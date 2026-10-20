@@ -1,0 +1,346 @@
+## css: Garlic's CSS parser, selector matching and cascade for text cells
+## (docs/design/garlic-browser.md, "CSS on cells").
+##
+## Written from CSS Syntax Level 3 (tokenizing, simplified), Selectors
+## Level 4 (type, universal, `#id`, `.class`, `[attr]`, `[attr=v]`,
+## descendant and child combinators, `,` lists) and CSS Cascade Level 4
+## (specificity, order, `!important`, inline `style`). At-rules are skipped
+## with their blocks, so `@media` rules don't apply.
+
+use html
+
+## One declaration: `name: value [!important]`, the name lowercase.
+pub struct Decl
+    pub name str
+    pub value str
+    pub important bool
+
+## A compound selector: an optional type and any ids, classes and
+## attribute tests, all of which must hold.
+pub struct Compound
+    pub tag str
+    pub ids List[str]
+    pub classes List[str]
+    pub attrs List[AttrTest]
+
+## `[name]` (any value) or `[name=value]`.
+pub struct AttrTest
+    pub name str
+    pub value str?
+
+## A complex selector: compounds left to right; `child[k]` says whether
+## compound k+1 is a child (`>`) of compound k rather than a descendant.
+pub struct Selector
+    pub parts List[Compound]
+    pub child List[bool]
+    pub specificity int
+
+## A style rule; `order` is its position, for the cascade.
+pub struct Rule
+    pub selector Selector
+    pub decls List[Decl]
+    pub order int
+
+## A parsed style sheet: rules indexed by their rightmost compound's id,
+## first class or type, so matching an element tries only likely rules.
+pub struct Sheet
+    pub rules List[Rule]
+    pub by_id Map[str, List[int]]
+    pub by_class Map[str, List[int]]
+    pub by_tag Map[str, List[int]]
+    pub general List[int]
+
+## The properties Garlic uses on text cells; the rest are dropped at parse.
+USED := {
+    "display",
+    "visibility",
+    "font-weight",
+    "font-style",
+    "text-transform",
+    "white-space",
+    "content",
+}
+
+## Removes `/* ... */` comments.
+fn strip_comments(src str) str
+    mut out := List[str]()
+    mut rest := src
+    while true
+        at := rest.find("/*") else
+            out.push(rest)
+            break
+        out.push(rest.slice(0, at))
+        after := rest.slice(at + 2, rest.chars().len())
+        close := after.find("*/") else break
+        rest = after.slice(close + 2, after.chars().len())
+    out.join("")
+
+## Parses a style sheet. Rules after an index of `start` keep their order
+## after earlier sheets' rules.
+pub fn parse(src str, start int) Sheet
+    cs := strip_comments(src).chars()
+    mut rules := List[Rule]()
+    mut i := 0
+    mut prelude := List[char]()
+    while i < cs.len()
+        c := cs[i]
+        if c == '@' and prelude.join("").trim() == ""
+            i = skip_at_rule(cs, i)
+            prelude.clear()
+            continue
+        if c == '{'
+            close := block_end(cs, i)
+            body := cs[i + 1..close].join("")
+            decls := declarations(body)
+            if decls.len() > 0
+                for text in prelude.join("").split(",")
+                    if sel := selector(text)
+                        rules.push(Rule(selector: sel, decls, order: start + rules.len()))
+            prelude.clear()
+            i = close + 1
+            continue
+        prelude.push(c)
+        i += 1
+    index(rules)
+
+## Builds the lookup maps of a sheet's rules.
+pub fn index(rules List[Rule]) Sheet
+    mut s := Sheet(rules, by_id: {}, by_class: {}, by_tag: {}, general: [])
+    for k in 0..rules.len()
+        last := rules[k].selector.parts[rules[k].selector.parts.len() - 1]
+        if last.ids.len() > 0
+            s.by_id.push(last.ids[0], k)
+        elif last.classes.len() > 0
+            s.by_class.push(last.classes[0], k)
+        elif last.tag != ""
+            s.by_tag.push(last.tag, k)
+        else
+            s.general.push(k)
+    s
+
+## Two sheets as one, `b`'s rules after `a`'s.
+pub fn concat(a Sheet, b Sheet) Sheet
+    mut all := a.rules
+    for r in b.rules
+        all.push(Rule(selector: r.selector, decls: r.decls, order: a.rules.len() + r.order))
+    index(all)
+
+## The index just past the matching `}` of the block opening at `open`
+## (or the end of input), skipping strings.
+fn block_end(cs List[char], open int) int
+    mut depth := 0
+    mut i := open
+    while i < cs.len()
+        c := cs[i]
+        if c == '"' or c == '\''
+            i = string_end(cs, i)
+            continue
+        if c == '{'
+            depth += 1
+        elif c == '}'
+            depth -= 1
+            if depth == 0
+                return i
+        i += 1
+    cs.len()
+
+## The index just past the string starting at `at`.
+fn string_end(cs List[char], at int) int
+    q := cs[at]
+    mut i := at + 1
+    while i < cs.len() and cs[i] != q
+        if cs[i] == '\\'
+            i += 1
+        i += 1
+    i + 1
+
+## Skips an at-rule from `@`: up to `;`, or past its block.
+fn skip_at_rule(cs List[char], at int) int
+    mut i := at
+    while i < cs.len()
+        if cs[i] == ';'
+            return i + 1
+        if cs[i] == '{'
+            return block_end(cs, i) + 1
+        i += 1
+    i
+
+## The declarations of a block body that Garlic uses.
+pub fn declarations(body str) List[Decl]
+    mut out := List[Decl]()
+    for part in body.split(";")
+        colon := part.find(":") else continue
+        name := part.slice(0, colon).trim().to_lower()
+        if not USED.contains(name)
+            continue
+        mut value := part.slice(colon + 1, part.chars().len()).trim()
+        mut important := false
+        if bang := value.find("!")
+            important = value.slice(bang + 1, value.chars().len()).trim().to_lower() == "important"
+            value = value.slice(0, bang).trim()
+        out.push(Decl(name, value: value.to_lower(), important))
+    out
+
+## Parses one complex selector, or none when Garlic doesn't support it
+## (pseudo-classes and pseudo-elements, `+`, `~`), so the rule is dropped.
+pub fn selector(text str) Selector?
+    t := text.trim()
+    if t == "" or t.contains(":") or t.contains("+") or t.contains("~")
+        return none
+    mut parts := List[Compound]()
+    mut child := List[bool]()
+    mut next_child := false
+    for word in t.replace(">", " > ").split(" ")
+        if word == ""
+            continue
+        if word == ">"
+            next_child = true
+            continue
+        c := compound(word)?
+        if parts.len() > 0
+            child.push(next_child)
+        next_child = false
+        parts.push(c)
+    if parts.len() == 0
+        return none
+    mut spec := 0
+    for p in parts
+        spec += p.ids.len() * 10000 + (p.classes.len() + p.attrs.len()) * 100
+        if p.tag != ""
+            spec += 1
+    Selector(parts, child, specificity: spec)
+
+## Parses a compound selector such as `a.nav#top[href]`.
+fn compound(word str) Compound?
+    mut c := Compound(tag: "", ids: [], classes: [], attrs: [])
+    cs := word.chars()
+    mut i := 0
+    mut kind := 't'
+    mut buf := List[char]()
+    while i <= cs.len()
+        ch := if i < cs.len() then cs[i] else '.'
+        if i == cs.len() or ch == '.' or ch == '#' or ch == '['
+            name := buf.join("")
+            buf.clear()
+            if kind == 't'
+                if name != "*"
+                    c.tag = name.to_lower()
+            elif kind == 'x'
+                if name != ""
+                    return none
+            elif name == ""
+                return none
+            elif kind == '.'
+                c.classes.push(name)
+            elif kind == '#'
+                c.ids.push(name)
+            if i == cs.len()
+                break
+            if ch == '['
+                close := word.slice(i, cs.len()).find("]")?
+                inner := word.slice(i + 1, i + close)
+                if eq := inner.find("=")
+                    v := inner
+                        .slice(eq + 1, inner.chars().len())
+                        .trim()
+                        .replace("\"", "")
+                        .replace("'", "")
+                    c.attrs.push(AttrTest(name: inner.slice(0, eq).trim().to_lower(), value: v))
+                else
+                    c.attrs.push(AttrTest(name: inner.trim().to_lower(), value: none))
+                i += close + 1
+                kind = 'x'
+                continue
+            kind = ch
+            i += 1
+            continue
+        buf.push(ch)
+        i += 1
+    c
+
+## Whether element `id` matches compound `c`.
+fn matches_compound(d html.Doc, id int, c Compound) bool
+    n := d.nodes[id]
+    if n.kind != html.Kind.Element or (c.tag != "" and c.tag != n.tag)
+        return false
+    for want in c.ids
+        if d.attr(id, "id") != want
+            return false
+    if c.classes.len() > 0
+        have := (d.attr(id, "class") else "").split(" ")
+        for want in c.classes
+            if not have.contains(want)
+                return false
+    for a in c.attrs
+        v := d.attr(id, a.name) else return false
+        if want := a.value
+            if v != want
+                return false
+    true
+
+## Whether element `id` matches selector `s`, right to left.
+pub fn matches(d html.Doc, id int, s Selector) bool
+    matches_from(d, id, s, s.parts.len() - 1)
+
+fn matches_from(d html.Doc, id int, s Selector, k int) bool
+    if not matches_compound(d, id, s.parts[k])
+        return false
+    if k == 0
+        return true
+    mut p := d.nodes[id].parent
+    if s.child[k - 1]
+        return p > 0 and matches_from(d, p, s, k - 1)
+    while p > 0
+        if matches_from(d, p, s, k - 1)
+            return true
+        p = d.nodes[p].parent
+    false
+
+## The rules of `sheet` that may match element `id`, by the index.
+fn candidates(d html.Doc, id int, sheet Sheet) List[int]
+    mut out := sheet.general
+    if key := d.attr(id, "id")
+        for k in sheet.by_id.get(key) else []
+            out.push(k)
+    for cls in (d.attr(id, "class") else "").split(" ")
+        if cls != ""
+            for k in sheet.by_class.get(cls) else []
+                out.push(k)
+    for k in sheet.by_tag.get(d.nodes[id].tag) else []
+        out.push(k)
+    out
+
+## The cascaded value of each property Garlic uses on element `id`:
+## matching rules by importance, specificity and order, then the element's
+## own `style` attribute (Cascade 4, simplified). Inherited values are the
+## layout's business.
+pub fn cascade(d html.Doc, id int, sheet Sheet) Map[str, str]
+    mut best := Map[str, int]()
+    mut out := Map[str, str]()
+    for k in candidates(d, id, sheet)
+        r := sheet.rules[k]
+        if not matches(d, id, r.selector)
+            continue
+        for decl in r.decls
+            level := if decl.important then 2 else 0
+            weight := level * 1000000000000 + r.selector.specificity * 1000000 + r.order
+            if weight >= (best.get(decl.name) else -1)
+                best[decl.name] = weight
+                out[decl.name] = decl.value
+    if inline := d.attr(id, "style")
+        for decl in declarations(inline)
+            level := if decl.important then 3 else 1
+            weight := level * 1000000000000
+            if weight >= (best.get(decl.name) else -1)
+                best[decl.name] = weight
+                out[decl.name] = decl.value
+    out
+
+## Every `<style>` element's sheet, in document order, as one sheet.
+pub fn document_sheet(d html.Doc) Sheet
+    mut all := parse("", 0)
+    for s in d.all("style")
+        media := (d.attr(s, "media") else "all").to_lower()
+        if media.contains("all") or media.contains("screen")
+            all = concat(all, parse(d.text(s), 0))
+    all
