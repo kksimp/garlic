@@ -1098,9 +1098,11 @@ fn node_with(b Browser, tag str, attr str, value str) int
 @test fn budgets_keep_the_viewport_then_key_nodes()
     pg := Browser.new("/dev/null", 60, 4).pg
     assert(pg.to_json_budget(0, 4, 400).contains("\"omitted\":0"))
-    mut b := Browser.new("{testdata()}/index.html", 60, 4)
-    full := b.pg.to_json(0, 3, false)
-    small := b.pg.to_json_budget(0, 3, 900)
+    ## A fixed URL, so the budget doesn't depend on where the checkout is.
+    index := fs.read_text("{testdata()}/index.html") else ""
+    p := lay(index, 60)
+    full := p.to_json(0, 3, false)
+    small := p.to_json_budget(0, 3, 900)
     assert(small.chars().len() <= 900 and small.chars().len() < full.chars().len())
     assert(small.contains("\"name\":\"Second page\"") and small.contains("\"role\":\"heading\",\"name\":\"Features\""))
     assert(not small.contains("\"omitted\":0"))
