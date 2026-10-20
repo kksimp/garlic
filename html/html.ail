@@ -38,6 +38,9 @@ pub enum Token
 pub struct Doc
     pub nodes List[Node]
     pub doctype str
+    ## Nodes changed since parsing (by scripts or form input), in order,
+    ## each once; the page model reports them.
+    pub changed List[int]
 
 ## Elements whose content is raw text up to their end tag.
 RAW_TEXT := {"script", "style", "xmp", "iframe", "noembed", "noframes"}
@@ -661,7 +664,7 @@ pub fn build(tokens List[Token]) Doc
                 ))
             Doctype(name) => b.doctype = name
     b.ensure_body()
-    Doc(nodes: b.nodes, doctype: b.doctype)
+    Doc(nodes: b.nodes, doctype: b.doctype, changed: [])
 
 ## Parses an HTML document.
 pub fn parse(src str) Doc
@@ -684,6 +687,124 @@ pub fn Doc.first(self, tag str) int?
         if nodes[i].kind == Element and nodes[i].tag == tag
             return i
     none
+
+## Sets attribute `name` of node `id` to `value`, adding it if absent.
+pub fn Doc.set_attr(mut self, id int, name str, value str)
+    mark(id)
+    for k in 0..nodes[id].attrs.len()
+        if nodes[id].attrs[k].name == name
+            nodes[id].attrs[k].value = value
+            return
+    nodes[id].attrs.push(Attr(name, value))
+
+## Removes attribute `name` from node `id`, if it has it.
+pub fn Doc.remove_attr(mut self, id int, name str)
+    nodes[id].attrs = [a for a in nodes[id].attrs if a.name != name]
+    mark(id)
+
+## Records that node `id` changed.
+pub fn Doc.mark(mut self, id int)
+    if not changed.contains(id)
+        changed.push(id)
+
+## A new element named `tag`, not yet in the tree (parent -1).
+pub fn Doc.create(mut self, tag str) int
+    nodes.push(Node(
+        kind: Element,
+        tag: tag.to_lower(),
+        attrs: [],
+        text: "",
+        parent: -1,
+        children: [],
+    ))
+    nodes.len() - 1
+
+## A new text node, not yet in the tree.
+pub fn Doc.create_text(mut self, s str) int
+    nodes.push(Node(kind: Text, tag: "", attrs: [], text: s, parent: -1, children: []))
+    nodes.len() - 1
+
+## Moves node `id` to the end of `parent`'s children; gives `id`.
+pub fn Doc.append(mut self, parent int, id int) int
+    requires not within(parent, id)
+    detach(id)
+    nodes[parent].children.push(id)
+    nodes[id].parent = parent
+    mark(parent)
+    mark(id)
+    id
+
+## Moves node `id` into `parent` just before child `before` (at the end
+## when `before` isn't a child); gives `id`.
+pub fn Doc.insert_before(mut self, parent int, id int, before int) int
+    requires not within(parent, id)
+    detach(id)
+    at := nodes[parent].children.index_of(before) else nodes[parent].children.len()
+    nodes[parent].children.insert(at, id)
+    nodes[id].parent = parent
+    mark(parent)
+    mark(id)
+    id
+
+## Takes node `id` out of the tree (it keeps its own children).
+pub fn Doc.detach(mut self, id int)
+    p := nodes[id].parent
+    if p < 0
+        return
+    nodes[p].children = [c for c in nodes[p].children if c != id]
+    nodes[id].parent = -1
+    mark(p)
+
+## Replaces the content of node `id` with `s`: a text node's text, or an
+## element's children with one text node.
+pub fn Doc.set_text(mut self, id int, s str)
+    if nodes[id].kind == Text
+        nodes[id].text = s
+        mark(id)
+        return
+    for c in nodes[id].children
+        nodes[c].parent = -1
+    nodes[id].children = []
+    if s != ""
+        append(id, create_text(s))
+    mark(id)
+
+## Whether node `id` is `ancestor` or inside it.
+pub fn Doc.within(self, id int, ancestor int) bool
+    mut p := id
+    while p >= 0
+        if p == ancestor
+            return true
+        p = nodes[p].parent
+    false
+
+## The nearest element named `tag` around node `id` (or `id` itself), or none.
+pub fn Doc.enclosing(self, id int, tag str) int?
+    mut p := id
+    while p >= 0
+        if nodes[p].kind == Element and nodes[p].tag == tag
+            return p
+        p = nodes[p].parent
+    none
+
+## Elements whose text is never shown: scripts, styles and templates.
+NOT_SHOWN := {"script", "style", "template"}
+
+## The text of node `id` and its descendants that a reader would see:
+## scripts, styles and templates left out.
+pub fn Doc.visible_text(self, id int) str
+    mut out := List[str]()
+    collect_visible(self, id, mut out)
+    out.join("")
+
+fn collect_visible(d Doc, id int, mut out List[str])
+    n := d.nodes[id]
+    if n.kind == Text
+        out.push(n.text)
+    if n.kind == Element and NOT_SHOWN.contains(n.tag)
+        return
+    for c in n.children
+        collect_visible(d, c, mut out)
 
 ## The text of node `id` and its descendants, concatenated.
 pub fn Doc.text(self, id int) str
