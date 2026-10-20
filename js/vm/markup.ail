@@ -3,7 +3,22 @@
 ## the serialisation `innerHTML` and `outerHTML` read (HTML §13.3). Garlic's
 ## own parser builds the real page; this one handles markup scripts write.
 
-VOID_TAGS := ["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]
+VOID_TAGS := [
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "source",
+    "track",
+    "wbr",
+]
+
 RAW_TAGS := ["script", "style", "textarea", "title"]
 
 ## The characters an entity names, for the entities pages use most.
@@ -109,7 +124,11 @@ pub fn Vm.parse_into(mut self, parent int, src str)
                         j += 1
                         continue
                     start := j
-                    while j < cs.len() and not cs[j].is_space() and cs[j] != '=' and cs[j] != '>' and not (cs[j] == '/' and j + 1 < cs.len() and cs[j + 1] == '>')
+                    while j < cs.len()
+                        and not cs[j].is_space()
+                        and cs[j] != '='
+                        and cs[j] != '>'
+                        and not (cs[j] == '/' and j + 1 < cs.len() and cs[j + 1] == '>')
                         j += 1
                     name := cs[start..j].join("").to_lower()
                     mut value := ""
@@ -146,7 +165,8 @@ pub fn Vm.parse_into(mut self, parent int, src str)
                     end := find_at_lower(cs, i, close) else cs.len()
                     raw := cs[i..end].join("")
                     if raw != ""
-                        text := if tag == "textarea" or tag == "title" then decode_entities(raw) else raw
+                        text := if tag == "textarea"
+                            or tag == "title" then decode_entities(raw) else raw
                         dom_append(el, dom_create("#text", 3, text))
                     after := find_at(cs, end, ">") else cs.len()
                     i = after + 1
@@ -214,7 +234,10 @@ pub fn Vm.outer_html(self, id int) str
     match n.kind
         3 =>
             p := n.parent
-            if p >= 0 and RAW_TAGS.contains(dom[p].tag) and dom[p].tag != "textarea" and dom[p].tag != "title"
+            if p >= 0
+                and RAW_TAGS.contains(dom[p].tag)
+                and dom[p].tag != "textarea"
+                and dom[p].tag != "title"
                 return n.text
             escape_text(n.text, false)
         8 => "<!--{n.text}-->"
