@@ -724,6 +724,11 @@ pub fn Doc.create_text(mut self, s str) int
     nodes.push(Node(kind: Text, tag: "", attrs: [], text: s, parent: -1, children: []))
     nodes.len() - 1
 
+## A new comment node, not yet in the tree.
+pub fn Doc.create_comment(mut self, s str) int
+    nodes.push(Node(kind: Comment, tag: "", attrs: [], text: s, parent: -1, children: []))
+    nodes.len() - 1
+
 ## Moves node `id` to the end of `parent`'s children; gives `id`.
 pub fn Doc.append(mut self, parent int, id int) int
     requires not within(parent, id)

@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html><head><title>Script test</title></head>
+<body>
+<h1 id="h">Loading…</h1>
+<ul id="list"></ul>
+<p id="later">waiting</p>
+<form action="result.html"><input name="q" id="q"><button id="go">Go</button></form>
+<script>
+document.getElementById("h").textContent = "Made by script";
+const list = document.getElementById("list");
+for (const name of ["garlic", "onion", "leek"]) {
+  const li = document.createElement("li");
+  li.innerHTML = "<b>" + name + "</b> bulb";
+  list.appendChild(li);
+}
+document.title = "Script test (" + list.children.length + " items)";
+document.getElementById("q").value = "filled by script";
+setTimeout(() => { document.getElementById("later").textContent = "timer ran"; }, 200);
+console.log("scripts ran");
+</script>
+</body></html>
