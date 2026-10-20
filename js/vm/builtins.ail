@@ -297,7 +297,7 @@ fn Vm.setup(mut self)
     methods(
         obj_of(proto_of("Date")) else object_proto,
         "Date.prototype",
-        "getTime:0 valueOf:0 toISOString:0 toJSON:1 getFullYear:0 getMonth:0 getDate:0 getDay:0 getHours:0 getMinutes:0 getSeconds:0 getMilliseconds:0 getUTCFullYear:0 getUTCMonth:0 getUTCDate:0 getUTCDay:0 getUTCHours:0 getUTCMinutes:0 getUTCSeconds:0 getUTCMilliseconds:0 getTimezoneOffset:0 setTime:1 toString:0 toUTCString:0",
+        "getTime:0 valueOf:0 toISOString:0 toJSON:1 getFullYear:0 getMonth:0 getDate:0 getDay:0 getHours:0 getMinutes:0 getSeconds:0 getMilliseconds:0 getUTCFullYear:0 getUTCMonth:0 getUTCDate:0 getUTCDay:0 getUTCHours:0 getUTCMinutes:0 getUTCSeconds:0 getUTCMilliseconds:0 getTimezoneOffset:0 setTime:1 toString:0 toUTCString:0 setFullYear:3 setMonth:2 setDate:1 setHours:4 setMinutes:3 setSeconds:2 setMilliseconds:1 setUTCFullYear:3 setUTCMonth:2 setUTCDate:1 setUTCHours:4 setUTCMinutes:3 setUTCSeconds:2 setUTCMilliseconds:1",
     )
 
     math := plain()
@@ -331,7 +331,7 @@ fn Vm.setup(mut self)
     methods(
         global_obj,
         "global",
-        "parseInt:2 parseFloat:1 isNaN:1 isFinite:1 encodeURIComponent:1 encodeURI:1 decodeURIComponent:1 decodeURI:1",
+        "parseInt:2 parseFloat:1 isNaN:1 isFinite:1 encodeURIComponent:1 encodeURI:1 decodeURIComponent:1 decodeURI:1 eval:1",
     )
     # Number.parseInt and parseInt are the same function (§21.1.2.13).
     number_ctor.props["parseInt"] = global_obj.props["parseInt"]
@@ -352,7 +352,7 @@ fn Vm.setup(mut self)
 ## Natives that `new` may call.
 pub fn native_is_ctor(name str) bool
     match name
-        "Object" | "Function" | "Array" | "String" | "Number" | "Boolean" | "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" | "AggregateError" | "Map" | "Set" | "RegExp" | "Date" | "Promise" | "dom.Event" | "dom.illegal" | "dom.URL" | "dom.URLSearchParams" =>
+        "Object" | "Function" | "Array" | "String" | "Number" | "Boolean" | "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" | "AggregateError" | "Map" | "Set" | "RegExp" | "Date" | "Promise" | "dom.Event" | "dom.illegal" | "dom.URL" | "dom.URLSearchParams" | "dom.Image" =>
             true
         _ => false
 
@@ -579,6 +579,7 @@ pub fn Vm.native(
             else
                 console_out.push(line)
             Undef
+        "global.eval" => global_eval(a0)?
         "global.parseInt" => Value.Num(parse_int(to_string(a0)?, to_int32(
             to_number(arg_at(args, 1))?,
         )))
@@ -644,6 +645,33 @@ fn Vm.function_constructor(mut self, args List[Value]) Value ! Thrown
             configurable: true,
         )
     v
+
+## `eval` (§19.2.1), always as an indirect eval: the code runs in the
+## global scope, even when called by the name `eval`.
+fn Vm.global_eval(mut self, code Value) Value ! Thrown
+    source := str_of(code) else return code
+    prog := syntax.parse(source) else err
+        return throw_error("SyntaxError", err.msg)
+    saved := global_env.strict
+    r := eval_program(prog) else err
+        global_env.strict = saved
+        return err
+    global_env.strict = saved
+    r
+
+## Run a script for `eval`: its value is the last expression statement's
+## (§14.1.1, simplified to the top level).
+fn Vm.eval_program(mut self, prog syntax.Program) Value ! Thrown
+    global_env.strict = prog.strict
+    hoist_vars(prog.body, global_env, true)
+    declare_block(prog.body, global_env)?
+    mut last := Value.Undef
+    for s in prog.body
+        match s
+            Exp(e, _) => last = eval(e, global_env)?
+            Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger =>
+                exec(s, global_env)?
+    last
 
 ## The value of a script made of one expression statement.
 fn Vm.run_program_value(mut self, prog syntax.Program) Value ! Thrown

@@ -565,7 +565,9 @@ pub fn Vm.dom_setup(mut self)
     navigator.props["webdriver"] = data(Bool(false))
     navigator.props["hardwareConcurrency"] = data(Num(4.0))
     navigator.props["maxTouchPoints"] = data(Num(0.0))
+    methods(navigator, "dom.navigator", "sendBeacon:1")
     global_obj.props["navigator"] = hidden(Obj(navigator))
+    global_obj.props["Image"] = hidden(native_fn("dom.Image", "Image", 0))
     for item in [
         "innerWidth=1280",
         "innerHeight=800",
@@ -674,6 +676,25 @@ pub fn Vm.dom_native(
         return make_event(to_string(arg_at(args, 0))?, arg_at(args, 1))
     if m == "illegal"
         return type_error("Illegal constructor")
+    if m == "Image"
+        # `new Image(width, height)` (HTML §4.8.4.1).
+        img := document_method("createElement", [Value.Str("img")])?
+        for i in 0..args.len().min(2)
+            if args[i] != Undef
+                id := node_id(img) else break
+                set_attr(id, if i == 0 then "width" else "height", to_string(args[i])?)
+        return img
+    if m == "navigator.sendBeacon"
+        # Sent as the page goes on; the browser decides whether to send it.
+        body := arg_at(args, 1)
+        host_requests.push(HostRequest(
+            kind: "beacon",
+            url: resolve_url(to_string(arg_at(args, 0))?),
+            method: "POST",
+            node: -1,
+            text: if is_nullish(body) then "" else to_string(body)?,
+        ))
+        return Value.Bool(true)
     match m
         "addEventListener" | "removeEventListener" | "dispatchEvent" =>
             target := if this_val
@@ -1955,14 +1976,33 @@ fn Vm.window_method(mut self, m str, args List[Value]) Value ! Thrown
             ))
             Null
         "atob" | "btoa" =>
+            # Both work on "binary strings": one character per byte (HTML §8.3).
             s := to_string(a0)?
             if m == "btoa"
-                return Value.Str(s.to_bytes().base64())
-            b := bytes.from_base64(s.replace(" ", "")) else return dom_exception(
+                mut raw := List[u8]()
+                for u in units(s)
+                    if u > 255
+                        return dom_exception(
+                            "InvalidCharacterError",
+                            "Failed to execute 'btoa' on 'Window': The string to be encoded contains characters outside of the Latin1 range.",
+                        )
+                    raw.push(u.to_u8())
+                return Value.Str(bytes.from_list(raw).base64())
+            # Padding may be left off (forgiving-base64 decode, Infra §4.7).
+            mut text := s.replace(" ", "").replace("\n", "").replace("\t", "").replace("\r", "")
+            if text.ends_with("==")
+                text = text.slice(0, text.len() - 2)
+            elif text.ends_with("=")
+                text = text.slice(0, text.len() - 1)
+            text = match text.len() % 4
+                2 => "{text}=="
+                3 => "{text}="
+                _ => text
+            b := bytes.from_base64(text) else return dom_exception(
                 "InvalidCharacterError",
                 "Failed to execute 'atob' on 'Window': The string to be decoded is not correctly encoded.",
             )
-            Value.Str(b.text())
+            Value.Str(from_units([x.to_int() for x in b.to_list()]))
         _ => Undef
 
 ## Run timers and microtasks in virtual time until none are left, the

@@ -290,6 +290,8 @@ fn Vm.date_method(mut self, m str, this_val Value, args List[Value]) Value ! Thr
         return Value.Num(t)
     if m == "getTimezoneOffset"
         return Value.Num(if is_finite(t) then 0.0 else nan())
+    if m.starts_with("set")
+        return date_set(o, m.replace("UTC", ""), t, args)
     if not is_finite(t)
         return Value.Num(nan())
     p := parts_of(t)
@@ -304,6 +306,33 @@ fn Vm.date_method(mut self, m str, this_val Value, args List[Value]) Value ! Thr
         "getMilliseconds" => p.ms
         _ => return type_error("Date.prototype.{m} is not supported yet")
     Value.Num(n.to_float())
+
+## setFullYear, setMonth, ... setMilliseconds (§21.4.4.20-28); local time is
+## UTC here.
+fn Vm.date_set(mut self, o ref JsObject, m str, t float, args List[Value]) Value ! Thrown
+    names := [
+        "setFullYear",
+        "setMonth",
+        "setDate",
+        "setHours",
+        "setMinutes",
+        "setSeconds",
+        "setMilliseconds",
+    ]
+    counts := [3, 2, 1, 4, 3, 2, 1]
+    first := names.index_of(m) else return type_error("Date.prototype.{m} is not a function")
+    mut f := [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+    if is_finite(t)
+        p := parts_of(t)
+        f = [x.to_float() for x in [p.year, p.month, p.date, p.hours, p.minutes, p.seconds, p.ms]]
+    elif first != 0
+        return Value.Num(nan())
+    n := args.len().max(1).min(counts[first])
+    for i in 0..n
+        f[first + i] = to_number(arg_at(args, i))?
+    nt := time_clip(make_time(f[0], f[1], f[2], f[3], f[4], f[5], f[6]))
+    o.prim = Num(nt)
+    Value.Num(nt)
 
 fn digits_at(cs List[char], a int, n int) bool
     if cs.len() < a + n

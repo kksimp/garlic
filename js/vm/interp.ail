@@ -1307,6 +1307,11 @@ pub fn Vm.instance_of(mut self, v Value, target Value) bool ! Thrown
 ## `=`, `+=`, `&&=` and the rest (§13.15.2).
 fn Vm.assignment(mut self, op str, target syntax.Pat, value syntax.Expr, env ref Env) Value ! Thrown
     if op == "="
+        # A property's object and key come before the value (§13.15.2).
+        if r := member_target(target, env)?
+            v := eval(value, env)?
+            put(r.f, r.key, v)?
+            return v
         v := eval_named(value, single_name(target), env)?
         bind_pattern(target, v, env, "assign")?
         return v
@@ -1338,6 +1343,15 @@ fn Vm.assignment(mut self, op str, target syntax.Pat, value syntax.Expr, env ref
     else
         assign_to(t, result, env)?
     result
+
+## The object and key of an assignment to a property, or none.
+fn Vm.member_target(mut self, target syntax.Pat, env ref Env) MemberRef? ! Thrown
+    match target
+        PatTarget(e) =>
+            if syntax.expr_kind(e) == "Member"
+                return member_ref(e, env)
+            none
+        PatId | PatObj | PatArr | PatDefault => none
 
 ## An object literal (§13.2.5.4).
 fn Vm.object_literal(mut self, props List[syntax.Prop], env ref Env) Value ! Thrown
