@@ -1,0 +1,181 @@
+## A cookie jar (RFC 6265, simplified): cookies from `Set-Cookie` headers
+## and from `document.cookie`, sent back on later requests to their site.
+## No paths, `Secure` or `SameSite` yet: every cookie for a host goes with
+## every request to it.
+
+pub struct Cookie
+    pub name str
+    pub value str
+    ## The host it was set by, or the `Domain` it names (no leading dot).
+    pub domain str
+    ## Whether `Domain` was given, so subdomains get it too.
+    pub shared bool
+
+pub struct Jar
+    pub cookies List[Cookie]
+
+pub fn new_jar() Jar
+    Jar(cookies: [])
+
+## The host of an `http`/`https` URL, in lowercase, or "".
+pub fn host_of(url str) str
+    rest := url.strip_prefix("https://") else url.strip_prefix("http://") else return ""
+    mut host := rest
+    for sep in ["/", "?", "#"]
+        if i := host.find(sep)
+            host = host.slice(0, i)
+    if i := host.find("@")
+        host = host.slice(i + 1, host.len())
+    if i := host.find(":")
+        host = host.slice(0, i)
+    host.to_lower()
+
+fn matches(c Cookie, host str) bool
+    host == c.domain or c.shared and host.ends_with(".{c.domain}")
+
+## The cookies for `url`, by name, as a page's scripts see them.
+pub fn Jar.for_url(self, url str) Map[str, str]
+    host := host_of(url)
+    mut out := Map[str, str]()
+    if host == ""
+        return out
+    for c in cookies
+        if matches(c, host)
+            out[c.name] = c.value
+    out
+
+## The `Cookie` header for a request to `url`, or "".
+pub fn Jar.header(self, url str) str
+    jar := for_url(url)
+    ["{k}={jar[k]}" for k in jar.keys()].join("; ")
+
+## Store one `Set-Cookie` value (or a `document.cookie` assignment) from
+## `url`. An expired cookie or one with `Max-Age` 0 or less is removed;
+## `now_ms` is the time to compare `Expires` with.
+pub fn Jar.set(mut self, url str, line str, now_ms float)
+    host := host_of(url)
+    if host == ""
+        return
+    parts := line.split(";")
+    pair := parts[0].trim()
+    eq := pair.find("=") else return
+    name := pair.slice(0, eq).trim()
+    value := pair.slice(eq + 1, pair.len()).trim()
+    if name == ""
+        return
+    mut domain := host
+    mut shared := false
+    mut expired := false
+    for p in parts[1..]
+        kv := p.trim()
+        lower := kv.to_lower()
+        if v := lower.strip_prefix("domain=")
+            d := v.strip_prefix(".") else v
+            # A cookie may only name its own host or a parent of it.
+            if d == host or host.ends_with(".{d}")
+                domain = d
+                shared = true
+            else
+                return
+        elif v := lower.strip_prefix("max-age=")
+            if n := v.trim().to_int()
+                expired = n <= 0
+        elif kv.to_lower().starts_with("expires=")
+            if t := http_date_ms(kv.slice(8, kv.len()).trim())
+                expired = t <= now_ms
+    mut kept := List[Cookie]()
+    for c in cookies
+        if not (c.name == name and c.domain == domain)
+            kept.push(c)
+    if not expired
+        kept.push(Cookie(name: name, value: value, domain: domain, shared: shared))
+    cookies = kept
+
+## Store every cookie of a response's `set-cookie` header, whose values
+## `std.net` joins with ", ".
+pub fn Jar.set_all(mut self, url str, header str, now_ms float)
+    for line in split_set_cookie(header)
+        set(url, line, now_ms)
+
+## Split joined `Set-Cookie` values: a ", " starts a new cookie only when
+## a `name=` follows before any ";" (an `Expires` date has a comma too).
+pub fn split_set_cookie(header str) List[str]
+    mut out := List[str]()
+    mut start := 0
+    cs := header.chars()
+    mut i := 0
+    while i + 1 < cs.len()
+        if cs[i] == ',' and cs[i + 1] == ' '
+            mut j := i + 2
+            mut is_pair := false
+            while j < cs.len()
+                if cs[j] == '='
+                    is_pair = j > i + 2
+                    break
+                if cs[j] == ';' or cs[j] == ',' or cs[j] == ' '
+                    break
+                j += 1
+            if is_pair
+                out.push(header.slice(start, i).trim())
+                start = i + 2
+        i += 1
+    last := header.slice(start, cs.len()).trim()
+    if last != ""
+        out.push(last)
+    out
+
+## An `Expires` date such as "Wed, 21-Apr-2027 19:12:31 GMT" or
+## "Wed, 21 Apr 2027 19:12:31 GMT", in ms since 1970 (UTC).
+fn http_date_ms(text str) float?
+    mut words := List[str]()
+    for w in text.replace("-", " ").replace(",", " ").split(" ")
+        if w != ""
+            words.push(w)
+    if words.len() < 5
+        return none
+    months := ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+    day := words[1].to_int() else return none
+    month := months.index_of(words[2].to_lower().slice(0, 3)) else return none
+    mut year := words[3].to_int() else return none
+    if year < 100
+        year += if year < 70 then 2000 else 1900
+    hms := words[4].split(":")
+    if hms.len() != 3
+        return none
+    h := hms[0].to_int() else return none
+    mi := hms[1].to_int() else return none
+    s := hms[2].to_int() else return none
+    days := days_from_civil(year, month + 1, day)
+    (days * 86400 + h * 3600 + mi * 60 + s).to_float() * 1000.0
+
+## Days from 1970-01-01 to a date (H. Hinnant's days_from_civil).
+fn days_from_civil(year int, month int, day int) int
+    y := if month <= 2 then year - 1 else year
+    era := (if y >= 0 then y else y - 399) / 400
+    yoe := y - era * 400
+    mp := (month + 9) % 12
+    doy := (153 * mp + 2) / 5 + day - 1
+    doe := yoe * 365 + yoe / 4 - yoe / 100 + doy
+    era * 146097 + doe - 719468
+
+@test fn cookies_round_trip()
+    mut jar := new_jar()
+    now := 1.0e12
+    jar.set_all(
+        "https://www.google.com/search?q=x",
+        "__Secure-STRP=abc; expires=Tue, 20-Oct-2026 19:17:31 GMT; path=/; domain=.google.com; Secure, NID=xyz; expires=Wed, 21-Apr-2027 19:12:31 GMT; path=/; domain=.google.com; HttpOnly",
+        now,
+    )
+    assert_eq(jar.header("https://www.google.com/"), "__Secure-STRP=abc; NID=xyz")
+    assert_eq(jar.header("https://maps.google.com/x"), "__Secure-STRP=abc; NID=xyz")
+    assert_eq(jar.header("https://example.com/"), "")
+    jar.set("https://www.google.com/", "SG_SS=tok; path=/", now)
+    assert_eq(jar.for_url("https://www.google.com/a")["SG_SS"], "tok")
+    assert_eq(jar.header("https://maps.google.com/"), "__Secure-STRP=abc; NID=xyz")
+    jar.set("https://www.google.com/", "SG_SS=gone; max-age=0", now)
+    assert(jar.for_url("https://www.google.com/").get("SG_SS") == none)
+    # An already expired cookie is dropped (Unix time 0 is in the past).
+    jar.set("https://a.test/", "old=1; expires=Thu, 01 Jan 1970 00:00:00 GMT", now)
+    assert_eq(jar.header("https://a.test/"), "")
+    jar.set("https://a.test/", "evil=1; domain=b.test", now)
+    assert_eq(jar.header("https://b.test/"), "")
