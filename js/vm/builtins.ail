@@ -338,7 +338,7 @@ fn Vm.setup(mut self)
 ## Natives that `new` may call.
 pub fn native_is_ctor(name str) bool
     match name
-        "Object" | "Function" | "Array" | "String" | "Number" | "Boolean" | "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" | "Map" | "Set" | "RegExp" | "Date" | "dom.Event" | "dom.illegal" =>
+        "Object" | "Function" | "Array" | "String" | "Number" | "Boolean" | "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" | "Map" | "Set" | "RegExp" | "Date" | "dom.Event" | "dom.illegal" | "dom.URL" | "dom.URLSearchParams" =>
             true
         _ => false
 

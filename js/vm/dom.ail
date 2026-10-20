@@ -496,6 +496,21 @@ pub fn Vm.dom_setup(mut self)
     getter(class_list_proto, "length", "dom.get.classList.length")
     getter(class_list_proto, "value", "dom.get.classList.value")
 
+    url_setup()
+    exception_proto := object("Object", proto_of("Error"))
+    protos["DOMException"] = Obj(exception_proto)
+    if c := obj_of(native_fn("dom.illegal", "DOMException", 2))
+        c.props["prototype"] = Prop(
+            value: Obj(exception_proto),
+            get: Undef,
+            set: Undef,
+            accessor: false,
+            enumerable: false,
+            writable: false,
+            configurable: false,
+        )
+        exception_proto.props["constructor"] = hidden(Obj(c))
+        global_obj.props["DOMException"] = hidden(Obj(c))
     document := node_value(0)
     global_obj.props["document"] = Prop(
         value: document,
@@ -647,6 +662,14 @@ pub fn Vm.dom_native(
         if p.starts_with("getEntries")
             return array([])
         return Undef
+    if p := m.strip_prefix("url.")
+        return url_method(p, this_val)
+    if p := m.strip_prefix("params.")
+        return params_method(p, this_val, args)
+    if m == "URL"
+        return make_url(args, new_target)
+    if m == "URLSearchParams"
+        return make_params(args)
     if m == "Event"
         return make_event(to_string(arg_at(args, 0))?, arg_at(args, 1))
     if m == "illegal"
@@ -1057,8 +1080,8 @@ fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
         "removeChild" =>
             child := need_node(a0, "removeChild")?
             if dom[child].parent != id
-                return throw_error(
-                    "Error",
+                return dom_exception(
+                    "NotFoundError",
                     "Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of this node.",
                 )
             dom_detach(child)
@@ -1160,8 +1183,8 @@ fn Vm.insert_checked(mut self, parent int, child int, before int) ! Thrown
     mut e := parent
     while e >= 0
         if e == child
-            return throw_error(
-                "Error",
+            return dom_exception(
+                "HierarchyRequestError",
                 "Failed to execute 'appendChild' on 'Node': The new child element contains the parent.",
             )
         e = dom[e].parent
@@ -1623,7 +1646,7 @@ fn Vm.parse_selector(mut self, text str) List[List[Compound]] ! Thrown
     for part in split_top(text, ',')
         cs := part.trim().chars()
         if cs.len() == 0
-            return throw_error(
+            return dom_exception(
                 "SyntaxError",
                 "Failed to execute 'querySelectorAll' on 'Document': '{text}' is not a valid selector.",
             )
@@ -1665,7 +1688,7 @@ fn Vm.parse_selector(mut self, text str) List[List[Compound]] ! Thrown
                         cur.classes.push(name)
                     i = j
                 elif ch == '['
-                    j := find_at(cs, i, "]") else return throw_error(
+                    j := find_at(cs, i, "]") else return dom_exception(
                         "SyntaxError",
                         "'{text}' is not a valid selector.",
                     )
@@ -1687,7 +1710,7 @@ fn Vm.parse_selector(mut self, text str) List[List[Compound]] ! Thrown
                 else
                     j := ident_end(cs, i)
                     if j == i
-                        return throw_error(
+                        return dom_exception(
                             "SyntaxError",
                             "Failed to execute 'querySelectorAll' on 'Document': '{text}' is not a valid selector.",
                         )
@@ -1935,8 +1958,8 @@ fn Vm.window_method(mut self, m str, args List[Value]) Value ! Thrown
             s := to_string(a0)?
             if m == "btoa"
                 return Value.Str(s.to_bytes().base64())
-            b := bytes.from_base64(s.replace(" ", "")) else return throw_error(
-                "Error",
+            b := bytes.from_base64(s.replace(" ", "")) else return dom_exception(
+                "InvalidCharacterError",
                 "Failed to execute 'atob' on 'Window': The string to be decoded is not correctly encoded.",
             )
             Value.Str(b.text())
@@ -2059,8 +2082,12 @@ fn first_of(s str, chars str) int
             return i
     cs.len()
 
-## Resolve a URL against the page's address (URL §4.4, the common cases).
+## Resolve a URL against the page's address.
 pub fn Vm.resolve_url(self, url str) str
+    resolve_against(location_href, url)
+
+## Resolve `url` against `base` (URL §4.4, the common cases).
+pub fn resolve_against(base_href str, url str) str
     u := url.trim()
     if u.contains("://")
         or u.starts_with("data:")
@@ -2068,18 +2095,18 @@ pub fn Vm.resolve_url(self, url str) str
         or u.starts_with("mailto:")
         or u.starts_with("about:")
         return u
-    origin := url_part(location_href, "origin")
+    origin := url_part(base_href, "origin")
     if u.starts_with("//")
-        return "{url_part(location_href, "protocol")}{u}"
+        return "{url_part(base_href, "protocol")}{u}"
     if u.starts_with("/")
         return "{origin}{u}"
     if u.starts_with("?")
-        return "{origin}{url_part(location_href, "pathname")}{u}"
+        return "{origin}{url_part(base_href, "pathname")}{u}"
     if u.starts_with("#")
-        return with_hash(location_href, u)
+        return with_hash(base_href, u)
     if u == ""
-        return location_href.split("#")[0]
-    dir := url_part(location_href, "pathname")
+        return base_href.split("#")[0]
+    dir := url_part(base_href, "pathname")
     base := dir.slice(0, (last_slash(dir) + 1).max(1))
     mut parts := [p for p in "{base}{u}".split("/")]
     mut out := List[str]()
@@ -2175,3 +2202,10 @@ fn Vm.fire(mut self, target int, type_name str, bubbles bool)
         ok
     else err
         report(uncaught_text(err))
+
+## A DOMException (WebIDL §2.8.1) named `name`, e.g. "NotFoundError".
+fn Vm.dom_exception(mut self, name str, msg str) Thrown
+    o := object("Error", proto_of("DOMException"))
+    o.props["message"] = hidden(Str(msg))
+    o.props["name"] = hidden(Str(name))
+    Thrown(value: Obj(o), text: "{name}: {msg}", limit: false)

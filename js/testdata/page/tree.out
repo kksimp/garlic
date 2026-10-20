@@ -1,0 +1,57 @@
+5 8 note SPAN
+3 x y true 3
+Tree test HTML 1 BODY
+onetwotexth 71
+4 <div id="a2"><!--note--><p class="x y">one</p><p>two</p>text<span hidden="">h</span></div>
+two false one
+<!--note-->swapped<p>two</p>text<span hidden="">h</span>
+<i>start</i><!--note-->swapped<p>two</p>text<span hidden="">h</span><b>end</b> before-
+false on
+true 1
+a 2 0
+3 1 id
+v true true true
+HierarchyRequestError
+NotFoundError
+<p>a &lt; b &amp; c</p><br><img src="x" alt="q&quot;"> a < b & c
+New title New title
+true BODY 4
+2 1 2
+== body
+before-<div id="a" data-long-name="v" hidden=""><i>start</i><!--note-->swapped<p>two</p>text<span hidden="">h</span><b>end</b></div><div id="a2"><!--note--><p class="x y">one</p><p>two</p>text<span hidden="">h</span></div><input id="cb" type="checkbox"><select id="s"><option>a</option><option value="b">B</option></select><script>
+const a = document.getElementById("a");
+console.log(a.childNodes.length, a.firstChild.nodeType, a.firstChild.nodeValue, a.lastChild.nodeName);
+console.log(a.children.length, a.firstElementChild.className, a.lastElementChild.hidden, a.childElementCount);
+console.log(document.title, document.documentElement.tagName, document.head.childNodes.length, document.body.tagName);
+console.log(a.textContent, a.innerHTML.length);
+const clone = a.cloneNode(true);
+clone.id = "a2";
+document.body.insertBefore(clone, a.nextSibling);
+console.log(document.querySelectorAll("p").length, clone.outerHTML);
+const p2 = clone.querySelector("p:last-child") || clone.querySelectorAll("p")[1];
+console.log(p2.textContent, clone.querySelector("p:first-child") === null, clone.querySelector(".x.y").textContent);
+a.replaceChild(document.createTextNode("swapped"), a.querySelector("p"));
+console.log(a.innerHTML);
+a.insertAdjacentHTML("beforeend", "<b>end</b>");
+a.insertAdjacentHTML("afterbegin", "<i>start</i>");
+a.insertAdjacentText("beforebegin", "before-");
+console.log(a.innerHTML, a.previousSibling.nodeValue);
+const cb = document.getElementById("cb");
+console.log(cb.checked, cb.value);
+cb.click();
+console.log(cb.checked, document.querySelectorAll("input:checked").length);
+const s = document.getElementById("s");
+console.log(s.value, s.options.length, s.selectedIndex);
+console.log(document.getElementsByTagName("p").length, document.getElementsByClassName("y").length, a.getAttributeNames().join());
+a.setAttribute("data-long-name", "v");
+console.log(a.dataset.longName, a.hasAttribute("data-long-name"), a.toggleAttribute("hidden"), a.hidden);
+try { a.appendChild(document.body); } catch (e) { console.log(e.name); }
+try { document.body.removeChild(document.createElement("q")); } catch (e) { console.log(e.name); }
+const t = document.createElement("template-x");
+t.innerHTML = "<p>a &lt; b &amp; c</p><br><img src=x alt='q\"'>";
+console.log(t.innerHTML, t.firstChild.textContent);
+document.title = "New title";
+console.log(document.title, document.querySelector("title").textContent);
+console.log(document.body.matches("body"), a.closest("body").tagName, document.querySelectorAll("div, span").length);
+console.log(document.querySelectorAll("p ~ span").length, document.querySelectorAll("[class^=x]").length, document.querySelectorAll("p:not(.x)").length);
+</script>

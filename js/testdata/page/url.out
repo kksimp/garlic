@@ -1,0 +1,29 @@
+https://www.example.test/search?q=garlic+bread&hl=en#top https: www.example.test /search ?q=garlic+bread&hl=en #top https://www.example.test
+garlic bread true null
+https://example.test/ {"u":"https://example.test/a/c?x=1"}
+1,3 two words x y 4
+a=only&c=x+y&d=%C3%A9+%26+%C3%BC
+a=only&c=x+y&d=%C3%A9+%26+%C3%BC a,c,d
+q=ail+lang&n=2 x=1&y=2
+a=only;c=x y;d=é & ü
+TypeError Failed to construct 'URL': Invalid URL
+https://example.test/dir/page.html true https://example.test
+== body
+<script>
+const u = new URL("/search?q=garlic+bread&hl=en#top", "https://WWW.Example.TEST/a/b.html");
+console.log(u.href, u.protocol, u.host, u.pathname, u.search, u.hash, u.origin);
+console.log(u.searchParams.get("q"), u.searchParams.has("hl"), u.searchParams.get("none"));
+console.log(String(new URL("https://example.test")), JSON.stringify({ u: new URL("../c?x=1", "https://example.test/a/b/c.html") }));
+const p = new URLSearchParams("a=1&b=two%20words&a=3&c=x+y");
+console.log(p.getAll("a").join(","), p.get("b"), p.get("c"), p.size);
+p.set("a", "only"); p.append("d", "é & ü"); p.delete("b");
+console.log(p.toString());
+p.sort();
+console.log(String(p), [...p.keys()].join(","));
+console.log(new URLSearchParams({ q: "ail lang", n: 2 }).toString(), new URLSearchParams([["x", "1"], ["y", "2"]]).toString());
+const seen = [];
+p.forEach((v, k) => seen.push(k + "=" + v));
+console.log(seen.join(";"));
+try { new URL("nope"); } catch (e) { console.log(e.name, e.message); }
+console.log(location.href, location.search === "", location.origin);
+</script>
