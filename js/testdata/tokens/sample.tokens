@@ -1,0 +1,66 @@
+2:1 name a nl
+2:3 punct =
+2:5 name b
+2:7 punct /
+2:9 name c
+2:10 punct ;
+2:12 name x
+2:14 punct =
+2:16 regex /[/]+/g
+2:23 punct .
+2:24 name test
+2:28 punct (
+2:29 name s
+2:30 punct )
+3:1 name if nl
+3:4 punct (
+3:5 name a
+3:6 punct )
+3:8 regex /re/
+3:12 punct .
+3:13 name exec
+3:17 punct (
+3:18 name s
+3:19 punct )
+3:20 punct ;
+3:22 name y
+3:24 punct =
+3:26 punct (
+3:27 name z
+3:28 punct )
+3:30 punct /
+3:32 number 2
+4:1 name t nl
+4:3 punct =
+4:5 template "head"
+4:13 punct {
+4:14 name k
+4:15 punct :
+4:17 number 1
+4:18 punct }
+4:19 punct .
+4:20 name k
+4:22 template-tail "tail"
+4:29 punct +
+4:31 number 31
+4:36 punct +
+4:38 number 1000
+4:44 punct +
+4:46 number 5
+4:51 punct +
+4:53 number 15
+5:1 name s nl
+5:3 punct =
+5:5 string "q😀\n"
+7:1 name o nl
+7:2 punct ?.
+7:4 name p
+7:6 punct ??
+7:9 name q
+7:10 punct ?
+7:11 number 0.5
+7:13 punct :
+7:14 name r
+7:15 punct ;
+7:17 private priv
+8:1 eof  nl

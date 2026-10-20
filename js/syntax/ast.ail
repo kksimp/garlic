@@ -1,0 +1,253 @@
+## The syntax tree of a JavaScript script. Its shape follows ESTree, the
+## tree most JavaScript tools share, and `dump.ail` prints it as ESTree
+## JSON. Node names keep ECMA-262's grammar names where ESTree has none.
+
+## Where a node starts: line and column, from 1.
+pub struct Pos
+    pub line int
+    pub col int
+
+pub struct Program
+    pub body List[Stmt]
+    ## The script starts with a "use strict" directive (§11.2.2).
+    pub strict bool
+
+pub enum Stmt
+    Exp(expr Expr, pos Pos)
+    Var(decl VarDecl)
+    FuncDecl(f Func)
+    ClassDecl(c Class)
+    Return(value Expr?, pos Pos)
+    If(test Expr, yes Stmt, no Stmt?, pos Pos)
+    Block(body List[Stmt], pos Pos)
+    Empty(pos Pos)
+    For(init ForInit?, test Expr?, update Expr?, body Stmt, pos Pos)
+    ## `for (left in right)`, or with `of`: `for (left of right)`.
+    ForIn(left ForLeft, right Expr, body Stmt, of bool, pos Pos)
+    While(test Expr, body Stmt, pos Pos)
+    DoWhile(body Stmt, test Expr, pos Pos)
+    Break(label str?, pos Pos)
+    Continue(label str?, pos Pos)
+    Throw(value Expr, pos Pos)
+    ## A `catch` without `finally` has `handler`; `catch {}` has no `param`.
+    Try(block List[Stmt], param Pat?, handler List[Stmt]?, finalizer List[Stmt]?, pos Pos)
+    Switch(disc Expr, cases List[Case], pos Pos)
+    Labeled(label str, body Stmt, pos Pos)
+    With(object Expr, body Stmt, pos Pos)
+    Debugger(pos Pos)
+
+## `var`, `let` or `const` and its declarators.
+pub struct VarDecl
+    pub kind str
+    pub decls List[Declarator]
+    pub pos Pos
+
+pub struct Declarator
+    pub target Pat
+    pub init Expr?
+
+pub enum ForInit
+    InitDecl(decl VarDecl)
+    InitExpr(expr Expr)
+
+pub enum ForLeft
+    LeftDecl(decl VarDecl)
+    LeftPat(target Pat)
+
+pub struct Case
+    ## None for `default:`.
+    pub test Expr?
+    pub body List[Stmt]
+    pub pos Pos
+
+pub enum Expr
+    Num(value float, pos Pos)
+    Str(value str, pos Pos)
+    Template(quasis List[Quasi], exprs List[Expr], pos Pos)
+    Tagged(tag Expr, quasis List[Quasi], exprs List[Expr], pos Pos)
+    Regex(pattern str, flags str, pos Pos)
+    Bool(value bool, pos Pos)
+    Null(pos Pos)
+    Ident(name str, pos Pos)
+    This(pos Pos)
+    Super(pos Pos)
+    ## `new.target` (§13.3.12).
+    NewTarget(pos Pos)
+    ## `none` is a hole: `[1, , 2]`. `comma_after_spread`: `[...a,]`, which
+    ## can't become a pattern.
+    Array(items List[Expr?], comma_after_spread bool, pos Pos)
+    Object(props List[Prop], pos Pos)
+    Function(f Func)
+    Arrow(f Func)
+    ClassExpr(c Class)
+    Unary(op str, arg Expr, pos Pos)
+    Update(op str, prefix bool, arg Expr, pos Pos)
+    Binary(op str, left Expr, right Expr, pos Pos)
+    Logical(op str, left Expr, right Expr, pos Pos)
+    Assign(op str, target Pat, value Expr, pos Pos)
+    Cond(test Expr, yes Expr, no Expr, pos Pos)
+    Call(callee Expr, args List[Expr], optional bool, pos Pos)
+    New(callee Expr, args List[Expr], pos Pos)
+    ## `a.b` has `prop` an `Ident`, `a.#b` a `PrivName`; `a[b]` is `computed`.
+    Member(object Expr, prop Expr, computed bool, optional bool, pos Pos)
+    Seq(items List[Expr], pos Pos)
+    Spread(arg Expr, pos Pos)
+    ## The whole of an optional chain `a?.b.c` (ESTree ChainExpression).
+    Chain(expr Expr, pos Pos)
+    PrivName(name str, pos Pos)
+    ## Parentheses, kept so `(a) = 1` and `({a}) = 1` can be told apart (§13.15.1).
+    Paren(expr Expr, pos Pos)
+
+## One literal piece of a template; `cooked` is none for an invalid escape
+## in a tagged template (§13.2.8.2).
+pub struct Quasi
+    pub cooked str?
+    pub raw str
+
+pub enum Prop
+    Init(key Key, value Expr, shorthand bool, pos Pos)
+    ## A method, getter (`kind` "get") or setter ("set"); "init" otherwise.
+    Method(key Key, kind str, f Func, pos Pos)
+    PropSpread(arg Expr, pos Pos)
+    ## `{a = 1}`: valid only where the object becomes a pattern
+    ## (§13.2.5.1, CoverInitializedName).
+    CoverInit(name str, value Expr, pos Pos)
+
+## A property name (§13.2.5 PropertyName).
+pub enum Key
+    KeyName(name str, pos Pos)
+    KeyStr(value str, pos Pos)
+    KeyNum(value float, pos Pos)
+    Computed(expr Expr, pos Pos)
+    KeyPriv(name str, pos Pos)
+
+## A binding or assignment target (§8.6.2, §13.15.5).
+pub enum Pat
+    PatId(name str, pos Pos)
+    ## A member expression, only in assignments.
+    PatTarget(expr Expr)
+    PatObj(props List[PatProp], rest Pat?, pos Pos)
+    ## `none` is an elision: `[, b] = x`.
+    PatArr(items List[Pat?], rest Pat?, pos Pos)
+    PatDefault(target Pat, value Expr, pos Pos)
+
+pub struct PatProp
+    pub key Key
+    pub value Pat
+    pub shorthand bool
+
+## A function, method, arrow or getter. An arrow with an expression body
+## has `expr`, and `body` is empty.
+pub struct Func
+    pub name str?
+    pub params List[Pat]
+    ## `...rest`, the last parameter.
+    pub rest Pat?
+    pub body List[Stmt]
+    pub expr Expr?
+    pub is_arrow bool
+    pub is_async bool
+    pub is_gen bool
+    ## Strict mode code (§11.2.2): inherited, or a "use strict" directive.
+    pub strict bool
+    pub pos Pos
+
+pub struct Class
+    pub name str?
+    pub superclass Expr?
+    pub members List[ClassMember]
+    pub pos Pos
+
+## A class element (§15.7). `kind` is "constructor", "method", "get",
+## "set", "field" or "static-block". Methods and blocks have `f`, a field
+## has its initialiser in `value`.
+pub struct ClassMember
+    pub kind str
+    pub key Key?
+    pub is_static bool
+    pub f Func?
+    pub value Expr?
+    pub pos Pos
+
+pub fn expr_pos(e Expr) Pos
+    match e
+        Num(_, p) => p
+        Str(_, p) => p
+        Template(_, _, p) => p
+        Tagged(_, _, _, p) => p
+        Regex(_, _, p) => p
+        Bool(_, p) => p
+        Null(p) => p
+        Ident(_, p) => p
+        This(p) => p
+        Super(p) => p
+        NewTarget(p) => p
+        Array(_, _, p) => p
+        Object(_, p) => p
+        Unary(_, _, p) => p
+        Update(_, _, _, p) => p
+        Binary(_, _, _, p) => p
+        Logical(_, _, _, p) => p
+        Assign(_, _, _, p) => p
+        Cond(_, _, _, p) => p
+        Call(_, _, _, p) => p
+        New(_, _, p) => p
+        Member(_, _, _, _, p) => p
+        Seq(_, p) => p
+        Spread(_, p) => p
+        Chain(_, p) => p
+        PrivName(_, p) => p
+        Paren(_, p) => p
+        Function(f) => f.pos
+        Arrow(f) => f.pos
+        ClassExpr(c) => c.pos
+
+pub fn pat_pos(p Pat) Pos
+    match p
+        PatId(_, at) => at
+        PatObj(_, _, at) => at
+        PatArr(_, _, at) => at
+        PatDefault(_, _, at) => at
+        PatTarget(e) => expr_pos(e)
+
+## The variant's name, to test a node's kind in one line.
+pub fn expr_kind(e Expr) str
+    match e
+        Num => "Num"
+        Str => "Str"
+        Template => "Template"
+        Tagged => "Tagged"
+        Regex => "Regex"
+        Bool => "Bool"
+        Null => "Null"
+        Ident => "Ident"
+        This => "This"
+        Super => "Super"
+        NewTarget => "NewTarget"
+        Array => "Array"
+        Object => "Object"
+        Function => "Function"
+        Arrow => "Arrow"
+        ClassExpr => "ClassExpr"
+        Unary => "Unary"
+        Update => "Update"
+        Binary => "Binary"
+        Logical => "Logical"
+        Assign => "Assign"
+        Cond => "Cond"
+        Call => "Call"
+        New => "New"
+        Member => "Member"
+        Seq => "Seq"
+        Spread => "Spread"
+        Chain => "Chain"
+        PrivName => "PrivName"
+        Paren => "Paren"
+
+pub fn pat_kind(p Pat) str
+    match p
+        PatId => "PatId"
+        PatTarget => "PatTarget"
+        PatObj => "PatObj"
+        PatArr => "PatArr"
+        PatDefault => "PatDefault"

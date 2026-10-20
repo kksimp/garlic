@@ -1,0 +1,1 @@
+SyntaxError: Unary operator used immediately before exponentiation expression. Parenthesis must be used to disambiguate operator precedence (1:4)

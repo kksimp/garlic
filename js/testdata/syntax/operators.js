@@ -1,0 +1,17 @@
+a + b * c - d / e % f;
+a ** b ** c;
+(-a) ** b;
+a ?? b;
+(a || b) ?? c;
+a && b || c && d;
+a | b ^ c & d;
+a << b >> c >>> d;
+a < b <= c > d >= e;
+a == b != c === d !== e;
+a in b, a instanceof B;
+!a, ~a, -a, +a, typeof a, void a, delete a.b;
+++a, --a, a++, a--;
+x = y += 1, x -= 1, x *= 2, x /= 2, x %= 2, x **= 2;
+x <<= 1, x >>= 1, x >>>= 1, x &= 1, x |= 1, x ^= 1;
+x &&= 1, x ||= 1, x ??= 1;
+a ? b : c ? d : e;

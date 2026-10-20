@@ -1,0 +1,1 @@
+SyntaxError: Classes may not have a field named 'constructor' (1:11)

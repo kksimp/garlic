@@ -1,0 +1,780 @@
+## The JavaScript lexer of Garlic's engine (ECMA-262 §12, "ECMAScript
+## Language: Lexical Grammar"). The parser pulls one token at a time and
+## says whether a `/` there starts a regular expression (§12: the goal
+## symbols InputElementDiv and InputElementRegExp); it rescans a `}` that
+## closes a template substitution as the template's next chunk (§12.9.6).
+##
+## Source text is a list of Unicode scalar values, not UTF-16 code units: a
+## lone surrogate written as an escape becomes U+FFFD (docs/design/garlic-js.md).
+
+## A SyntaxError: what is wrong and where, 1-based.
+pub error struct JsError "SyntaxError: {msg} ({line}:{col})"
+    pub msg str
+    pub line int
+    pub col int
+
+pub enum Kind
+    ## An IdentifierName, reserved or not (§12.7); the parser decides.
+    Name
+    ## `#name` in a class (§12.7, PrivateIdentifier).
+    Priv
+    Punct
+    Num
+    Str
+    ## One chunk of a template literal (§12.9.6).
+    Template
+    Regex
+    Eof
+
+## A token. `text` is a name with its escapes decoded, a punctuator, a
+## string's value or a template chunk's cooked value, or a regular
+## expression's body; `raw` is a template chunk's raw text or a regular
+## expression's flags.
+pub struct Token
+    pub kind Kind
+    pub text str
+    pub raw str
+    pub num float
+    ## A name spelled with `\u` escapes, which can't be a keyword (§12.7.2).
+    pub escaped bool
+    ## A template chunk that ends the literal (it ends in a backquote).
+    pub tail bool
+    ## A template chunk with an invalid escape: allowed only when tagged (§13.2.8.2).
+    pub bad_escape bool
+    ## A legacy octal number or escape: `010`, `"\07"` (Annex B; a strict-mode error).
+    pub octal bool
+    ## Offsets into the source: the token is `src[start..end]`.
+    pub start int
+    pub end int
+    pub line int
+    pub col int
+    ## A line terminator comes between this token and the previous one (§12.10, ASI).
+    pub nl_before bool
+
+pub struct Lexer
+    src List[char]
+    pos int
+    line int
+    ## Offset of the first character of `line`.
+    line_start int
+
+## Punctuators (§12.8), longest first. `/` and `/=` are added only where a
+## division is possible, `?.` only when no digit follows.
+PUNCTUATORS := [
+    ">>>=",
+    "...",
+    "===",
+    "!==",
+    "**=",
+    "<<=",
+    ">>=",
+    ">>>",
+    "&&=",
+    "||=",
+    "??=",
+    "=>",
+    "==",
+    "!=",
+    "<=",
+    ">=",
+    "&&",
+    "||",
+    "??",
+    "?.",
+    "++",
+    "--",
+    "+=",
+    "-=",
+    "*=",
+    "%=",
+    "&=",
+    "|=",
+    "^=",
+    "<<",
+    ">>",
+    "**",
+    "\{",
+    "}",
+    "(",
+    ")",
+    "[",
+    "]",
+    ";",
+    ",",
+    "<",
+    ">",
+    "+",
+    "-",
+    "*",
+    "%",
+    "&",
+    "|",
+    "^",
+    "!",
+    "~",
+    "?",
+    ":",
+    "=",
+    ".",
+    "@",
+]
+
+pub fn new_lexer(source str) Lexer
+    Lexer(src: source.chars(), pos: 0, line: 1, line_start: 0)
+
+## Line terminators (§12.3): LF, CR, LS, PS.
+pub fn is_line_term(c char) bool
+    c == '\n' or c == '\r' or c == '\u{2028}' or c == '\u{2029}'
+
+## White space other than line terminators (§12.2).
+fn is_blank(c char) bool
+    c == ' '
+        or c == '\t'
+        or c == '\u{b}'
+        or c == '\u{c}'
+        or c == '\u{a0}'
+        or c == '\u{feff}'
+        or c.code() > 127 and c.is_space() and not is_line_term(c)
+
+## IdentifierStart (§12.7): ID_Start, `$`, `_`.
+pub fn id_start(c char) bool
+    k := c.code()
+    if k < 128
+        return k >= 97 and k <= 122 or k >= 65 and k <= 90 or c == '$' or c == '_'
+    in_ranges(ID_START, k)
+
+## IdentifierPart (§12.7): ID_Continue, `$`, ZWNJ, ZWJ.
+pub fn id_part(c char) bool
+    k := c.code()
+    if k < 128
+        return k >= 97 and k <= 122
+            or k >= 65 and k <= 90
+            or k >= 48 and k <= 57
+            or c == '$'
+            or c == '_'
+    k == 0x200C or k == 0x200D or in_ranges(ID_CONTINUE, k)
+
+fn digit_value(c char) int
+    k := c.code()
+    if k >= 48 and k <= 57
+        return k - 48
+    if k >= 97 and k <= 122
+        return k - 87
+    if k >= 65 and k <= 90
+        return k - 55
+    99
+
+fn Lexer.at(self, i int) char
+    if i < src.len() then src[i] else '\0'
+
+fn Lexer.cur(self) char
+    at(pos)
+
+fn Lexer.done(self) bool
+    pos >= src.len()
+
+fn Lexer.fail(self, msg str, offset int) JsError
+    JsError(msg: msg, line: line, col: offset - line_start + 1)
+
+## Step over the line terminator at `pos`; CR LF counts as one (§12.3).
+fn Lexer.newline(mut self)
+    if src[pos] == '\r' and at(pos + 1) == '\n'
+        pos += 1
+    pos += 1
+    line += 1
+    line_start = pos
+
+## Restart at a token already scanned, to scan it again another way.
+pub fn Lexer.reset(mut self, t Token)
+    pos = t.start
+    line = t.line
+    line_start = t.start - t.col + 1
+
+fn Lexer.token(self, kind Kind, text str, start int, line_no int, col int, nl bool) Token
+    Token(
+        kind: kind,
+        text: text,
+        raw: "",
+        num: 0,
+        escaped: false,
+        tail: false,
+        bad_escape: false,
+        octal: false,
+        start: start,
+        end: pos,
+        line: line_no,
+        col: col,
+        nl_before: nl,
+    )
+
+## Skip white space and comments (§12.2-12.4); whether a line terminator
+## was crossed. A `/* */` comment holding one counts as one (§12.4).
+fn Lexer.skip_space(mut self) bool ! JsError
+    mut nl := false
+    # No token yet: the script's start counts as a line's start.
+    at_start := pos == 0
+    if pos == 0 and cur() == '#' and at(1) == '!'
+        # A hashbang comment on the first line (§12.5).
+        while not done() and not is_line_term(cur())
+            pos += 1
+    while not done()
+        c := cur()
+        if is_line_term(c)
+            newline()
+            nl = true
+        elif is_blank(c)
+            pos += 1
+        elif c == '/' and at(pos + 1) == '/' or html_comment(nl or at_start)
+            # Annex B.1.1: `<!--` anywhere and `-->` first on a line are line comments too.
+            while not done() and not is_line_term(cur())
+                pos += 1
+        elif c == '/' and at(pos + 1) == '*'
+            open := JsError(msg: "Unterminated comment", line: line, col: pos - line_start + 1)
+            pos += 2
+            while true
+                if done()
+                    return open
+                if cur() == '*' and at(pos + 1) == '/'
+                    pos += 2
+                    break
+                if is_line_term(cur())
+                    newline()
+                    nl = true
+                else
+                    pos += 1
+        else
+            break
+    nl
+
+## `<!--`, or `-->` with no token before it on its line (Annex B.1.1).
+fn Lexer.html_comment(self, line_start_seen bool) bool
+    if matches("<!--")
+        return true
+    matches("-->") and line_start_seen
+
+## The next token. `regex` is the goal: a `/` starts a regular expression
+## (InputElementRegExp) instead of being a division.
+pub fn Lexer.next(mut self, regex bool) Token ! JsError
+    nl := skip_space()?
+    start := pos
+    line_no := line
+    col := pos - line_start + 1
+    if done()
+        return token(Eof, "", start, line_no, col, nl)
+    c := cur()
+    if id_start(c) or c == '\\'
+        word := name()?
+        mut t := token(Name, word.text, start, line_no, col, nl)
+        t.escaped = word.escaped
+        return t
+    if c == '#'
+        pos += 1
+        if not id_start(cur()) and cur() != '\\'
+            return fail("Invalid or unexpected token", start)
+        word := name()?
+        return token(Priv, word.text, start, line_no, col, nl)
+    if c.is_digit() or c == '.' and at(pos + 1).is_digit()
+        return number(start, line_no, col, nl)
+    if c == '"' or c == '\''
+        return string(c, start, line_no, col, nl)
+    if c == '`'
+        pos += 1
+        return template(start, line_no, col, nl)
+    if c == '/'
+        if regex
+            return regexp(start, line_no, col, nl)
+        if at(pos + 1) == '='
+            pos += 2
+            return token(Punct, "/=", start, line_no, col, nl)
+        pos += 1
+        return token(Punct, "/", start, line_no, col, nl)
+    for p in PUNCTUATORS
+        if matches(p)
+            if p == "?." and at(pos + 2).is_digit()
+                # `a?.5:b` is a conditional (§12.8, OptionalChainingPunctuator).
+                continue
+            pos += p.chars().len()
+            return token(Punct, p, start, line_no, col, nl)
+    fail("Invalid or unexpected token", start)
+
+fn Lexer.matches(self, p str) bool
+    cs := p.chars()
+    for k in 0..cs.len()
+        if at(pos + k) != cs[k]
+            return false
+    true
+
+## A scanned name and whether it used escapes.
+struct Word
+    text str
+    escaped bool
+
+## IdentifierName (§12.7), with `\uXXXX` and `\u{X}` escapes.
+fn Lexer.name(mut self) Word ! JsError
+    mut out := List[char]()
+    mut escaped := false
+    while not done()
+        c := cur()
+        if c == '\\'
+            at_escape := pos
+            if at(pos + 1) != 'u'
+                return fail("Invalid Unicode escape sequence", at_escape)
+            pos += 2
+            code := unicode_escape(at_escape)?
+            ch := char.from_code(code) else return fail(
+                "Invalid Unicode escape sequence",
+                at_escape,
+            )
+            ok := if out.len() == 0 then id_start(ch) else id_part(ch)
+            if not ok
+                return fail("Invalid Unicode escape sequence", at_escape)
+            out.push(ch)
+            escaped = true
+        elif id_part(c)
+            out.push(c)
+            pos += 1
+        else
+            break
+    Word(text: out.join(""), escaped: escaped)
+
+## After `\u`: `XXXX` or `{X...}` (§12.9.4), as a code point.
+fn Lexer.unicode_escape(mut self, at_escape int) int ! JsError
+    if cur() == '\{'
+        pos += 1
+        mut v := 0
+        mut digits := 0
+        while cur() != '}'
+            d := digit_value(cur())
+            if d > 15
+                return fail("Invalid Unicode escape sequence", at_escape)
+            v = v * 16 + d
+            if v > 0x10FFFF
+                return fail("Undefined Unicode code-point", at_escape)
+            digits += 1
+            pos += 1
+        if digits == 0
+            return fail("Invalid Unicode escape sequence", at_escape)
+        pos += 1
+        return v
+    hex(4, at_escape, "Invalid Unicode escape sequence")
+
+## Exactly `n` hexadecimal digits.
+fn Lexer.hex(mut self, n int, at_escape int, msg str) int ! JsError
+    mut v := 0
+    for _ in 0..n
+        d := digit_value(cur())
+        if d > 15
+            return fail(msg, at_escape)
+        v = v * 16 + d
+        pos += 1
+    v
+
+## NumericLiteral (§12.9.3): decimal, `0x`, `0o`, `0b`, `_` separators,
+## and Annex B's legacy octal `017`. BigInt (`10n`) is not supported yet.
+fn Lexer.number(mut self, start int, line_no int, col int, nl bool) Token ! JsError
+    mut value := 0.0
+    mut octal := false
+    c := cur()
+    n := at(pos + 1)
+    if c == '0' and (n == 'x' or n == 'X' or n == 'o' or n == 'O' or n == 'b' or n == 'B')
+        radix := match n.to_lower()
+            'x' => 16
+            'o' => 8
+            _ => 2
+        pos += 2
+        value = radix_digits(radix, start)?
+    elif c == '0' and at(pos + 1).is_digit() and not legacy_decimal()
+        # Annex B: `0` then octal digits is octal.
+        pos += 1
+        while cur().is_digit()
+            value = value * 8 + digit_value(cur()).to_float()
+            pos += 1
+        octal = true
+    else
+        # Annex B NonOctalDecimalIntegerLiteral `09` is decimal (a strict error).
+        octal = c == '0' and at(pos + 1).is_digit()
+        mut int_part := digits(start)?
+        mut frac := ""
+        mut exp := ""
+        if cur() == '.'
+            pos += 1
+            if cur().is_digit()
+                frac = digits(start)?
+        if cur() == 'e' or cur() == 'E'
+            mut sign := ""
+            mut k := pos + 1
+            if at(k) == '+' or at(k) == '-'
+                sign = at(k).to_str()
+                k += 1
+            if not at(k).is_digit()
+                return fail("Invalid or unexpected token", start)
+            pos = k
+            exp = "e{sign}{digits(start)?}"
+        if int_part == ""
+            int_part = "0"
+        if frac == ""
+            frac = "0"
+        value = "{int_part}.{frac}{exp}".to_float() else 0.0
+    if cur() == 'n'
+        return fail("BigInt literals are not supported yet", start)
+    if id_start(cur()) or cur().is_digit() or cur() == '\\'
+        return fail("Invalid or unexpected token", pos)
+    mut t := token(Num, src[start..pos].join(""), start, line_no, col, nl)
+    t.num = value
+    t.octal = octal
+    t
+
+## A `0` and digits that include an 8 or a 9 (Annex B NonOctalDecimalIntegerLiteral).
+fn Lexer.legacy_decimal(self) bool
+    mut k := pos + 1
+    while at(k).is_digit()
+        if at(k) == '8' or at(k) == '9'
+            return true
+        k += 1
+    false
+
+## Decimal digits with `_` separators between them (§12.9.3), without the separators.
+fn Lexer.digits(mut self, start int) str ! JsError
+    mut out := List[char]()
+    while cur().is_digit() or cur() == '_'
+        if cur() == '_'
+            if out.len() == 0 or not at(pos + 1).is_digit()
+                return fail("Numeric separators are only allowed between two digits", pos)
+        else
+            out.push(cur())
+        pos += 1
+    out.join("")
+
+## Digits of `radix` after `0x`, `0o` or `0b`, with separators.
+fn Lexer.radix_digits(mut self, radix int, start int) float ! JsError
+    mut value := 0.0
+    mut count := 0
+    while true
+        c := cur()
+        if c == '_'
+            if count == 0 or digit_value(at(pos + 1)) >= radix
+                return fail("Numeric separators are only allowed between two digits", pos)
+            pos += 1
+            continue
+        d := digit_value(c)
+        if d >= radix
+            break
+        value = value * radix.to_float() + d.to_float()
+        count += 1
+        pos += 1
+    if count == 0
+        return fail("Invalid or unexpected token", start)
+    value
+
+## StringLiteral (§12.9.4), opened by `quote`.
+fn Lexer.string(mut self, close char, start int, line_no int, col int, nl bool) Token ! JsError
+    pos += 1
+    mut out := List[char]()
+    mut octal := false
+    while true
+        if done()
+            return fail("Invalid or unexpected token", start)
+        c := cur()
+        if c == close
+            pos += 1
+            break
+        if c == '\n' or c == '\r'
+            return fail("Invalid or unexpected token", start)
+        if c == '\\'
+            r := escape(false)?
+            if r.octal
+                octal = true
+            if code := r.code
+                push_code(mut out, code)
+        else
+            out.push(c)
+            pos += 1
+    mut t := token(Str, out.join(""), start, line_no, col, nl)
+    t.octal = octal
+    t
+
+## A decoded escape: its code point (none for a line continuation), and
+## whether it was a legacy octal escape.
+struct Escape
+    code int?
+    octal bool
+    bad bool
+
+## The escape at `pos` (a backslash), in a string or, with `in_template`, a
+## template (§12.9.4 EscapeSequence, §12.9.6 TemplateEscapeSequence). In a
+## template an invalid escape is reported as `bad`, for tagged templates.
+fn Lexer.escape(mut self, in_template bool) Escape ! JsError
+    at_escape := pos
+    pos += 1
+    if done()
+        return fail("Invalid or unexpected token", at_escape)
+    c := cur()
+    if is_line_term(c)
+        newline()
+        return Escape(code: none, octal: false, bad: false)
+    pos += 1
+    simple := match c
+        'n' => 10
+        't' => 9
+        'r' => 13
+        'b' => 8
+        'f' => 12
+        'v' => 11
+        _ => -1
+    if simple >= 0
+        return Escape(code: simple, octal: false, bad: false)
+    if c == 'x'
+        if digit_value(cur()) > 15 or digit_value(at(pos + 1)) > 15
+            if in_template
+                return Escape(code: none, octal: false, bad: true)
+            return fail("Invalid hexadecimal escape sequence", at_escape)
+        return Escape(
+            code: hex(2, at_escape, "Invalid hexadecimal escape sequence")?,
+            octal: false,
+            bad: false,
+        )
+    if c == 'u'
+        if in_template and not valid_unicode_escape()
+            return Escape(code: none, octal: false, bad: true)
+        mut code := unicode_escape(at_escape)?
+        # A surrogate pair written as two escapes is one code point.
+        if code >= 0xD800 and code <= 0xDBFF and cur() == '\\' and at(pos + 1) == 'u'
+            save := pos
+            pos += 2
+            low := unicode_escape(at_escape) else 0
+            if low >= 0xDC00 and low <= 0xDFFF
+                code = 0x10000 + (code - 0xD800) * 0x400 + (low - 0xDC00)
+            else
+                pos = save
+        return Escape(code: code, octal: false, bad: false)
+    if c == '0' and not cur().is_digit()
+        return Escape(code: 0, octal: false, bad: false)
+    if c.is_digit()
+        if in_template
+            return Escape(code: none, octal: false, bad: true)
+        if c == '8' or c == '9'
+            # Annex B NonOctalDecimalEscapeSequence: the digit itself.
+            return Escape(code: c.code(), octal: true, bad: false)
+        # Annex B LegacyOctalEscapeSequence: up to 3 digits, at most 0o377.
+        mut v := digit_value(c)
+        if cur() >= '0' and cur() <= '7'
+            v = v * 8 + digit_value(cur())
+            pos += 1
+            if c <= '3' and cur() >= '0' and cur() <= '7'
+                v = v * 8 + digit_value(cur())
+                pos += 1
+        return Escape(code: v, octal: true, bad: false)
+    Escape(code: c.code(), octal: false, bad: false)
+
+## Whether the text after `\u` is a well-formed escape, without moving.
+fn Lexer.valid_unicode_escape(self) bool
+    if cur() == '\{'
+        mut k := pos + 1
+        mut v := 0
+        while at(k) != '}'
+            d := digit_value(at(k))
+            if d > 15
+                return false
+            v = v * 16 + d
+            if v > 0x10FFFF
+                return false
+            k += 1
+        return k > pos + 1
+    for k in 0..4
+        if digit_value(at(pos + k)) > 15
+            return false
+    true
+
+## A code point as a character; a lone surrogate becomes U+FFFD.
+fn push_code(mut out List[char], code int)
+    out.push(char.from_code(code) else '\u{fffd}')
+
+## A template chunk (§12.9.6), from after its opening backquote or `}` to
+## its closing backquote (`tail`) or `${`.
+fn Lexer.template(mut self, start int, line_no int, col int, nl bool) Token ! JsError
+    mut cooked := List[char]()
+    mut raw := List[char]()
+    mut bad := false
+    mut tail := false
+    while true
+        if done()
+            return JsError(msg: "Unterminated template literal", line: line_no, col: col)
+        c := cur()
+        if c == '`'
+            pos += 1
+            tail = true
+            break
+        if c == '$' and at(pos + 1) == '\{'
+            pos += 2
+            break
+        if c == '\\'
+            from := pos
+            r := escape(true)?
+            if r.bad
+                bad = true
+            elif code := r.code
+                push_code(mut cooked, code)
+            raw_text(mut raw, from, pos)
+        elif c == '\r' or c == '\n'
+            # CR and CR LF are LF in both values (§12.9.6 TRV, TV).
+            cooked.push('\n')
+            raw.push('\n')
+            newline()
+        elif c == '\u{2028}' or c == '\u{2029}'
+            cooked.push(c)
+            raw.push(c)
+            newline()
+        else
+            cooked.push(c)
+            raw.push(c)
+            pos += 1
+    mut t := token(Template, cooked.join(""), start, line_no, col, nl)
+    t.raw = raw.join("")
+    t.tail = tail
+    t.bad_escape = bad
+    t
+
+## The raw text of `src[from..to]` with CR LF and CR as LF.
+fn Lexer.raw_text(self, mut out List[char], from int, to int)
+    mut k := from
+    while k < to
+        if src[k] == '\r'
+            out.push('\n')
+            if k + 1 < to and src[k + 1] == '\n'
+                k += 1
+        else
+            out.push(src[k])
+        k += 1
+
+## Scan again from a `}` that closes a template substitution (§12.9.6
+## TemplateMiddle, TemplateTail).
+pub fn Lexer.template_continue(mut self, close Token) Token ! JsError
+    reset(close)
+    pos += 1
+    template(close.start, close.line, close.col, close.nl_before)
+
+## Scan again from a `/` or `/=` as a regular expression literal.
+pub fn Lexer.regex_at(mut self, slash Token) Token ! JsError
+    reset(slash)
+    regexp(slash.start, slash.line, slash.col, slash.nl_before)
+
+## RegularExpressionLiteral (§12.9.5): `/body/flags`. The body's pattern
+## syntax (§22.2) is checked when the expression is compiled, not here.
+fn Lexer.regexp(mut self, start int, line_no int, col int, nl bool) Token ! JsError
+    pos += 1
+    mut in_class := false
+    body_start := pos
+    while true
+        if done() or is_line_term(cur())
+            return fail("Invalid regular expression: missing /", start)
+        c := cur()
+        if c == '\\'
+            pos += 1
+            if done() or is_line_term(cur())
+                return fail("Invalid regular expression: missing /", start)
+        elif c == '['
+            in_class = true
+        elif c == ']'
+            in_class = false
+        elif c == '/' and not in_class
+            break
+        pos += 1
+    body := src[body_start..pos].join("")
+    pos += 1
+    flags_start := pos
+    while not done() and id_part(cur())
+        pos += 1
+    flags := src[flags_start..pos].join("")
+    mut seen := Set[char]()
+    for f in flags.chars()
+        if not "dgimsuvy".contains(f) or not seen.add(f)
+            return fail("Invalid regular expression flags", start)
+    if seen.contains('u') and seen.contains('v')
+        return fail("Invalid regular expression flags", start)
+    mut t := token(Regex, body, start, line_no, col, nl)
+    t.raw = flags
+    t
+
+## Every token of `source`, with a `/` read as division after a value and
+## as a regular expression elsewhere (the usual approximation of §12: a `/`
+## after `}` is division; the parser decides exactly).
+pub fn tokenize(source str) List[Token] ! JsError
+    mut lx := new_lexer(source)
+    mut out := List[Token]()
+    mut regex := true
+    mut template_depth := List[int]()
+    mut braces := 0
+    # For each open `(`: whether it follows `if`, `while`, `for` or `with`,
+    # so the `)` that closes it ends a statement head: `if (a) /re/`.
+    mut parens := List[bool]()
+    mut prev := ""
+    while true
+        mut t := lx.next(regex)?
+        if t.kind == Punct
+            and t.text == "}"
+            and template_depth.len() > 0
+            and template_depth[template_depth.len() - 1] == braces
+            template_depth.pop()
+            t = lx.template_continue(t)?
+        if t.kind == Punct and t.text == "\{"
+            braces += 1
+        elif t.kind == Punct and t.text == "}"
+            braces -= 1
+        if t.kind == Template and not t.tail
+            template_depth.push(braces)
+        out.push(t)
+        if t.kind == Eof
+            break
+        regex = regex_may_follow(t)
+        if t.kind == Punct and t.text == "("
+            parens.push(prev == "if" or prev == "while" or prev == "for" or prev == "with")
+        elif t.kind == Punct and t.text == ")"
+            regex = parens.pop() else false
+        prev = if t.kind == Name and not t.escaped then t.text else ""
+    out
+
+## Whether a `/` after `t` starts a regular expression.
+fn regex_may_follow(t Token) bool
+    match t.kind
+        Num | Str | Regex | Priv => false
+        Template => not t.tail
+        Name => VALUE_KEYWORDS_BEFORE_REGEX.contains(t.text)
+        Punct => t.text != ")" and t.text != "]" and t.text != "}"
+        Eof => true
+
+## Keywords after which an expression starts: `return /x/`.
+VALUE_KEYWORDS_BEFORE_REGEX := {
+    "return",
+    "typeof",
+    "instanceof",
+    "in",
+    "of",
+    "new",
+    "delete",
+    "void",
+    "throw",
+    "case",
+    "do",
+    "else",
+    "yield",
+    "await",
+}
+
+## A token as one line of `--tokens` output: `LINE:COL KIND text`.
+pub fn token_line(t Token) str
+    kind := match t.kind
+        Name => "name"
+        Priv => "private"
+        Punct => "punct"
+        Num => "number"
+        Str => "string"
+        Template => if t.tail then "template-tail" else "template"
+        Regex => "regex"
+        Eof => "eof"
+    text := match t.kind
+        Str | Template => quote(t.text)
+        Regex => "/{t.text}/{t.raw}"
+        Num => number_to_string(t.num)
+        Name | Priv | Punct | Eof => t.text
+    nl := if t.nl_before then " nl" else ""
+    "{t.line}:{t.col} {kind} {text}{nl}"
