@@ -1,1 +1,1 @@
-SyntaxError: Generators are not supported yet (1:9)
+SyntaxError: Unexpected identifier 'yield' (1:21)

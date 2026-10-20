@@ -825,7 +825,7 @@ fn Vm.assign_to(mut self, target syntax.Expr, v Value, env ref Env) ! Thrown
             base := member_base(object, env)?
             key := member_key(prop, computed, env)?
             put(base, key, v)?
-        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName =>
+        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
             return syntax_error("Invalid left-hand side in assignment")
 
 pub fn Vm.syntax_error(mut self, msg str) Thrown
@@ -855,7 +855,7 @@ fn is_anonymous_fn(e syntax.Expr) bool
         Function(f) => f.name == none
         Arrow => true
         ClassExpr(c) => c.name == none
-        Paren | Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Array | Object | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName =>
+        Paren | Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Array | Object | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Yield | Await =>
             false
 
 fn set_fn_name(v Value, name str)
@@ -995,6 +995,7 @@ pub fn Vm.eval(mut self, e syntax.Expr, env ref Env) Value ! Thrown
         Super => return syntax_error("'super' keyword unexpected here")
         Spread => return syntax_error("Unexpected token '...'")
         PrivName(name, _) => Value.Str("{PRIVATE}{name}")
+        Yield | Await => return syntax_error("yield and await run only in compiled code")
 
 ## The object a member expression reads from; `super.x` reads from the
 ## home object's prototype (§13.3.7.1).
@@ -1009,7 +1010,7 @@ fn Vm.member_key(mut self, prop syntax.Expr, computed bool, env ref Env) str ! T
     match prop
         Ident(name, _) => name
         PrivName(name, _) => "{PRIVATE}{name}"
-        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | Paren =>
+        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | Paren | Yield | Await =>
             to_key(eval(prop, env)?)
 
 ## `super[key]` with the current `this` as the receiver.
@@ -1047,7 +1048,7 @@ fn Vm.callee_of(mut self, callee syntax.Expr, env ref Env) Callee ! Thrown
             if syntax.expr_kind(inner) == "Member"
                 return callee_of(inner, env)
             Callee(f: eval(inner, env)?, this_val: Undef)
-        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName =>
+        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
             Callee(f: eval(callee, env)?, this_val: Undef)
 
 ## Call, naming the callee in the error when it isn't a function.
@@ -1089,7 +1090,7 @@ pub fn expr_text(e syntax.Expr) str
         Str(value, _) => "\"{value}\""
         Num(value, _) => syntax.number_to_string(value)
         Object(props, _) => if props.len() == 0 then "\{}" else "(intermediate value)"
-        Template | Tagged | Regex | Bool | Null | NewTarget | Array | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | New | Seq | Spread =>
+        Template | Tagged | Regex | Bool | Null | NewTarget | Array | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | New | Seq | Spread | Yield | Await =>
             "(intermediate value)"
 
 fn Vm.unary(mut self, op str, operand syntax.Expr, env ref Env) Value ! Thrown
@@ -1113,7 +1114,7 @@ fn ident_name(e syntax.Expr) str?
     match e
         Ident(name, _) => name
         Paren(inner, _) => ident_name(inner)
-        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName =>
+        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Yield | Await =>
             none
 
 ## `delete` (§13.5.1.2).
@@ -1133,7 +1134,7 @@ fn Vm.delete_expr(mut self, operand syntax.Expr, env ref Env) bool ! Thrown
             chain_shorted = false
             r
         Ident => false
-        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | PrivName =>
+        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | PrivName | Yield | Await =>
             eval(operand, env)?
             true
 
@@ -1750,7 +1751,7 @@ fn left_decl(left syntax.ForLeft) syntax.VarDecl?
 fn spread_of(e syntax.Expr) syntax.Expr?
     match e
         Spread(operand, _) => operand
-        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Chain | PrivName | Paren =>
+        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Chain | PrivName | Paren | Yield | Await =>
             none
 
 fn bound_target(c Callable) Value?
@@ -1773,5 +1774,5 @@ fn Vm.member_ref(mut self, t syntax.Expr, env ref Env) MemberRef? ! Thrown
         Member(object, prop, computed, _, _) =>
             base := member_base(object, env)?
             MemberRef(f: base, key: member_key(prop, computed, env)?)
-        Paren | Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName =>
+        Paren | Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
             none

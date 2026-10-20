@@ -97,6 +97,10 @@ pub enum Expr
     PrivName(name str, pos Pos)
     ## Parentheses, kept so `(a) = 1` and `({a}) = 1` can be told apart (§13.15.1).
     Paren(expr Expr, pos Pos)
+    ## `yield`, `yield x` and `yield* x` in a generator (§15.5).
+    Yield(arg Expr?, delegate bool, pos Pos)
+    ## `await x` in an async function (§15.8).
+    Await(arg Expr, pos Pos)
 
 ## One literal piece of a template; `cooked` is none for an invalid escape
 ## in a tagged template (§13.2.8.2).
@@ -198,6 +202,8 @@ pub fn expr_pos(e Expr) Pos
         Chain(_, p) => p
         PrivName(_, p) => p
         Paren(_, p) => p
+        Yield(_, _, p) => p
+        Await(_, p) => p
         Function(f) => f.pos
         Arrow(f) => f.pos
         ClassExpr(c) => c.pos
@@ -243,6 +249,8 @@ pub fn expr_kind(e Expr) str
         Chain => "Chain"
         PrivName => "PrivName"
         Paren => "Paren"
+        Yield => "Yield"
+        Await => "Await"
 
 pub fn pat_kind(p Pat) str
     match p
@@ -251,3 +259,158 @@ pub fn pat_kind(p Pat) str
         PatObj => "PatObj"
         PatArr => "PatArr"
         PatDefault => "PatDefault"
+
+## Whether `yield` or `await` occurs in an expression, outside nested
+## functions and classes (whose own code they belong to). A computed class
+## key or `extends` runs in the enclosing code, so it counts.
+pub fn expr_suspends(e Expr) bool
+    match e
+        Yield | Await => true
+        Num | Str | Regex | Bool | Null | Ident | This | Super | NewTarget | PrivName | Function | Arrow => false
+        Template(_, exprs, _) => any_suspends(exprs)
+        Tagged(tag, _, exprs, _) => expr_suspends(tag) or any_suspends(exprs)
+        Array(items, _, _) =>
+            for item in items
+                if x := item
+                    if expr_suspends(x)
+                        return true
+            false
+        Object(props, _) =>
+            for p in props
+                if prop_suspends(p)
+                    return true
+            false
+        ClassExpr(c) => class_suspends(c)
+        Unary(_, arg, _) => expr_suspends(arg)
+        Update(_, _, arg, _) => expr_suspends(arg)
+        Binary(_, l, r, _) => expr_suspends(l) or expr_suspends(r)
+        Logical(_, l, r, _) => expr_suspends(l) or expr_suspends(r)
+        Assign(_, target, value, _) => pat_suspends(target) or expr_suspends(value)
+        Cond(t, y, n, _) => expr_suspends(t) or expr_suspends(y) or expr_suspends(n)
+        Call(callee, args, _, _) => expr_suspends(callee) or any_suspends(args)
+        New(callee, args, _) => expr_suspends(callee) or any_suspends(args)
+        Member(object, prop, _, _, _) => expr_suspends(object) or expr_suspends(prop)
+        Seq(items, _) => any_suspends(items)
+        Spread(arg, _) => expr_suspends(arg)
+        Chain(inner, _) => expr_suspends(inner)
+        Paren(inner, _) => expr_suspends(inner)
+
+pub fn any_suspends(es List[Expr]) bool
+    for e in es
+        if expr_suspends(e)
+            return true
+    false
+
+fn key_suspends(k Key) bool
+    match k
+        Computed(e, _) => expr_suspends(e)
+        KeyName | KeyStr | KeyNum | KeyPriv => false
+
+fn prop_suspends(p Prop) bool
+    match p
+        Init(key, value, _, _) => key_suspends(key) or expr_suspends(value)
+        Method(key, _, _, _) => key_suspends(key)
+        PropSpread(arg, _) => expr_suspends(arg)
+        CoverInit(_, value, _) => expr_suspends(value)
+
+fn class_suspends(c Class) bool
+    if s := c.superclass
+        if expr_suspends(s)
+            return true
+    for m in c.members
+        if k := m.key
+            if key_suspends(k)
+                return true
+    false
+
+pub fn pat_suspends(p Pat) bool
+    match p
+        PatId => false
+        PatTarget(e) => expr_suspends(e)
+        PatObj(props, rest, _) =>
+            for pp in props
+                if key_suspends(pp.key) or pat_suspends(pp.value)
+                    return true
+            if r := rest
+                return pat_suspends(r)
+            false
+        PatArr(items, rest, _) =>
+            for item in items
+                if it := item
+                    if pat_suspends(it)
+                        return true
+            if r := rest
+                return pat_suspends(r)
+            false
+        PatDefault(target, value, _) => pat_suspends(target) or expr_suspends(value)
+
+## Whether a statement may suspend: `yield` or `await` in it, outside
+## nested functions.
+pub fn stmt_suspends(s Stmt) bool
+    match s
+        Exp(e, _) => expr_suspends(e)
+        Var(d) => decl_suspends(d)
+        FuncDecl | Empty | Break | Continue | Debugger => false
+        ClassDecl(c) => class_suspends(c)
+        Return(value, _) => if v := value then expr_suspends(v) else false
+        If(test, yes, no, _) =>
+            expr_suspends(test)
+                or stmt_suspends(yes)
+                or (if n := no then stmt_suspends(n) else false)
+        Block(body, _) => block_suspends(body)
+        For(init, test, update, body, _) =>
+            mut r := stmt_suspends(body)
+            if i := init
+                head := match i
+                    InitDecl(d) => decl_suspends(d)
+                    InitExpr(e) => expr_suspends(e)
+                r = r or head
+            if t := test
+                r = r or expr_suspends(t)
+            if u := update
+                r = r or expr_suspends(u)
+            r
+        ForIn(left, right, body, _, _) =>
+            l := match left
+                LeftDecl(d) => decl_suspends(d)
+                LeftPat(p) => pat_suspends(p)
+            l or expr_suspends(right) or stmt_suspends(body)
+        While(test, body, _) => expr_suspends(test) or stmt_suspends(body)
+        DoWhile(body, test, _) => expr_suspends(test) or stmt_suspends(body)
+        Throw(value, _) => expr_suspends(value)
+        Try(block, param, handler, finalizer, _) =>
+            mut r := block_suspends(block)
+            if p := param
+                r = r or pat_suspends(p)
+            if h := handler
+                r = r or block_suspends(h)
+            if f := finalizer
+                r = r or block_suspends(f)
+            r
+        Switch(disc, cases, _) =>
+            if expr_suspends(disc)
+                return true
+            for c in cases
+                if t := c.test
+                    if expr_suspends(t)
+                        return true
+                if block_suspends(c.body)
+                    return true
+            false
+        Labeled(_, body, _) => stmt_suspends(body)
+        With(object, body, _) => expr_suspends(object) or stmt_suspends(body)
+
+pub fn block_suspends(body List[Stmt]) bool
+    for s in body
+        if stmt_suspends(s)
+            return true
+    false
+
+fn decl_suspends(d VarDecl) bool
+    for x in d.decls
+        if pat_suspends(x.target)
+            return true
+        if i := x.init
+            if expr_suspends(i)
+                return true
+    false
