@@ -49,8 +49,24 @@ pub fn arg_at(args List[Value], i int) Value
 pub fn Vm.native_fn(mut self, name str, display str, length int) Value
     o := object("Function", proto_of("Function"))
     o.call = Native(name)
-    o.props["length"] = Prop(value: Num(length.to_float()), get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: true)
-    o.props["name"] = Prop(value: Str(display), get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: true)
+    o.props["length"] = Prop(
+        value: Num(length.to_float()),
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+    )
+    o.props["name"] = Prop(
+        value: Str(display),
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+    )
     Obj(o)
 
 ## Methods from a spec like "push:1 pop:0": native `PREFIX.push`, length 1.
@@ -61,10 +77,26 @@ fn Vm.methods(mut self, target ref JsObject, prefix str, spec str)
         target.props[parts[0]] = hidden(native_fn("{prefix}.{parts[0]}", parts[0], n))
 
 fn Vm.constant(mut self, target ref JsObject, key str, v Value)
-    target.props[key] = Prop(value: v, get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: false)
+    target.props[key] = Prop(
+        value: v,
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+    )
 
 fn Vm.getter(mut self, target ref JsObject, key str, native str)
-    target.props[key] = Prop(value: Undef, get: native_fn(native, "get {key}", 0), set: Undef, accessor: true, enumerable: false, writable: true, configurable: true)
+    target.props[key] = Prop(
+        value: Undef,
+        get: native_fn(native, "get {key}", 0),
+        set: Undef,
+        accessor: true,
+        enumerable: false,
+        writable: true,
+        configurable: true,
+    )
 
 ## A constructor `name` with its prototype (already in `protos` or made
 ## here), installed on the global object.
@@ -77,7 +109,15 @@ fn Vm.constructor(mut self, name str, length int) ref JsObject
             protos[name] = Obj(p)
             p
     c := obj_of(native_fn(name, name, length)) else return proto
-    c.props["prototype"] = Prop(value: Obj(proto), get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: false)
+    c.props["prototype"] = Prop(
+        value: Obj(proto),
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+    )
     proto.props["constructor"] = hidden(Obj(c))
     ctors[name] = Obj(c)
     global_obj.props[name] = hidden(Obj(c))
@@ -101,8 +141,16 @@ fn Vm.setup(mut self)
         protos[name] = Obj(p)
 
     object_ctor := constructor("Object", 1)
-    methods(object_ctor, "Object", "keys:1 values:1 entries:1 assign:2 create:2 getPrototypeOf:1 setPrototypeOf:2 defineProperty:3 defineProperties:2 getOwnPropertyNames:1 getOwnPropertyDescriptor:2 getOwnPropertyDescriptors:1 freeze:1 isFrozen:1 seal:1 isSealed:1 preventExtensions:1 isExtensible:1 fromEntries:1 is:2")
-    methods(object_proto, "Object.prototype", "hasOwnProperty:1 isPrototypeOf:1 propertyIsEnumerable:1 toString:0 toLocaleString:0 valueOf:0")
+    methods(
+        object_ctor,
+        "Object",
+        "keys:1 values:1 entries:1 assign:2 create:2 getPrototypeOf:1 setPrototypeOf:2 defineProperty:3 defineProperties:2 getOwnPropertyNames:1 getOwnPropertyDescriptor:2 getOwnPropertyDescriptors:1 freeze:1 isFrozen:1 seal:1 isSealed:1 preventExtensions:1 isExtensible:1 fromEntries:1 is:2",
+    )
+    methods(
+        object_proto,
+        "Object.prototype",
+        "hasOwnProperty:1 isPrototypeOf:1 propertyIsEnumerable:1 toString:0 toLocaleString:0 valueOf:0",
+    )
     object_proto.props["__proto__"] = Prop(
         value: Undef,
         get: native_fn("Object.prototype.__proto__get", "get __proto__", 0),
@@ -114,20 +162,48 @@ fn Vm.setup(mut self)
     )
 
     constructor("Function", 1)
-    func_proto.props["length"] = Prop(value: Num(0.0), get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: true)
-    func_proto.props["name"] = Prop(value: Str(""), get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: true)
+    func_proto.props["length"] = Prop(
+        value: Num(0.0),
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+    )
+    func_proto.props["name"] = Prop(
+        value: Str(""),
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+    )
     methods(func_proto, "Function.prototype", "call:1 apply:2 bind:1 toString:0")
 
     array_ctor := constructor("Array", 1)
     methods(array_ctor, "Array", "isArray:1 of:0 from:1")
-    methods(array_proto, "Array.prototype", "push:1 pop:0 shift:0 unshift:1 slice:2 splice:2 concat:1 join:1 reverse:0 indexOf:1 lastIndexOf:1 includes:1 find:1 findIndex:1 findLast:1 findLastIndex:1 filter:1 map:1 forEach:1 reduce:1 reduceRight:1 some:1 every:1 sort:1 fill:1 flat:0 flatMap:1 toString:0 at:1 keys:0 values:0 entries:0 copyWithin:2 toReversed:0 toSorted:1 with:2")
+    methods(
+        array_proto,
+        "Array.prototype",
+        "push:1 pop:0 shift:0 unshift:1 slice:2 splice:2 concat:1 join:1 reverse:0 indexOf:1 lastIndexOf:1 includes:1 find:1 findIndex:1 findLast:1 findLastIndex:1 filter:1 map:1 forEach:1 reduce:1 reduceRight:1 some:1 every:1 sort:1 fill:1 flat:0 flatMap:1 toString:0 at:1 keys:0 values:0 entries:0 copyWithin:2 toReversed:0 toSorted:1 with:2",
+    )
 
     string_ctor := constructor("String", 1)
     methods(string_ctor, "String", "fromCharCode:1 fromCodePoint:1 raw:1")
-    methods(obj_of(proto_of("String")) else object_proto, "String.prototype", "charAt:1 charCodeAt:1 codePointAt:1 indexOf:1 lastIndexOf:1 includes:1 startsWith:1 endsWith:1 slice:2 substring:2 substr:2 toUpperCase:0 toLowerCase:0 toLocaleUpperCase:0 toLocaleLowerCase:0 trim:0 trimStart:0 trimEnd:0 padStart:2 padEnd:2 repeat:1 split:2 concat:1 at:1 replace:2 replaceAll:2 toString:0 valueOf:0 localeCompare:1 normalize:0 match:1 matchAll:1 search:1")
+    methods(
+        obj_of(proto_of("String")) else object_proto,
+        "String.prototype",
+        "charAt:1 charCodeAt:1 codePointAt:1 indexOf:1 lastIndexOf:1 includes:1 startsWith:1 endsWith:1 slice:2 substring:2 substr:2 toUpperCase:0 toLowerCase:0 toLocaleUpperCase:0 toLocaleLowerCase:0 trim:0 trimStart:0 trimEnd:0 padStart:2 padEnd:2 repeat:1 split:2 concat:1 at:1 replace:2 replaceAll:2 toString:0 valueOf:0 localeCompare:1 normalize:0 match:1 matchAll:1 search:1",
+    )
 
     number_ctor := constructor("Number", 1)
-    methods(number_ctor, "Number", "isInteger:1 isSafeInteger:1 isFinite:1 isNaN:1 parseFloat:1 parseInt:2")
+    methods(
+        number_ctor,
+        "Number",
+        "isInteger:1 isSafeInteger:1 isFinite:1 isNaN:1 parseFloat:1 parseInt:2",
+    )
     constant(number_ctor, "MAX_SAFE_INTEGER", Num(9007199254740991.0))
     constant(number_ctor, "MIN_SAFE_INTEGER", Num(-9007199254740991.0))
     constant(number_ctor, "EPSILON", Num(2.220446049250313e-16))
@@ -136,17 +212,32 @@ fn Vm.setup(mut self)
     constant(number_ctor, "POSITIVE_INFINITY", Num(infinity()))
     constant(number_ctor, "NEGATIVE_INFINITY", Num(0.0 - infinity()))
     constant(number_ctor, "NaN", Num(nan()))
-    methods(obj_of(proto_of("Number")) else object_proto, "Number.prototype", "toString:1 toFixed:1 toExponential:1 toPrecision:1 valueOf:0 toLocaleString:0")
+    methods(
+        obj_of(proto_of("Number")) else object_proto,
+        "Number.prototype",
+        "toString:1 toFixed:1 toExponential:1 toPrecision:1 valueOf:0 toLocaleString:0",
+    )
 
     constructor("Boolean", 1)
-    methods(obj_of(proto_of("Boolean")) else object_proto, "Boolean.prototype", "toString:0 valueOf:0")
+    methods(
+        obj_of(proto_of("Boolean")) else object_proto,
+        "Boolean.prototype",
+        "toString:0 valueOf:0",
+    )
 
     error_ctor := constructor("Error", 1)
     error_proto := obj_of(proto_of("Error")) else object_proto
     error_proto.props["name"] = hidden(Str("Error"))
     error_proto.props["message"] = hidden(Str(""))
     methods(error_proto, "Error.prototype", "toString:0")
-    for kind in ["TypeError", "RangeError", "SyntaxError", "ReferenceError", "EvalError", "URIError"]
+    for kind in [
+        "TypeError",
+        "RangeError",
+        "SyntaxError",
+        "ReferenceError",
+        "EvalError",
+        "URIError",
+    ]
         p := object("Object", Obj(error_proto))
         p.props["name"] = hidden(Str(kind))
         p.props["message"] = hidden(Str(""))
@@ -156,11 +247,19 @@ fn Vm.setup(mut self)
 
     map_ctor := constructor("Map", 0)
     map_proto := obj_of(proto_of("Map")) else object_proto
-    methods(map_proto, "Map.prototype", "get:1 set:2 has:1 delete:1 clear:0 forEach:1 keys:0 values:0 entries:0")
+    methods(
+        map_proto,
+        "Map.prototype",
+        "get:1 set:2 has:1 delete:1 clear:0 forEach:1 keys:0 values:0 entries:0",
+    )
     getter(map_proto, "size", "Map.prototype.size")
     set_ctor := constructor("Set", 0)
     set_proto := obj_of(proto_of("Set")) else object_proto
-    methods(set_proto, "Set.prototype", "add:1 has:1 delete:1 clear:0 forEach:1 keys:0 values:0 entries:0")
+    methods(
+        set_proto,
+        "Set.prototype",
+        "add:1 has:1 delete:1 clear:0 forEach:1 keys:0 values:0 entries:0",
+    )
     getter(set_proto, "size", "Set.prototype.size")
     map_ctor.props["length"] = hidden(Num(0.0))
     set_ctor.props["length"] = hidden(Num(0.0))
@@ -171,7 +270,11 @@ fn Vm.setup(mut self)
 
     date_ctor := constructor("Date", 7)
     methods(date_ctor, "Date", "now:0 UTC:7 parse:1")
-    methods(obj_of(proto_of("Date")) else object_proto, "Date.prototype", "getTime:0 valueOf:0 toISOString:0 toJSON:1 getFullYear:0 getMonth:0 getDate:0 getDay:0 getHours:0 getMinutes:0 getSeconds:0 getMilliseconds:0 getUTCFullYear:0 getUTCMonth:0 getUTCDate:0 getUTCDay:0 getUTCHours:0 getUTCMinutes:0 getUTCSeconds:0 getUTCMilliseconds:0 getTimezoneOffset:0 setTime:1 toString:0 toUTCString:0")
+    methods(
+        obj_of(proto_of("Date")) else object_proto,
+        "Date.prototype",
+        "getTime:0 valueOf:0 toISOString:0 toJSON:1 getFullYear:0 getMonth:0 getDate:0 getDay:0 getHours:0 getMinutes:0 getSeconds:0 getMilliseconds:0 getUTCFullYear:0 getUTCMonth:0 getUTCDate:0 getUTCDay:0 getUTCHours:0 getUTCMinutes:0 getUTCSeconds:0 getUTCMilliseconds:0 getTimezoneOffset:0 setTime:1 toString:0 toUTCString:0",
+    )
 
     math := plain()
     math.props["PI"] = hidden(Num(PI))
@@ -186,7 +289,11 @@ fn Vm.setup(mut self)
             "SQRT2" => 1.4142135623730951
             _ => 0.7071067811865476
         constant(math, name, Num(v))
-    methods(math, "Math", "abs:1 floor:1 ceil:1 round:1 trunc:1 sign:1 sqrt:1 cbrt:1 pow:2 exp:1 expm1:1 log:1 log2:1 log10:1 log1p:1 sin:1 cos:1 tan:1 asin:1 acos:1 atan:1 atan2:2 sinh:1 cosh:1 tanh:1 min:2 max:2 random:0 hypot:2 fround:1 clz32:1 imul:2")
+    methods(
+        math,
+        "Math",
+        "abs:1 floor:1 ceil:1 round:1 trunc:1 sign:1 sqrt:1 cbrt:1 pow:2 exp:1 expm1:1 log:1 log2:1 log10:1 log1p:1 sin:1 cos:1 tan:1 asin:1 acos:1 atan:1 atan2:2 sinh:1 cosh:1 tanh:1 min:2 max:2 random:0 hypot:2 fround:1 clz32:1 imul:2",
+    )
     global_obj.props["Math"] = hidden(Obj(math))
 
     json := plain()
@@ -197,7 +304,11 @@ fn Vm.setup(mut self)
     methods(console, "console", "log:0 info:0 debug:0 warn:0 error:0")
     global_obj.props["console"] = hidden(Obj(console))
 
-    methods(global_obj, "global", "parseInt:2 parseFloat:1 isNaN:1 isFinite:1 encodeURIComponent:1 encodeURI:1 decodeURIComponent:1 decodeURI:1")
+    methods(
+        global_obj,
+        "global",
+        "parseInt:2 parseFloat:1 isNaN:1 isFinite:1 encodeURIComponent:1 encodeURI:1 decodeURIComponent:1 decodeURI:1",
+    )
     # Number.parseInt and parseInt are the same function (§21.1.2.13).
     number_ctor.props["parseInt"] = global_obj.props["parseInt"]
     number_ctor.props["parseFloat"] = global_obj.props["parseFloat"]
@@ -214,7 +325,14 @@ pub fn native_is_ctor(name str) bool
         _ => false
 
 ## Run the native function `name`. `new_target` is Undef for a plain call.
-pub fn Vm.native(mut self, name str, f ref JsObject, this_val Value, args List[Value], new_target Value) Value ! Thrown
+pub fn Vm.native(
+    mut self,
+    name str,
+    f ref JsObject,
+    this_val Value,
+    args List[Value],
+    new_target Value,
+) Value ! Thrown
     tick()?
     if m := name.strip_prefix("Array.prototype.")
         return array_method(m, this_val, args)
@@ -248,15 +366,35 @@ pub fn Vm.native(mut self, name str, f ref JsObject, this_val Value, args List[V
             if not is_callable(this_val)
                 return type_error("Bind must be called on a function")
             b := object("Function", proto_of("Function"))
-            b.call = Bound(target: this_val, this_val: a0, args: if args.len() > 1 then args[1..] else List[Value]())
+            b.call = Bound(
+                target: this_val,
+                this_val: a0,
+                args: if args.len() > 1 then args[1..] else List[Value](),
+            )
             target_name := get(this_val, "name")?
             n := if t := str_of(target_name) then t else ""
-            b.props["name"] = Prop(value: Str("bound {n}"), get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: true)
+            b.props["name"] = Prop(
+                value: Str("bound {n}"),
+                get: Undef,
+                set: Undef,
+                accessor: false,
+                enumerable: false,
+                writable: false,
+                configurable: true,
+            )
             len := to_number(get(this_val, "length")?)? - (args.len() - 1).max(0).to_float()
-            b.props["length"] = Prop(value: Num(if len > 0.0 then len else 0.0), get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: true)
+            b.props["length"] = Prop(
+                value: Num(if len > 0.0 then len else 0.0),
+                get: Undef,
+                set: Undef,
+                accessor: false,
+                enumerable: false,
+                writable: false,
+                configurable: true,
+            )
             Obj(b)
         "Function.prototype.toString" =>
-            n := if o := obj_of(this_val) then (plain_string(o, "name") else "") else ""
+            n := if o := obj_of(this_val) then(plain_string(o, "name") else "") else ""
             Value.Str("function {n}() \{ [native code] }")
         "Function" => function_constructor(args)
         "Object" =>
@@ -382,7 +520,9 @@ pub fn Vm.native(mut self, name str, f ref JsObject, this_val Value, args List[V
             else
                 console_out.push(line)
             Undef
-        "global.parseInt" => Value.Num(parse_int(to_string(a0)?, to_int32(to_number(arg_at(args, 1))?)))
+        "global.parseInt" => Value.Num(parse_int(to_string(a0)?, to_int32(
+            to_number(arg_at(args, 1))?,
+        )))
         "global.parseFloat" => Value.Num(parse_float(to_string(a0)?))
         "global.isNaN" => Value.Bool(is_nan(to_number(a0)?))
         "global.isFinite" => Value.Bool(is_finite(to_number(a0)?))
@@ -435,7 +575,15 @@ fn Vm.function_constructor(mut self, args List[Value]) Value ! Thrown
         return throw_error("SyntaxError", err.msg)
     v := run_program_value(prog)?
     if o := obj_of(v)
-        o.props["name"] = Prop(value: Str("anonymous"), get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: true)
+        o.props["name"] = Prop(
+            value: Str("anonymous"),
+            get: Undef,
+            set: Undef,
+            accessor: false,
+            enumerable: false,
+            writable: false,
+            configurable: true,
+        )
     v
 
 ## The value of a script made of one expression statement.
@@ -491,7 +639,9 @@ fn Vm.object_function(mut self, m str, args List[Value]) Value ! Thrown
         "defineProperty" =>
             o := obj_of(a0) else return type_error("Object.defineProperty called on non-object")
             key := to_key(arg_at(args, 1))?
-            desc := obj_of(arg_at(args, 2)) else return type_error("Property description must be an object: {describe(arg_at(args, 2))}")
+            desc := obj_of(
+                arg_at(args, 2),
+            ) else return type_error("Property description must be an object: {describe(arg_at(args, 2))}")
             define_from(o, key, desc)?
             a0
         "defineProperties" =>
@@ -594,14 +744,24 @@ fn Vm.descriptor(mut self, p Prop) Value
 
 fn Vm.define_properties(mut self, o ref JsObject, props ref JsObject) ! Thrown
     for k in enum_keys(props)
-        desc := obj_of(get(Obj(props), k)?) else return type_error("Property description must be an object")
+        desc := obj_of(
+            get(Obj(props), k)?,
+        ) else return type_error("Property description must be an object")
         define_from(o, k, desc)?
 
 ## Object.defineProperty with a descriptor object (§10.1.6.3, simplified:
 ## absent fields keep the old value, or default to false).
 fn Vm.define_from(mut self, o ref JsObject, key str, desc ref JsObject) ! Thrown
     old := own(o, key)
-    mut p := old else Prop(value: Undef, get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: false)
+    mut p := old else Prop(
+        value: Undef,
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+    )
     d := Value.Obj(desc)
     if has_property(desc, "get") or has_property(desc, "set")
         if has_property(desc, "value") or has_property(desc, "writable")
@@ -666,7 +826,14 @@ fn Vm.object_proto_method(mut self, m str, this_val Value, args List[Value]) Val
                 Obj(o) =>
                     if o.call != none
                         "Function"
-                    elif o.class == "Error" or o.class == "Array" or o.class == "Date" or o.class == "RegExp" or o.class == "Arguments" or o.class == "Boolean" or o.class == "Number" or o.class == "String"
+                    elif o.class == "Error"
+                        or o.class == "Array"
+                        or o.class == "Date"
+                        or o.class == "RegExp"
+                        or o.class == "Arguments"
+                        or o.class == "Boolean"
+                        or o.class == "Number"
+                        or o.class == "String"
                         o.class
                     elif o.class == "Map" or o.class == "Set"
                         o.class
@@ -833,15 +1000,15 @@ fn Vm.math_function(mut self, m str, args List[Value]) Value ! Thrown
                 x
             else
                 c := x.ceil()
-                if c == 0.0 and x < 0.0 then -0.0 else c
+                if c == 0.0 and x < 0.0 then - 0.0 else c
         "round" =>
             if not is_finite(x) or x == 0.0
                 x
             else
                 r := (x + 0.5).floor()
-                if r == 0.0 and x < 0.0 then -0.0 else r
+                if r == 0.0 and x < 0.0 then - 0.0 else r
         "trunc" => trunc(x)
-        "sign" => if x > 0.0 then 1.0 else (if x < 0.0 then -1.0 else x)
+        "sign" => if x > 0.0 then 1.0 else (if x < 0.0 then - 1.0 else x)
         "sqrt" => if x < 0.0 then nan() else x.sqrt()
         "cbrt" => cbrt(x)
         "pow" => pow(x, y)
@@ -985,7 +1152,10 @@ pub fn Vm.uri_decode(mut self, s str, reserved str) str ! Thrown
             if utf8_complete(bytes_list)
                 break
         if bytes_list.len() > 0
-            text := bytes.from_list([b.to_u8() for b in bytes_list]).to_str() else return throw_error("URIError", "URI malformed")
+            text := bytes.from_list([
+                b.to_u8()
+                for b in bytes_list
+            ]).to_str() else return throw_error("URIError", "URI malformed")
             if start == i
                 break
             out.push(text)

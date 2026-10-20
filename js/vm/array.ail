@@ -115,7 +115,8 @@ fn Vm.array_method(mut self, m str, this_val Value, args List[Value]) Value ! Th
                 count = len - start
             elif args.len() > 1
                 n := trunc(to_number(a1)?)
-                count = if is_nan(n) or n < 0.0 then 0 else (if n > (len - start).to_float() then len - start else n.to_int())
+                count = if is_nan(n)
+                    or n < 0.0 then 0 else (if n > (len - start).to_float() then len - start else n.to_int())
             removed := o.elems[start..start + count]
             mut out := o.elems[0..start]
             if args.len() > 2

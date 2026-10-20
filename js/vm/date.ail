@@ -68,7 +68,11 @@ fn make_time(year float, month float, date float, h float, mi float, s float, ms
     ym := year + (month / 12.0).floor()
     mn := fmod(month, 12.0)
     m := if mn < 0.0 then mn + 12.0 else mn
-    days := days_from_civil(trunc(ym).to_int(), trunc(m).to_int() + 1, 1).to_float() + trunc(date) - 1.0
+    days := days_from_civil(
+        trunc(ym).to_int(),
+        trunc(m).to_int() + 1,
+        1,
+    ).to_float() + trunc(date) - 1.0
     time_clip(days * MS_PER_DAY + trunc(h) * 3600000.0 + trunc(mi) * 60000.0 + trunc(s) * 1000.0 + trunc(ms))
 
 ## TimeClip (§21.4.1.31).
@@ -115,7 +119,7 @@ pub fn parse_date(text str) float
     mut i := 0
     mut sign := 1
     if i < cs.len() and (cs[i] == '+' or cs[i] == '-')
-        sign = if cs[i] == '-' then -1 else 1
+        sign = if cs[i] == '-' then - 1 else 1
         i += 1
     year_len := if i > 0 then 6 else 4
     if not digits_at(cs, i, year_len)
@@ -142,7 +146,11 @@ pub fn parse_date(text str) float
     mut ms := 0
     mut offset := 0
     if i < cs.len() and (cs[i] == 'T' or cs[i] == 't' or cs[i] == ' ')
-        if not digits_at(cs, i + 1, 2) or i + 3 >= cs.len() or cs[i + 3] != ':' or not digits_at(cs, i + 4, 2)
+        if not digits_at(
+            cs,
+            i + 1,
+            2,
+        ) or i + 3 >= cs.len() or cs[i + 3] != ':' or not digits_at(cs, i + 4, 2)
             return nan()
         h = cs[i + 1..i + 3].join("").to_int() else 0
         mi = cs[i + 4..i + 6].join("").to_int() else 0
@@ -162,7 +170,7 @@ pub fn parse_date(text str) float
         if i < cs.len() and (cs[i] == 'Z' or cs[i] == 'z')
             i += 1
         elif i < cs.len() and (cs[i] == '+' or cs[i] == '-')
-            osign := if cs[i] == '-' then -1 else 1
+            osign := if cs[i] == '-' then - 1 else 1
             if not digits_at(cs, i + 1, 2)
                 return nan()
             oh := cs[i + 1..i + 3].join("").to_int() else 0
@@ -178,7 +186,15 @@ pub fn parse_date(text str) float
             offset = osign * (oh * 60 + om)
     if i != cs.len() or h > 24 or mi > 59 or sec > 59
         return nan()
-    t := make_time(year.to_float(), (month - 1).to_float(), day.to_float(), h.to_float(), mi.to_float(), sec.to_float(), ms.to_float())
+    t := make_time(
+        year.to_float(),
+        (month - 1).to_float(),
+        day.to_float(),
+        h.to_float(),
+        mi.to_float(),
+        sec.to_float(),
+        ms.to_float(),
+    )
     t - offset.to_float() * 60000.0
 
 ## "Thu Jan 01 2026 00:00:00 GMT+0000" and "Thu, 01 Jan 2026 00:00:00 GMT".
@@ -202,9 +218,17 @@ fn parse_text_date(s str) float
         return nan()
     hm := clock.split(":")
     h := hm[0].to_int() else 0
-    mi := if hm.len() > 1 then (hm[1].to_int() else 0) else 0
-    sec := if hm.len() > 2 then (hm[2].to_int() else 0) else 0
-    make_time(year.to_float(), month.to_float(), day.to_float(), h.to_float(), mi.to_float(), sec.to_float(), 0.0)
+    mi := if hm.len() > 1 then(hm[1].to_int() else 0) else 0
+    sec := if hm.len() > 2 then(hm[2].to_int() else 0) else 0
+    make_time(
+        year.to_float(),
+        month.to_float(),
+        day.to_float(),
+        h.to_float(),
+        mi.to_float(),
+        sec.to_float(),
+        0.0,
+    )
 
 fn Vm.date_components(mut self, args List[Value]) float ! Thrown
     mut nums := List[float]()

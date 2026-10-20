@@ -68,7 +68,7 @@ fn shortest(x float) Decimal
     text := "{x}"
     parts := text.split("e")
     mut mant := parts[0]
-    exp_part := if parts.len() > 1 then (parts[1].replace("+", "").to_int() else 0) else 0
+    exp_part := if parts.len() > 1 then(parts[1].replace("+", "").to_int() else 0) else 0
     dot := mant.find(".") else mant.chars().len()
     mant = mant.replace(".", "")
     strip_zeros(mant, dot + exp_part)

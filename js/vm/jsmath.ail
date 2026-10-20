@@ -109,7 +109,7 @@ pub fn exp(x float) float
         return infinity()
     if x < -745.1332191019412
         return 0.0
-    k := (x / LN2 + (if x < 0.0 then -0.5 else 0.5))
+    k := (x / LN2 + (if x < 0.0 then - 0.5 else 0.5))
     ki := trunc(k)
     r := (x - ki * LN2_HI) - ki * LN2_LO
     # exp(r) for |r| <= ln2 / 2 by its series, summed small terms first.
@@ -380,8 +380,7 @@ pub fn cbrt(x float) float
         r = near
     if x < 0.0 then 0.0 - r else r
 
-@test
-fn exp_and_log_are_close()
+@test fn exp_and_log_are_close()
     assert((exp(1.0) - 2.718281828459045).abs() < 1e-15)
     assert(log(2.718281828459045) == 1.0)
     assert(log(1.0) == 0.0)
@@ -389,16 +388,14 @@ fn exp_and_log_are_close()
     assert(log2(8.0) == 3.0)
     assert((log(10.0) - LN10).abs() < 1e-15)
 
-@test
-fn trig_is_close()
+@test fn trig_is_close()
     assert((sin(1.0) - 0.8414709848078965).abs() < 2e-16)
     assert((cos(1.0) - 0.5403023058681398).abs() < 2e-16)
     assert((atan(1.0) - PI / 4.0).abs() < 2e-16)
     assert(sin(0.0) == 0.0)
     assert((atan2(1.0, -1.0) - 3.0 * PI / 4.0).abs() < 1e-15)
 
-@test
-fn pow_is_exact_on_integers()
+@test fn pow_is_exact_on_integers()
     assert(pow(2.0, 10.0) == 1024.0)
     assert(pow(2.0, -1.0) == 0.5)
     assert(pow(9.0, 0.5) == 3.0)

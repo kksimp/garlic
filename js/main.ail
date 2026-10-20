@@ -113,7 +113,11 @@ fn run_script(source str, max_steps int, echo bool) RunResult
     if result := machine.run_program(prog)
         result
     else err
-        return RunResult(lines: machine.console_out, failed: true, message: machine.uncaught_text(err))
+        return RunResult(
+            lines: machine.console_out,
+            failed: true,
+            message: machine.uncaught_text(err),
+        )
     RunResult(lines: machine.console_out, failed: false, message: "")
 
 ## Run every `NAME.js` in `dir` and compare what it printed with `NAME.out`

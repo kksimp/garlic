@@ -35,7 +35,10 @@ fn Vm.json_parse(mut self, text str, reviver Value) Value ! Thrown
 fn Vm.revive(mut self, holder Value, key str, reviver Value) Value ! Thrown
     v := get(holder, key)?
     if o := obj_of(v)
-        keys := if o.class == "Array" then [Value.Str("{i}") for i in 0..o.elems.len()] else [Value.Str(k) for k in enum_keys(o)]
+        keys := if o.class == "Array" then[Value.Str("{i}") for i in 0..o.elems.len()] else [
+            Value.Str(k)
+            for k in enum_keys(o)
+        ]
         for kv in keys
             k := str_of(kv) else ""
             nv := revive(v, k, reviver)?
@@ -145,7 +148,10 @@ fn Vm.json_string(mut self, mut r JsonReader, text str) str ! Thrown
             r.pos += 1
             break
         if c.code() < 0x20
-            return throw_error("SyntaxError", "Bad control character in string literal in JSON at position {r.pos}")
+            return throw_error(
+                "SyntaxError",
+                "Bad control character in string literal in JSON at position {r.pos}",
+            )
         if c != '\\'
             if c.code() >= 0x10000
                 units_out.extend(units("{c}"))
@@ -172,13 +178,19 @@ fn Vm.json_string(mut self, mut r JsonReader, text str) str ! Thrown
                 for _ in 0..4
                     if r.pos >= r.cs.len()
                         return json_error(r, text)
-                    d := r.cs[r.pos].to_digit(16) else return throw_error("SyntaxError", "Bad Unicode escape in JSON at position {r.pos}")
+                    d := r.cs[r.pos].to_digit(16) else return throw_error(
+                        "SyntaxError",
+                        "Bad Unicode escape in JSON at position {r.pos}",
+                    )
                     v = v * 16 + d
                     r.pos += 1
                 units_out.push(v)
             _ =>
                 r.pos -= 1
-                return throw_error("SyntaxError", "Bad escaped character in JSON at position {r.pos}")
+                return throw_error(
+                    "SyntaxError",
+                    "Bad escaped character in JSON at position {r.pos}",
+                )
     from_units(units_out)
 
 ## The state of one JSON.stringify call (§25.5.2).
@@ -208,7 +220,12 @@ fn Vm.json_stringify(mut self, v Value, replacer Value, space Value) Value ! Thr
         Num(n) => " ".repeat(int_of(n).min(10).max(0))
         Str(s) => if s.chars().len() > 10 then s.slice(0, 10) else s
         Undef | Null | Bool | Obj => ""
-    mut st := Stringifier(replacer: if is_callable(replacer) then replacer else Undef, allow: allow, gap: gap, indent: "")
+    mut st := Stringifier(
+        replacer: if is_callable(replacer) then replacer else Undef,
+        allow: allow,
+        gap: gap,
+        indent: "",
+    )
     holder := plain()
     holder.props[""] = data(v)
     r := serialize(mut st, Obj(holder), "", v)?

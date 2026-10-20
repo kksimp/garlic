@@ -112,11 +112,27 @@ pub fn new_env(parent ref Env?, is_function bool) ref Env
     )
 
 pub fn data(v Value) Prop
-    Prop(value: v, get: Undef, set: Undef, accessor: false, enumerable: true, writable: true, configurable: true)
+    Prop(
+        value: v,
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+    )
 
 ## A built-in's property: writable and configurable, not enumerable.
 pub fn hidden(v Value) Prop
-    Prop(value: v, get: Undef, set: Undef, accessor: false, enumerable: false, writable: true, configurable: true)
+    Prop(
+        value: v,
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: true,
+        configurable: true,
+    )
 
 pub fn is_obj(v Value) bool
     match v
@@ -216,8 +232,17 @@ pub fn string_to_number(text str) float
 
 ## The white space and line terminators String.prototype.trim removes (§22.1.3.32).
 pub fn js_space(c char) bool
-    c == ' ' or c == '\t' or c == '\n' or c == '\r' or c == '\u{b}' or c == '\u{c}' or c == '\u{a0}'
-        or c == '\u{feff}' or c == '\u{2028}' or c == '\u{2029}' or c.code() > 127 and c.is_space()
+    c == ' '
+        or c == '\t'
+        or c == '\n'
+        or c == '\r'
+        or c == '\u{b}'
+        or c == '\u{c}'
+        or c == '\u{a0}'
+        or c == '\u{feff}'
+        or c == '\u{2028}'
+        or c == '\u{2029}'
+        or c.code() > 127 and c.is_space()
 
 pub fn trim_js(s str) str
     cs := s.chars()
@@ -290,7 +315,11 @@ pub fn from_units(us List[int]) str
     mut i := 0
     while i < us.len()
         k := us[i]
-        if k >= 0xD800 and k <= 0xDBFF and i + 1 < us.len() and us[i + 1] >= 0xDC00 and us[i + 1] <= 0xDFFF
+        if k >= 0xD800
+            and k <= 0xDBFF
+            and i + 1 < us.len()
+            and us[i + 1] >= 0xDC00
+            and us[i + 1] <= 0xDFFF
             out.push(char.from_code(0x10000 + (k - 0xD800) * 0x400 + (us[i + 1] - 0xDC00)) else '\u{fffd}')
             i += 2
             continue

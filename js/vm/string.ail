@@ -79,7 +79,11 @@ fn Vm.string_method(mut self, m str, this_val Value, args List[Value]) Value ! T
             if i < 0 or i >= n
                 return Undef
             c := us[i]
-            if c >= 0xD800 and c <= 0xDBFF and i + 1 < n and us[i + 1] >= 0xDC00 and us[i + 1] <= 0xDFFF
+            if c >= 0xD800
+                and c <= 0xDBFF
+                and i + 1 < n
+                and us[i + 1] >= 0xDC00
+                and us[i + 1] <= 0xDFFF
                 return Value.Num((0x10000 + (c - 0xD800) * 0x400 + (us[i + 1] - 0xDC00)).to_float())
             Value.Num(c.to_float())
         "at" =>
@@ -202,9 +206,19 @@ fn Vm.string_method(mut self, m str, this_val Value, args List[Value]) Value ! T
                 out.push(from_units(us[start..i]))
                 matched := from_units(us[i..i + needle.len()])
                 if is_callable(a1)
-                    out.push(to_string(call(a1, Undef, [Value.Str(matched), Num(i.to_float()), Value.Str(s)])?)?)
+                    out.push(
+                        to_string(
+                            call(a1, Undef, [Value.Str(matched), Num(i.to_float()), Value.Str(s)])?,
+                        )?,
+                    )
                 else
-                    out.push(expand_replacement(to_string(a1)?, matched, from_units(us[0..i]), from_units(us[i + needle.len()..]), []))
+                    out.push(expand_replacement(
+                        to_string(a1)?,
+                        matched,
+                        from_units(us[0..i]),
+                        from_units(us[i + needle.len()..]),
+                        [],
+                    ))
                 start = i + needle.len()
                 if m == "replace"
                     break
@@ -218,7 +232,7 @@ fn Vm.string_method(mut self, m str, this_val Value, args List[Value]) Value ! T
             Value.Str(out.join(""))
         "localeCompare" =>
             t := to_string(a0)?
-            Value.Num(if s == t then 0.0 else (if utf16_less(s, t) then -1.0 else 1.0))
+            Value.Num(if s == t then 0.0 else (if utf16_less(s, t) then - 1.0 else 1.0))
         "normalize" => Value.Str(s)
         "match" | "matchAll" | "search" => regexp_string_method(m, s, a0)
         _ => return type_error("String.prototype.{m} is not supported yet")

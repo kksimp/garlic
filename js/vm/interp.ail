@@ -38,7 +38,7 @@ struct Callee
     f Value
     this_val Value
 
-MAX_DEPTH := 300
+MAX_DEPTH := 350
 
 ## The key prefix of private names (`#x`): no script can write a NUL then a
 ## `#` by accident, and keys with it are left out of every key list.
@@ -114,7 +114,7 @@ pub fn Vm.to_primitive(mut self, v Value, hint str) Value ! Thrown
         Obj(x) => x
         Undef | Null | Bool | Num | Str => return v
     as_string := hint == "string" or (hint == "default" and o.class == "Date")
-    order := if as_string then ["toString", "valueOf"] else ["valueOf", "toString"]
+    order := if as_string then["toString", "valueOf"] else ["valueOf", "toString"]
     for name in order
         method := get(v, name)?
         if is_callable(method)
@@ -231,7 +231,15 @@ pub fn Vm.declare_var(mut self, env ref Env, name str)
     scope := var_scope(env)
     if scope == global_env
         if global_obj.props.get(name) == none
-            global_obj.props[name] = Prop(value: Undef, get: Undef, set: Undef, accessor: false, enumerable: true, writable: true, configurable: false)
+            global_obj.props[name] = Prop(
+                value: Undef,
+                get: Undef,
+                set: Undef,
+                accessor: false,
+                enumerable: true,
+                writable: true,
+                configurable: false,
+            )
         return
     if scope.vars.get(name) == none
         scope.vars[name] = Binding(value: Undef, mutable: true, ready: true)
@@ -395,7 +403,11 @@ fn Vm.declare_lexical(mut self, s syntax.Stmt, env ref Env) ! Thrown
             if d.kind != "var"
                 for decl in d.decls
                     for name in pattern_names(decl.target)
-                        env.vars[name] = Binding(value: Undef, mutable: d.kind != "const", ready: false)
+                        env.vars[name] = Binding(
+                            value: Undef,
+                            mutable: d.kind != "const",
+                            ready: false,
+                        )
         ClassDecl(c) =>
             if name := c.name
                 env.vars[name] = Binding(value: Undef, mutable: true, ready: false)
@@ -422,6 +434,19 @@ pub fn Vm.run_program(mut self, prog syntax.Program) Value ! Thrown
         if v := returned(f)
             last = v
     last
+
+## Whether a block declares anything of its own (`let`, `const`, `class`,
+## functions), so that it needs a scope.
+fn needs_scope(body List[syntax.Stmt]) bool
+    for st in body
+        match st
+            Var(d) =>
+                if d.kind != "var"
+                    return true
+            FuncDecl | ClassDecl | Labeled => return true
+            Exp | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | With | Debugger =>
+                continue
+    false
 
 ## The statements of a block, in `env` (made by the caller).
 pub fn Vm.exec_block(mut self, body List[syntax.Stmt], env ref Env) Flow ! Thrown
@@ -479,7 +504,14 @@ fn Vm.exec_in(mut self, s syntax.Stmt, env ref Env, labels List[str]) Flow ! Thr
             if n := no
                 return exec(n, env)
             Normal
-        Block(body, _) => exec_block(body, new_env(env, false))
+        Block(body, _) =>
+            if needs_scope(body)
+                return exec_block(body, new_env(env, false))
+            for st in body
+                f := exec(st, env)?
+                if f != Normal
+                    return f
+            Normal
         Empty => Normal
         Debugger => Normal
         For(init, test, update, body, _) => for_loop(init, test, update, body, env, labels)
@@ -507,7 +539,13 @@ fn Vm.exec_in(mut self, s syntax.Stmt, env ref Env, labels List[str]) Flow ! Thr
         Break(label, _) => Brk(label else "")
         Continue(label, _) => Cont(label else "")
         Throw(value, _) => return thrown(eval(value, env)?)
-        Try(block, param, handler, finalizer, _) => try_statement(block, param, handler, finalizer, env)
+        Try(block, param, handler, finalizer, _) => try_statement(
+            block,
+            param,
+            handler,
+            finalizer,
+            env,
+        )
         Switch(disc, cases, _) => switch_statement(disc, cases, env)
         Labeled(label, body, _) =>
             mut inner := labels
@@ -539,7 +577,15 @@ fn single_name(p syntax.Pat) str
         PatId(name, _) => name
         PatTarget | PatObj | PatArr | PatDefault => ""
 
-fn Vm.for_loop(mut self, init syntax.ForInit?, test syntax.Expr?, update syntax.Expr?, body syntax.Stmt, env ref Env, labels List[str]) Flow ! Thrown
+fn Vm.for_loop(
+    mut self,
+    init syntax.ForInit?,
+    test syntax.Expr?,
+    update syntax.Expr?,
+    body syntax.Stmt,
+    env ref Env,
+    labels List[str],
+) Flow ! Thrown
     loop_env := new_env(env, false)
     mut per_iteration := false
     if i := init
@@ -569,7 +615,15 @@ fn Vm.for_loop(mut self, init syntax.ForInit?, test syntax.Expr?, update syntax.
     Normal
 
 ## `for-in` and `for-of` (§14.7.5).
-fn Vm.for_in(mut self, left syntax.ForLeft, right syntax.Expr, body syntax.Stmt, of bool, env ref Env, labels List[str]) Flow ! Thrown
+fn Vm.for_in(
+    mut self,
+    left syntax.ForLeft,
+    right syntax.Expr,
+    body syntax.Stmt,
+    of bool,
+    env ref Env,
+    labels List[str],
+) Flow ! Thrown
     mut head_env := env
     if d := left_decl(left)
         if d.kind != "var"
@@ -612,7 +666,14 @@ fn decl_init(d syntax.VarDecl) syntax.Expr?
     d.decls[0].init
 
 ## `try` (§14.15.3): a run limit passes every `catch` and `finally`.
-fn Vm.try_statement(mut self, block List[syntax.Stmt], param syntax.Pat?, handler List[syntax.Stmt]?, finalizer List[syntax.Stmt]?, env ref Env) Flow ! Thrown
+fn Vm.try_statement(
+    mut self,
+    block List[syntax.Stmt],
+    param syntax.Pat?,
+    handler List[syntax.Stmt]?,
+    finalizer List[syntax.Stmt]?,
+    env ref Env,
+) Flow ! Thrown
     mut flow := Flow.Normal
     mut failed := none
     if f := exec_block(block, new_env(env, false))
@@ -642,7 +703,12 @@ fn Vm.try_statement(mut self, block List[syntax.Stmt], param syntax.Pat?, handle
     flow
 
 ## `switch` (§14.12.4): cases share one scope and fall through.
-fn Vm.switch_statement(mut self, disc syntax.Expr, cases List[syntax.Case], env ref Env) Flow ! Thrown
+fn Vm.switch_statement(
+    mut self,
+    disc syntax.Expr,
+    cases List[syntax.Case],
+    env ref Env,
+) Flow ! Thrown
     v := eval(disc, env)?
     block := new_env(env, false)
     for c in cases
@@ -760,7 +826,15 @@ fn set_fn_name(v Value, name str)
         Obj(o) =>
             if p := o.props.get("name")
                 if p.value == Str("")
-                    o.props["name"] = Prop(value: Str(name), get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: true)
+                    o.props["name"] = Prop(
+                        value: Str(name),
+                        get: Undef,
+                        set: Undef,
+                        accessor: false,
+                        enumerable: false,
+                        writable: false,
+                        configurable: true,
+                    )
         Undef | Null | Bool | Num | Str => return
 
 pub fn Vm.eval(mut self, e syntax.Expr, env ref Env) Value ! Thrown
@@ -940,7 +1014,13 @@ fn Vm.callee_of(mut self, callee syntax.Expr, env ref Env) Callee ! Thrown
             Callee(f: eval(callee, env)?, this_val: Undef)
 
 ## Call, naming the callee in the error when it isn't a function.
-fn Vm.call_named(mut self, f Value, this_val Value, args List[Value], callee syntax.Expr) Value ! Thrown
+fn Vm.call_named(
+    mut self,
+    f Value,
+    this_val Value,
+    args List[Value],
+    callee syntax.Expr,
+) Value ! Thrown
     if not is_callable(f)
         return type_error("{expr_text(callee)} is not a function")
     call(f, this_val, args)
@@ -1022,6 +1102,35 @@ fn Vm.delete_expr(mut self, operand syntax.Expr, env ref Env) bool ! Thrown
 
 ## Binary operators (§13.6-§13.12).
 pub fn Vm.binary(mut self, op str, a Value, b Value) Value ! Thrown
+    # Two numbers need no conversions: the common case, done first.
+    match a
+        Num(x) =>
+            match b
+                Num(y) =>
+                    match op
+                        "+" => return Value.Num(x + y)
+                        "-" => return Value.Num(x - y)
+                        "*" => return Value.Num(x * y)
+                        "<" => return Value.Bool(x < y)
+                        ">" => return Value.Bool(x > y)
+                        "<=" => return Value.Bool(x <= y)
+                        ">=" => return Value.Bool(x >= y)
+                        "===" | "==" => return Value.Bool(x == y)
+                        "!==" | "!=" => return Value.Bool(x != y)
+                        "%" =>
+                            if x >= 0.0
+                                and y > 0.0
+                                and x < 9007199254740992.0
+                                and y < 9007199254740992.0
+                                and x.floor() == x
+                                and y.floor() == y
+                                return Value.Num((x.to_int() % y.to_int()).to_float())
+                            return Value.Num(fmod(x, y))
+                        _ => return binary_slow(op, a, b)
+                Undef | Null | Bool | Str | Obj => return binary_slow(op, a, b)
+        Undef | Null | Bool | Str | Obj => return binary_slow(op, a, b)
+
+fn Vm.binary_slow(mut self, op str, a Value, b Value) Value ! Thrown
     match op
         "+" =>
             pa := to_primitive(a, "default")?
@@ -1150,9 +1259,25 @@ fn Vm.object_literal(mut self, props List[syntax.Prop], env ref Env) Value ! Thr
                 fv := make_function(f, env, Obj(o), "method")
                 if kind == "get" or kind == "set"
                     set_fn_name(fv, "{kind} {k}")
-                    mut acc := o.props.get(k) else Prop(value: Undef, get: Undef, set: Undef, accessor: true, enumerable: true, writable: true, configurable: true)
+                    mut acc := o.props.get(k) else Prop(
+                        value: Undef,
+                        get: Undef,
+                        set: Undef,
+                        accessor: true,
+                        enumerable: true,
+                        writable: true,
+                        configurable: true,
+                    )
                     if not acc.accessor
-                        acc = Prop(value: Undef, get: Undef, set: Undef, accessor: true, enumerable: true, writable: true, configurable: true)
+                        acc = Prop(
+                            value: Undef,
+                            get: Undef,
+                            set: Undef,
+                            accessor: true,
+                            enumerable: true,
+                            writable: true,
+                            configurable: true,
+                        )
                     if kind == "get"
                         acc.get = fv
                     else
@@ -1183,12 +1308,36 @@ pub fn Vm.make_function(mut self, f syntax.Func, env ref Env, home Value, kind s
     o := object("Function", proto_of("Function"))
     is_ctor := kind == "normal" and not f.is_gen and not f.is_async
     o.call = Closure(f: f, env: env, home: home, is_ctor: is_ctor, class_info: none)
-    o.props["length"] = Prop(value: Num(param_count(f).to_float()), get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: true)
-    o.props["name"] = Prop(value: Str(f.name else ""), get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: true)
+    o.props["length"] = Prop(
+        value: Num(param_count(f).to_float()),
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+    )
+    o.props["name"] = Prop(
+        value: Str(f.name else ""),
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+    )
     if is_ctor
         proto := plain()
         proto.props["constructor"] = hidden(Obj(o))
-        o.props["prototype"] = Prop(value: Obj(proto), get: Undef, set: Undef, accessor: false, enumerable: false, writable: true, configurable: false)
+        o.props["prototype"] = Prop(
+            value: Obj(proto),
+            get: Undef,
+            set: Undef,
+            accessor: false,
+            enumerable: false,
+            writable: true,
+            configurable: false,
+        )
     Obj(o)
 
 ## The number of parameters before the first default or rest (§15.1.5).
@@ -1232,7 +1381,15 @@ pub fn Vm.call(mut self, f Value, this_val Value, args List[Value]) Value ! Thro
 
 ## A function's scope for one call (§10.2.1.1 PrepareForOrdinaryCall,
 ## §10.2.1.2 OrdinaryCallBindThis).
-fn Vm.function_env(mut self, fobj ref JsObject, fun syntax.Func, scope ref Env, home Value, this_val Value, new_target Value) ref Env
+fn Vm.function_env(
+    mut self,
+    fobj ref JsObject,
+    fun syntax.Func,
+    scope ref Env,
+    home Value,
+    this_val Value,
+    new_target Value,
+) ref Env
     env := new_env(scope, true)
     env.strict = fun.strict
     env.func = Obj(fobj)
@@ -1252,10 +1409,18 @@ fn Vm.function_env(mut self, fobj ref JsObject, fun syntax.Func, scope ref Env, 
 fn Vm.run_body(mut self, fun syntax.Func, env ref Env, args List[Value]) Value ! Thrown
     if fun.is_gen or fun.is_async
         return syntax_error("Generators and async functions are not supported yet")
-    call_depth += 1
-    if call_depth > MAX_DEPTH
-        call_depth = 0
+    saved := call_depth
+    if call_depth >= MAX_DEPTH
         return range_error("Maximum call stack size exceeded")
+    call_depth += 1
+    if v := run_params_and_body(fun, env, args)
+        call_depth = saved
+        return v
+    else err
+        call_depth = saved
+        return err
+
+fn Vm.run_params_and_body(mut self, fun syntax.Func, env ref Env, args List[Value]) Value ! Thrown
     env.args = args
     for i in 0..fun.params.len()
         v := if i < args.len() then args[i] else Undef
@@ -1264,12 +1429,9 @@ fn Vm.run_body(mut self, fun syntax.Func, env ref Env, args List[Value]) Value !
         tail := if fun.params.len() < args.len() then args[fun.params.len()..] else List[Value]()
         bind_pattern(r, array(tail), env, "param")?
     if body := fun.expr
-        v := eval(body, env)?
-        call_depth -= 1
-        return v
+        return eval(body, env)
     hoist_vars(fun.body, env, true)
     f := exec_block(fun.body, env)?
-    call_depth -= 1
     match f
         Ret(v) => v
         Normal | Brk | Cont => Undef
@@ -1414,11 +1576,42 @@ fn Vm.make_class(mut self, c syntax.Class, env ref Env) Value ! Thrown
         env: class_env,
         home: Obj(proto),
         is_ctor: true,
-        class_info: ClassInfo(fields: fields, field_keys: field_keys, derived: derived, implicit: implicit, home: Obj(proto), scope: class_env),
+        class_info: ClassInfo(
+            fields: fields,
+            field_keys: field_keys,
+            derived: derived,
+            implicit: implicit,
+            home: Obj(proto),
+            scope: class_env,
+        ),
     )
-    ctor.props["length"] = Prop(value: Num(param_count(ctor_fn).to_float()), get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: true)
-    ctor.props["name"] = Prop(value: Str(name), get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: true)
-    ctor.props["prototype"] = Prop(value: Obj(proto), get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: false)
+    ctor.props["length"] = Prop(
+        value: Num(param_count(ctor_fn).to_float()),
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+    )
+    ctor.props["name"] = Prop(
+        value: Str(name),
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+    )
+    ctor.props["prototype"] = Prop(
+        value: Obj(proto),
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+    )
     proto.props["constructor"] = hidden(Obj(ctor))
     for m in c.members
         if m.kind == "method" or m.kind == "get" or m.kind == "set"
@@ -1431,9 +1624,25 @@ fn Vm.make_class(mut self, c syntax.Class, env ref Env) Value ! Thrown
                 target.props[key] = hidden(fv)
             else
                 set_fn_name(fv, "{m.kind} {key}")
-                mut acc := target.props.get(key) else Prop(value: Undef, get: Undef, set: Undef, accessor: true, enumerable: false, writable: true, configurable: true)
+                mut acc := target.props.get(key) else Prop(
+                    value: Undef,
+                    get: Undef,
+                    set: Undef,
+                    accessor: true,
+                    enumerable: false,
+                    writable: true,
+                    configurable: true,
+                )
                 if not acc.accessor
-                    acc = Prop(value: Undef, get: Undef, set: Undef, accessor: true, enumerable: false, writable: true, configurable: true)
+                    acc = Prop(
+                        value: Undef,
+                        get: Undef,
+                        set: Undef,
+                        accessor: true,
+                        enumerable: false,
+                        writable: true,
+                        configurable: true,
+                    )
                 if m.kind == "get"
                     acc.get = fv
                 else
@@ -1468,7 +1677,15 @@ fn Vm.make_regexp(mut self, pattern str, flags str) Value
     o.props["source"] = hidden(Str(pattern))
     o.props["flags"] = hidden(Str(flags))
     o.props["global"] = hidden(Bool(flags.contains("g")))
-    o.props["lastIndex"] = Prop(value: Num(0.0), get: Undef, set: Undef, accessor: false, enumerable: false, writable: true, configurable: false)
+    o.props["lastIndex"] = Prop(
+        value: Num(0.0),
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: true,
+        configurable: false,
+    )
     Obj(o)
 
 # --------------------------------------------------------------- helpers

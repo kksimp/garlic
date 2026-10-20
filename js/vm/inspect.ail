@@ -27,7 +27,11 @@ fn ident_like(k str) bool
         return false
     for i in 0..cs.len()
         c := cs[i]
-        ok := (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_' or c == '$' or (i > 0 and c.is_digit())
+        ok := (c >= 'a' and c <= 'z')
+            or (c >= 'A' and c <= 'Z')
+            or c == '_'
+            or c == '$'
+            or (i > 0 and c.is_digit())
         if not ok
             return false
     true
@@ -95,7 +99,7 @@ fn Vm.show(self, mut st Inspector, v Value, depth int, nested bool) str
         Obj(o) => show_object(mut st, o, depth)
 
 fn Vm.fn_base(self, o ref JsObject) str
-    name := if p := o.props.get("name") then (str_of(p.value) else "") else ""
+    name := if p := o.props.get("name") then(str_of(p.value) else "") else ""
     if c := o.call
         if class_info_of(c) != none
             mut base := if name == "" then "[class (anonymous)" else "[class {name}"
@@ -121,7 +125,9 @@ fn Vm.show_object(self, mut st Inspector, o ref JsObject, depth int) str
     if o.class == "Error"
         return "[{error_text(Obj(o))}]"
     empty := o.props.len() == 0 and o.elems.len() == 0
-    if depth > 2 and not is_fn and not (empty and (o.class == "Array" or (o.class == "Object" and cname == "Object")))
+    if depth > 2
+        and not is_fn
+        and not (empty and (o.class == "Array" or (o.class == "Object" and cname == "Object")))
         label := if o.class == "Array" then "Array" else (if cname != "" then cname else "Object")
         return "[{label}]"
     if empty and o.class == "Array" and cname == "Array"
@@ -144,7 +150,8 @@ fn Vm.show_object(self, mut st Inspector, o ref JsObject, depth int) str
         if o.class == "Arguments"
             open = "[Arguments] ["
         elif cname != "Array"
-            open = if ctor == none then "[Array({o.elems.len()}): null prototype] [" else "{cname}({o.elems.len()}) ["
+            open = if ctor
+                == none then "[Array({o.elems.len()}): null prototype] [" else "{cname}({o.elems.len()}) ["
         mut shown := 0
         for x in o.elems
             if shown == 100
@@ -173,8 +180,8 @@ fn Vm.show_object(self, mut st Inspector, o ref JsObject, depth int) str
     elif o.class == "Number" or o.class == "String" or o.class == "Boolean"
         base = "[{o.class}: {show(mut st, o.prim, depth + 1, true)}]"
     elif o.class == "RegExp"
-        src := if p := o.props.get("source") then (str_of(p.value) else "") else ""
-        fl := if p := o.props.get("flags") then (str_of(p.value) else "") else ""
+        src := if p := o.props.get("source") then(str_of(p.value) else "") else ""
+        fl := if p := o.props.get("flags") then(str_of(p.value) else "") else ""
         base = "/{src}/{fl}"
     elif o.class == "Date"
         base = if t := num_of(o.prim) then iso_date(t) else "Invalid Date"
@@ -188,7 +195,12 @@ fn Vm.show_object(self, mut st Inspector, o ref JsObject, depth int) str
             continue
         if is_array_kind and index_of_key(k) != none
             continue
-        shown_value := if p.accessor then accessor_label(p) else show(mut st, p.value, depth + 1, true)
+        shown_value := if p.accessor then accessor_label(p) else show(
+            mut st,
+            p.value,
+            depth + 1,
+            true,
+        )
         output.push("{show_key(k)}: {shown_value}")
     st.indent -= 2
     st.stack.pop()
@@ -242,7 +254,8 @@ fn group_elements(output List[str], indent int, numbers_only bool) List[str]
         if n > max_len
             max_len = n
     actual_max := max_len + 2
-    if actual_max * 3 + indent >= 80 or not (total.to_float() / actual_max.to_float() > 5.0 or max_len <= 6)
+    if actual_max * 3 + indent >= 80
+        or not (total.to_float() / actual_max.to_float() > 5.0 or max_len <= 6)
         return output
     bias := (actual_max.to_float() - total.to_float() / output.len().to_float()).sqrt()
     biased_max := (actual_max.to_float() - 3.0 - bias).max(1.0)

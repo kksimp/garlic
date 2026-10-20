@@ -39,10 +39,26 @@ pub fn Vm.own(self, o ref JsObject, key str) Prop?
     if is_array_like(o)
         if i := index_of_key(key)
             if i < o.elems.len()
-                return Prop(value: o.elems[i], get: Undef, set: Undef, accessor: false, enumerable: true, writable: not o.frozen, configurable: not o.frozen)
+                return Prop(
+                    value: o.elems[i],
+                    get: Undef,
+                    set: Undef,
+                    accessor: false,
+                    enumerable: true,
+                    writable: not o.frozen,
+                    configurable: not o.frozen,
+                )
             return none
         if key == "length"
-            return Prop(value: Num(o.elems.len().to_float()), get: Undef, set: Undef, accessor: false, enumerable: false, writable: not o.frozen, configurable: false)
+            return Prop(
+                value: Num(o.elems.len().to_float()),
+                get: Undef,
+                set: Undef,
+                accessor: false,
+                enumerable: false,
+                writable: not o.frozen,
+                configurable: false,
+            )
     if o.class == "String"
         s := match o.prim
             Str(t) => t
@@ -52,7 +68,15 @@ pub fn Vm.own(self, o ref JsObject, key str) Prop?
         if i := index_of_key(key)
             us := units(s)
             if i < us.len()
-                return Prop(value: Str(from_units([us[i]])), get: Undef, set: Undef, accessor: false, enumerable: true, writable: false, configurable: false)
+                return Prop(
+                    value: Str(from_units([us[i]])),
+                    get: Undef,
+                    set: Undef,
+                    accessor: false,
+                    enumerable: true,
+                    writable: false,
+                    configurable: false,
+                )
     o.props.get(key)
 
 ## [[Get]] (§10.1.8): from `o` or its prototypes, with `receiver` as the

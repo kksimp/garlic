@@ -66,7 +66,13 @@ fn translate(pattern str, flags str) str
             out.push("[")
             i += 1
             continue
-        if c == '(' and i + 2 < cs.len() and cs[i + 1] == '?' and cs[i + 2] == '<' and i + 3 < cs.len() and cs[i + 3] != '=' and cs[i + 3] != '!'
+        if c == '('
+            and i + 2 < cs.len()
+            and cs[i + 1] == '?'
+            and cs[i + 2] == '<'
+            and i + 3 < cs.len()
+            and cs[i + 3] != '='
+            and cs[i + 3] != '!'
             out.push("(?P<")
             i += 3
             continue
@@ -172,7 +178,10 @@ fn all_matches(re regex.Regex, s str) List[Found]
 
 ## String.prototype.match, matchAll and search with a pattern.
 fn Vm.regexp_string_method(mut self, m str, s str, pattern Value) Value ! Thrown
-    rv := if is_regexp(pattern) then pattern else make_regexp(if pattern == Undef then "(?:)" else to_string(pattern)?, if m == "matchAll" then "g" else "")
+    rv := if is_regexp(pattern) then pattern else make_regexp(
+        if pattern == Undef then "(?:)" else to_string(pattern)?,
+        if m == "matchAll" then "g" else "",
+    )
     p := regexp_parts(rv)?
     match m
         "search" =>
@@ -229,7 +238,10 @@ fn Vm.regexp_replace(mut self, rv Value, s str, replacement Value, all bool) Val
     if all and not p.global
         return type_error("replaceAll must be called with a global RegExp")
     us := units(s)
-    found := if p.global then all_matches(p.re, s) else (if f := find_from(p.re, s, 0) then [f] else List[Found]())
+    found := if p.global then all_matches(
+        p.re,
+        s,
+    ) else (if f := find_from(p.re, s, 0) then[f] else List[Found]())
     if p.global
         set_own(p.o, "lastIndex", Num(0.0))?
     mut out := List[str]()
@@ -245,7 +257,13 @@ fn Vm.regexp_replace(mut self, rv Value, s str, replacement Value, all bool) Val
             cargs.push(Str(s))
             out.push(to_string(call(replacement, Undef, cargs)?)?)
         else
-            out.push(expand_replacement(to_string(replacement)?, matched, from_units(us[0..f.start]), from_units(us[f.end..]), f.groups))
+            out.push(expand_replacement(
+                to_string(replacement)?,
+                matched,
+                from_units(us[0..f.start]),
+                from_units(us[f.end..]),
+                f.groups,
+            ))
         last = f.end
     out.push(from_units(us[last..]))
     Value.Str(out.join(""))
