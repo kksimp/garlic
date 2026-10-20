@@ -1,0 +1,407 @@
+## The tree as ESTree JSON, one line: what `--ast` prints. With `loc`, each
+## node also has `"loc":"LINE:COL"`. Parentheses leave no node.
+
+## Builds one node's JSON. `canon` writes trees that mean the same alike:
+## nested comma expressions as one, and every static property name as the
+## string it stands for (`1e3`, `"1000"` and `1000` are one name).
+struct Dump
+    loc bool
+    canon bool
+
+pub fn program_json(prog Program, loc bool) str
+    Dump(loc: loc, canon: false).program(prog)
+
+## The canonical form, to compare two scripts that differ only in grouping.
+pub fn canonical_json(prog Program) str
+    Dump(loc: false, canon: true).program(prog)
+
+fn Dump.program(self, prog Program) str
+    d := self
+    d.node("Program", Pos(line: 1, col: 1), ["\"body\":{d.stmts(prog.body)}"])
+
+fn field(name str, value str) str
+    "\"{name}\":{value}"
+
+fn bool_text(b bool) str
+    if b then "true" else "false"
+
+fn Dump.node(self, kind str, p Pos, fields List[str]) str
+    mut parts := ["\"type\":\"{kind}\""]
+    if loc
+        parts.push("\"loc\":\"{p.line}:{p.col}\"")
+    parts.extend(fields)
+    "\{{parts.join(",")}}"
+
+fn Dump.stmts(self, xs List[Stmt]) str
+    "[{[stmt(s) for s in xs].join(",")}]"
+
+fn Dump.exprs(self, xs List[Expr]) str
+    "[{[expr(e) for e in xs].join(",")}]"
+
+fn Dump.opt_expr(self, e Expr?) str
+    if x := e then expr(x) else "null"
+
+fn Dump.opt_name(self, name str?, p Pos) str
+    if n := name then ident(n, p) else "null"
+
+fn Dump.ident(self, name str, p Pos) str
+    node("Identifier", p, [field("name", quote(name))])
+
+fn Dump.block(self, body List[Stmt], p Pos) str
+    node("BlockStatement", p, [field("body", stmts(body))])
+
+fn Dump.stmt(self, s Stmt) str
+    match s
+        Exp(e, p) => node("ExpressionStatement", p, [field("expression", expr(e))])
+        Var(d) => var_decl(d)
+        FuncDecl(f) => function("FunctionDeclaration", f)
+        ClassDecl(c) => class("ClassDeclaration", c)
+        Return(v, p) => node("ReturnStatement", p, [field("argument", opt_expr(v))])
+        If(test, yes, no, p) =>
+            alt := if n := no then stmt(n) else "null"
+            node("IfStatement", p, [
+                field("test", expr(test)),
+                field("consequent", stmt(yes)),
+                field("alternate", alt),
+            ])
+        Block(body, p) => block(body, p)
+        Empty(p) => node("EmptyStatement", p, [])
+        For(init, test, update, body, p) =>
+            init_text := if i := init then for_init(i) else "null"
+            fields := [
+                field("init", init_text),
+                field("test", opt_expr(test)),
+                field("update", opt_expr(update)),
+                field("body", stmt(body)),
+            ]
+            node("ForStatement", p, fields)
+        ForIn(left, right, body, of, p) =>
+            left_text := match left
+                LeftDecl(d) => var_decl(d)
+                LeftPat(t) => pat(t)
+            mut fields := [
+                field("left", left_text),
+                field("right", expr(right)),
+                field("body", stmt(body)),
+            ]
+            if of
+                fields.push(field("await", "false"))
+                return node("ForOfStatement", p, fields)
+            node("ForInStatement", p, fields)
+        While(test, body, p) => node("WhileStatement", p, [
+            field("test", expr(test)),
+            field("body", stmt(body)),
+        ])
+        DoWhile(body, test, p) => node("DoWhileStatement", p, [
+            field("body", stmt(body)),
+            field("test", expr(test)),
+        ])
+        Break(label, p) => node("BreakStatement", p, [field("label", opt_name(label, p))])
+        Continue(label, p) => node("ContinueStatement", p, [field("label", opt_name(label, p))])
+        Throw(v, p) => node("ThrowStatement", p, [field("argument", expr(v))])
+        Try(body, param, handler, finalizer, p) =>
+            handler_text := if h := handler then catch_clause(param, h, p) else "null"
+            fin := if f := finalizer then block(f, p) else "null"
+            node("TryStatement", p, [
+                field("block", block(body, p)),
+                field("handler", handler_text),
+                field("finalizer", fin),
+            ])
+        Switch(disc, cases, p) =>
+            cs := [
+                node("SwitchCase", c.pos, [
+                    field("test", opt_expr(c.test)),
+                    field("consequent", stmts(c.body)),
+                ])
+                for c in cases
+            ]
+            node("SwitchStatement", p, [
+                field("discriminant", expr(disc)),
+                field("cases", "[{cs.join(",")}]"),
+            ])
+        Labeled(label, body, p) => node("LabeledStatement", p, [
+            field("label", ident(label, p)),
+            field("body", stmt(body)),
+        ])
+        With(obj, body, p) => node("WithStatement", p, [
+            field("object", expr(obj)),
+            field("body", stmt(body)),
+        ])
+        Debugger(p) => node("DebuggerStatement", p, [])
+
+fn Dump.catch_clause(self, param Pat?, body List[Stmt], p Pos) str
+    param_text := if x := param then pat(x) else "null"
+    node("CatchClause", p, [field("param", param_text), field("body", block(body, p))])
+
+fn Dump.for_init(self, i ForInit) str
+    match i
+        InitDecl(d) => var_decl(d)
+        InitExpr(e) => expr(e)
+
+fn Dump.var_decl(self, d VarDecl) str
+    decls := [
+        node("VariableDeclarator", pat_pos(x.target), [
+            field("id", pat(x.target)),
+            field("init", opt_expr(x.init)),
+        ])
+        for x in d.decls
+    ]
+    node("VariableDeclaration", d.pos, [
+        field("kind", quote(d.kind)),
+        field("declarations", "[{decls.join(",")}]"),
+    ])
+
+fn Dump.function(self, kind str, f Func) str
+    mut params := [pat(x) for x in f.params]
+    if r := f.rest
+        params.push(node("RestElement", pat_pos(r), [field("argument", pat(r))]))
+    mut fields := List[str]()
+    if not f.is_arrow
+        fields.push(field("id", opt_name(f.name, f.pos)))
+    fields.push(field("params", "[{params.join(",")}]"))
+    if e := f.expr
+        fields.push(field("body", expr(e)))
+    else
+        fields.push(field("body", block(f.body, f.pos)))
+    if f.is_arrow
+        fields.push(field("expression", bool_text(f.expr != none)))
+    fields.push(field("generator", bool_text(f.is_gen)))
+    fields.push(field("async", bool_text(f.is_async)))
+    node(kind, f.pos, fields)
+
+fn Dump.class(self, kind str, c Class) str
+    members := [member(m) for m in c.members]
+    body := node("ClassBody", c.pos, [field("body", "[{members.join(",")}]")])
+    node(kind, c.pos, [
+        field("id", opt_name(c.name, c.pos)),
+        field("superClass", opt_expr(c.superclass)),
+        field("body", body),
+    ])
+
+fn Dump.member(self, m ClassMember) str
+    if m.kind == "static-block"
+        body := if f := m.f then f.body else List[Stmt]()
+        return node("StaticBlock", m.pos, [field("body", stmts(body))])
+    key_text := if k := m.key then key(k) else "null"
+    computed := if k := m.key then is_computed(k) else false
+    if m.kind == "field"
+        fields := [
+            field("key", key_text),
+            field("value", opt_expr(m.value)),
+            field("computed", bool_text(computed)),
+            field("static", bool_text(m.is_static)),
+        ]
+        return node("PropertyDefinition", m.pos, fields)
+    value := if f := m.f then function("FunctionExpression", f) else "null"
+    fields := [
+        field("key", key_text),
+        field("value", value),
+        field("kind", quote(m.kind)),
+        field("computed", bool_text(computed)),
+        field("static", bool_text(m.is_static)),
+    ]
+    node("MethodDefinition", m.pos, fields)
+
+fn is_computed(k Key) bool
+    match k
+        Computed(_, _) => true
+        KeyName(_, _) | KeyStr(_, _) | KeyNum(_, _) | KeyPriv(_, _) => false
+
+## Comma expressions inside a comma expression, spliced in.
+fn flatten(items List[Expr]) List[Expr]
+    mut out := List[Expr]()
+    for e in items
+        inner := unparen(e)
+        if expr_kind(inner) == "Seq"
+            out.extend(flatten(seq_items(inner)))
+        else
+            out.push(e)
+    out
+
+fn seq_items(e Expr) List[Expr]
+    match e
+        Seq(items, _) => items
+        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget => []
+        Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => []
+        Assign | Cond | Call | New | Member | Spread | Chain | PrivName | Paren => []
+
+fn Dump.key(self, k Key) str
+    match k
+        KeyName(n, p) => if canon then canon_key(n, p) else ident(n, p)
+        KeyStr(v, p) => if canon then canon_key(v, p) else literal(quote(v), p)
+        KeyNum(v, p) => if canon then canon_key(
+            number_to_string(v),
+            p,
+        ) else literal(number_json(v), p)
+        Computed(e, _) => expr(e)
+        KeyPriv(n, p) => node("PrivateIdentifier", p, [field("name", quote(n))])
+
+fn Dump.canon_key(self, name str, p Pos) str
+    node("Key", p, [field("name", quote(name))])
+
+## A number as JSON, where infinity has no spelling: `null`, as
+## JSON.stringify writes it.
+fn number_json(v float) str
+    if v > 1.7976931348623157e308 then "null" else number_to_string(v)
+
+fn Dump.literal(self, value str, p Pos) str
+    node("Literal", p, [field("value", value)])
+
+fn Dump.template(self, quasis List[Quasi], exprs List[Expr], p Pos) str
+    mut qs := List[str]()
+    for i in 0..quasis.len()
+        q := quasis[i]
+        cooked := if c := q.cooked then quote(c) else "null"
+        value := "\{\"raw\":{quote(q.raw)},\"cooked\":{cooked}}"
+        qs.push(node("TemplateElement", p, [field("value", value), field(
+            "tail",
+            bool_text(i == quasis.len() - 1),
+        )]))
+    node("TemplateLiteral", p, [
+        field("quasis", "[{qs.join(",")}]"),
+        field("expressions", exprs(exprs)),
+    ])
+
+fn Dump.expr(self, e Expr) str
+    match e
+        Num(v, p) => literal(number_json(v), p)
+        Str(v, p) => literal(quote(v), p)
+        Template(quasis, es, p) => template(quasis, es, p)
+        Tagged(tag, quasis, es, p) => node("TaggedTemplateExpression", p, [
+            field("tag", expr(tag)),
+            field("quasi", template(quasis, es, p)),
+        ])
+        Regex(pattern, flags, p) =>
+            re := "\{\"pattern\":{quote(pattern)},\"flags\":{quote(flags)}}"
+            node("Literal", p, [field("value", "null"), field("regex", re)])
+        Bool(v, p) => literal(bool_text(v), p)
+        Null(p) => literal("null", p)
+        Ident(n, p) => ident(n, p)
+        This(p) => node("ThisExpression", p, [])
+        Super(p) => node("Super", p, [])
+        NewTarget(p) => node("MetaProperty", p, [
+            field("meta", ident("new", p)),
+            field("property", ident("target", p)),
+        ])
+        Array(items, _, p) =>
+            texts := [if x := it then expr(x) else "null" for it in items]
+            node("ArrayExpression", p, [field("elements", "[{texts.join(",")}]")])
+        Object(props, p) =>
+            texts := [prop(x) for x in props]
+            node("ObjectExpression", p, [field("properties", "[{texts.join(",")}]")])
+        Function(f) => function("FunctionExpression", f)
+        Arrow(f) => function("ArrowFunctionExpression", f)
+        ClassExpr(c) => class("ClassExpression", c)
+        Unary(op, arg, p) => node("UnaryExpression", p, [
+            field("operator", quote(op)),
+            field("prefix", "true"),
+            field("argument", expr(arg)),
+        ])
+        Update(op, prefix, arg, p) =>
+            node("UpdateExpression", p, [
+                field("operator", quote(op)),
+                field("prefix", bool_text(prefix)),
+                field("argument", expr(arg)),
+            ])
+        Binary(op, l, r, p) => node("BinaryExpression", p, [
+            field("left", expr(l)),
+            field("operator", quote(op)),
+            field("right", expr(r)),
+        ])
+        Logical(op, l, r, p) => node("LogicalExpression", p, [
+            field("left", expr(l)),
+            field("operator", quote(op)),
+            field("right", expr(r)),
+        ])
+        Assign(op, t, v, p) => node("AssignmentExpression", p, [
+            field("operator", quote(op)),
+            field("left", pat(t)),
+            field("right", expr(v)),
+        ])
+        Cond(t, y, n, p) => node("ConditionalExpression", p, [
+            field("test", expr(t)),
+            field("consequent", expr(y)),
+            field("alternate", expr(n)),
+        ])
+        Call(callee, args, optional, p) =>
+            node("CallExpression", p, [
+                field("callee", expr(callee)),
+                field("arguments", exprs(args)),
+                field("optional", bool_text(optional)),
+            ])
+        New(callee, args, p) => node("NewExpression", p, [
+            field("callee", expr(callee)),
+            field("arguments", exprs(args)),
+        ])
+        Member(obj, prop, computed, optional, p) =>
+            fields := [
+                field("object", expr(obj)),
+                field("property", expr(prop)),
+                field("computed", bool_text(computed)),
+                field("optional", bool_text(optional)),
+            ]
+            node("MemberExpression", p, fields)
+        Seq(items, p) =>
+            flat := if canon then flatten(items) else items
+            node("SequenceExpression", p, [field("expressions", exprs(flat))])
+        Spread(arg, p) => node("SpreadElement", p, [field("argument", expr(arg))])
+        Chain(inner, p) => node("ChainExpression", p, [field("expression", expr(inner))])
+        PrivName(n, p) => node("PrivateIdentifier", p, [field("name", quote(n))])
+        Paren(inner, _) => expr(inner)
+
+fn Dump.prop(self, x Prop) str
+    match x
+        Init(k, v, shorthand, p) =>
+            fields := [
+                field("key", key(k)),
+                field("value", expr(v)),
+                field("kind", "\"init\""),
+                field("method", "false"),
+                field("shorthand", bool_text(shorthand)),
+                field("computed", bool_text(is_computed(k))),
+            ]
+            node("Property", p, fields)
+        Method(k, kind, f, p) =>
+            fields := [
+                field("key", key(k)),
+                field("value", function("FunctionExpression", f)),
+                field("kind", quote(kind)),
+                field("method", bool_text(kind == "init")),
+                field("shorthand", "false"),
+                field("computed", bool_text(is_computed(k))),
+            ]
+            node("Property", p, fields)
+        PropSpread(arg, p) => node("SpreadElement", p, [field("argument", expr(arg))])
+        CoverInit(n, v, p) => node("Property", p, [
+            field("key", ident(n, p)),
+            field("value", expr(v)),
+        ])
+
+fn Dump.pat(self, x Pat) str
+    match x
+        PatId(n, p) => ident(n, p)
+        PatTarget(e) => expr(e)
+        PatObj(props, rest, p) =>
+            mut texts := List[str]()
+            for pp in props
+                fields := [
+                    field("key", key(pp.key)),
+                    field("value", pat(pp.value)),
+                    field("kind", "\"init\""),
+                    field("method", "false"),
+                    field("shorthand", bool_text(pp.shorthand)),
+                    field("computed", bool_text(is_computed(pp.key))),
+                ]
+                texts.push(node("Property", pat_pos(pp.value), fields))
+            if r := rest
+                texts.push(node("RestElement", pat_pos(r), [field("argument", pat(r))]))
+            node("ObjectPattern", p, [field("properties", "[{texts.join(",")}]")])
+        PatArr(items, rest, p) =>
+            mut texts := [if it := i then pat(it) else "null" for i in items]
+            if r := rest
+                texts.push(node("RestElement", pat_pos(r), [field("argument", pat(r))]))
+            node("ArrayPattern", p, [field("elements", "[{texts.join(",")}]")])
+        PatDefault(t, v, p) => node("AssignmentPattern", p, [
+            field("left", pat(t)),
+            field("right", expr(v)),
+        ])

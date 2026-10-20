@@ -1,0 +1,79 @@
+# Garlic's JavaScript engine, run on its own (docs/design/garlic-js.md):
+#   ail run tools/garlic/js --tokens FILE...      one token per line: LINE:COL KIND TEXT
+#   ail run tools/garlic/js --ast [--loc] FILE... the syntax tree as ESTree JSON, one line
+#   ail run tools/garlic/js --check FILE...       "ok", or the SyntaxError
+#   ail run tools/garlic/js --test DIR            each DIR/NAME.js against NAME.ast or NAME.err
+#   ail run tools/garlic/js --test262 DIR [--bless]  the packed test262 parser tests (suite.ail)
+# With several files, each output starts with a line `== PATH`. Exit 1 on
+# any SyntaxError (or failed test).
+use syntax
+
+fn main() !
+    mut args := env.args()
+    if args.len() < 2
+        usage()
+    mode := args.remove_at(0)
+    mut loc := false
+    if args.len() > 0 and args[0] == "--loc"
+        loc = true
+        args.remove_at(0)
+    mut failed := false
+    match mode
+        "--tokens" | "--ast" | "--check" =>
+            for path in args
+                if args.len() > 1
+                    print("== {path}")
+                out := run(mode, fs.read_text(path)?, loc) else err
+                    print(err)
+                    failed = true
+                    continue
+                print(out)
+        "--test" => failed = not test_dir(args[0])?
+        "--test262" => failed = not run_suite(args[0], args.len() > 1 and args[1] == "--bless")?
+        _ => usage()
+    if failed
+        io.exit(1)
+
+fn usage()
+    io.eprint("usage: ail run tools/garlic/js (--tokens | --ast [--loc] | --check) FILE... | --test DIR | --test262 DIR")
+    io.exit(2)
+
+## One file's output for `mode`.
+fn run(mode str, source str, loc bool) str ! syntax.JsError
+    match mode
+        "--tokens" => [syntax.token_line(t) for t in syntax.tokenize(source)?].join("\n")
+        "--ast" => syntax.program_json(syntax.parse(source)?, loc)
+        _ =>
+            syntax.parse(source)?
+            "ok"
+
+## Run every `NAME.js` in `dir`: its tree must equal `NAME.ast`, or its
+## SyntaxError `NAME.err`. Prints each mismatch; true if there were none.
+fn test_dir(dir str) !bool
+    mut passed := 0
+    mut failures := 0
+    for name in fs.list_dir(dir)?
+        if not name.ends_with(".js")
+            continue
+        file := path.join(dir, name)
+        stem := name.slice(0, name.chars().len() - 3)
+        source := fs.read_text(file)?
+        actual := run("--ast", source, false) else err
+            "{err}"
+        ast_path := path.join(dir, "{stem}.ast")
+        err_path := path.join(dir, "{stem}.err")
+        expected := if fs.exists(ast_path)
+            fs.read_text(ast_path)?.trim()
+        elif fs.exists(err_path)
+            fs.read_text(err_path)?.trim()
+        else
+            print("{file}: no {stem}.ast or {stem}.err")
+            failures += 1
+            continue
+        if actual == expected
+            passed += 1
+        else
+            print("FAIL {file}\n  expected: {expected}\n  actual:   {actual}")
+            failures += 1
+    print("{passed} passed, {failures} failed")
+    failures == 0

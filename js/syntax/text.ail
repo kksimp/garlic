@@ -1,0 +1,89 @@
+## Text forms shared by the dumps and, later, the interpreter: a Number as
+## JavaScript prints it, and a string as a JSON string.
+
+## Number::toString(x) in base 10 (ECMA-262 §6.1.6.1.20). AIL prints a
+## float with the shortest digits that read back the same, as JavaScript
+## does; only the layout differs.
+pub fn number_to_string(x float) str
+    if x != x
+        return "NaN"
+    if x == 0.0
+        return "0"
+    if x < 0.0
+        return "-{number_to_string(0.0 - x)}"
+    if x > 1.7976931348623157e308
+        return "Infinity"
+    text := "{x}"
+    parts := text.split("e")
+    mantissa := parts[0].split(".")
+    whole := mantissa[0].chars()
+    frac := if mantissa.len() > 1 then mantissa[1].chars() else List[char]()
+    mut all := whole
+    all.extend(frac)
+    mut z := 0
+    while z < all.len() and all[z] == '0'
+        z += 1
+    mut end := all.len()
+    while end > z and all[end - 1] == '0'
+        end -= 1
+    ds := all[z..end]
+    exp := if parts.len() > 1 then(parts[1].replace("+", "").to_int() else 0) else 0
+    k := ds.len()
+    # The value is 0.DIGITS times 10^n.
+    n := whole.len() - z + exp
+    digits := ds.join("")
+    if k <= n and n <= 21
+        return "{digits}{"0".repeat(n - k)}"
+    if 0 < n and n <= 21
+        return "{ds[..n].join("")}.{ds[n..].join("")}"
+    if -6 < n and n <= 0
+        return "0.{"0".repeat(0 - n)}{digits}"
+    e := n - 1
+    sign := if e < 0 then "-" else "+"
+    if k == 1
+        return "{digits}e{sign}{e.abs()}"
+    "{ds[0]}.{ds[1..].join("")}e{sign}{e.abs()}"
+
+## `s` as a JSON string, quotes included.
+pub fn quote(s str) str
+    mut out := List[str]()
+    out.push("\"")
+    for c in s.chars()
+        k := c.code()
+        if c == '"'
+            out.push("\\\"")
+        elif c == '\\'
+            out.push("\\\\")
+        elif c == '\n'
+            out.push("\\n")
+        elif c == '\r'
+            out.push("\\r")
+        elif c == '\t'
+            out.push("\\t")
+        elif k < 32
+            out.push("\\u{k.to_hex().pad_left(4, '0')}")
+        else
+            out.push(c.to_str())
+    out.push("\"")
+    out.join("")
+
+@test fn numbers_print_as_javascript_does()
+    assert_eq(number_to_string(0.0), "0")
+    assert_eq(number_to_string(-0.0), "0")
+    assert_eq(number_to_string(42.0), "42")
+    assert_eq(number_to_string(-1.5), "-1.5")
+    assert_eq(number_to_string(0.1 + 0.2), "0.30000000000000004")
+    assert_eq(number_to_string(0.000001), "0.000001")
+    assert_eq(number_to_string(1e-7), "1e-7")
+    assert_eq(number_to_string(1e21), "1e+21")
+    assert_eq(number_to_string(123456789012345680000.0), "123456789012345680000")
+    assert_eq(number_to_string(1.5e300), "1.5e+300")
+    assert_eq(number_to_string(1.0 / 0.0), "Infinity")
+    assert_eq(number_to_string(0.0 / 0.0), "NaN")
+
+@test fn integers_print_without_a_point(n int)
+    m := n % 1000000000000000
+    assert_eq(number_to_string(m.to_float()), "{m}")
+
+@test fn strings_quote_as_json()
+    assert_eq(quote("a\"b\\c\nd\u{1}"), "\"a\\\"b\\\\c\\nd\\u0001\"")

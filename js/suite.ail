@@ -1,0 +1,108 @@
+# The tc39 test262 parser tests (testdata/test262-parser, licences in its
+# licenses.md), packed one test per line: NAME, a tab, the source as a JSON
+# string. Every `pass` script must parse, to the same tree as its `pass-explicit`
+# twin (the same script with every grouping parenthesised); every `fail` and
+# `early` script must be a SyntaxError. `known.txt` lists the exceptions
+# with their reasons; one that starts to behave is reported, so the list
+# only shrinks.
+
+use syntax
+
+## A packed test.
+struct Case
+    name str
+    source str
+
+fn load(path str) !List[Case]
+    mut out := List[Case]()
+    for line in fs.read_text(path)?.split("\n")
+        if line == ""
+            continue
+        tab := line.find("\t")?
+        name := line.slice(0, tab)
+        value := parse_json(line.slice(tab + 1, line.chars().len()))?
+        out.push(Case(name: name, source: value.as_str()?))
+    out
+
+## `known.txt`: `DIR/NAME reason`, one per line; `#` starts a comment.
+fn load_known(path str) !Map[str, str]
+    mut out := Map[str, str]()
+    for line in fs.read_text(path)?.split("\n")
+        if line == "" or line.starts_with("#")
+            continue
+        space := line.find(" ") else line.chars().len()
+        out[line.slice(0, space)] = line.slice(space, line.chars().len()).trim()
+    out
+
+## FNV-1a over the text's code points: a short fingerprint of a tree.
+fn fingerprint(text str) str
+    mut h := -3750763034362895579
+    for c in text.chars()
+        h = h.bit_xor(c.code()).wrapping_mul(1099511628211)
+    "{h}"
+
+## Run the suite in `dir`; print each surprise and a summary. True if none.
+## `trees.txt` holds the fingerprint of each `pass` script's ESTree JSON,
+## checked against a reference parser when written; `bless` rewrites it.
+fn run_suite(dir str, bless bool) !bool
+    known := load_known(path.join(dir, "known.txt"))?
+    explicit := {c.name: c.source for c in load(path.join(dir, "pass-explicit.txt"))?}
+    trees_path := path.join(dir, "trees.txt")
+    mut trees := Map[str, str]()
+    if fs.exists(trees_path)
+        for line in fs.read_text(trees_path)?.split("\n")
+            parts := line.split(" ")
+            if parts.len() == 2
+                trees[parts[0]] = parts[1]
+    mut blessed := List[str]()
+    mut passed := 0
+    mut gaps := 0
+    mut surprises := 0
+    for kind in ["pass", "fail", "early"]
+        for c in load(path.join(dir, "{kind}.txt"))?
+            id := "{kind}/{c.name}"
+            reason := known.get(id) else ""
+            tree := syntax.parse(c.source) else err
+                if kind == "pass" and reason.starts_with("unsupported")
+                    gaps += 1
+                elif kind == "pass"
+                    print("{id}: rejected: {err}")
+                    surprises += 1
+                elif reason != ""
+                    print("{id}: now rejected; remove it from known.txt")
+                    surprises += 1
+                else
+                    passed += 1
+                continue
+            if kind != "pass"
+                if reason != ""
+                    gaps += 1
+                else
+                    print("{id}: accepted")
+                    surprises += 1
+                continue
+            if reason.starts_with("unsupported")
+                print("{id}: now parses; remove it from known.txt")
+                surprises += 1
+                continue
+            print_ok := fingerprint(syntax.program_json(tree, false))
+            blessed.push("{c.name} {print_ok}")
+            if not bless and (trees.get(c.name) else "") != print_ok
+                print("{id}: tree differs from the one in trees.txt")
+                surprises += 1
+                continue
+            if not reason.starts_with("twin")
+                twin := explicit.get(c.name) else ""
+                other := syntax.parse(twin) else err
+                    print("{id}: explicit form rejected: {err}")
+                    surprises += 1
+                    continue
+                if syntax.canonical_json(tree) != syntax.canonical_json(other)
+                    print("{id}: tree differs from the explicit form's")
+                    surprises += 1
+                    continue
+            passed += 1
+    if bless
+        fs.write_text(trees_path, "{blessed.join("\n")}\n")?
+    print("test262 parser tests: {passed} passed, {gaps} known gaps, {surprises} surprises")
+    surprises == 0
