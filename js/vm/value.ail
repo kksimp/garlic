@@ -150,13 +150,33 @@ pub fn is_callable(v Value) bool
         Undef | Null | Bool | Num | Str => false
 
 ## typeof (§13.5.3).
+## The key prefix of symbols: a symbol is a string "\u{0}@ID:DESC" (ID ends
+## in `u` when it has no description), so that symbols are property keys
+## with no new kind of value; no script can write such a string by accident.
+pub SYMBOL := "\u{0}@"
+
+pub fn is_symbol(s str) bool
+    s.starts_with(SYMBOL)
+
+## What `Symbol(...).description` gives: the text after the id.
+pub fn symbol_description(s str) str?
+    rest := s.slice(2, s.chars().len())
+    colon := rest.find(":") else return none
+    if rest.slice(0, colon).ends_with("u")
+        return none
+    rest.slice(colon + 1, rest.chars().len())
+
+## `Symbol(desc)`, as String(symbol) and console.log write it.
+pub fn symbol_text(s str) str
+    "Symbol({symbol_description(s) else ""})"
+
 pub fn type_of(v Value) str
     match v
         Undef => "undefined"
         Null => "object"
         Bool(_) => "boolean"
         Num(_) => "number"
-        Str(_) => "string"
+        Str(s) => if is_symbol(s) then "symbol" else "string"
         Obj(o) => if o.call != none then "function" else "object"
 
 ## ToBoolean (§7.1.2).

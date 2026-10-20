@@ -101,6 +101,8 @@ pub fn Vm.get(mut self, base Value, key str) Value ! Thrown
     match base
         Obj(o) => get_from(o, key, base)
         Str(s) =>
+            if is_symbol(s)
+                return proto_get("Symbol", key, base)
             if key == "length"
                 return Num(unit_len(s).to_float())
             if i := index_of_key(key)
@@ -237,9 +239,13 @@ pub fn Vm.own_keys(self, o ref JsObject) List[str]
     for i in indexes.sorted()
         out.push("{i}")
     for k in o.props.keys()
-        if index_of_key(k) == none and not k.starts_with(PRIVATE)
+        if index_of_key(k) == none and not k.starts_with("\u{0}")
             out.push(k)
     out
+
+## The symbol keys of `o` (Object.getOwnPropertySymbols).
+pub fn Vm.own_symbols(self, o ref JsObject) List[str]
+    [k for k in o.props.keys() if is_symbol(k)]
 
 ## Own enumerable keys (§7.3.23 EnumerableOwnProperties): `Object.keys`.
 pub fn Vm.enum_keys(self, o ref JsObject) List[str]
@@ -283,6 +289,12 @@ pub fn Vm.iterate(mut self, v Value) List[Value] ! Thrown
                 return o.elems
             if o.class == "Map"
                 return map_entries(o)
+            if o.class == "Iterator" and o.props.get(ITERATOR) == none
+                i := int_of(num_of(o.prim) else 0.0)
+                o.prim = Num(o.elems.len().to_float())
+                return o.elems[i.min(o.elems.len())..]
+            if items := drain_iterator(v)?
+                return items
             len := get(v, "length")?
             if len == Undef
                 return type_error("{describe(v)} is not iterable")

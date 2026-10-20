@@ -54,6 +54,7 @@ pub fn new_vm() Vm
         page_start_ms: 0.0,
         ready_state: "complete",
         stopped: false,
+        unhandled: [],
     )
     vm.setup()
     vm
@@ -255,6 +256,7 @@ fn Vm.setup(mut self)
         "ReferenceError",
         "EvalError",
         "URIError",
+        "AggregateError",
     ]
         p := object("Object", Obj(error_proto))
         p.props["name"] = hidden(Str(kind))
@@ -334,11 +336,18 @@ fn Vm.setup(mut self)
     constant(global_obj, "NaN", Num(nan()))
     constant(global_obj, "Infinity", Num(infinity()))
     constant(global_obj, "undefined", Undef)
+    symbol_setup()
+    promise_setup()
+    methods(
+        global_obj,
+        "dom.window",
+        "setTimeout:1 setInterval:1 clearTimeout:1 clearInterval:1 queueMicrotask:1",
+    )
 
 ## Natives that `new` may call.
 pub fn native_is_ctor(name str) bool
     match name
-        "Object" | "Function" | "Array" | "String" | "Number" | "Boolean" | "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" | "Map" | "Set" | "RegExp" | "Date" | "dom.Event" | "dom.illegal" | "dom.URL" | "dom.URLSearchParams" =>
+        "Object" | "Function" | "Array" | "String" | "Number" | "Boolean" | "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" | "AggregateError" | "Map" | "Set" | "RegExp" | "Date" | "Promise" | "dom.Event" | "dom.illegal" | "dom.URL" | "dom.URLSearchParams" =>
             true
         _ => false
 
@@ -352,6 +361,12 @@ pub fn Vm.native(
     new_target Value,
 ) Value ! Thrown
     tick()?
+    if name.starts_with("Promise")
+        return promise_native(name, this_val, args, new_target)
+    if name.starts_with("Symbol")
+        return symbol_native(name, this_val, args, new_target)
+    if name.starts_with("Iterator.")
+        return iterator_native(name, this_val)
     if m := name.strip_prefix("dom.")
         return dom_native(m, this_val, args, new_target)
     if m := name.strip_prefix("Array.prototype.")
@@ -426,6 +441,10 @@ pub fn Vm.native(
         "Array.of" => array(args)
         "Array.from" => array_from(args)
         "String" =>
+            if new_target == Undef
+                if sym := str_of(a0)
+                    if is_symbol(sym)
+                        return Value.Str(symbol_text(sym))
             s := if args.len() == 0 then "" else to_string(a0)?
             if new_target == Undef
                 return Value.Str(s)
@@ -477,6 +496,17 @@ pub fn Vm.native(
             Obj(wrap_with(new_target, "Boolean", Bool(truthy(a0)))?)
         "Boolean.prototype.toString" => Value.Str(if this_bool(this_val)? then "true" else "false")
         "Boolean.prototype.valueOf" => Value.Bool(this_bool(this_val)?)
+        "AggregateError" =>
+            e := native(
+                "Error",
+                f,
+                this_val,
+                args[1.min(args.len())..],
+                if new_target == Undef then ctors[name] else new_target,
+            )?
+            if eo := obj_of(e)
+                eo.props["errors"] = hidden(array(iterate(a0)?))
+            e
         "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" =>
             nt := if new_target == Undef then ctors[name] else new_target
             proto := get(nt, "prototype")?
@@ -669,6 +699,7 @@ fn Vm.object_function(mut self, m str, args List[Value]) Value ! Thrown
             p := to_object(arg_at(args, 1))?
             define_properties(o, p)?
             a0
+        "getOwnPropertySymbols" => array([Value.Str(k) for k in own_symbols(to_object(a0)?)])
         "getOwnPropertyNames" =>
             o := to_object(a0)?
             mut keys := own_keys(o)
@@ -859,6 +890,9 @@ fn Vm.object_proto_method(mut self, m str, this_val Value, args List[Value]) Val
                         o.class
                     else
                         "Object"
+            if is_obj(this_val)
+                if t := str_of(get(this_val, well_known("toStringTag"))?)
+                    return Value.Str("[object {t}]")
             Value.Str("[object {tag}]")
         "valueOf" => Obj(to_object(this_val)?)
         "__proto__get" => to_object(this_val)?.proto
@@ -872,11 +906,11 @@ fn Vm.object_proto_method(mut self, m str, this_val Value, args List[Value]) Val
 # ------------------------------------------------------------ Map and Set
 
 ## A Map keeps its entries as key, value, key, value in `elems`.
-pub fn map_entries(o ref JsObject) List[Value]
+pub fn Vm.map_entries(mut self, o ref JsObject) List[Value]
     mut out := List[Value]()
     mut i := 0
     while i + 1 < o.elems.len()
-        out.push(Undef)
+        out.push(array([o.elems[i], o.elems[i + 1]]))
         i += 2
     out
 
@@ -944,7 +978,7 @@ fn Vm.map_method(mut self, m str, this_val Value, args List[Value]) Value ! Thro
                     _ => array([o.elems[i], o.elems[i + 1]])
                 out.push(item)
                 i += 2
-            array(out)
+            list_iterator(out, "Map Iterator")
         _ => return type_error("Map.prototype.{m} is not supported yet")
 
 fn Vm.set_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
@@ -973,8 +1007,8 @@ fn Vm.set_method(mut self, m str, this_val Value, args List[Value]) Value ! Thro
             for x in o.elems
                 call(a0, arg_at(args, 1), [x, x, this_val])?
             Undef
-        "keys" | "values" => array(o.elems)
-        "entries" => array([array([x, x]) for x in o.elems])
+        "keys" | "values" => list_iterator(o.elems, "Set Iterator")
+        "entries" => list_iterator([array([x, x]) for x in o.elems], "Set Iterator")
         _ => return type_error("Set.prototype.{m} is not supported yet")
 
 # ---------------------------------------------------------------- Math

@@ -1,0 +1,157 @@
+## Symbols (ECMA-262 §20.4) and iterators (§27.1): symbols are strings with
+## the SYMBOL prefix (value.ail); an iterator over a known list of values is
+## an "Iterator" object holding the values in `elems` and its place in `prim`.
+
+pub fn well_known(name str) str
+    "{SYMBOL}w:Symbol.{name}"
+
+pub ITERATOR := "\u{0}@w:Symbol.iterator"
+
+fn Vm.symbol_setup(mut self)
+    object_proto := proto_of("Object")
+    proto := object("Object", object_proto)
+    protos["Symbol"] = Obj(proto)
+    c := obj_of(native_fn("Symbol", "Symbol", 0)) else return
+    c.props["prototype"] = Prop(
+        value: Obj(proto),
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+    )
+    proto.props["constructor"] = hidden(Obj(c))
+    ctors["Symbol"] = Obj(c)
+    global_obj.props["Symbol"] = hidden(Obj(c))
+    methods(c, "Symbol", "for:1 keyFor:1")
+    for name in [
+        "iterator",
+        "asyncIterator",
+        "hasInstance",
+        "toPrimitive",
+        "toStringTag",
+        "species",
+        "isConcatSpreadable",
+        "match",
+        "replace",
+        "search",
+        "split",
+        "unscopables",
+    ]
+        constant(c, name, Str(well_known(name)))
+    methods(proto, "Symbol.prototype", "toString:0 valueOf:0")
+    getter(proto, "description", "Symbol.prototype.description")
+
+    iter_proto := object("Object", object_proto)
+    protos["Iterator"] = Obj(iter_proto)
+    methods(iter_proto, "Iterator.prototype", "next:0")
+    iter_proto.props[ITERATOR] = hidden(native_fn(
+        "Iterator.prototype.self",
+        "[Symbol.iterator]",
+        0,
+    ))
+    # Arrays, strings, maps and sets iterate with their own iterators.
+    for pair in ["Array:values", "String:chars", "Map:entries", "Set:values"]
+        parts := pair.split(":")
+        p := obj_of(proto_of(parts[0])) else continue
+        p.props[ITERATOR] = hidden(native_fn("Iterator.of.{parts[1]}", "[Symbol.iterator]", 0))
+    object_ctor := obj_of(global_obj.props["Object"].value) else return
+    methods(object_ctor, "Object", "getOwnPropertySymbols:1")
+
+pub fn Vm.symbol_native(
+    mut self,
+    name str,
+    this_val Value,
+    args List[Value],
+    new_target Value,
+) Value ! Thrown
+    a0 := arg_at(args, 0)
+    match name
+        "Symbol" =>
+            if new_target != Undef
+                return type_error("Symbol is not a constructor")
+            next_id += 1
+            if a0 == Undef
+                return Value.Str("{SYMBOL}{next_id}u:")
+            Value.Str("{SYMBOL}{next_id}:{to_string(a0)?}")
+        "Symbol.for" => Value.Str("{SYMBOL}r:{to_string(a0)?}")
+        "Symbol.keyFor" =>
+            s := str_of(a0) else return type_error("{describe(a0)} is not a symbol")
+            if not is_symbol(s)
+                return type_error("{describe(a0)} is not a symbol")
+            if key := s.strip_prefix("{SYMBOL}r:")
+                return Value.Str(key)
+            Undef
+        _ =>
+            s := this_symbol(this_val)?
+            match name
+                "Symbol.prototype.toString" => Value.Str(symbol_text(s))
+                "Symbol.prototype.description" =>
+                    if d := symbol_description(s)
+                        return Value.Str(d)
+                    Undef
+                _ => Value.Str(s)
+
+fn Vm.this_symbol(mut self, v Value) str ! Thrown
+    if s := str_of(v)
+        if is_symbol(s)
+            return s
+    if o := obj_of(v)
+        if s := str_of(o.prim)
+            if o.class == "Symbol" and is_symbol(s)
+                return s
+    return type_error("Symbol.prototype.toString requires that 'this' be a Symbol")
+
+## An iterator over `items`; `tag` is what console.log calls it ("Array Iterator").
+pub fn Vm.list_iterator(mut self, items List[Value], tag str) Value
+    o := object("Iterator", proto_of("Iterator"))
+    o.elems = items
+    o.prim = Num(0.0)
+    o.props["{PRIVATE}tag"] = hidden(Str(tag))
+    Obj(o)
+
+pub fn Vm.iterator_native(mut self, name str, this_val Value) Value ! Thrown
+    match name
+        "Iterator.prototype.self" => this_val
+        "Iterator.prototype.next" =>
+            o := obj_of(this_val) else return type_error("next method called on incompatible receiver")
+            if o.class != "Iterator"
+                return type_error("next method called on incompatible receiver {describe(this_val)}")
+            i := int_of(num_of(o.prim) else 0.0)
+            r := plain()
+            if i < o.elems.len()
+                o.prim = Num((i + 1).to_float())
+                r.props["value"] = data(o.elems[i])
+                r.props["done"] = data(Bool(false))
+            else
+                r.props["value"] = data(Undef)
+                r.props["done"] = data(Bool(true))
+            Value.Obj(r)
+        "Iterator.of.chars" => list_iterator(iterate(Str(to_string(this_val)?))?, "String Iterator")
+        "Iterator.of.entries" => call_method(this_val, "entries", [])
+        _ => call_method(this_val, "values", [])
+
+fn Vm.call_method(mut self, v Value, key str, args List[Value]) Value ! Thrown
+    f := get(v, key)?
+    call(f, v, args)
+
+## The values a user-defined iterable gives (§7.4): call its
+## [Symbol.iterator], then `next()` until `done`.
+pub fn Vm.drain_iterator(mut self, v Value) List[Value]? ! Thrown
+    f := get(v, ITERATOR)?
+    if not is_callable(f)
+        return none
+    it := call(f, v, [])?
+    if not is_obj(it)
+        return type_error("Result of the Symbol.iterator method is not an object")
+    next := get(it, "next")?
+    mut out := List[Value]()
+    while true
+        r := call(next, it, [])?
+        if not is_obj(r)
+            return type_error("Iterator result {describe(r)} is not an object")
+        if truthy(get(r, "done")?)
+            break
+        out.push(get(r, "value")?)
+    out

@@ -278,14 +278,14 @@ fn Vm.array_method(mut self, m str, this_val Value, args List[Value]) Value ! Th
             array(xs)
         "keys" =>
             n := elements_of(this_val)?.len()
-            array([Value.Num(i.to_float()) for i in 0..n])
-        "values" => array(elements_of(this_val)?)
+            list_iterator([Value.Num(i.to_float()) for i in 0..n], "Array Iterator")
+        "values" => list_iterator(elements_of(this_val)?, "Array Iterator")
         "entries" =>
             xs := elements_of(this_val)?
             mut out := List[Value]()
             for i in 0..xs.len()
                 out.push(array([Value.Num(i.to_float()), xs[i]]))
-            array(out)
+            list_iterator(out, "Array Iterator")
         "copyWithin" =>
             o := this_array(this_val, m)?
             len := o.elems.len()

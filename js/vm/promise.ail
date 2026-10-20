@@ -1,0 +1,336 @@
+## Promises (ECMA-262 §27.2) and the job queue they use (§9.5). A promise is
+## a "Promise" object with its state, result and reactions in hidden
+## properties; a reaction is a plain object with `ok`, `err` and `child`.
+
+fn Vm.promise_setup(mut self)
+    c := constructor("Promise", 1)
+    methods(c, "Promise", "resolve:1 reject:1 all:1 allSettled:1 race:1 any:1 withResolvers:0")
+    proto := obj_of(proto_of("Promise")) else return
+    methods(proto, "Promise.prototype", "then:2 catch:1 finally:1")
+    proto.props[well_known("toStringTag")] = hidden(Str("Promise"))
+
+fn state_of(p ref JsObject) str
+    str_of((p.props.get("{PRIVATE}state") else hidden(Str("pending"))).value) else "pending"
+
+fn result_of(p ref JsObject) Value
+    (p.props.get("{PRIVATE}result") else hidden(Undef)).value
+
+## A pending promise.
+pub fn Vm.new_promise(mut self) ref JsObject
+    p := object("Promise", proto_of("Promise"))
+    p.props["{PRIVATE}state"] = hidden(Str("pending"))
+    p.props["{PRIVATE}result"] = hidden(Undef)
+    p.props["{PRIVATE}handled"] = hidden(Bool(false))
+    p
+
+## A function object that calls native `name` with `this` = `rec` and
+## `bound` before its own arguments.
+pub fn Vm.closure_native(mut self, name str, rec Value, bound List[Value], length int) Value
+    o := object("Function", proto_of("Function"))
+    o.call = Bound(target: native_fn(name, "", length), this_val: rec, args: bound)
+    o.props["length"] = Prop(
+        value: Num(length.to_float()),
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+    )
+    o.props["name"] = Prop(
+        value: Str(""),
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+    )
+    Obj(o)
+
+## The resolve and reject functions of `p`, sharing an "already resolved" flag.
+fn Vm.resolving_functions(mut self, p ref JsObject) List[Value]
+    rec := plain()
+    rec.props["promise"] = hidden(Obj(p))
+    rec.props["done"] = hidden(Bool(false))
+    [
+        closure_native("Promise.resolveFn", Obj(rec), [], 1),
+        closure_native("Promise.rejectFn", Obj(rec), [], 1),
+    ]
+
+## Resolve `p` with `x` (§27.2.1.3.2): a thenable is adopted in a later job.
+pub fn Vm.resolve_promise(mut self, p ref JsObject, x Value)
+    if state_of(p) != "pending"
+        return
+    if x == Obj(p)
+        err := make_error("TypeError", "Chaining cycle detected for promise #<Promise>")
+        settle(p, "rejected", err)
+        return
+    xo := obj_of(x) else
+        settle(p, "fulfilled", x)
+        return
+    then := get(x, "then") else e
+        settle(p, "rejected", e.value)
+        return
+    if not is_callable(then)
+        settle(p, "fulfilled", x)
+        return
+    # A promise of ours adopts directly, as V8 does, but still a job later.
+    job := plain()
+    job.props["kind"] = hidden(Str("thenable"))
+    job.props["target"] = hidden(Obj(p))
+    job.props["thenable"] = hidden(Obj(xo))
+    job.props["then"] = hidden(then)
+    microtasks.push(closure_native("Promise.job", Obj(job), [], 0))
+
+pub fn Vm.reject_promise(mut self, p ref JsObject, reason Value)
+    if state_of(p) == "pending"
+        settle(p, "rejected", reason)
+
+fn Vm.settle(mut self, p ref JsObject, state str, v Value)
+    p.props["{PRIVATE}state"] = hidden(Str(state))
+    p.props["{PRIVATE}result"] = hidden(v)
+    reactions := p.elems
+    p.elems = []
+    for r in reactions
+        queue_reaction(r, state, v)
+    if state == "rejected"
+        and not truthy((p.props.get("{PRIVATE}handled") else hidden(Bool(false))).value)
+        unhandled.push(Obj(p))
+
+fn Vm.queue_reaction(mut self, reaction Value, state str, v Value)
+    job := plain()
+    job.props["kind"] = hidden(Str(state))
+    job.props["reaction"] = hidden(reaction)
+    job.props["arg"] = hidden(v)
+    microtasks.push(closure_native("Promise.job", Obj(job), [], 0))
+
+## `p.then(ok, err)` with a new promise for its result (or none, for `await`).
+pub fn Vm.promise_then(mut self, p ref JsObject, ok Value, err Value, child Value) Value
+    r := plain()
+    r.props["ok"] = hidden(ok)
+    r.props["err"] = hidden(err)
+    r.props["child"] = hidden(child)
+    p.props["{PRIVATE}handled"] = hidden(Bool(true))
+    st := state_of(p)
+    if st == "pending"
+        p.elems.push(Obj(r))
+    else
+        unhandled = [u for u in unhandled if u != Obj(p)]
+        queue_reaction(Obj(r), st, result_of(p))
+    child
+
+## Promise.resolve(x): `x` itself when it is a promise.
+pub fn Vm.promise_resolve(mut self, x Value) ref JsObject
+    if o := obj_of(x)
+        if o.class == "Promise"
+            return o
+    p := new_promise()
+    resolve_promise(p, x)
+    p
+
+fn Vm.this_promise(mut self, v Value, m str) ref JsObject ! Thrown
+    o := obj_of(v) else return type_error("Method Promise.prototype.{m} called on incompatible receiver {describe(v)}")
+    if o.class != "Promise"
+        return type_error("Method Promise.prototype.{m} called on incompatible receiver {describe(v)}")
+    o
+
+fn hidden_of(o ref JsObject, key str) Value
+    (o.props.get(key) else hidden(Undef)).value
+
+pub fn Vm.promise_native(
+    mut self,
+    name str,
+    this_val Value,
+    args List[Value],
+    new_target Value,
+) Value ! Thrown
+    a0 := arg_at(args, 0)
+    match name
+        "Promise" =>
+            if new_target == Undef
+                return type_error("Promise constructor cannot be invoked without 'new'")
+            if not is_callable(a0)
+                return type_error("Promise resolver {describe(a0)} is not a function")
+            p := new_promise()
+            proto := get(new_target, "prototype")?
+            if is_obj(proto)
+                p.proto = proto
+            fns := resolving_functions(p)
+            if result := call(a0, Undef, fns)
+                result
+            else e
+                if e.limit
+                    return e
+                reject_promise(p, e.value)
+            Value.Obj(p)
+        "Promise.resolveFn" | "Promise.rejectFn" =>
+            rec := obj_of(this_val) else return Undef
+            if truthy(hidden_of(rec, "done"))
+                return Undef
+            rec.props["done"] = hidden(Bool(true))
+            p := obj_of(hidden_of(rec, "promise")) else return Undef
+            if name == "Promise.resolveFn"
+                resolve_promise(p, a0)
+            else
+                reject_promise(p, a0)
+            Undef
+        "Promise.job" => run_job(this_val)
+        "Promise.resolve" => Value.Obj(promise_resolve(a0))
+        "Promise.reject" =>
+            p := new_promise()
+            reject_promise(p, a0)
+            Value.Obj(p)
+        "Promise.withResolvers" =>
+            p := new_promise()
+            fns := resolving_functions(p)
+            r := plain()
+            r.props["promise"] = data(Obj(p))
+            r.props["resolve"] = data(fns[0])
+            r.props["reject"] = data(fns[1])
+            Value.Obj(r)
+        "Promise.all" | "Promise.allSettled" | "Promise.race" | "Promise.any" => combinator(
+            name,
+            a0,
+        )
+        "Promise.element" => combinator_step(this_val, args)
+        "Promise.prototype.then" =>
+            p := this_promise(this_val, "then")?
+            promise_then(p, a0, arg_at(args, 1), Obj(new_promise()))
+        "Promise.prototype.catch" =>
+            then := get(this_val, "then")?
+            call(then, this_val, [Undef, a0])
+        "Promise.prototype.finally" =>
+            then := get(this_val, "then")?
+            if not is_callable(a0)
+                return call(then, this_val, [a0, a0])
+            ok := closure_native("Promise.finallyStep", Undef, [a0, Bool(true)], 1)
+            err := closure_native("Promise.finallyStep", Undef, [a0, Bool(false)], 1)
+            call(then, this_val, [ok, err])
+        "Promise.finallyStep" =>
+            # args: on_finally, fulfilled?, the value or reason.
+            r := call(a0, Undef, [])?
+            p := promise_resolve(r)
+            v := arg_at(args, 2)
+            back := if truthy(arg_at(args, 1)) then "Promise.thunk" else "Promise.thrower"
+            promise_then(p, closure_native(back, Undef, [v], 0), Undef, Obj(new_promise()))
+        "Promise.thunk" => a0
+        "Promise.thrower" => return Thrown(value: a0, text: "", limit: false)
+        _ => return type_error("{name} is not supported yet")
+
+## A job (§27.2.2): run a reaction, or adopt a thenable.
+fn Vm.run_job(mut self, job_val Value) Value ! Thrown
+    job := obj_of(job_val) else return Undef
+    kind := str_of(hidden_of(job, "kind")) else ""
+    if kind == "thenable"
+        p := obj_of(hidden_of(job, "target")) else return Undef
+        fns := resolving_functions(p)
+        if r := call(hidden_of(job, "then"), hidden_of(job, "thenable"), fns)
+            r
+        else e
+            if e.limit
+                return e
+            call(fns[1], Undef, [e.value])?
+        return Undef
+    reaction := obj_of(hidden_of(job, "reaction")) else return Undef
+    arg := hidden_of(job, "arg")
+    handler := hidden_of(reaction, if kind == "fulfilled" then "ok" else "err")
+    child := obj_of(hidden_of(reaction, "child"))
+    if not is_callable(handler)
+        if c := child
+            if kind == "fulfilled"
+                resolve_promise(c, arg)
+            else
+                reject_promise(c, arg)
+        return Undef
+    if r := call(handler, Undef, [arg])
+        if c := child
+            resolve_promise(c, r)
+    else e
+        if e.limit
+            return e
+        if c := child
+            reject_promise(c, e.value)
+    Undef
+
+## Promise.all, allSettled, race and any (§27.2.4).
+fn Vm.combinator(mut self, name str, iterable Value) Value ! Thrown
+    out := new_promise()
+    items := iterate(iterable) else e
+        reject_promise(out, e.value)
+        return Value.Obj(out)
+    agg := plain()
+    agg.props["kind"] = hidden(Str(name))
+    agg.props["out"] = hidden(Obj(out))
+    agg.props["values"] = hidden(array([Value.Undef for _ in items]))
+    agg.props["left"] = hidden(Num(items.len().to_float()))
+    if items.len() == 0
+        if name == "Promise.any"
+            reject_promise(out, aggregate_error())
+        elif name != "Promise.race"
+            resolve_promise(out, hidden_of(agg, "values"))
+        return Value.Obj(out)
+    for i in 0..items.len()
+        p := promise_resolve(items[i])
+        idx := Value.Num(i.to_float())
+        ok := closure_native("Promise.element", Obj(agg), [idx, Bool(true)], 1)
+        err := closure_native("Promise.element", Obj(agg), [idx, Bool(false)], 1)
+        promise_then(p, ok, err, Undef)
+    Value.Obj(out)
+
+fn Vm.aggregate_error(mut self) Value
+    make_error("AggregateError", "All promises were rejected")
+
+fn Vm.combinator_step(mut self, agg_val Value, args List[Value]) Value ! Thrown
+    agg := obj_of(agg_val) else return Undef
+    out := obj_of(hidden_of(agg, "out")) else return Undef
+    if state_of(out) != "pending"
+        return Undef
+    kind := str_of(hidden_of(agg, "kind")) else ""
+    i := int_of(num_of(arg_at(args, 0)) else 0.0)
+    ok := truthy(arg_at(args, 1))
+    v := arg_at(args, 2)
+    values := obj_of(hidden_of(agg, "values")) else return Undef
+    left := (num_of(hidden_of(agg, "left")) else 1.0) - 1.0
+    match kind
+        "Promise.race" =>
+            if ok
+                resolve_promise(out, v)
+            else
+                reject_promise(out, v)
+            return Undef
+        "Promise.all" =>
+            if not ok
+                reject_promise(out, v)
+                return Undef
+            values.elems[i] = v
+        "Promise.any" =>
+            if ok
+                resolve_promise(out, v)
+                return Undef
+            values.elems[i] = v
+        _ =>
+            r := plain()
+            r.props["status"] = data(Str(if ok then "fulfilled" else "rejected"))
+            key := if ok then "value" else "reason"
+            r.props[key] = data(v)
+            values.elems[i] = Obj(r)
+    agg.props["left"] = hidden(Num(left))
+    if left == 0.0
+        if kind == "Promise.any"
+            e := aggregate_error()
+            if eo := obj_of(e)
+                eo.props["errors"] = hidden(Obj(values))
+            reject_promise(out, e)
+        else
+            resolve_promise(out, Obj(values))
+    Undef
+
+## Report promises rejected with no handler once the job queue is empty
+## (HTML §8.1.7.3.1: "unhandled rejection").
+pub fn Vm.report_unhandled(mut self)
+    for u in unhandled
+        if p := obj_of(u)
+            if not truthy(hidden_of(p, "{PRIVATE}handled"))
+                report(uncaught_text(Thrown(value: result_of(p), text: "", limit: false)))
+    unhandled = []

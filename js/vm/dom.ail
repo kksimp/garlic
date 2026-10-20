@@ -2011,7 +2011,11 @@ pub fn Vm.run_microtasks(mut self)
             v
         else err
             report(uncaught_text(err))
+            if err.limit
+                stopped = true
+                return
         n += 1
+    report_unhandled()
 
 # -------------------------------------------------------------- location
 

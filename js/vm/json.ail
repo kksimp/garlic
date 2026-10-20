@@ -255,7 +255,7 @@ fn Vm.serialize(mut self, mut st Stringifier, holder Value, key str, start Value
     match v
         Null => "null"
         Bool(b) => if b then "true" else "false"
-        Str(s) => syntax.quote(s)
+        Str(s) => if is_symbol(s) then OMIT else syntax.quote(s)
         Num(n) => if is_finite(n) then syntax.number_to_string(n) else "null"
         Undef => OMIT
         Obj(o) =>

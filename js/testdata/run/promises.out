@@ -1,0 +1,24 @@
+start
+executor
+end function [object Promise]
+Promise constructor cannot be invoked without 'new'
+Promise resolver 5 is not a function
+then 1
+microtask
+resolved done
+caught boom
+thenable called
+all empty []
+then2 2
+finally
+thenable value 42
+allSettled ["rejected","fulfilled"]
+any any ok
+any failed AggregateError [ 1 ]
+TypeError Chaining cycle detected for promise #<Promise>
+rejected with TypeError
+finally keeps 7
+timeout 0
+race fast
+all [ 1, 2, 3 ]
+interval x3

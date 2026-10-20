@@ -124,6 +124,8 @@ fn run_script(source str, max_steps int, echo bool) RunResult
             failed: true,
             message: machine.uncaught_text(err),
         )
+    # Then jobs and timers, as Node runs them after the script.
+    machine.run_event_loop(1.0e300, 1000000)
     RunResult(lines: machine.console_out, failed: false, message: "")
 
 ## Run every `NAME.js` in `dir` and compare what it printed with `NAME.out`

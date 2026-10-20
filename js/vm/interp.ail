@@ -48,6 +48,8 @@ pub struct Vm
     pub ready_state str
     ## Set when a run limit stops the page's scripts.
     pub stopped bool
+    ## Promises rejected with no handler yet.
+    pub unhandled List[Value]
 
 ## How a statement ended (§6.2.4 Completion Records); a throw is the `Thrown` error.
 pub enum Flow
@@ -154,7 +156,10 @@ pub fn Vm.to_number(mut self, v Value) float ! Thrown
         Null => 0.0
         Bool(b) => if b then 1.0 else 0.0
         Num(n) => n
-        Str(s) => string_to_number(s)
+        Str(s) =>
+            if is_symbol(s)
+                return type_error("Cannot convert a Symbol value to a number")
+            string_to_number(s)
         Obj => to_number(to_primitive(v, "number")?)
 
 ## ToString (§7.1.17).
@@ -164,15 +169,23 @@ pub fn Vm.to_string(mut self, v Value) str ! Thrown
         Null => "null"
         Bool(b) => if b then "true" else "false"
         Num(n) => syntax.number_to_string(n)
-        Str(s) => s
+        Str(s) =>
+            if is_symbol(s)
+                return type_error("Cannot convert a Symbol value to a string")
+            s
         Obj => to_string(to_primitive(v, "string")?)
 
-## ToPropertyKey (§7.1.19); symbols are not supported yet.
+## ToPropertyKey (§7.1.19): a symbol is its own key.
 pub fn Vm.to_key(mut self, v Value) str ! Thrown
     match v
         Str(s) => s
         Num(n) => syntax.number_to_string(n)
-        Undef | Null | Bool | Obj => to_string(to_primitive(v, "string")?)
+        Undef | Null | Bool => to_string(v)
+        Obj =>
+            p := to_primitive(v, "string")?
+            if s := str_of(p)
+                return s
+            to_string(p)
 
 ## ToObject (§7.1.18): a primitive's wrapper.
 pub fn Vm.to_object(mut self, v Value) ref JsObject ! Thrown
@@ -181,7 +194,7 @@ pub fn Vm.to_object(mut self, v Value) ref JsObject ! Thrown
         Undef | Null => return type_error("Cannot convert undefined or null to object")
         Bool => wrap("Boolean", v)
         Num => wrap("Number", v)
-        Str => wrap("String", v)
+        Str(s) => wrap(if is_symbol(s) then "Symbol" else "String", v)
 
 pub fn Vm.wrap(mut self, class str, v Value) ref JsObject
     o := object(class, proto_of(class))

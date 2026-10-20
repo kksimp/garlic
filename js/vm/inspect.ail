@@ -95,7 +95,10 @@ fn Vm.show(self, mut st Inspector, v Value, depth int, nested bool) str
         Null => "null"
         Bool(b) => if b then "true" else "false"
         Num(n) => if n == 0.0 and 1.0 / n < 0.0 then "-0" else syntax.number_to_string(n)
-        Str(s) => if nested then quote_js(s) else s
+        Str(s) =>
+            if is_symbol(s)
+                return symbol_text(s)
+            if nested then quote_js(s) else s
         Obj(o) => show_object(mut st, o, depth)
 
 fn Vm.fn_base(self, o ref JsObject) str
