@@ -2,10 +2,12 @@
 ## tree most JavaScript tools share, and `dump.ail` prints it as ESTree
 ## JSON. Node names keep ECMA-262's grammar names where ESTree has none.
 
-## Where a node starts: line and column, from 1.
+## Where a node starts: line and column, from 1, and the offset into the
+## source.
 pub struct Pos
     pub line int
     pub col int
+    pub offset int
 
 pub struct Program
     pub body List[Stmt]
@@ -156,12 +158,16 @@ pub struct Func
     ## Strict mode code (§11.2.2): inherited, or a "use strict" directive.
     pub strict bool
     pub pos Pos
+    ## The function's source text, which `toString` returns (§20.2.3.5).
+    pub text str
 
 pub struct Class
     pub name str?
     pub superclass Expr?
     pub members List[ClassMember]
     pub pos Pos
+    ## The class's source text, which its constructor's `toString` returns.
+    pub text str
 
 ## A class element (§15.7). `kind` is "constructor", "method", "get",
 ## "set", "field" or "static-block". Methods and blocks have `f`, a field

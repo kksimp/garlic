@@ -103,6 +103,8 @@ struct Ctx
 pub struct Parser
     lx Lexer
     tok Token
+    ## Where the last token consumed ends.
+    last_end int
     ahead List[Token]
     strict bool
     in_function bool
@@ -147,6 +149,7 @@ pub fn parse(source str) Program ! JsError
     mut p := Parser(
         lx: new_lexer(source),
         tok: first,
+        last_end: 0,
         ahead: [],
         strict: false,
         in_function: false,
@@ -171,6 +174,7 @@ pub fn parse(source str) Program ! JsError
 # ---- Tokens ----
 
 fn Parser.next(mut self) ! JsError
+    last_end = tok.end
     if ahead.len() > 0
         tok = ahead.remove_at(0)
     else
@@ -182,8 +186,12 @@ fn Parser.peek(mut self) Token ! JsError
         ahead.push(lx.next(false)?)
     ahead[0]
 
+## The source from `p` to the last token consumed.
+fn Parser.source_since(self, p Pos) str
+    lx.src[p.offset..last_end].join("")
+
 fn Parser.pos(self) Pos
-    Pos(line: tok.line, col: tok.col)
+    Pos(line: tok.line, col: tok.col, offset: tok.start)
 
 fn Parser.is_p(self, s str) bool
     tok.kind == Punct and tok.text == s
@@ -401,7 +409,7 @@ fn Parser.statements_until_end(mut self, close str) Body ! JsError
                             octal_directive[0],
                         )
                 elif first.octal
-                    octal_directive.push(Pos(line: first.line, col: first.col))
+                    octal_directive.push(Pos(line: first.line, col: first.col, offset: first.start))
         out.push(s)
     Body(stmts: out, strict: strict)
 
@@ -1151,6 +1159,7 @@ fn Parser.arrow(
         is_gen: false,
         strict: strict,
         pos: p,
+        text: source_since(p),
     )
     check_params(f, true)?
     leave_scope()
@@ -1866,6 +1875,7 @@ fn Parser.function_rest(mut self, name str?, p Pos) Func ! JsError
         is_gen: false,
         strict: b.strict,
         pos: p,
+        text: source_since(p),
     )
     if b.strict
         if n := name
@@ -1944,6 +1954,7 @@ fn Parser.class(mut self, is_stmt bool) Class ! JsError
                     is_gen: false,
                     strict: true,
                     pos: mp,
+                    text: "",
                 )
                 members.push(ClassMember(
                     kind: "static-block",
@@ -2017,4 +2028,4 @@ fn Parser.class(mut self, is_stmt bool) Class ! JsError
             ))
     next()?
     strict = old_strict
-    Class(name: name, superclass: superclass, members: members, pos: p)
+    Class(name: name, superclass: superclass, members: members, pos: p, text: source_since(p))

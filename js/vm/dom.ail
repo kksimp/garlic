@@ -249,10 +249,10 @@ pub fn Vm.node_value(mut self, id int) Value
         return v
     n := dom[id]
     proto := match n.kind
-        1 => proto_of("HTMLElement")
+        1 => proto_of(element_interface(n.tag))
         3 => proto_of("Text")
         8 => proto_of("Comment")
-        _ => proto_of("Document")
+        _ => proto_of("HTMLDocument")
     o := object("Node", proto)
     o.prim = Num(id.to_float())
     v := Value.Obj(o)
@@ -436,31 +436,9 @@ pub fn Vm.dom_setup(mut self)
         "Comment",
         "Document",
     ]
-        c := obj_of(native_fn("dom.illegal", name, 0)) else continue
         p := obj_of(proto_of(name)) else continue
-        c.props["prototype"] = Prop(
-            value: Obj(p),
-            get: Undef,
-            set: Undef,
-            accessor: false,
-            enumerable: false,
-            writable: false,
-            configurable: false,
-        )
-        p.props["constructor"] = hidden(Obj(c))
-        global_obj.props[name] = hidden(Obj(c))
-    for name in [
-        "HTMLDivElement",
-        "HTMLAnchorElement",
-        "HTMLInputElement",
-        "HTMLFormElement",
-        "HTMLScriptElement",
-        "HTMLImageElement",
-        "HTMLButtonElement",
-        "HTMLSpanElement",
-        "HTMLIFrameElement",
-    ]
-        global_obj.props[name] = global_obj.props["HTMLElement"]
+        interface(name, p)
+    element_interfaces()
 
     event_proto := object("Object", object_proto)
     protos["Event"] = Obj(event_proto)
@@ -554,19 +532,87 @@ pub fn Vm.dom_setup(mut self)
     methods(location_proto, "dom.location", "assign:1 replace:1 reload:0 toString:0")
     location_obj := object("Location", Obj(location_proto))
     protos["location-object"] = Obj(location_obj)
-    navigator := plain()
-    navigator.props["userAgent"] = data(Str("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Garlic/0.1 Chrome/120.0 Safari/537.36"))
-    navigator.props["language"] = data(Str("en-US"))
-    navigator.props["languages"] = data(array([Value.Str("en-US"), Value.Str("en")]))
-    navigator.props["platform"] = data(Str("Linux x86_64"))
-    navigator.props["vendor"] = data(Str("Garlic"))
-    navigator.props["cookieEnabled"] = data(Bool(true))
-    navigator.props["onLine"] = data(Bool(true))
-    navigator.props["webdriver"] = data(Bool(false))
-    navigator.props["hardwareConcurrency"] = data(Num(4.0))
-    navigator.props["maxTouchPoints"] = data(Num(0.0))
-    methods(navigator, "dom.navigator", "sendBeacon:1")
+    # What the browser says about itself: on the prototype, as in browsers,
+    # so `Object.keys(navigator)` is empty. Values follow a desktop Chrome.
+    nav_proto := object("Object", object_proto)
+    protos["Navigator"] = Obj(nav_proto)
+    nav_proto.props[well_known("toStringTag")] = hidden(Str("Navigator"))
+    nav_proto.props["userAgent"] = data(Str(USER_AGENT))
+    nav_proto.props["appVersion"] = data(Str(USER_AGENT.strip_prefix("Mozilla/") else USER_AGENT))
+    for kv in [
+        "appName=Netscape",
+        "appCodeName=Mozilla",
+        "product=Gecko",
+        "productSub=20030107",
+        "language=en-US",
+        "platform=Linux x86_64",
+        "vendor=Google Inc.",
+        "vendorSub=",
+        "doNotTrack=",
+    ]
+        parts := kv.split("=")
+        nav_proto.props[parts[0]] = data(if parts[1] == "" and parts[0] == "doNotTrack" then Null else Str(parts[1]))
+    nav_proto.props["languages"] = data(array([Value.Str("en-US"), Value.Str("en")]))
+    for kv in ["cookieEnabled=1", "onLine=1", "webdriver=0", "pdfViewerEnabled=1"]
+        parts := kv.split("=")
+        nav_proto.props[parts[0]] = data(Bool(parts[1] == "1"))
+    for kv in ["hardwareConcurrency=4", "maxTouchPoints=0", "deviceMemory=8"]
+        parts := kv.split("=")
+        nav_proto.props[parts[0]] = data(Num(string_to_number(parts[1])))
+    connection := plain()
+    connection.props["effectiveType"] = data(Str("4g"))
+    connection.props["rtt"] = data(Num(100.0))
+    connection.props["downlink"] = data(Num(10.0))
+    connection.props["saveData"] = data(Bool(false))
+    nav_proto.props["connection"] = data(Obj(connection))
+    # The PDF viewer Chrome lists, five times, and its two MIME types.
+    mut plugins := List[Value]()
+    mut mimes := List[Value]()
+    for name in [
+        "PDF Viewer",
+        "Chrome PDF Viewer",
+        "Chromium PDF Viewer",
+        "Microsoft Edge PDF Viewer",
+        "WebKit built-in PDF",
+    ]
+        p := object("Plugin", object_proto)
+        p.props["name"] = data(Str(name))
+        p.props["filename"] = data(Str("internal-pdf-viewer"))
+        p.props["description"] = data(Str("Portable Document Format"))
+        p.props["length"] = data(Num(2.0))
+        plugins.push(Obj(p))
+    for t in ["application/pdf", "text/pdf"]
+        m := object("MimeType", object_proto)
+        m.props["type"] = data(Str(t))
+        m.props["suffixes"] = data(Str("pdf"))
+        m.props["description"] = data(Str("Portable Document Format"))
+        m.props["enabledPlugin"] = data(plugins[0])
+        mimes.push(Obj(m))
+    for pair in ["plugins:PluginArray", "mimeTypes:MimeTypeArray"]
+        parts := pair.split(":")
+        list := object(parts[1], object_proto)
+        list.elems = if parts[0] == "plugins" then plugins else mimes
+        list.props["length"] = hidden(Num(list.elems.len().to_float()))
+        for i in 0..list.elems.len()
+            list.props["{i}"] = data(list.elems[i])
+        nav_proto.props[parts[0]] = data(Obj(list))
+    navigator_surface(nav_proto)
+    methods(nav_proto, "dom.navigator", "sendBeacon:1 javaEnabled:0")
+    navigator := object("Navigator", Obj(nav_proto))
     global_obj.props["navigator"] = hidden(Obj(navigator))
+    global_obj.props["clientInformation"] = hidden(Obj(navigator))
+    global_obj.props["opener"] = data(Null)
+    global_obj.props["isSecureContext"] = data(Bool(true))
+    tt := object("TrustedTypePolicyFactory", object_proto)
+    methods(
+        tt,
+        "dom.tt",
+        "createPolicy:2 isHTML:1 isScript:1 isScriptURL:1 getAttributeType:2 getPropertyType:2",
+    )
+    tt.props["emptyHTML"] = hidden(Str(""))
+    tt.props["emptyScript"] = hidden(Str(""))
+    tt.props["defaultPolicy"] = hidden(Null)
+    global_obj.props["trustedTypes"] = hidden(Obj(tt))
     global_obj.props["Image"] = hidden(native_fn("dom.Image", "Image", 0))
     for item in [
         "innerWidth=1280",
@@ -578,6 +624,10 @@ pub fn Vm.dom_setup(mut self)
         "scrollY=0",
         "pageXOffset=0",
         "pageYOffset=0",
+        "screenX=10",
+        "screenY=10",
+        "screenLeft=10",
+        "screenTop=10",
     ]
         kv := item.split("=")
         global_obj.props[kv[0]] = data(Num(string_to_number(kv[1])))
@@ -587,6 +637,8 @@ pub fn Vm.dom_setup(mut self)
         "height=800",
         "availWidth=1280",
         "availHeight=800",
+        "availLeft=0",
+        "availTop=0",
         "colorDepth=24",
         "pixelDepth=24",
     ]
@@ -609,8 +661,41 @@ pub fn Vm.dom_setup(mut self)
         "now:0 mark:1 measure:1 getEntriesByType:1 getEntriesByName:1",
     )
     performance.props["timeOrigin"] = data(Num(clock_ms))
-    performance.props["timing"] = data(Obj(plain()))
+    # Navigation Timing: every moment is the page's start, as nothing is
+    # measured.
+    timing := plain()
+    for k in [
+        "navigationStart",
+        "unloadEventStart",
+        "unloadEventEnd",
+        "redirectStart",
+        "redirectEnd",
+        "fetchStart",
+        "domainLookupStart",
+        "domainLookupEnd",
+        "connectStart",
+        "connectEnd",
+        "secureConnectionStart",
+        "requestStart",
+        "responseStart",
+        "responseEnd",
+        "domLoading",
+        "domInteractive",
+        "domContentLoadedEventStart",
+        "domContentLoadedEventEnd",
+        "domComplete",
+        "loadEventStart",
+        "loadEventEnd",
+    ]
+        timing.props[k] = data(Num(clock_ms))
+    performance.props["timing"] = data(Obj(timing))
+    memory := plain()
+    memory.props["jsHeapSizeLimit"] = data(Num(4294705152.0))
+    memory.props["totalJSHeapSize"] = data(Num(10000000.0))
+    memory.props["usedJSHeapSize"] = data(Num(8000000.0))
+    performance.props["memory"] = data(Obj(memory))
     global_obj.props["performance"] = hidden(Obj(performance))
+    host_interfaces()
 
 fn Vm.accessor(mut self, target ref JsObject, name str)
     accessor_named(target, name, name)
@@ -628,6 +713,31 @@ fn Vm.accessor_named(mut self, target ref JsObject, name str, native str)
 
 # ------------------------------------------------------------ dispatch
 
+## The user agent Garlic's scripts see: a desktop Chrome's, as pages test
+## for features by browser.
+USER_AGENT := "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+
+## Trusted Types (W3C): policies whose rules turn strings into "trusted"
+## strings; Garlic keeps them as plain strings.
+fn Vm.trusted_types(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    match m
+        "createPolicy" =>
+            policy := object("TrustedTypePolicy", proto_of("Object"))
+            policy.props["name"] = data(Str(to_string(arg_at(args, 0))?))
+            policy.props["{PRIVATE}rules"] = hidden(arg_at(args, 1))
+            methods(policy, "dom.tt.policy", "createHTML:1 createScript:1 createScriptURL:1")
+            Value.Obj(policy)
+        "policy.createHTML" | "policy.createScript" | "policy.createScriptURL" =>
+            rule_name := m.strip_prefix("policy.") else m
+            o := obj_of(this_val) else return type_error("Illegal invocation")
+            rules := (o.props.get("{PRIVATE}rules") else hidden(Undef)).value
+            rule := if is_obj(rules) then get(rules, rule_name)? else Value.Undef
+            if not is_callable(rule)
+                return type_error("Failed to execute '{rule_name}' on 'TrustedTypePolicy': Policy {to_string(get(this_val, "name")?)?}'s TrustedTypePolicyOptions did not specify a '{rule_name}' member.")
+            Value.Str(to_string(call(rule, Undef, args)?)?)
+        "isHTML" | "isScript" | "isScriptURL" => Value.Bool(false)
+        _ => Null
+
 ## The DOM's natives: `m` is the name after "dom.".
 pub fn Vm.dom_native(
     mut self,
@@ -638,6 +748,8 @@ pub fn Vm.dom_native(
 ) Value ! Thrown
     if p := m.strip_prefix("get.")
         return dom_get(p, this_val)
+    if r := browser_native(m, this_val, args)?
+        return r
     if p := m.strip_prefix("set.")
         dom_set(p, this_val, arg_at(args, 0))?
         return Undef
@@ -675,7 +787,8 @@ pub fn Vm.dom_native(
     if m == "Event"
         return make_event(to_string(arg_at(args, 0))?, arg_at(args, 1))
     if m == "illegal"
-        return type_error("Illegal constructor")
+        name := to_string(get(new_target, "name") else Value.Str("")) else ""
+        return type_error(if name == "" then "Illegal constructor" else "Failed to construct '{name}': Illegal constructor")
     if m == "Image"
         # `new Image(width, height)` (HTML §4.8.4.1).
         img := document_method("createElement", [Value.Str("img")])?
@@ -684,6 +797,10 @@ pub fn Vm.dom_native(
                 id := node_id(img) else break
                 set_attr(id, if i == 0 then "width" else "height", to_string(args[i])?)
         return img
+    if p := m.strip_prefix("tt.")
+        return trusted_types(p, this_val, args)
+    if m == "navigator.javaEnabled"
+        return Value.Bool(false)
     if m == "navigator.sendBeacon"
         # Sent as the page goes on; the browser decides whether to send it.
         body := arg_at(args, 1)
@@ -755,7 +872,7 @@ fn Vm.dom_get(mut self, p str, this_val Value) Value ! Thrown
             == "classList.length" then Value.Num(cls.len().to_float()) else Value.Str(cls.join(" "))
     if lp := p.strip_prefix("location.")
         return Value.Str(url_part(location_href, lp))
-    id := node_id(this_val) else return Undef
+    id := node_id(this_val) else return type_error("Illegal invocation")
     n := dom[id]
     if id == 0 and p == "title"
         for e in elements_under(0)
@@ -801,7 +918,7 @@ fn Vm.dom_get(mut self, p str, this_val Value) Value ! Thrown
         "nodeValue" | "data" => if n.kind == 3 or n.kind == 8 then Value.Str(n.text) else Null
         "innerHTML" => Value.Str(inner_html(id))
         "outerHTML" => Value.Str(outer_html(id))
-        "id" | "className" | "title" | "lang" | "name" | "placeholder" | "alt" | "rel" | "target" | "content" =>
+        "id" | "className" | "title" | "lang" | "name" | "placeholder" | "alt" | "rel" | "target" | "content" | "srcdoc" =>
             attr := match p
                 "className" => "class"
                 _ => p
@@ -944,7 +1061,7 @@ fn Vm.dom_set(mut self, p str, this_val Value, v Value) ! Thrown
             for c in dom[id].children
                 dom_detach(c)
             parse_into(id, to_string(v)?)
-        "id" | "title" | "lang" | "name" | "placeholder" | "alt" | "rel" | "target" | "type" | "href" | "src" | "action" | "method" | "content" =>
+        "id" | "title" | "lang" | "name" | "placeholder" | "alt" | "rel" | "target" | "type" | "href" | "src" | "action" | "method" | "content" | "srcdoc" =>
             set_attr(id, p, to_string(v)?)
         "className" => set_attr(id, "class", to_string(v)?)
         "htmlFor" => set_attr(id, "for", to_string(v)?)
@@ -1911,8 +2028,9 @@ fn Vm.window_method(mut self, m str, args List[Value]) Value ! Thrown
             mut delay := if m == "requestAnimationFrame" then 16.0 else to_number(arg_at(args, 1))?
             if is_nan(delay) or delay < 0.0
                 delay = 0.0
+            # An idle page runs idle callbacks at once, as Chrome does.
             if m == "requestIdleCallback"
-                delay = 50.0
+                delay = 1.0
             timer_seq += 1
             extra := if args.len() > 2
                 and m != "requestAnimationFrame" then args[2..] else List[Value]()
@@ -2202,6 +2320,7 @@ fn Vm.storage_method(mut self, m str, this_val Value, args List[Value]) Value ! 
 ## every change to the tree is logged in `mutations`.
 pub fn Vm.load_page(mut self, url str, budget_ms float)
     location_href = url
+    global_obj.props["isSecureContext"] = data(Bool(url.starts_with("https:") or url.starts_with("file:") or url.starts_with("http://localhost")))
     page_start_ms = clock_ms
     recording = true
     ready_state = "loading"

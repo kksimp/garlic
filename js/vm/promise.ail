@@ -49,7 +49,7 @@ pub fn Vm.closure_native(mut self, name str, rec Value, bound List[Value], lengt
     Obj(o)
 
 ## The resolve and reject functions of `p`, sharing an "already resolved" flag.
-fn Vm.resolving_functions(mut self, p ref JsObject) List[Value]
+pub fn Vm.resolving_functions(mut self, p ref JsObject) List[Value]
     rec := plain()
     rec.props["promise"] = hidden(Obj(p))
     rec.props["done"] = hidden(Bool(false))

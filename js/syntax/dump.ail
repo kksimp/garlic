@@ -17,7 +17,7 @@ pub fn canonical_json(prog Program) str
 
 fn Dump.program(self, prog Program) str
     d := self
-    d.node("Program", Pos(line: 1, col: 1), ["\"body\":{d.stmts(prog.body)}"])
+    d.node("Program", Pos(line: 1, col: 1, offset: 0), ["\"body\":{d.stmts(prog.body)}"])
 
 fn field(name str, value str) str
     "\"{name}\":{value}"

@@ -444,9 +444,17 @@ pub fn Vm.native(
                 configurable: true,
             )
             Obj(b)
+        # Source text for code, else a NativeFunction form (§20.2.3.5).
         "Function.prototype.toString" =>
-            n := if o := obj_of(this_val) then(plain_string(o, "name") else "") else ""
-            Value.Str("function {n}() \{ [native code] }")
+            o := obj_of(this_val) else return type_error(TO_STRING_THIS)
+            c := o.call else return type_error(TO_STRING_THIS)
+            match c
+                Closure(code, _, _, _, _) =>
+                    if code.text != ""
+                        return Value.Str(code.text)
+                    Value.Str("function () \{ [native code] }")
+                Native(_) => Value.Str("function {plain_string(o, "name") else ""}() \{ [native code] }")
+                Bound => Value.Str("function () \{ [native code] }")
         "Function" => function_constructor(args)
         "Object" =>
             if is_nullish(a0)
@@ -655,6 +663,8 @@ fn Vm.function_constructor(mut self, args List[Value]) Value ! Thrown
 
 ## `eval` (§19.2.1), always as an indirect eval: the code runs in the
 ## global scope, even when called by the name `eval`.
+TO_STRING_THIS := "Function.prototype.toString requires that 'this' be a Function"
+
 fn Vm.global_eval(mut self, code Value) Value ! Thrown
     source := str_of(code) else return code
     prog := syntax.parse(source) else err
@@ -678,6 +688,42 @@ fn Vm.eval_program(mut self, prog syntax.Program) Value ! Thrown
             Exp(e, _) => last = eval(e, global_env)?
             Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger =>
                 exec(s, global_env)?
+    last
+
+## `eval(...)` by that name, calling the real `eval`, is a direct eval: the
+## code runs in the caller's scope (§19.2.1.1 PerformEval).
+pub fn Vm.is_direct_eval(self, callee syntax.Expr, f Value) bool
+    match callee
+        Ident(name, _) =>
+            if name != "eval"
+                return false
+            o := obj_of(f) else return false
+            c := o.call else return false
+            match c
+                Native(n) => n == "global.eval"
+                Closure | Bound => false
+        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await =>
+            false
+
+pub fn Vm.direct_eval(mut self, code Value, env ref Env) Value ! Thrown
+    source := str_of(code) else return code
+    prog := syntax.parse(source) else err
+        return throw_error("SyntaxError", err.msg)
+    # `var`s go to the caller's function, or to a scope of their own in
+    # strict code (§19.2.1.3).
+    # `declare_var` puts them in the nearest function scope, which a strict
+    # eval's own scope counts as.
+    strict := env.strict or prog.strict
+    lex := new_env(env, strict)
+    lex.strict = strict
+    hoist_vars(prog.body, lex, true)
+    declare_block(prog.body, lex)?
+    mut last := Value.Undef
+    for s in prog.body
+        match s
+            Exp(e, _) => last = eval(e, lex)?
+            Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger =>
+                exec(s, lex)?
     last
 
 ## The value of a script made of one expression statement.

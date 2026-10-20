@@ -91,6 +91,7 @@ pub fn Vm.tick(mut self) ! Thrown
 pub fn Vm.make_error(mut self, kind str, msg str) Value
     o := object("Error", proto_of(kind))
     o.props["message"] = hidden(Str(msg))
+    o.props["stack"] = hidden(Str("{kind}: {msg}\n    at <anonymous>"))
     Obj(o)
 
 pub fn Vm.throw_error(mut self, kind str, msg str) Thrown
@@ -1026,6 +1027,8 @@ pub fn Vm.eval(mut self, e syntax.Expr, env ref Env) Value ! Thrown
                 chain_shorted = true
                 return Undef
             xs := eval_args(args, env)?
+            if is_direct_eval(callee, target.f)
+                return direct_eval(arg_at(xs, 0), env)
             call_named(target.f, target.this_val, xs, callee)
         New(callee, args, _) =>
             f := eval(callee, env)?
@@ -1689,12 +1692,14 @@ fn Vm.make_class(mut self, c syntax.Class, env ref Env) Value ! Thrown
         is_gen: false,
         strict: true,
         pos: c.pos,
+        text: c.text,
     )
     mut implicit := true
     for m in c.members
         if m.kind == "constructor"
             if f := m.f
                 ctor_fn = f
+                ctor_fn.text = c.text
                 ctor_fn.name = c.name
                 implicit = false
     # Instance fields: their keys are computed now, their values per `new`.
