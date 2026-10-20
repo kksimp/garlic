@@ -1,0 +1,252 @@
+## HTML text in and out of the script's node tree: a small fragment parser
+## for `innerHTML`, `insertAdjacentHTML`, `document.write` and `--page`, and
+## the serialisation `innerHTML` and `outerHTML` read (HTML §13.3). Garlic's
+## own parser builds the real page; this one handles markup scripts write.
+
+VOID_TAGS := [
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "source",
+    "track",
+    "wbr",
+]
+
+RAW_TAGS := ["script", "style", "textarea", "title"]
+
+## The characters an entity names, for the entities pages use most.
+fn entity(name str) str?
+    match name
+        "amp" => "&"
+        "lt" => "<"
+        "gt" => ">"
+        "quot" => "\""
+        "apos" => "'"
+        "nbsp" => "\u{a0}"
+        "copy" => "©"
+        "reg" => "®"
+        "hellip" => "…"
+        "mdash" => "—"
+        "ndash" => "–"
+        "middot" => "·"
+        "laquo" => "«"
+        "raquo" => "»"
+        "times" => "×"
+        _ => none
+
+## Text with its character references decoded.
+pub fn decode_entities(s str) str
+    if not s.contains('&')
+        return s
+    cs := s.chars()
+    mut out := List[str]()
+    mut i := 0
+    while i < cs.len()
+        if cs[i] != '&'
+            out.push("{cs[i]}")
+            i += 1
+            continue
+        mut j := i + 1
+        while j < cs.len() and j - i < 12 and (cs[j].is_alpha() or cs[j].is_digit() or cs[j] == '#')
+            j += 1
+        name := cs[i + 1..j].join("")
+        mut decoded := none
+        if name.starts_with("#x") or name.starts_with("#X")
+            mut v := 0
+            mut ok := name.chars().len() > 2
+            for c in name.chars()[2..]
+                d := c.to_digit(16) else -1
+                if d < 0
+                    ok = false
+                    break
+                v = v * 16 + d
+            if ok
+                decoded = "{char.from_code(v) else '\u{fffd}'}"
+        elif name.starts_with("#")
+            if n := name.slice(1, name.chars().len()).to_int()
+                decoded = "{char.from_code(n) else '\u{fffd}'}"
+        else
+            decoded = entity(name)
+        if d := decoded
+            out.push(d)
+            i = if j < cs.len() and cs[j] == ';' then j + 1 else j
+        else
+            out.push("&")
+            i += 1
+    out.join("")
+
+## Parse `src` and append its nodes to `parent`.
+pub fn Vm.parse_into(mut self, parent int, src str)
+    cs := src.chars()
+    mut i := 0
+    mut open := [parent]
+    while i < cs.len()
+        current := open[open.len() - 1]
+        if cs[i] == '<' and i + 1 < cs.len()
+            if starts_at(cs, i, "<!--")
+                end := find_at(cs, i + 4, "-->") else cs.len()
+                c := dom_create("#comment", 8, cs[i + 4..end].join(""))
+                dom_append(current, c)
+                i = (end + 3).min(cs.len())
+                continue
+            if cs[i + 1] == '!' or cs[i + 1] == '?'
+                end := find_at(cs, i, ">") else cs.len()
+                i = end + 1
+                continue
+            if cs[i + 1] == '/'
+                end := find_at(cs, i, ">") else cs.len()
+                name := cs[i + 2..end].join("").trim().to_lower()
+                # Close the nearest open element with that name.
+                mut k := open.len() - 1
+                while k > 0 and dom[open[k]].tag != name
+                    k -= 1
+                if k > 0
+                    while open.len() > k
+                        open.pop()
+                i = end + 1
+                continue
+            if cs[i + 1].is_alpha()
+                mut j := i + 1
+                while j < cs.len() and not cs[j].is_space() and cs[j] != '>' and cs[j] != '/'
+                    j += 1
+                tag := cs[i + 1..j].join("").to_lower()
+                el := dom_create(tag, 1, "")
+                # Attributes.
+                while j < cs.len() and cs[j] != '>'
+                    if cs[j].is_space() or cs[j] == '/'
+                        j += 1
+                        continue
+                    start := j
+                    while j < cs.len()
+                        and not cs[j].is_space()
+                        and cs[j] != '='
+                        and cs[j] != '>'
+                        and not (cs[j] == '/' and j + 1 < cs.len() and cs[j + 1] == '>')
+                        j += 1
+                    name := cs[start..j].join("").to_lower()
+                    mut value := ""
+                    while j < cs.len() and cs[j].is_space()
+                        j += 1
+                    if j < cs.len() and cs[j] == '='
+                        j += 1
+                        while j < cs.len() and cs[j].is_space()
+                            j += 1
+                        if j < cs.len() and (cs[j] == '"' or cs[j] == '\'')
+                            q := cs[j]
+                            vstart := j + 1
+                            j += 1
+                            while j < cs.len() and cs[j] != q
+                                j += 1
+                            value = decode_entities(cs[vstart..j].join(""))
+                            j += 1
+                        else
+                            vstart := j
+                            while j < cs.len() and not cs[j].is_space() and cs[j] != '>'
+                                j += 1
+                            value = decode_entities(cs[vstart..j].join(""))
+                    if name != "" and attr_of(el, name) == none
+                        set_attr(el, name, value)
+                self_closing := j > 0 and j - 1 < cs.len() and cs[j - 1] == '/'
+                i = j + 1
+                dom_append(current, el)
+                if VOID_TAGS.contains(tag) or self_closing
+                    continue
+                if RAW_TAGS.contains(tag)
+                    close := "</{tag}"
+                    end := find_at_lower(cs, i, close) else cs.len()
+                    raw := cs[i..end].join("")
+                    if raw != ""
+                        text := if tag == "textarea"
+                            or tag == "title" then decode_entities(raw) else raw
+                        dom_append(el, dom_create("#text", 3, text))
+                    after := find_at(cs, end, ">") else cs.len()
+                    i = after + 1
+                    continue
+                open.push(el)
+                continue
+        # Text up to the next tag.
+        mut j := i + 1
+        while j < cs.len() and cs[j] != '<'
+            j += 1
+        dom_append(current, dom_create("#text", 3, decode_entities(cs[i..j].join(""))))
+        i = j
+
+fn starts_at(cs List[char], i int, s str) bool
+    sc := s.chars()
+    if i + sc.len() > cs.len()
+        return false
+    for k in 0..sc.len()
+        if cs[i + k] != sc[k]
+            return false
+    true
+
+fn find_at(cs List[char], from int, s str) int?
+    mut i := from
+    while i < cs.len()
+        if starts_at(cs, i, s)
+            return i
+        i += 1
+    none
+
+fn find_at_lower(cs List[char], from int, s str) int?
+    sc := s.chars()
+    mut i := from
+    while i + sc.len() <= cs.len()
+        mut ok := true
+        for k in 0..sc.len()
+            if cs[i + k].to_lower() != sc[k]
+                ok = false
+                break
+        if ok
+            return i
+        i += 1
+    none
+
+fn escape_text(s str, in_attr bool) str
+    mut out := List[str]()
+    for c in s.chars()
+        if c == '&'
+            out.push("&amp;")
+        elif c == '\u{a0}'
+            out.push("&nbsp;")
+        elif in_attr and c == '"'
+            out.push("&quot;")
+        elif not in_attr and c == '<'
+            out.push("&lt;")
+        elif not in_attr and c == '>'
+            out.push("&gt;")
+        else
+            out.push("{c}")
+    out.join("")
+
+## A node as HTML (§13.3 "serializing HTML fragments").
+pub fn Vm.outer_html(self, id int) str
+    n := dom[id]
+    match n.kind
+        3 =>
+            p := n.parent
+            if p >= 0
+                and RAW_TAGS.contains(dom[p].tag)
+                and dom[p].tag != "textarea"
+                and dom[p].tag != "title"
+                return n.text
+            escape_text(n.text, false)
+        8 => "<!--{n.text}-->"
+        9 => inner_html(id)
+        _ =>
+            mut attrs := ""
+            for a in n.attrs
+                attrs = "{attrs} {a.name}=\"{escape_text(a.value, true)}\""
+            if VOID_TAGS.contains(n.tag)
+                return "<{n.tag}{attrs}>"
+            "<{n.tag}{attrs}>{inner_html(id)}</{n.tag}>"
+
+pub fn Vm.inner_html(self, id int) str
+    [outer_html(c) for c in dom[id].children].join("")

@@ -6,6 +6,8 @@
 #   ail run tools/garlic/js --test262 DIR [--bless]  the packed test262 parser tests (suite.ail)
 #   ail run tools/garlic/js --run [--max-steps N] FILE...  run scripts; console.log to stdout
 #   ail run tools/garlic/js --test-run DIR        each DIR/NAME.js's output against NAME.out
+#   ail run tools/garlic/js --page FILE.html      load a page: its console, then the body's HTML
+#   ail run tools/garlic/js --test-page DIR       each DIR/NAME.html's output against NAME.out
 # With several files, each output starts with a line `== PATH`. Exit 1 on
 # any SyntaxError (or failed test).
 use syntax
@@ -47,12 +49,16 @@ fn main() !
                     io.eprint(out.message)
                     failed = true
         "--test-run" => failed = not test_runs(args[0])?
+        "--page" =>
+            for path in args
+                print(run_page(fs.read_text(path)?, max_steps).join("\n"))
+        "--test-page" => failed = not test_pages(args[0])?
         _ => usage()
     if failed
         io.exit(1)
 
 fn usage()
-    io.eprint("usage: ail run tools/garlic/js (--tokens | --ast [--loc] | --check | --run [--max-steps N]) FILE... | --test DIR | --test262 DIR | --test-run DIR")
+    io.eprint("usage: ail run tools/garlic/js (--tokens | --ast [--loc] | --check | --run [--max-steps N]) FILE... | --test DIR | --test262 DIR | --test-run DIR | --page FILE | --test-page DIR")
     io.exit(2)
 
 ## One file's output for `mode`.
@@ -135,6 +141,54 @@ fn test_runs(dir str) !bool
         if out.failed
             lines.push(out.message)
         actual := lines.join("\n").trim()
+        expected := fs.read_text(path.join(dir, "{stem}.out"))?.trim()
+        if actual == expected
+            passed += 1
+        else
+            print("FAIL {file}")
+            exp_lines := expected.lines()
+            act_lines := actual.lines()
+            for i in 0..exp_lines.len().max(act_lines.len())
+                e := if i < exp_lines.len() then exp_lines[i] else "<none>"
+                a := if i < act_lines.len() then act_lines[i] else "<none>"
+                if e != a
+                    print("  line {i + 1}\n    expected: {e}\n    actual:   {a}")
+                    break
+            failures += 1
+    print("{passed} passed, {failures} failed")
+    failures == 0
+
+## The address test pages load at.
+PAGE_URL := "https://example.test/dir/page.html"
+
+## Load a page and run its scripts, then a second of virtual time: what the
+## console printed, the body's HTML, and what the page asked the browser for.
+fn run_page(html str, max_steps int) List[str]
+    mut machine := vm.new_vm()
+    machine.step_limit = max_steps
+    machine.dom_setup()
+    machine.parse_into(0, html)
+    machine.load_page(PAGE_URL, 1000.0)
+    mut lines := machine.console_out
+    bodies := machine.descendants_by_tag(0, "body")
+    lines.push("== body")
+    lines.push(if bodies.len() > 0 then machine.inner_html(bodies[0]) else "")
+    for r in machine.host_requests
+        if r.kind == "navigate"
+            body := if r.text == "" then "" else " {r.text}"
+            lines.push("== navigate {r.method} {r.url}{body}")
+    lines
+
+## Run every `NAME.html` in `dir` against `NAME.out` (written by Chromium).
+fn test_pages(dir str) !bool
+    mut passed := 0
+    mut failures := 0
+    for name in fs.list_dir(dir)?
+        if not name.ends_with(".html")
+            continue
+        file := path.join(dir, name)
+        stem := name.slice(0, name.chars().len() - 5)
+        actual := run_page(fs.read_text(file)?, 10000000).join("\n").trim()
         expected := fs.read_text(path.join(dir, "{stem}.out"))?.trim()
         if actual == expected
             passed += 1

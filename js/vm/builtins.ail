@@ -36,6 +36,24 @@ pub fn new_vm() Vm
         rand_state: 88172645463325252,
         busy: Set[int](),
         clock_ms: 1767225600000.0,
+        dom: [],
+        mutations: [],
+        recording: false,
+        node_objs: {},
+        style_objs: {},
+        field_values: {},
+        listeners: [],
+        timers: [],
+        timer_seq: 0,
+        microtasks: [],
+        started_scripts: Set[int](),
+        host_requests: [],
+        external_scripts: {},
+        cookies: {},
+        location_href: "about:blank",
+        page_start_ms: 0.0,
+        ready_state: "complete",
+        stopped: false,
     )
     vm.setup()
     vm
@@ -320,7 +338,7 @@ fn Vm.setup(mut self)
 ## Natives that `new` may call.
 pub fn native_is_ctor(name str) bool
     match name
-        "Object" | "Function" | "Array" | "String" | "Number" | "Boolean" | "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" | "Map" | "Set" | "RegExp" | "Date" =>
+        "Object" | "Function" | "Array" | "String" | "Number" | "Boolean" | "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" | "Map" | "Set" | "RegExp" | "Date" | "dom.Event" | "dom.illegal" | "dom.URL" | "dom.URLSearchParams" =>
             true
         _ => false
 
@@ -334,6 +352,8 @@ pub fn Vm.native(
     new_target Value,
 ) Value ! Thrown
     tick()?
+    if m := name.strip_prefix("dom.")
+        return dom_native(m, this_val, args, new_target)
     if m := name.strip_prefix("Array.prototype.")
         return array_method(m, this_val, args)
     if m := name.strip_prefix("String.prototype.")

@@ -150,6 +150,13 @@ pub fn Vm.put_obj(mut self, target ref JsObject, key str, v Value, receiver Valu
 pub fn Vm.set_own(mut self, o ref JsObject, key str, v Value) ! Thrown
     if o.frozen
         return
+    if o.class == "CSSStyle"
+        return style_write(o, key, v)
+    if key.starts_with("on")
+        and (o.class == "Node" or o.class == "global")
+        and dom.len() > 0
+        and is_event_handler_name(key)
+        handler_set(if o.class == "Node" then(node_id(Obj(o)) else -1) else -1, key)
     if is_array_like(o)
         if i := index_of_key(key)
             while o.elems.len() <= i

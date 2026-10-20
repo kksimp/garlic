@@ -1,0 +1,11 @@
+<!DOCTYPE html><html><head></head><body><form id="f" action="/search" method="get"><input name="q" value="garlic bread"><input type="hidden" name="hl" value="en"><input type="checkbox" name="safe" checked><input type="checkbox" name="off"><select name="s"><option value="1">one</option><option value="2" selected>two</option></select><textarea name="t">a&amp;b</textarea><input type="submit" name="btnK" value="Search" id="go"></form><script>
+const f = document.forms[0];
+console.log(f.method, f.action, f.elements === undefined);
+const q = document.querySelector("input[name=q]");
+console.log(q.value, q.type, q.name, q.form.id);
+q.value = "ail language";
+console.log(q.value, q.getAttribute("value"));
+console.log(document.querySelector("select").value, document.querySelector("select").selectedIndex, document.querySelector("textarea").value);
+f.addEventListener("submit", e => console.log("submit event", e.target.id));
+document.getElementById("go").click();
+</script></body></html>
