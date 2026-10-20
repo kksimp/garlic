@@ -2,7 +2,7 @@
 ## script: interface objects, per-tag element prototypes, navigator's
 ## getters, permissions, media and frames. Each built-in checks its
 ## receiver and fails as Chrome does, because pages call them on the wrong
-## object on purpose (garlic-js.md, "Google").
+## object on purpose (garlic-js.md, "The DOM").
 
 ## Element interfaces by tag. A tag not listed is a plain HTMLElement.
 ELEMENT_INTERFACES := "a:Anchor area:Area audio:Audio base:Base body:Body br:BR button:Button canvas:Canvas data:Data datalist:DataList details:Details dialog:Dialog div:Div dl:DList embed:Embed fieldset:FieldSet form:Form h1:Heading h2:Heading h3:Heading h4:Heading h5:Heading h6:Heading head:Head hr:HR html:Html iframe:IFrame img:Image input:Input label:Label legend:Legend li:LI link:Link map:Map menu:Menu meta:Meta meter:Meter ol:OList object:Object optgroup:OptGroup option:Option output:Output p:Paragraph picture:Picture pre:Pre progress:Progress q:Quote script:Script select:Select slot:Slot source:Source span:Span style:Style table:Table tbody:TableSection td:TableCell template:Template textarea:TextArea tfoot:TableSection th:TableCell thead:TableSection time:Time title:Title tr:TableRow track:Track ul:UList video:Video"
