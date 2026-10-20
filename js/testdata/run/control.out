@@ -1,0 +1,22 @@
+[ '2', '10', 'b', 'a' ]
+0 x
+1 y
+9
+one string one two or three other
+finally runs
+try
+finally
+5
+4
+0 0
+0 1
+1 0
+1 1
+cleanup
+caught RangeError
+42
+no binding
+in block
+1
+[ 'a', 'b', 1, 2 ] 8
+2

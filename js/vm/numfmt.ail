@@ -1,0 +1,223 @@
+## Number formatting that needs a number's exact decimal value:
+## `toFixed`, `toExponential`, `toPrecision` (ECMA-262 §21.1.3.3-5), and
+## `toString(radix)`.
+use syntax
+
+## A positive number as 0.DIGITS × 10^point, without trailing zeros.
+struct Decimal
+    digits str
+    point int
+
+## Base 10^9 digits, least significant first.
+fn big_mul(mut n List[int], k int)
+    mut carry := 0
+    for i in 0..n.len()
+        v := n[i] * k + carry
+        n[i] = v % 1000000000
+        carry = v / 1000000000
+    while carry > 0
+        n.push(carry % 1000000000)
+        carry = carry / 1000000000
+
+fn big_text(n List[int]) str
+    mut parts := List[str]()
+    mut i := n.len() - 1
+    while i > 0 and n[i] == 0
+        i -= 1
+    parts.push("{n[i]}")
+    i -= 1
+    while i >= 0
+        parts.push("{n[i]}".pad_left(9, '0'))
+        i -= 1
+    parts.join("")
+
+fn strip_zeros(digits str, point int) Decimal
+    cs := digits.chars()
+    mut a := 0
+    while a < cs.len() and cs[a] == '0'
+        a += 1
+    mut b := cs.len()
+    while b > a and cs[b - 1] == '0'
+        b -= 1
+    Decimal(digits: cs[a..b].join(""), point: point - a)
+
+## The exact value of a positive finite double: an integer mantissa times
+## a power of two, multiplied out in decimal.
+fn exact(x float) Decimal
+    e := exponent(x)
+    s := if e < -1022 then 1074 else 52 - e
+    m := (x * pow2(s)).to_int()
+    mut n := [m % 1000000000, m / 1000000000 % 1000000000, m / 1000000000000000000]
+    if s <= 0
+        for _ in 0..0 - s
+            big_mul(mut n, 2)
+        t := big_text(n)
+        return strip_zeros(t, t.chars().len())
+    # m / 2^s = m × 5^s / 10^s.
+    mut left := s
+    while left >= 13
+        big_mul(mut n, 1220703125)
+        left -= 13
+    for _ in 0..left
+        big_mul(mut n, 5)
+    t := big_text(n)
+    strip_zeros(t, t.chars().len() - s)
+
+## The shortest digits that read back as `x` (what `String(x)` shows).
+fn shortest(x float) Decimal
+    text := "{x}"
+    parts := text.split("e")
+    mut mant := parts[0]
+    exp_part := if parts.len() > 1 then(parts[1].replace("+", "").to_int() else 0) else 0
+    dot := mant.find(".") else mant.chars().len()
+    mant = mant.replace(".", "")
+    strip_zeros(mant, dot + exp_part)
+
+## Keep `keep` significant digits, rounding half up: of two nearest
+## candidates, the spec takes the larger.
+fn round_at(d Decimal, keep int) Decimal
+    cs := d.digits.chars()
+    if keep >= cs.len()
+        return d
+    if keep < 0
+        return Decimal(digits: "", point: d.point)
+    mut out := cs[0..keep]
+    if cs[keep].code() >= '5'.code()
+        mut i := keep - 1
+        while i >= 0 and out[i] == '9'
+            out[i] = '0'
+            i -= 1
+        if i < 0
+            out.insert(0, '1')
+            return strip_zeros(out.join(""), d.point + 1)
+        out[i] = char.from_code(out[i].code() + 1) else '0'
+    strip_zeros(out.join(""), d.point)
+
+## Digit `i` of the significand, or "0" past its end.
+fn digit_at(cs List[char], i int) str
+    if i >= 0 and i < cs.len()
+        return "{cs[i]}"
+    "0"
+
+fn fixed_text(d Decimal, frac int) str
+    cs := d.digits.chars()
+    mut int_part := ""
+    if d.point <= 0
+        int_part = "0"
+    else
+        int_part = [digit_at(cs, i) for i in 0..d.point].join("")
+    if frac == 0
+        return int_part
+    f := [digit_at(cs, d.point + i) for i in 0..frac].join("")
+    "{int_part}.{f}"
+
+## Number.prototype.toFixed (§21.1.3.3).
+pub fn to_fixed(x float, frac int) str
+    if not is_finite(x) or x.abs() >= 1e21
+        return syntax.number_to_string(x)
+    if x == 0.0
+        return fixed_text(Decimal(digits: "", point: 0), frac)
+    sign := if x < 0.0 then "-" else ""
+    d := round_at(exact(x.abs()), exact(x.abs()).point + frac)
+    t := fixed_text(d, frac)
+    # (-0.0001).toFixed(2) is "-0.00": the sign stays.
+    "{sign}{t}"
+
+fn exp_text(d Decimal, digits int) str
+    cs := d.digits.chars()
+    first := digit_at(cs, 0)
+    rest := [digit_at(cs, i) for i in 1..digits].join("")
+    e := d.point - 1
+    es := if e < 0 then "-{0 - e}" else "+{e}"
+    if rest == ""
+        return "{first}e{es}"
+    "{first}.{rest}e{es}"
+
+## Number.prototype.toExponential (§21.1.3.2); `frac` none means as many
+## digits as it takes.
+pub fn to_exponential(x float, frac int?) str
+    if not is_finite(x)
+        return syntax.number_to_string(x)
+    sign := if x < 0.0 then "-" else ""
+    a := x.abs()
+    if a == 0.0
+        n := frac else 0
+        z := if n > 0 then ".{"0".repeat(n)}" else ""
+        return "{sign}0{z}e+0"
+    if f := frac
+        d := round_at(exact(a), f + 1)
+        return "{sign}{exp_text(d, f + 1)}"
+    d := shortest(a)
+    "{sign}{exp_text(d, d.digits.chars().len())}"
+
+## Number.prototype.toPrecision (§21.1.3.5).
+pub fn to_precision(x float, p int) str
+    if not is_finite(x)
+        return syntax.number_to_string(x)
+    sign := if x < 0.0 then "-" else ""
+    a := x.abs()
+    if a == 0.0
+        z := if p > 1 then ".{"0".repeat(p - 1)}" else ""
+        return "{sign}0{z}"
+    d := round_at(exact(a), p)
+    e := d.point - 1
+    if e < -6 or e >= p
+        return "{sign}{exp_text(d, p)}"
+    "{sign}{fixed_text(d, p - d.point)}"
+
+## Number.prototype.toString(radix) for a radix other than 10, as V8 writes
+## it: the fraction gets digits until it is within half an ulp.
+pub fn to_radix(value float, radix int) str
+    if value != value
+        return "NaN"
+    if not is_finite(value)
+        return if value > 0.0 then "Infinity" else "-Infinity"
+    if value == 0.0
+        return "0"
+    chars := "0123456789abcdefghijklmnopqrstuvwxyz".chars()
+    a := value.abs()
+    mut integer := a.floor()
+    mut fraction := a - integer
+    r := radix.to_float()
+    mut delta := 0.5 * ulp(a)
+    if delta < 5e-324
+        delta = 5e-324
+    mut frac_digits := List[int]()
+    if fraction >= delta
+        while true
+            fraction = fraction * r
+            delta = delta * r
+            digit := fraction.floor()
+            frac_digits.push(digit.to_int())
+            fraction = fraction - digit
+            if fraction > 0.5 or (fraction == 0.5 and digit.to_int().bit_and(1) == 1)
+                if fraction + delta > 1.0
+                    # Round up, carrying into earlier digits.
+                    while true
+                        if frac_digits.len() == 0
+                            integer = integer + 1.0
+                            break
+                        last := frac_digits.pop() else 0
+                        if last + 1 < radix
+                            frac_digits.push(last + 1)
+                            break
+                    break
+            if fraction < delta
+                break
+    mut int_digits := List[char]()
+    while integer / r >= 9007199254740992.0
+        integer = integer / r
+        int_digits.push('0')
+    while true
+        rem := fmod(integer, r)
+        int_digits.push(chars[rem.to_int()])
+        integer = (integer - rem) / r
+        if integer <= 0.0
+            break
+    int_digits.reverse()
+    sign := if value < 0.0 then "-" else ""
+    head := int_digits.join("")
+    if frac_digits.len() == 0
+        return "{sign}{head}"
+    tail := [chars[d] for d in frac_digits].join("")
+    "{sign}{head}.{tail}"

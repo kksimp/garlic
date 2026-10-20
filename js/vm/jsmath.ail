@@ -1,0 +1,403 @@
+## The floating-point functions of `Math` (ECMA-262 §21.3.2), written here
+## because AIL's `float` has only `abs`, `floor`, `ceil`, `round` and `sqrt`.
+## Each reduces its argument to a small range and sums a series; results are
+## within an ulp or two of the correctly rounded value, not always the same
+## last bit as V8's.
+
+pub PI := 3.141592653589793
+pub LN2 := 0.6931471805599453
+pub LN10 := 2.302585092994046
+
+LN2_HI := 0.6931471803691238
+LN2_LO := 1.9082149292705877e-10
+PIO2_1 := 1.5707963267341256
+PIO2_2 := 6.077100506506192e-11
+PIO2_3 := 2.0222662487959506e-21
+
+pub fn is_nan(x float) bool
+    x != x
+
+pub fn is_finite(x float) bool
+    x == x and x <= 1.7976931348623157e308 and x >= -1.7976931348623157e308
+
+pub fn nan() float
+    0.0 / 0.0
+
+pub fn infinity() float
+    1.0 / 0.0
+
+## The remainder of `a / b` with the sign of `a` (§6.1.6.1.6).
+pub fn fmod(a float, b float) float
+    if is_nan(a) or is_nan(b) or not is_finite(a) or b == 0.0
+        return nan()
+    if not is_finite(b) or a == 0.0
+        return a
+    q := a / b
+    t := if q < 0.0 then 0.0 - (0.0 - q).floor() else q.floor()
+    r := a - t * b
+    # Large quotients lose bits; step the remainder back into range.
+    mut fixed := r
+    ab := b.abs()
+    while fixed.abs() >= ab
+        fixed = if (fixed > 0.0) == (b > 0.0) then fixed - b else fixed + b
+    if a < 0.0 and fixed > 0.0
+        fixed = fixed - ab
+    if a > 0.0 and fixed < 0.0
+        fixed = fixed + ab
+    fixed
+
+## 2 to the power `k`, exactly, for any `k` a double can reach.
+pub fn pow2(k int) float
+    mut r := 1.0
+    mut n := k
+    if n > 0
+        while n >= 64
+            r = r * 18446744073709551616.0
+            n -= 64
+        while n > 0
+            r = r * 2.0
+            n -= 1
+    else
+        # Steps of 2^-64 then 2^-1 keep subnormal results exact.
+        while n <= -64 and r > 1e-280
+            r = r * 5.421010862427522e-20
+            n += 64
+        while n < 0
+            r = r * 0.5
+            n += 1
+    r
+
+## The exponent `e` with 2^e <= |x| < 2^(e+1), for finite non-zero `x`.
+pub fn exponent(x float) int
+    mut a := x.abs()
+    mut e := 0
+    while a >= 18446744073709551616.0
+        a = a / 18446744073709551616.0
+        e += 64
+    while a >= 2.0
+        a = a / 2.0
+        e += 1
+    while a < 5.421010862427522e-20
+        a = a * 18446744073709551616.0
+        e -= 64
+    while a < 1.0
+        a = a * 2.0
+        e -= 1
+    e
+
+## The distance from `x` to the next double away from zero.
+pub fn ulp(x float) float
+    if x == 0.0
+        return 5e-324
+    e := exponent(x)
+    if e < -1022
+        return 5e-324
+    pow2(e - 52)
+
+## Truncation toward zero.
+pub fn trunc(x float) float
+    if x != x or not is_finite(x)
+        return x
+    if x < 0.0
+        return 0.0 - (0.0 - x).floor()
+    x.floor()
+
+pub fn exp(x float) float
+    if x != x
+        return x
+    if x > 709.782712893384
+        return infinity()
+    if x < -745.1332191019412
+        return 0.0
+    k := (x / LN2 + (if x < 0.0 then - 0.5 else 0.5))
+    ki := trunc(k)
+    r := (x - ki * LN2_HI) - ki * LN2_LO
+    # exp(r) for |r| <= ln2 / 2 by its series, summed small terms first.
+    mut term := 1.0
+    mut terms := List[float]()
+    for i in 1..20
+        term = term * r / i.to_float()
+        terms.push(term)
+    mut sum := 0.0
+    mut j := terms.len() - 1
+    while j >= 0
+        sum = sum + terms[j]
+        j -= 1
+    y := 1.0 + sum
+    n := ki.to_int()
+    # Scale in two steps so that 2^n can't overflow on its own.
+    if n > 1000
+        return y * pow2(n - 100) * pow2(100)
+    if n < -1000
+        return y * pow2(n + 100) * pow2(-100)
+    y * pow2(n)
+
+pub fn log(x float) float
+    if x != x or x < 0.0
+        return nan()
+    if x == 0.0
+        return 0.0 - infinity()
+    if not is_finite(x)
+        return x
+    mut e := exponent(x)
+    mut m := x / pow2(e)
+    if e < -1022
+        m = (x * pow2(60)) / pow2(e + 60)
+    if m > 1.4142135623730951
+        m = m / 2.0
+        e += 1
+    # log(m) = 2 atanh(s), s = (m - 1) / (m + 1), |s| < 0.172.
+    s := (m - 1.0) / (m + 1.0)
+    s2 := s * s
+    mut sum := 0.0
+    mut k := 41
+    while k >= 3
+        sum = (sum + 1.0 / k.to_float()) * s2
+        k -= 2
+    lm := 2.0 * s + 2.0 * s * sum
+    ef := e.to_float()
+    ef * LN2_HI + (ef * LN2_LO + lm)
+
+pub fn log2(x float) float
+    r := log(x) / LN2
+    near := r.round()
+    if is_finite(r) and (r - near).abs() < 1e-9 and pow2(near.to_int()) == x
+        return near
+    r
+
+pub fn log10(x float) float
+    r := log(x) / LN10
+    near := r.round()
+    if is_finite(r) and (r - near).abs() < 1e-9 and near.abs() < 300.0
+        if pow_int(10.0, near.to_int()) == x
+            return near
+    r
+
+## x^n by repeated squaring.
+fn pow_int(x float, n int) float
+    mut result := 1.0
+    mut base := x
+    mut k := if n < 0 then 0 - n else n
+    while k > 0
+        if k.bit_and(1) == 1
+            result = result * base
+        base = base * base
+        k = k.shr(1)
+    if n < 0
+        return 1.0 / result
+    result
+
+## Number::exponentiate (§6.1.6.1.3).
+pub fn pow(base float, e float) float
+    if e != e
+        return nan()
+    if e == 0.0
+        return 1.0
+    if base != base
+        return nan()
+    ab := base.abs()
+    if not is_finite(e)
+        if ab == 1.0
+            return nan()
+        if (ab > 1.0) == (e > 0.0)
+            return infinity()
+        return 0.0
+    is_int := e.floor() == e
+    if base == 0.0 or not is_finite(base)
+        odd := is_int and e.abs() < 9007199254740992.0 and fmod(e, 2.0) != 0.0
+        negative := base < 0.0 or (base == 0.0 and 1.0 / base < 0.0)
+        big := (base == 0.0) == (e < 0.0)
+        r := if big then infinity() else 0.0
+        if negative and odd
+            return 0.0 - r
+        return r
+    if is_int and e.abs() < 2147483648.0
+        return pow_int(base, e.to_int())
+    if e == 0.5 and base >= 0.0
+        return base.sqrt()
+    if base < 0.0
+        return nan()
+    exp(e * log(base))
+
+## sin and cos of the reduced argument `r`, |r| <= pi/4.
+fn sin_small(r float) float
+    r2 := r * r
+    mut sum := 0.0
+    mut k := 25
+    while k >= 3
+        sum = (0.0 - 1.0 - sum) * r2 / ((k - 1) * k).to_float()
+        k -= 2
+    r + r * sum
+
+fn cos_small(r float) float
+    r2 := r * r
+    mut sum := 0.0
+    mut k := 24
+    while k >= 2
+        sum = (0.0 - 1.0 - sum) * r2 / ((k - 1) * k).to_float()
+        k -= 2
+    1.0 + sum
+
+## x - n pi/2 and n mod 4, by Cody and Waite's three-part pi/2.
+fn reduce(x float) Reduced
+    n := (x / (PI / 2.0)).round()
+    r := ((x - n * PIO2_1) - n * PIO2_2) - n * PIO2_3
+    q := fmod(n, 4.0)
+    Reduced(r: r, quadrant: (if q < 0.0 then q + 4.0 else q).to_int())
+
+struct Reduced
+    r float
+    quadrant int
+
+pub fn sin(x float) float
+    if not is_finite(x)
+        return nan()
+    if x == 0.0
+        return x
+    red := reduce(x)
+    match red.quadrant
+        0 => sin_small(red.r)
+        1 => cos_small(red.r)
+        2 => 0.0 - sin_small(red.r)
+        _ => 0.0 - cos_small(red.r)
+
+pub fn cos(x float) float
+    if not is_finite(x)
+        return nan()
+    red := reduce(x)
+    match red.quadrant
+        0 => cos_small(red.r)
+        1 => 0.0 - sin_small(red.r)
+        2 => 0.0 - cos_small(red.r)
+        _ => sin_small(red.r)
+
+pub fn tan(x float) float
+    if not is_finite(x)
+        return nan()
+    if x == 0.0
+        return x
+    red := reduce(x)
+    s := sin_small(red.r)
+    c := cos_small(red.r)
+    if red.quadrant.bit_and(1) == 0
+        return s / c
+    0.0 - c / s
+
+pub fn atan(x float) float
+    if x != x or x == 0.0
+        return x
+    if not is_finite(x)
+        return if x > 0.0 then PI / 2.0 else 0.0 - PI / 2.0
+    if x < 0.0
+        return 0.0 - atan(0.0 - x)
+    if x > 1.0
+        return PI / 2.0 - atan(1.0 / x)
+    # Above tan(pi/12), shift by pi/6: atan(x) = pi/6 + atan((x√3 - 1)/(√3 + x)).
+    if x > 0.2679491924311227
+        root3 := 1.7320508075688772
+        return PI / 6.0 + atan((x * root3 - 1.0) / (root3 + x))
+    x2 := x * x
+    mut sum := 0.0
+    mut k := 41
+    while k >= 3
+        sum = (1.0 / k.to_float() - sum) * x2
+        k -= 2
+    x - x * sum
+
+pub fn atan2(y float, x float) float
+    if y != y or x != x
+        return nan()
+    if y == 0.0
+        neg_y := 1.0 / y < 0.0
+        if x > 0.0 or (x == 0.0 and 1.0 / x > 0.0)
+            return y
+        return if neg_y then 0.0 - PI else PI
+    if x == 0.0
+        return if y > 0.0 then PI / 2.0 else 0.0 - PI / 2.0
+    if not is_finite(x)
+        if not is_finite(y)
+            q := if x > 0.0 then PI / 4.0 else 3.0 * PI / 4.0
+            return if y > 0.0 then q else 0.0 - q
+        if x > 0.0
+            return if y > 0.0 then 0.0 else -0.0
+        return if y > 0.0 then PI else 0.0 - PI
+    if not is_finite(y)
+        return if y > 0.0 then PI / 2.0 else 0.0 - PI / 2.0
+    a := atan((y / x).abs())
+    if x > 0.0
+        return if y > 0.0 then a else 0.0 - a
+    if y > 0.0 then PI - a else a - PI
+
+pub fn asin(x float) float
+    if x != x or x > 1.0 or x < -1.0
+        return nan()
+    if x == 1.0 or x == -1.0
+        return x * PI / 2.0
+    atan2(x, (1.0 - x * x).sqrt())
+
+pub fn acos(x float) float
+    if x != x or x > 1.0 or x < -1.0
+        return nan()
+    atan2((1.0 - x * x).sqrt(), x)
+
+pub fn expm1(x float) float
+    if x.abs() < 1e-5
+        return x + x * x / 2.0 + x * x * x / 6.0
+    exp(x) - 1.0
+
+pub fn log1p(x float) float
+    if x.abs() < 1e-4
+        return x - x * x / 2.0 + x * x * x / 3.0
+    log(1.0 + x)
+
+pub fn sinh(x float) float
+    if x.abs() < 1e-5
+        return x
+    (exp(x) - exp(0.0 - x)) / 2.0
+
+pub fn cosh(x float) float
+    (exp(x) + exp(0.0 - x)) / 2.0
+
+pub fn tanh(x float) float
+    if x != x or x == 0.0
+        return x
+    if x > 22.0
+        return 1.0
+    if x < -22.0
+        return -1.0
+    e2 := exp(2.0 * x)
+    (e2 - 1.0) / (e2 + 1.0)
+
+pub fn cbrt(x float) float
+    if x != x or x == 0.0 or not is_finite(x)
+        return x
+    a := x.abs()
+    mut r := exp(log(a) / 3.0)
+    # Two Newton steps, then prefer an exact cube root.
+    r = r - (r * r * r - a) / (3.0 * r * r)
+    near := r.round()
+    if near * near * near == a
+        r = near
+    if x < 0.0 then 0.0 - r else r
+
+@test fn exp_and_log_are_close()
+    assert((exp(1.0) - 2.718281828459045).abs() < 1e-15)
+    assert(log(2.718281828459045) == 1.0)
+    assert(log(1.0) == 0.0)
+    assert(log10(1000.0) == 3.0)
+    assert(log2(8.0) == 3.0)
+    assert((log(10.0) - LN10).abs() < 1e-15)
+
+@test fn trig_is_close()
+    assert((sin(1.0) - 0.8414709848078965).abs() < 2e-16)
+    assert((cos(1.0) - 0.5403023058681398).abs() < 2e-16)
+    assert((atan(1.0) - PI / 4.0).abs() < 2e-16)
+    assert(sin(0.0) == 0.0)
+    assert((atan2(1.0, -1.0) - 3.0 * PI / 4.0).abs() < 1e-15)
+
+@test fn pow_is_exact_on_integers()
+    assert(pow(2.0, 10.0) == 1024.0)
+    assert(pow(2.0, -1.0) == 0.5)
+    assert(pow(9.0, 0.5) == 3.0)
+    assert(pow(0.0, -1.0) == infinity())
+    assert(pow(-8.0, 1.0 / 3.0) != pow(-8.0, 1.0 / 3.0))

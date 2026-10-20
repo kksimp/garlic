@@ -1,0 +1,26 @@
+{"s":"q\"uote\n","n":1.5,"b":true,"z":null,"a":[1,"two",{"three":3}],"d":"1970-01-01T00:00:00.000Z"}
+{
+  "s": "q\"uote\n",
+  "n": 1.5,
+  "b": true,
+  "z": null,
+  "a": [
+    1,
+    "two",
+    {
+      "three": 3
+    }
+  ],
+  "d": "1970-01-01T00:00:00.000Z"
+}
+[null,null,null,null] "x" undefined null
+{"a":1,"c":3} {"a":10,"b":"x"}
+{"replaced":true} {
+--"a": [],
+--"b": {}
+}
+{ x: [ 1, 2, { y: 'A' } ], e: 100, neg: -0.5, t: true } A [] s
+{ a: 1, b: 2 }
+SyntaxError
+SyntaxError Unexpected end of JSON input
+TypeError true

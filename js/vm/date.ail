@@ -1,0 +1,314 @@
+## Date (ECMA-262 §21.4). The local time zone is UTC, and `Date.now()`
+## reads the interpreter's clock (`Vm.clock_ms`), so a run repeats exactly.
+use syntax
+
+MS_PER_DAY := 86400000.0
+
+## Days since 1970-01-01 of a proleptic Gregorian date (month 1-12).
+fn days_from_civil(year int, month int, day int) int
+    y := if month <= 2 then year - 1 else year
+    era := (if y >= 0 then y else y - 399) / 400
+    yoe := y - era * 400
+    mp := (month + 9) % 12
+    doy := (153 * mp + 2) / 5 + day - 1
+    doe := yoe * 365 + yoe / 4 - yoe / 100 + doy
+    era * 146097 + doe - 719468
+
+struct Civil
+    year int
+    month int
+    day int
+
+fn civil_from_days(z0 int) Civil
+    z := z0 + 719468
+    era := (if z >= 0 then z else z - 146096) / 146097
+    doe := z - era * 146097
+    yoe := (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    doy := doe - (365 * yoe + yoe / 4 - yoe / 100)
+    mp := (5 * doy + 2) / 153
+    day := doy - (153 * mp + 2) / 5 + 1
+    month := if mp < 10 then mp + 3 else mp - 9
+    Civil(year: yoe + era * 400 + (if month <= 2 then 1 else 0), month: month, day: day)
+
+## The parts of a time value: year, month 0-11, date, hours, minutes,
+## seconds, milliseconds, weekday 0-6.
+struct DateParts
+    year int
+    month int
+    date int
+    hours int
+    minutes int
+    seconds int
+    ms int
+    weekday int
+
+fn parts_of(t float) DateParts
+    days := (t / MS_PER_DAY).floor()
+    in_day := (t - days * MS_PER_DAY).to_int()
+    c := civil_from_days(days.to_int())
+    d := days.to_int()
+    wd := (d + 4) % 7
+    DateParts(
+        year: c.year,
+        month: c.month - 1,
+        date: c.day,
+        hours: in_day / 3600000,
+        minutes: in_day / 60000 % 60,
+        seconds: in_day / 1000 % 60,
+        ms: in_day % 1000,
+        weekday: if wd < 0 then wd + 7 else wd,
+    )
+
+## MakeDate from components, with month overflow (§21.4.1.28-29).
+fn make_time(year float, month float, date float, h float, mi float, s float, ms float) float
+    if year.abs() > 400000.0 or month.abs() > 4800000.0 or date.abs() > 1e8
+        return nan()
+    if not (is_finite(year) and is_finite(month) and is_finite(date) and is_finite(h) and is_finite(mi) and is_finite(s) and is_finite(ms))
+        return nan()
+    ym := year + (month / 12.0).floor()
+    mn := fmod(month, 12.0)
+    m := if mn < 0.0 then mn + 12.0 else mn
+    days := days_from_civil(
+        trunc(ym).to_int(),
+        trunc(m).to_int() + 1,
+        1,
+    ).to_float() + trunc(date) - 1.0
+    time_clip(days * MS_PER_DAY + trunc(h) * 3600000.0 + trunc(mi) * 60000.0 + trunc(s) * 1000.0 + trunc(ms))
+
+## TimeClip (§21.4.1.31).
+fn time_clip(t float) float
+    if not is_finite(t) or t.abs() > 8.64e15
+        return nan()
+    trunc(t) + 0.0
+
+fn pad2(n int) str
+    "{n}".pad_left(2, '0')
+
+## Date.prototype.toISOString's text.
+pub fn iso_date(t float) str
+    if not is_finite(t)
+        return "Invalid Date"
+    p := parts_of(t)
+    mut y := "+{"{p.year}".pad_left(6, '0')}"
+    if p.year < 0
+        y = "-{"{0 - p.year}".pad_left(6, '0')}"
+    elif p.year <= 9999
+        y = "{p.year}".pad_left(4, '0')
+    "{y}-{pad2(p.month + 1)}-{pad2(p.date)}T{pad2(p.hours)}:{pad2(p.minutes)}:{pad2(p.seconds)}.{"{p.ms}".pad_left(3, '0')}Z"
+
+DAYS := ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+MONTHS := ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+fn date_text(t float) str
+    if not is_finite(t)
+        return "Invalid Date"
+    p := parts_of(t)
+    "{DAYS[p.weekday]} {MONTHS[p.month]} {pad2(p.date)} {"{p.year}".pad_left(4, '0')} {pad2(p.hours)}:{pad2(p.minutes)}:{pad2(p.seconds)} GMT+0000 (Coordinated Universal Time)"
+
+fn utc_text(t float) str
+    if not is_finite(t)
+        return "Invalid Date"
+    p := parts_of(t)
+    "{DAYS[p.weekday]}, {pad2(p.date)} {MONTHS[p.month]} {"{p.year}".pad_left(4, '0')} {pad2(p.hours)}:{pad2(p.minutes)}:{pad2(p.seconds)} GMT"
+
+## Date.parse: the ISO format of §21.4.1.32 and the toString and
+## toUTCString forms; NaN otherwise.
+pub fn parse_date(text str) float
+    s := text.trim()
+    cs := s.chars()
+    mut i := 0
+    mut sign := 1
+    if i < cs.len() and (cs[i] == '+' or cs[i] == '-')
+        sign = if cs[i] == '-' then - 1 else 1
+        i += 1
+    year_len := if i > 0 then 6 else 4
+    if not digits_at(cs, i, year_len)
+        return parse_text_date(s)
+    year := sign * (cs[i..i + year_len].join("").to_int() else 0)
+    i += year_len
+    mut month := 1
+    mut day := 1
+    if i < cs.len() and cs[i] == '-'
+        if not digits_at(cs, i + 1, 2)
+            return nan()
+        month = cs[i + 1..i + 3].join("").to_int() else 1
+        i += 3
+        if i < cs.len() and cs[i] == '-'
+            if not digits_at(cs, i + 1, 2)
+                return nan()
+            day = cs[i + 1..i + 3].join("").to_int() else 1
+            i += 3
+    if month < 1 or month > 12 or day < 1 or day > 31
+        return nan()
+    mut h := 0
+    mut mi := 0
+    mut sec := 0
+    mut ms := 0
+    mut offset := 0
+    if i < cs.len() and (cs[i] == 'T' or cs[i] == 't' or cs[i] == ' ')
+        if not digits_at(
+            cs,
+            i + 1,
+            2,
+        ) or i + 3 >= cs.len() or cs[i + 3] != ':' or not digits_at(cs, i + 4, 2)
+            return nan()
+        h = cs[i + 1..i + 3].join("").to_int() else 0
+        mi = cs[i + 4..i + 6].join("").to_int() else 0
+        i += 6
+        if i < cs.len() and cs[i] == ':'
+            if not digits_at(cs, i + 1, 2)
+                return nan()
+            sec = cs[i + 1..i + 3].join("").to_int() else 0
+            i += 3
+            if i < cs.len() and cs[i] == '.'
+                mut j := i + 1
+                while j < cs.len() and cs[j].is_digit()
+                    j += 1
+                frac := "{cs[i + 1..j].join("")}000".slice(0, 3)
+                ms = frac.to_int() else 0
+                i = j
+        if i < cs.len() and (cs[i] == 'Z' or cs[i] == 'z')
+            i += 1
+        elif i < cs.len() and (cs[i] == '+' or cs[i] == '-')
+            osign := if cs[i] == '-' then - 1 else 1
+            if not digits_at(cs, i + 1, 2)
+                return nan()
+            oh := cs[i + 1..i + 3].join("").to_int() else 0
+            mut om := 0
+            if i + 3 < cs.len() and cs[i + 3] == ':' and digits_at(cs, i + 4, 2)
+                om = cs[i + 4..i + 6].join("").to_int() else 0
+                i += 6
+            elif digits_at(cs, i + 3, 2)
+                om = cs[i + 3..i + 5].join("").to_int() else 0
+                i += 5
+            else
+                i += 3
+            offset = osign * (oh * 60 + om)
+    if i != cs.len() or h > 24 or mi > 59 or sec > 59
+        return nan()
+    t := make_time(
+        year.to_float(),
+        (month - 1).to_float(),
+        day.to_float(),
+        h.to_float(),
+        mi.to_float(),
+        sec.to_float(),
+        ms.to_float(),
+    )
+    t - offset.to_float() * 60000.0
+
+## "Thu Jan 01 2026 00:00:00 GMT+0000" and "Thu, 01 Jan 2026 00:00:00 GMT".
+fn parse_text_date(s str) float
+    words := [w for w in s.replace(",", " ").split(" ") if w != ""]
+    mut month := -1
+    mut day := -1
+    mut year := -1
+    mut clock := "00:00:00"
+    for w in words
+        if MONTHS.contains(w.slice(0, 3)) and w.chars().len() >= 3
+            month = MONTHS.index_of(w.slice(0, 3)) else -1
+        elif w.contains(":")
+            clock = w
+        elif n := w.to_int()
+            if day < 0 and n <= 31 and w.chars().len() <= 2
+                day = n
+            else
+                year = n
+    if month < 0 or day < 0 or year < 0
+        return nan()
+    hm := clock.split(":")
+    h := hm[0].to_int() else 0
+    mi := if hm.len() > 1 then(hm[1].to_int() else 0) else 0
+    sec := if hm.len() > 2 then(hm[2].to_int() else 0) else 0
+    make_time(
+        year.to_float(),
+        month.to_float(),
+        day.to_float(),
+        h.to_float(),
+        mi.to_float(),
+        sec.to_float(),
+        0.0,
+    )
+
+fn Vm.date_components(mut self, args List[Value]) float ! Thrown
+    mut nums := List[float]()
+    for a in args
+        nums.push(to_number(a)?)
+    while nums.len() < 7
+        nums.push(if nums.len() == 2 then 1.0 else 0.0)
+    mut year := nums[0]
+    if is_finite(year)
+        y := trunc(year)
+        if y >= 0.0 and y <= 99.0
+            year = 1900.0 + y
+    make_time(year, nums[1], nums[2], nums[3], nums[4], nums[5], nums[6])
+
+fn Vm.date_utc(mut self, args List[Value]) Value ! Thrown
+    Value.Num(date_components(args)?)
+
+fn Vm.date_constructor(mut self, args List[Value], new_target Value) Value ! Thrown
+    if new_target == Undef
+        return Value.Str(date_text(clock_ms))
+    mut t := clock_ms
+    if args.len() == 1
+        a := args[0]
+        if o := obj_of(a)
+            if o.class == "Date"
+                t = num_of(o.prim) else nan()
+            else
+                p := to_primitive(a, "default")?
+                t = if s := str_of(p) then parse_date(s) else time_clip(to_number(p)?)
+        elif s := str_of(a)
+            t = parse_date(s)
+        else
+            t = time_clip(to_number(a)?)
+    elif args.len() > 1
+        t = date_components(args)?
+    proto := get(new_target, "prototype")?
+    o := object("Date", if is_obj(proto) then proto else proto_of("Date"))
+    o.prim = Num(t)
+    Value.Obj(o)
+
+fn Vm.date_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    o := this_class(this_val, "Date", m)?
+    t := num_of(o.prim) else nan()
+    if m == "setTime"
+        nt := time_clip(to_number(arg_at(args, 0))?)
+        o.prim = Num(nt)
+        return Value.Num(nt)
+    if m == "toISOString" or m == "toJSON"
+        if not is_finite(t)
+            if m == "toJSON"
+                return Null
+            return range_error("Invalid time value")
+        return Value.Str(iso_date(t))
+    if m == "toString"
+        return Value.Str(date_text(t))
+    if m == "toUTCString"
+        return Value.Str(utc_text(t))
+    if m == "getTime" or m == "valueOf"
+        return Value.Num(t)
+    if m == "getTimezoneOffset"
+        return Value.Num(if is_finite(t) then 0.0 else nan())
+    if not is_finite(t)
+        return Value.Num(nan())
+    p := parts_of(t)
+    n := match m.replace("UTC", "")
+        "getFullYear" => p.year
+        "getMonth" => p.month
+        "getDate" => p.date
+        "getDay" => p.weekday
+        "getHours" => p.hours
+        "getMinutes" => p.minutes
+        "getSeconds" => p.seconds
+        "getMilliseconds" => p.ms
+        _ => return type_error("Date.prototype.{m} is not supported yet")
+    Value.Num(n.to_float())
+
+fn digits_at(cs List[char], a int, n int) bool
+    if cs.len() < a + n
+        return false
+    for c in cs[a..a + n]
+        if not c.is_digit()
+            return false
+    true

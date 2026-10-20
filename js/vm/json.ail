@@ -1,0 +1,307 @@
+## JSON.parse and JSON.stringify (ECMA-262 §25.5).
+use syntax
+
+struct JsonReader
+    cs List[char]
+    pos int
+
+fn Vm.json_error(mut self, r JsonReader, text str) Thrown
+    if r.pos >= r.cs.len()
+        return throw_error("SyntaxError", "Unexpected end of JSON input")
+    c := r.cs[r.pos]
+    shown := if r.cs.len() <= 40 then "\"{text}\"" else "\"{r.cs[0..37].join("")}...\""
+    throw_error("SyntaxError", "Unexpected token '{c}', {shown} is not valid JSON")
+
+fn skip_ws(mut r JsonReader)
+    while r.pos < r.cs.len()
+        c := r.cs[r.pos]
+        if c != ' ' and c != '\t' and c != '\n' and c != '\r'
+            break
+        r.pos += 1
+
+## JSON.parse(text, reviver) (§25.5.1).
+fn Vm.json_parse(mut self, text str, reviver Value) Value ! Thrown
+    mut r := JsonReader(cs: text.chars(), pos: 0)
+    v := json_value(mut r, text)?
+    skip_ws(mut r)
+    if r.pos < r.cs.len()
+        return json_error(r, text)
+    if is_callable(reviver)
+        root := plain()
+        root.props[""] = data(v)
+        return revive(Obj(root), "", reviver)
+    v
+
+fn Vm.revive(mut self, holder Value, key str, reviver Value) Value ! Thrown
+    v := get(holder, key)?
+    if o := obj_of(v)
+        keys := if o.class == "Array" then[Value.Str("{i}") for i in 0..o.elems.len()] else [
+            Value.Str(k)
+            for k in enum_keys(o)
+        ]
+        for kv in keys
+            k := str_of(kv) else ""
+            nv := revive(v, k, reviver)?
+            if nv == Undef
+                delete(o, k)
+            else
+                set_own(o, k, nv)?
+    call(reviver, holder, [Value.Str(key), v])
+
+fn Vm.json_value(mut self, mut r JsonReader, text str) Value ! Thrown
+    skip_ws(mut r)
+    if r.pos >= r.cs.len()
+        return json_error(r, text)
+    c := r.cs[r.pos]
+    if c == '{'
+        r.pos += 1
+        o := plain()
+        skip_ws(mut r)
+        if r.pos < r.cs.len() and r.cs[r.pos] == '}'
+            r.pos += 1
+            return Obj(o)
+        while true
+            skip_ws(mut r)
+            if r.pos >= r.cs.len() or r.cs[r.pos] != '"'
+                return json_error(r, text)
+            key := json_string(mut r, text)?
+            skip_ws(mut r)
+            if r.pos >= r.cs.len() or r.cs[r.pos] != ':'
+                return json_error(r, text)
+            r.pos += 1
+            v := json_value(mut r, text)?
+            if key == "__proto__"
+                o.props[key] = data(v)
+            else
+                define(o, key, data(v))?
+            skip_ws(mut r)
+            if r.pos < r.cs.len() and r.cs[r.pos] == ','
+                r.pos += 1
+                continue
+            if r.pos < r.cs.len() and r.cs[r.pos] == '}'
+                r.pos += 1
+                return Obj(o)
+            return json_error(r, text)
+    if c == '['
+        r.pos += 1
+        mut items := List[Value]()
+        skip_ws(mut r)
+        if r.pos < r.cs.len() and r.cs[r.pos] == ']'
+            r.pos += 1
+            return array(items)
+        while true
+            items.push(json_value(mut r, text)?)
+            skip_ws(mut r)
+            if r.pos < r.cs.len() and r.cs[r.pos] == ','
+                r.pos += 1
+                continue
+            if r.pos < r.cs.len() and r.cs[r.pos] == ']'
+                r.pos += 1
+                return array(items)
+            return json_error(r, text)
+    if c == '"'
+        return Value.Str(json_string(mut r, text)?)
+    if c == '-' or c.is_digit()
+        start := r.pos
+        if r.cs[r.pos] == '-'
+            r.pos += 1
+        if r.pos >= r.cs.len() or not r.cs[r.pos].is_digit()
+            return json_error(r, text)
+        if r.cs[r.pos] == '0'
+            r.pos += 1
+        else
+            while r.pos < r.cs.len() and r.cs[r.pos].is_digit()
+                r.pos += 1
+        if r.pos < r.cs.len() and r.cs[r.pos] == '.'
+            r.pos += 1
+            if r.pos >= r.cs.len() or not r.cs[r.pos].is_digit()
+                return json_error(r, text)
+            while r.pos < r.cs.len() and r.cs[r.pos].is_digit()
+                r.pos += 1
+        if r.pos < r.cs.len() and (r.cs[r.pos] == 'e' or r.cs[r.pos] == 'E')
+            r.pos += 1
+            if r.pos < r.cs.len() and (r.cs[r.pos] == '+' or r.cs[r.pos] == '-')
+                r.pos += 1
+            if r.pos >= r.cs.len() or not r.cs[r.pos].is_digit()
+                return json_error(r, text)
+            while r.pos < r.cs.len() and r.cs[r.pos].is_digit()
+                r.pos += 1
+        return Value.Num(string_to_number(r.cs[start..r.pos].join("")))
+    for word in ["true", "false", "null"]
+        wc := word.chars()
+        if r.pos + wc.len() <= r.cs.len() and r.cs[r.pos..r.pos + wc.len()] == wc
+            r.pos += wc.len()
+            return match word
+                "true" => Value.Bool(true)
+                "false" => Value.Bool(false)
+                _ => Value.Null
+    json_error(r, text)
+
+fn Vm.json_string(mut self, mut r JsonReader, text str) str ! Thrown
+    r.pos += 1
+    mut units_out := List[int]()
+    while true
+        if r.pos >= r.cs.len()
+            return throw_error("SyntaxError", "Unterminated string in JSON at position {r.pos}")
+        c := r.cs[r.pos]
+        if c == '"'
+            r.pos += 1
+            break
+        if c.code() < 0x20
+            return throw_error(
+                "SyntaxError",
+                "Bad control character in string literal in JSON at position {r.pos}",
+            )
+        if c != '\\'
+            if c.code() >= 0x10000
+                units_out.extend(units("{c}"))
+            else
+                units_out.push(c.code())
+            r.pos += 1
+            continue
+        r.pos += 1
+        if r.pos >= r.cs.len()
+            return json_error(r, text)
+        e := r.cs[r.pos]
+        r.pos += 1
+        match e
+            '"' => units_out.push(34)
+            '\\' => units_out.push(92)
+            '/' => units_out.push(47)
+            'b' => units_out.push(8)
+            'f' => units_out.push(12)
+            'n' => units_out.push(10)
+            'r' => units_out.push(13)
+            't' => units_out.push(9)
+            'u' =>
+                mut v := 0
+                for _ in 0..4
+                    if r.pos >= r.cs.len()
+                        return json_error(r, text)
+                    d := r.cs[r.pos].to_digit(16) else return throw_error(
+                        "SyntaxError",
+                        "Bad Unicode escape in JSON at position {r.pos}",
+                    )
+                    v = v * 16 + d
+                    r.pos += 1
+                units_out.push(v)
+            _ =>
+                r.pos -= 1
+                return throw_error(
+                    "SyntaxError",
+                    "Bad escaped character in JSON at position {r.pos}",
+                )
+    from_units(units_out)
+
+## The state of one JSON.stringify call (§25.5.2).
+struct Stringifier
+    replacer Value
+    allow List[str]?
+    gap str
+    indent str
+
+## JSON.stringify(value, replacer, space) (§25.5.2).
+fn Vm.json_stringify(mut self, v Value, replacer Value, space Value) Value ! Thrown
+    mut allow := none
+    if is_array(replacer)
+        mut keys := List[str]()
+        for item in elements_of(replacer)?
+            k := allow_key(item)?
+            if k == ""
+                continue
+            if not keys.contains(k)
+                keys.push(k)
+        allow = keys
+    mut sp := space
+    if o := obj_of(space)
+        if o.class == "Number" or o.class == "String"
+            sp = o.prim
+    gap := match sp
+        Num(n) => " ".repeat(int_of(n).min(10).max(0))
+        Str(s) => if s.chars().len() > 10 then s.slice(0, 10) else s
+        Undef | Null | Bool | Obj => ""
+    mut st := Stringifier(
+        replacer: if is_callable(replacer) then replacer else Undef,
+        allow: allow,
+        gap: gap,
+        indent: "",
+    )
+    holder := plain()
+    holder.props[""] = data(v)
+    r := serialize(mut st, Obj(holder), "", v)?
+    if r == OMIT
+        return Undef
+    Value.Str(r)
+
+## What `serialize` gives for a value JSON leaves out (undefined, functions).
+## A raw NUL can't be in its output: JSON escapes it.
+OMIT := "\u{0}"
+
+fn Vm.serialize(mut self, mut st Stringifier, holder Value, key str, start Value) str ! Thrown
+    mut v := start
+    if is_obj(v) or type_of(v) == "bigint"
+        to_json := get(v, "toJSON")?
+        if is_callable(to_json)
+            v = call(to_json, v, [Value.Str(key)])?
+    if st.replacer != Undef
+        v = call(st.replacer, holder, [Value.Str(key), v])?
+    if o := obj_of(v)
+        if o.class == "Number"
+            v = Num(to_number(v)?)
+        elif o.class == "String"
+            v = Str(to_string(v)?)
+        elif o.class == "Boolean"
+            v = o.prim
+    match v
+        Null => "null"
+        Bool(b) => if b then "true" else "false"
+        Str(s) => syntax.quote(s)
+        Num(n) => if is_finite(n) then syntax.number_to_string(n) else "null"
+        Undef => OMIT
+        Obj(o) =>
+            if o.call != none
+                return OMIT
+            if busy.contains(o.id)
+                return type_error("Converting circular structure to JSON")
+            busy.add(o.id)
+            outer := st.indent
+            st.indent = "{outer}{st.gap}"
+            mut parts := List[str]()
+            is_arr := o.class == "Array"
+            if is_arr
+                for i in 0..o.elems.len()
+                    item := serialize(mut st, v, "{i}", o.elems[i]) else err
+                        busy.remove(o.id)
+                        return err
+                    parts.push(if item == OMIT then "null" else item)
+            else
+                keys := if a := st.allow then a else enum_keys(o)
+                for k in keys
+                    pv := get(v, k) else err
+                        busy.remove(o.id)
+                        return err
+                    item := serialize(mut st, v, k, pv) else err
+                        busy.remove(o.id)
+                        return err
+                    if item != OMIT
+                        sep := if st.gap == "" then ":" else ": "
+                        parts.push("{syntax.quote(k)}{sep}{item}")
+            busy.remove(o.id)
+            st.indent = outer
+            open := if is_arr then "[" else "\{"
+            close := if is_arr then "]" else "}"
+            if parts.len() == 0
+                return "{open}{close}"
+            if st.gap == ""
+                return "{open}{parts.join(",")}{close}"
+            inner := "{outer}{st.gap}"
+            body := parts.join(",\n{inner}")
+            "{open}\n{inner}{body}\n{outer}{close}"
+
+## An entry of a replacer array as a key; "" to skip it (§25.5.2 step 4.b).
+fn Vm.allow_key(mut self, item Value) str ! Thrown
+    match item
+        Str(s) => s
+        Num(n) => syntax.number_to_string(n)
+        Obj(o) => if o.class == "String" or o.class == "Number" then to_string(item)? else ""
+        Undef | Null | Bool => ""

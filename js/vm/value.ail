@@ -1,0 +1,335 @@
+## JavaScript values (ECMA-262 §6.1) and the abstract operations that
+## convert between them (§7.1). Objects live in `ref` cells, so copies of a
+## value share the object, as JavaScript requires.
+use syntax
+
+pub enum Value
+    Undef
+    Null
+    Bool(b bool)
+    Num(n float)
+    Str(s str)
+    Obj(o ref JsObject)
+
+## A property (§6.1.7.1): a data property, or an accessor with `get` and `set`.
+pub struct Prop
+    pub value Value
+    pub get Value
+    pub set Value
+    pub accessor bool
+    pub enumerable bool
+    pub writable bool
+    pub configurable bool
+
+## An object. `class` is its internal kind: "Object", "Array", "Function",
+## "Error", "Arguments", "Boolean", "Number", "String", "Date", "RegExp".
+## An array keeps its elements in `elems`; other properties are in `props`,
+## in insertion order.
+pub struct JsObject
+    pub class str
+    pub proto Value
+    pub props Map[str, Prop]
+    pub elems List[Value]
+    pub extensible bool
+    pub call Callable?
+    ## A wrapper's primitive (`new Number(1)`), or a Date's time value.
+    pub prim Value
+    ## A number for agents and traces: objects are numbered as they are made.
+    pub id int
+    ## Object.freeze: no property may change, elements included.
+    pub frozen bool
+
+## What calling a function object does.
+pub enum Callable
+    ## Code: the function, its scope, the object its `super` starts from
+    ## (§10.2.5 HomeObject), whether `new` may call it, and for a class
+    ## constructor its field initialisers.
+    Closure(f syntax.Func, env ref Env, home Value, is_ctor bool, class_info ClassInfo?)
+    ## A built-in, dispatched by name in `builtins.ail`.
+    Native(name str)
+    ## `f.bind(this, ...args)` (§10.4.1).
+    Bound(target Value, this_val Value, args List[Value])
+
+## What `new` needs to know about a class constructor (§15.7.14).
+pub struct ClassInfo
+    pub fields List[syntax.ClassMember]
+    ## The fields' keys, computed when the class was defined.
+    pub field_keys List[str]
+    pub derived bool
+    ## No `constructor` was written: a derived class passes its arguments on.
+    pub implicit bool
+    ## The class's prototype object, home of its methods' `super`.
+    pub home Value
+    pub scope ref Env
+
+## One binding in a scope. `ready` is false in the temporal dead zone (§9.1.1.1).
+pub struct Binding
+    pub value Value
+    pub mutable bool
+    pub ready bool
+
+## A scope (§9.1). A function's scope holds its `this` and arguments.
+pub struct Env
+    pub vars Map[str, Binding]
+    pub parent ref Env?
+    ## A function's or the script's top scope, where `var` declares.
+    pub is_function bool
+    ## A scope that binds `this` (not an arrow function's).
+    pub has_this bool
+    pub strict bool
+    ## A `with` object or the global object, whose properties are names here.
+    pub object Value
+    pub this_val Value
+    ## A derived constructor's `this` before `super()` returns (§9.1.1.3).
+    pub this_ready bool
+    pub new_target Value
+    ## The object a method's `super` looks up from (§10.2.5 HomeObject).
+    pub home Value
+    pub func Value
+    pub args List[Value]
+
+## A thrown JavaScript value. `limit` marks a run limit, which no `catch`
+## can stop.
+pub error struct Thrown "Uncaught {text}"
+    pub value Value
+    pub text str
+    pub limit bool
+
+pub fn new_env(parent ref Env?, is_function bool) ref Env
+    ref Env(
+        vars: {},
+        parent: parent,
+        is_function: is_function,
+        has_this: false,
+        strict: if p := parent then p.strict else false,
+        object: Undef,
+        this_val: Undef,
+        this_ready: true,
+        new_target: Undef,
+        home: Undef,
+        func: Undef,
+        args: [],
+    )
+
+pub fn data(v Value) Prop
+    Prop(
+        value: v,
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+    )
+
+## A built-in's property: writable and configurable, not enumerable.
+pub fn hidden(v Value) Prop
+    Prop(
+        value: v,
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: true,
+        configurable: true,
+    )
+
+pub fn is_obj(v Value) bool
+    match v
+        Obj(_) => true
+        Undef | Null | Bool | Num | Str => false
+
+pub fn is_nullish(v Value) bool
+    match v
+        Undef | Null => true
+        Bool | Num | Str | Obj => false
+
+pub fn is_callable(v Value) bool
+    match v
+        Obj(o) => o.call != none
+        Undef | Null | Bool | Num | Str => false
+
+## typeof (§13.5.3).
+pub fn type_of(v Value) str
+    match v
+        Undef => "undefined"
+        Null => "object"
+        Bool(_) => "boolean"
+        Num(_) => "number"
+        Str(_) => "string"
+        Obj(o) => if o.call != none then "function" else "object"
+
+## ToBoolean (§7.1.2).
+pub fn truthy(v Value) bool
+    match v
+        Undef | Null => false
+        Bool(b) => b
+        Num(n) => n == n and n != 0.0
+        Str(s) => s != ""
+        Obj(_) => true
+
+## StringToNumber (§7.1.4.1.1): decimal, `0x`, `0o`, `0b`, `Infinity`;
+## blank text is 0, anything else NaN.
+pub fn string_to_number(text str) float
+    s := trim_js(text)
+    if s == ""
+        return 0.0
+    cs := s.chars()
+    if cs.len() > 2 and cs[0] == '0'
+        radix := match cs[1]
+            'x' | 'X' => 16
+            'o' | 'O' => 8
+            'b' | 'B' => 2
+            _ => 0
+        if radix > 0
+            mut v := 0.0
+            for c in cs[2..]
+                d := c.to_digit(radix) else return nan()
+                v = v * radix.to_float() + d.to_float()
+            return v
+    mut sign := 1.0
+    mut body := s
+    if cs[0] == '+' or cs[0] == '-'
+        if cs[0] == '-'
+            sign = -1.0
+        body = s.slice(1, cs.len())
+    if body == "Infinity"
+        return sign * infinity()
+    # StrDecimalLiteral: digits, one `.`, digits, then an optional exponent.
+    bc := body.chars()
+    mut i := 0
+    mut digits := 0
+    while i < bc.len() and bc[i].is_digit()
+        i += 1
+        digits += 1
+    mut frac := ""
+    if i < bc.len() and bc[i] == '.'
+        i += 1
+        start := i
+        while i < bc.len() and bc[i].is_digit()
+            i += 1
+            digits += 1
+        frac = bc[start..i].join("")
+    if digits == 0
+        return nan()
+    mut exponent_part := ""
+    if i < bc.len() and (bc[i] == 'e' or bc[i] == 'E')
+        mut k := i + 1
+        if k < bc.len() and (bc[k] == '+' or bc[k] == '-')
+            k += 1
+        if k >= bc.len() or not bc[k].is_digit()
+            return nan()
+        while k < bc.len() and bc[k].is_digit()
+            k += 1
+        exponent_part = bc[i..k].join("")
+        i = k
+    if i != bc.len()
+        return nan()
+    whole := bc[0..digits - frac.chars().len()].join("")
+    int_part := if whole == "" then "0" else whole
+    f := if frac == "" then "0" else frac
+    sign * ("{int_part}.{f}{exponent_part}".to_float() else nan())
+
+## The white space and line terminators String.prototype.trim removes (§22.1.3.32).
+pub fn js_space(c char) bool
+    c == ' '
+        or c == '\t'
+        or c == '\n'
+        or c == '\r'
+        or c == '\u{b}'
+        or c == '\u{c}'
+        or c == '\u{a0}'
+        or c == '\u{feff}'
+        or c == '\u{2028}'
+        or c == '\u{2029}'
+        or c.code() > 127 and c.is_space()
+
+pub fn trim_js(s str) str
+    cs := s.chars()
+    mut a := 0
+    mut b := cs.len()
+    while a < b and js_space(cs[a])
+        a += 1
+    while b > a and js_space(cs[b - 1])
+        b -= 1
+    cs[a..b].join("")
+
+## The number truncated to an int, saturating at ±2^53; NaN is 0.
+pub fn int_of(x float) int
+    if x != x
+        return 0
+    if x >= 9007199254740992.0
+        return 9007199254740992
+    if x <= -9007199254740992.0
+        return -9007199254740992
+    if x < 0.0
+        return 0 - (0.0 - x).floor().to_int()
+    x.floor().to_int()
+
+## The number as an integer, when it is one that fits; for keys and indexes.
+pub fn as_index(x float) int?
+    if x == x and x >= 0.0 and x < 9007199254740992.0 and x.floor() == x
+        return x.to_int()
+    none
+
+## An array index key (§6.1.7): "0", "1", ... without leading zeros.
+pub fn index_of_key(key str) int?
+    cs := key.chars()
+    if cs.len() == 0 or cs.len() > 10 or cs[0] == '0' and cs.len() > 1
+        return none
+    mut v := 0
+    for c in cs
+        if not c.is_digit()
+            return none
+        v = v * 10 + c.code() - 48
+    if v < 4294967295 then v else none
+
+## ToInt32 (§7.1.6).
+pub fn to_int32(x float) int
+    u := to_uint32(x)
+    if u >= 2147483648 then u - 4294967296 else u
+
+## ToUint32 (§7.1.7).
+pub fn to_uint32(x float) int
+    if not is_finite(x) or x == 0.0
+        return 0
+    t := if x < 0.0 then 0.0 - (0.0 - x).floor() else x.floor()
+    m := t - (t / 4294967296.0).floor() * 4294967296.0
+    m.to_int()
+
+## A string's UTF-16 code units (§6.1.4): what `length` and indexes count.
+pub fn units(s str) List[int]
+    mut out := List[int]()
+    for c in s.chars()
+        k := c.code()
+        if k >= 0x10000
+            out.push(0xD800 + (k - 0x10000).shr(10))
+            out.push(0xDC00 + (k - 0x10000).bit_and(0x3FF))
+        else
+            out.push(k)
+    out
+
+## Code units back to a string; a lone surrogate becomes U+FFFD.
+pub fn from_units(us List[int]) str
+    mut out := List[char]()
+    mut i := 0
+    while i < us.len()
+        k := us[i]
+        if k >= 0xD800
+            and k <= 0xDBFF
+            and i + 1 < us.len()
+            and us[i + 1] >= 0xDC00
+            and us[i + 1] <= 0xDFFF
+            out.push(char.from_code(0x10000 + (k - 0xD800) * 0x400 + (us[i + 1] - 0xDC00)) else '\u{fffd}')
+            i += 2
+            continue
+        out.push(char.from_code(k) else '\u{fffd}')
+        i += 1
+    out.join("")
+
+## The length in UTF-16 code units.
+pub fn unit_len(s str) int
+    mut n := 0
+    for c in s.chars()
+        n += if c.code() >= 0x10000 then 2 else 1
+    n
