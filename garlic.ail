@@ -6,6 +6,7 @@
 ## `--json`: roles, names, links and the cells each was drawn in.
 
 use std.env
+use std.io
 use std.fs
 use std.net
 use std.ui
@@ -54,6 +55,8 @@ struct Browser
     message str
     prompt Prompt
     last_find str
+    ## Whether the page model lists only the viewport's nodes (`--viewport`).
+    viewport_only bool
 
 ## The text of `url`: `http` and `https` through `net.get` (which follows
 ## redirects), `file://` and anything without a scheme from the file
@@ -90,6 +93,7 @@ fn Browser.new(url str, width int, height int) Browser
         message: "",
         prompt: Status,
         last_find: "",
+        viewport_only: false,
     )
 
 ## Rows of page the window shows: all but the status row.
@@ -213,6 +217,66 @@ fn Browser.key(mut self, key str, alt bool, shift bool) bool
         _ => return true
     true
 
+## Does one agent action (docs/design/garlic-browser.md, "Agent actions"):
+## `follow` a link number, `click` a node id, `open` a URL, `back`, `find`
+## text, `scroll` to a row, `reload`. False for an unknown action.
+fn Browser.act(mut self, name str, arg str) bool
+    message = ""
+    match name
+        "follow" => follow(arg.to_int() else 0)
+        "click" => click(arg.to_int() else -1)
+        "open" => go(arg)
+        "back" => go_back()
+        "find" => find(arg)
+        "scroll" => scroll_to(arg.to_int() else 0)
+        "reload" => load(url)
+        _ =>
+            message = "unknown action `{name}`: try follow, click, open, back, find, scroll or reload"
+            return false
+    true
+
+## Clicks node `id`: follows it when it is a link.
+fn Browser.click(mut self, id int)
+    for n in 1..=pg.links.len()
+        if pg.boxes[pg.links[n - 1]].id == id
+            follow(n)
+            return
+    message = "node {id} has no action"
+
+## The page model of the viewport, with the last action's message.
+fn Browser.model(self) str
+    j := pg.to_json(scroll, view(), viewport_only)
+    if message == ""
+        return j
+    j.replace(",\"nodes\":[", ",\"message\":{page.quote(message)},\"nodes\":[")
+
+## One action from a session line: `\{"do":"follow","link":3}`; the argument
+## is `link`, `id` or `row` (a number), or `url` or `text`.
+fn Browser.act_json(mut self, line str)
+    j := parse_json(line) else err
+        message = "bad JSON: {err}"
+        return
+    name := j.str("do") else ""
+    mut arg := ""
+    for key in ["link", "id", "row"]
+        if n := j.num(key)
+            arg = "{n.to_int()}"
+    for key in ["url", "text"]
+        if t := j.str(key)
+            arg = t
+    act(name, arg)
+
+## `--session`: reads one JSON action per line on stdin and answers each
+## with the page model on one line, so an agent keeps one browser open.
+fn Browser.session(mut self)
+    print(model())
+    while true
+        line := io.read_line() else break
+        if line.trim() == ""
+            continue
+        act_json(line)
+        print(model())
+
 ## The link drawn at window cell (`col`, `row`), or 0.
 fn Browser.link_at(self, col int, row int) int
     r := row + scroll
@@ -302,7 +366,7 @@ fn flag(args List[str], name str) str?
     if at + 1 < args.len() then args[at + 1] else none
 
 fn usage()
-    print("usage: ail run tools/garlic/garlic.ail [--width N] [--height N] [--follow N]... [--find TEXT] [--print | --json | --links | --keys] URL|FILE")
+    print("usage: ail run tools/garlic/garlic.ail [--width N] [--height N] [--follow N | --find TEXT | --do ACTION:ARG]... [--viewport] [--print | --json | --links | --session | --keys] URL|FILE")
 
 fn main() !
     args := env.args()
@@ -316,15 +380,25 @@ fn main() !
     width := (flag(args, "--width") else "100").to_int() else 100
     height := (flag(args, "--height") else "32").to_int() else 32
     mut b := Browser.new(args[args.len() - 1], width, height)
+    b.viewport_only = args.contains("--viewport")
     for k in 0..args.len() - 1
         if args[k] == "--follow"
             b.follow(args[k + 1].to_int() else 0)
         elif args[k] == "--find"
             b.find(args[k + 1])
-    if args.contains("--print")
+        elif args[k] == "--do"
+            spec := args[k + 1]
+            at := spec.find(":") else spec.chars().len()
+            b.act(spec.slice(0, at), spec.slice(
+                (at + 1).min(spec.chars().len()),
+                spec.chars().len(),
+            ))
+    if args.contains("--session")
+        b.session()
+    elif args.contains("--print")
         print(b.pg.text())
     elif args.contains("--json")
-        print(b.pg.to_json(b.scroll, b.view()))
+        print(b.model())
     elif args.contains("--links")
         for n in 1..=b.pg.links.len()
             bx := b.pg.boxes[b.pg.links[n - 1]]
@@ -511,7 +585,8 @@ fn lay(src str, width int) page.Page
 @test fn page_model_json_marks_the_viewport()
     p := lay("<title>T</title><h1>Head</h1><p>one</p><p><a href=n>next</a></p>", 40)
     want := r"""{"api":1,"url":"https://example.com/docs/a.html","title":"T","width":40,"height":2,"scroll":0,"rows":5,"nodes":[{"id":6,"role":"heading","name":"Head","level":1,"row":0,"col":2,"end_row":1,"end_col":6,"visible":true},{"id":8,"role":"paragraph","name":"one","row":2,"col":0,"end_row":3,"end_col":3,"visible":false},{"id":10,"role":"paragraph","name":"next","row":4,"col":0,"end_row":5,"end_col":7,"visible":false},{"id":11,"role":"link","name":"next","href":"https://example.com/docs/n","row":4,"col":0,"end_row":5,"end_col":7,"visible":false,"link":1,"actions":["follow"]}]}"""
-    assert_eq(p.to_json(0, 2), want)
+    assert_eq(p.to_json(0, 2, false), want)
+    assert_eq(p.to_json(0, 2, true).split("\"id\"").len(), 2)
 
 @test fn explicit_role_and_aria_label_win()
     p := lay("<div role=button aria-label=Close>x</div>", 40)
@@ -557,6 +632,21 @@ fn testdata() str
     b.key("tab", false, false)
     assert_eq(b.focus, 1)
     assert(b.status().starts_with("[1] "))
+
+@test fn agent_actions_follow_click_back_and_report()
+    mut b := Browser.new("{testdata()}/index.html", 60, 12)
+    second := b.pg.boxes[b.pg.links[0]].id
+    assert(b.act("click", "{second}"))
+    assert_eq(b.pg.title, "Second page")
+    assert(b.act("back", ""))
+    assert(not b.act("fly", ""))
+    assert(b.model().contains("\"message\":\"unknown action `fly`"))
+    b.act_json("\{\"do\":\"follow\",\"link\":1}")
+    assert_eq(b.pg.title, "Second page")
+    b.act_json("\{\"do\":\"click\",\"id\":0}")
+    assert(b.model().contains("\"message\":\"node 0 has no action\""))
+    b.act_json("not json")
+    assert(b.message.starts_with("bad JSON"))
 
 @test fn browser_finds_text_and_scrolls()
     dir := testdata()

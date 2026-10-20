@@ -507,13 +507,16 @@ pub fn Page.find(self, needle str, from int) int?
     none
 
 ## The page model as one JSON object (api 1): the viewport `height` rows
-## from row `scroll`, and every box with whether it shows in the viewport.
-pub fn Page.to_json(self, scroll int, height int) str
+## from row `scroll`, and every box with whether it shows in the viewport;
+## only the boxes in the viewport when `viewport_only`, to save tokens.
+pub fn Page.to_json(self, scroll int, height int, viewport_only bool) str
     mut out := List[str]()
     for b in boxes
         if b.row < 0
             continue
         vis := b.row < scroll + height and b.end_row > scroll
+        if viewport_only and not vis
+            continue
         mut parts := ["\"id\":{b.id}", "\"role\":{quote(b.role)}", "\"name\":{quote(b.name)}"]
         if b.level > 0
             parts.push("\"level\":{b.level}")

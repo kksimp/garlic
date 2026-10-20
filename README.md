@@ -11,6 +11,9 @@ design, scope and roadmap are in
 ./ail run tools/garlic/garlic.ail --links URL|FILE         # the numbered links
 ./ail run tools/garlic/garlic.ail --follow 3 --print URL   # follow link 3 first (repeatable)
 ./ail run tools/garlic/garlic.ail --find TEXT --json URL   # scroll to TEXT first
+./ail run tools/garlic/garlic.ail --do click:12 --json URL # an agent action first: follow:N, click:ID, open:URL, back, find:TEXT, scroll:ROW, reload
+./ail run tools/garlic/garlic.ail --session URL            # JSON actions on stdin, one page model per line out
+./ail run tools/garlic/garlic.ail --viewport --json URL    # only the nodes in the viewport
 ./ail run tools/garlic/garlic.ail --keys                   # the keys
 ./ail test tools/garlic/garlic.ail                         # the headless tests
 ```
