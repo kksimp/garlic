@@ -102,6 +102,51 @@ fn fetch(url str, method str, body str) str
 fn error_page(url str, why str) str
     "<title>Can't open {url}</title><h1>Can't open this page</h1><p>{url}</p><p>{why}</p>"
 
+## At most this many `<meta http-equiv=refresh>` hops are followed per load.
+MAX_REFRESHES := 5
+
+## A refresh with a longer delay is left alone, as the page asks to be read.
+MAX_REFRESH_DELAY := 5
+
+## Where the page's `<meta http-equiv=refresh content="N; url=...">` sends
+## the browser, when it has a URL other than the page's own and a delay
+## of at most `MAX_REFRESH_DELAY` seconds. Garlic goes there at once (HTML
+## "shared declarative refresh steps", simplified). Google's search sends
+## script-less clients to its enable-JavaScript page this way.
+fn refresh_target(d html.Doc, url str) str?
+    for m in d.all("meta")
+        if (d.attr(m, "http-equiv") else "").trim().to_lower() != "refresh"
+            continue
+        content := (d.attr(m, "content") else "").trim()
+        cs := content.chars()
+        mut i := 0
+        while i < cs.len() and cs[i].is_digit()
+            i += 1
+        if i == 0
+            continue
+        delay := content.slice(0, i).to_int() else continue
+        if delay > MAX_REFRESH_DELAY
+            continue
+        while i < cs.len() and (cs[i].is_digit() or cs[i] == '.')
+            i += 1
+        mut rest := content.slice(i, cs.len()).trim()
+        rest = (rest.strip_prefix(";") else rest.strip_prefix(",") else rest).trim()
+        if rest.to_lower().starts_with("url")
+            after := rest.slice(3, rest.chars().len()).trim()
+            if after.starts_with("=")
+                rest = after.slice(1, after.chars().len()).trim()
+        if rest.starts_with("\"") or rest.starts_with("'")
+            q := rest.slice(0, 1)
+            rest = rest.slice(1, rest.chars().len())
+            if end := rest.find(q)
+                rest = rest.slice(0, end)
+        if rest == ""
+            continue
+        target := page.resolve(url, rest)
+        if target != url
+            return target
+    none
+
 ## At most this many linked style sheets are fetched per page.
 MAX_SHEETS := 8
 
@@ -132,9 +177,9 @@ fn fetch_text(url str) str
     fs.read_text(url.strip_prefix("file://") else url) else ""
 
 fn Browser.new(url str, width int, height int) Browser
-    d := html.parse(fetch(url, "GET", ""))
-    sheet := linked_sheets(d, url)
-    Browser(
+    d := html.parse("")
+    sheet := css.parse("", 0)
+    mut b := Browser(
         url,
         doc: d,
         sheet,
@@ -153,6 +198,8 @@ fn Browser.new(url str, width int, height int) Browser
         last_url: "",
         last_nodes: {},
     )
+    b.load(url, "GET", "")
+    b
 
 ## Rows of page the window shows: all but the status row.
 fn Browser.view(self) int
@@ -177,6 +224,10 @@ fn Browser.go(mut self, target str)
 fn Browser.load(mut self, target str, method str, body str)
     url = target
     doc = html.parse(fetch(target, method, body))
+    for _ in 0..MAX_REFRESHES
+        next := refresh_target(doc, url) else break
+        url = next
+        doc = html.parse(fetch(next, "GET", ""))
     sheet = linked_sheets(doc, url)
     pg = page.layout_with(doc, url, width, sheet)
     scroll = 0
@@ -886,6 +937,23 @@ fn testdata() str
     b.key("tab", false, false)
     assert_eq(b.focus, 1)
     assert(b.status().starts_with("[1] "))
+
+@test fn a_meta_refresh_moves_to_its_target_at_once()
+    b := Browser.new("{testdata()}/refresh.html", 60, 12)
+    assert_eq(b.pg.title, "Second page")
+    assert(b.url.ends_with("/second.html"))
+    assert_eq(b.back.len(), 0)
+
+@test fn a_slow_meta_refresh_stays_put()
+    b := Browser.new("{testdata()}/slow-refresh.html", 60, 12)
+    assert_eq(b.pg.title, "Read me first")
+
+@test fn refresh_targets_parse_like_browsers()
+    d := html.parse("<meta http-equiv=refresh content=\"1, URL = 'a b.html' \">")
+    assert_eq(refresh_target(d, "http://x/y/z.html") else "", "http://x/y/a b.html")
+    assert(refresh_target(html.parse("<meta http-equiv=refresh content=0>"), "http://x/") == none)
+    same := html.parse("<meta http-equiv=refresh content=\"0;url=z.html\">")
+    assert(refresh_target(same, "http://x/z.html") == none)
 
 @test fn agent_actions_follow_click_back_and_report()
     mut b := Browser.new("{testdata()}/index.html", 60, 12)
