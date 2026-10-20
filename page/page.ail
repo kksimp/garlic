@@ -586,6 +586,8 @@ fn Flow.element(mut self, id int)
         _ => children(id)
     if tag == "a"
         if bi := b
+            if boxes[bi].row < 0 and boxes[bi].name != ""
+                word(boxes[bi].name)
             style = saved
             put("[{boxes[bi].link}]")
     style = saved
