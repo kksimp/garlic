@@ -1,0 +1,4 @@
+https://example.test/search?q=garlic&sca_esv=1 example.test /dir/page.html
+== body
+<noscript><style>table,div,span,p{display:none}</style><div style="display:block">Please click <a href="/httpservice/retry/enablejs?sei=abc">here</a> if you are not redirected within a few seconds.</div></noscript><script nonce="x">(function(){var sct=document.querySelector('meta[http-equiv="refresh"]');window.google={kEI:"abc"};var a=document.createElement("a");a.href="/search?q=garlic&sca_esv=1";console.log(a.href, location.hostname, location.pathname);setTimeout(function(){location.replace("/search?q=garlic&sei=abc&gs_ssp=1")},10);})();</script>
+== navigate GET https://example.test/search?q=garlic&sei=abc&gs_ssp=1

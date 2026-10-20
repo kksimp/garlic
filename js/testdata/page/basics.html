@@ -1,0 +1,28 @@
+<!DOCTYPE html><html><head><title>Basics</title></head><body><div id="main" class="a b"><p>Hello <b>world</b></p><ul id="list"><li>one</li><li class="x">two</li></ul></div><script>
+const main = document.getElementById("main");
+console.log(main.tagName, main.id, main.className, main.classList.length);
+console.log(document.title, document.querySelectorAll("li").length);
+console.log(document.querySelector("li.x").textContent);
+console.log(main.querySelector("p b").textContent, main.children.length);
+const li = document.createElement("li");
+li.textContent = "three";
+li.setAttribute("data-n", "3");
+document.getElementById("list").appendChild(li);
+console.log(li.dataset.n, li.parentNode.id, li.previousElementSibling.textContent);
+main.classList.add("c");
+main.classList.remove("a");
+console.log(main.className, main.classList.contains("b"));
+const p = document.querySelector("p");
+p.innerHTML = "Changed <i>text</i> &amp; more";
+console.log(p.childNodes.length, p.firstChild.nodeValue, p.lastChild.nodeType);
+li.style.color = "red";
+li.style.fontSize = "12px";
+console.log(li.getAttribute("style"));
+document.querySelector("li").remove();
+console.log(document.getElementById("list").children.length);
+const frag = document.createDocumentFragment();
+for (let i = 0; i < 2; i++) { const s = document.createElement("span"); s.textContent = "s" + i; frag.appendChild(s); }
+main.append(frag);
+console.log(main.lastElementChild.textContent, document.body.contains(li), li.closest("div").id);
+console.log(document.querySelectorAll("#main > ul > li + li").length, li.matches("ul li[data-n]"));
+</script></body></html>

@@ -1,0 +1,54 @@
+attr handler click btn
+outer capture 1 | btn 2 true | outer bubble 3 btn outer | document | window
+attr handler click btn
+outer capture 1 | btn 2 true
+attr handler click btn
+outer capture 1 | btn 2 true | outer bubble 3 btn outer | document | window
+ping 5 btn
+dispatched false true
+property handler
+object listener focus
+readyState loading
+property handler
+Uncaught Error: listener failed
+still runs
+DOMContentLoaded interactive
+load complete
+onload property
+== body
+<div id="outer"><button id="btn" onclick="console.log('attr handler', event.type, this.id)">Go</button></div><a id="link" href="#top">top</a><script>
+const outer = document.getElementById("outer"), btn = document.getElementById("btn");
+const log = [];
+outer.addEventListener("click", e => log.push("outer capture " + e.eventPhase), true);
+outer.addEventListener("click", e => log.push("outer bubble " + e.eventPhase + " " + e.target.id + " " + e.currentTarget.id));
+btn.addEventListener("click", function (e) { log.push("btn " + e.eventPhase + " " + (this === btn)); });
+document.addEventListener("click", () => log.push("document"));
+window.addEventListener("click", () => log.push("window"));
+btn.click();
+console.log(log.join(" | "));
+log.length = 0;
+btn.addEventListener("click", e => e.stopPropagation(), { once: true });
+btn.click();
+console.log(log.join(" | "));
+log.length = 0;
+btn.click();
+console.log(log.join(" | "));
+const ev = new CustomEvent("ping", { detail: { n: 5 }, bubbles: true, cancelable: true });
+outer.addEventListener("ping", e => { console.log("ping", e.detail.n, e.target.id); e.preventDefault(); });
+console.log("dispatched", btn.dispatchEvent(ev), ev.defaultPrevented);
+btn.onclick = () => console.log("property handler");
+btn.click();
+const handler = { handleEvent(e) { console.log("object listener", e.type); } };
+btn.addEventListener("focus", handler);
+btn.dispatchEvent(new Event("focus"));
+btn.removeEventListener("focus", handler);
+btn.dispatchEvent(new Event("focus"));
+document.addEventListener("DOMContentLoaded", () => console.log("DOMContentLoaded", document.readyState));
+window.addEventListener("load", () => console.log("load", document.readyState));
+window.onload = () => console.log("onload property");
+console.log("readyState", document.readyState);
+btn.addEventListener("click", () => { throw new Error("listener failed"); });
+btn.addEventListener("click", () => console.log("still runs"));
+btn.click();
+</script>
+

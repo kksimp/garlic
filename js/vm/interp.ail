@@ -24,6 +24,30 @@ pub struct Vm
     pub busy Set[int]
     ## What Date.now() reads, in milliseconds since 1970: fixed, so runs repeat.
     pub clock_ms float
+    ## The page (dom.ail): its nodes by id, the log of changes scripts made,
+    ## and whether changes are logged yet.
+    pub dom List[DomNode]
+    pub mutations List[Mutation]
+    pub recording bool
+    pub node_objs Map[int, Value]
+    pub style_objs Map[int, Value]
+    ## Form fields' current values ("on"/"off" for checkboxes).
+    pub field_values Map[int, str]
+    pub listeners List[Listener]
+    pub timers List[Timer]
+    pub timer_seq int
+    pub microtasks List[Value]
+    pub started_scripts Set[int]
+    ## Requests for the browser: navigations, script fetches, dialogs.
+    pub host_requests List[HostRequest]
+    ## Sources of external scripts the browser already fetched, by URL.
+    pub external_scripts Map[str, str]
+    pub cookies Map[str, str]
+    pub location_href str
+    pub page_start_ms float
+    pub ready_state str
+    ## Set when a run limit stops the page's scripts.
+    pub stopped bool
 
 ## How a statement ended (§6.2.4 Completion Records); a throw is the `Thrown` error.
 pub enum Flow

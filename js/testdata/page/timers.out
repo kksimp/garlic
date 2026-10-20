@@ -1,0 +1,19 @@
+string timer
+sync,micro,t0,args xy,iv1,iv2,iv3,t100
+== body
+<p id="out">done</p><script>
+const out = document.getElementById("out");
+const order = [];
+setTimeout(() => { order.push("t100"); }, 100);
+setTimeout(() => { order.push("t0"); }, 0);
+setTimeout((a, b) => { order.push("args " + a + b); }, 10, "x", "y");
+const cancelled = setTimeout(() => order.push("cancelled"), 5);
+clearTimeout(cancelled);
+queueMicrotask(() => order.push("micro"));
+let n = 0;
+const iv = setInterval(() => { n++; order.push("iv" + n); if (n === 3) clearInterval(iv); }, 30);
+setTimeout(() => { out.textContent = "done"; console.log(order.join(",")); }, 500);
+setTimeout("console.log('string timer')", 20);
+order.push("sync");
+</script>
+
