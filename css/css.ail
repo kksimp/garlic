@@ -53,6 +53,18 @@ pub struct Sheet
 ## The properties Garlic uses on text cells; the rest are dropped at parse.
 USED := {
     "display",
+    "margin",
+    "margin-left",
+    "margin-right",
+    "margin-inline",
+    "margin-inline-start",
+    "margin-inline-end",
+    "padding",
+    "padding-left",
+    "padding-right",
+    "padding-inline",
+    "padding-inline-start",
+    "padding-inline-end",
     "visibility",
     "font-weight",
     "font-style",

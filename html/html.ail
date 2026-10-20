@@ -787,6 +787,25 @@ pub fn Doc.enclosing(self, id int, tag str) int?
         p = nodes[p].parent
     none
 
+## Elements whose text is never shown: scripts, styles and templates.
+NOT_SHOWN := {"script", "style", "template"}
+
+## The text of node `id` and its descendants that a reader would see:
+## scripts, styles and templates left out.
+pub fn Doc.visible_text(self, id int) str
+    mut out := List[str]()
+    collect_visible(self, id, mut out)
+    out.join("")
+
+fn collect_visible(d Doc, id int, mut out List[str])
+    n := d.nodes[id]
+    if n.kind == Text
+        out.push(n.text)
+    if n.kind == Element and NOT_SHOWN.contains(n.tag)
+        return
+    for c in n.children
+        collect_visible(d, c, mut out)
+
 ## The text of node `id` and its descendants, concatenated.
 pub fn Doc.text(self, id int) str
     mut out := List[str]()

@@ -306,6 +306,9 @@ fn Browser.activate(mut self, id int)
     b := target(id) else
         message = "node {id} has no action"
         return
+    if b.link > 0
+        follow(b.link)
+        return
     match b.role
         "link" => follow(b.link)
         "textbox" => prompt = Field(id, b.value)
@@ -830,7 +833,7 @@ fn lay(src str, width int) page.Page
         "<p><img src=a.png alt=Logo> <input name=q placeholder=Search> <input type=submit value=Go></p>",
         60,
     )
-    assert_eq(p.text(), "[Logo] [Search____] [Go]")
+    assert_eq(p.text(), "[Logo] [Search______________] [Go]")
     assert_eq([b.name for b in p.boxes if b.role == "image"], ["Logo"])
 
 @test fn page_model_json_marks_the_viewport()
@@ -907,9 +910,10 @@ fn node_with(b Browser, tag str, attr str, value str) int
     -1
 
 @test fn forms_render_and_join_the_model()
-    b := Browser.new("{testdata()}/form.html", 80, 30)
+    b := Browser.new("{testdata()}/form.html", 120, 30)
     text := b.pg.text()
-    assert(text.contains("Query [words____] [ ] Exact (*) New ( ) Old [en v] [hi____] [Search] [Clear]"))
+    assert(text.contains("[a b&c_______________] [Send]"))
+    assert(text.contains("Query [words_______________] [ ] Exact (*) New ( ) Old [en v] [hi__________________] [Search] [Clear]"))
     q := node_with(b, "input", "name", "q")
     box := b.target(q)?
     assert_eq([box.role, box.name, box.value], ["textbox", "Query", ""])
@@ -921,7 +925,7 @@ fn node_with(b Browser, tag str, attr str, value str) int
     mut b := Browser.new("{testdata()}/form.html", 80, 30)
     q := node_with(b, "input", "name", "q")
     assert(b.act("type", "{q}=garlic bread"))
-    assert(b.pg.text().contains("[garlic bread____]"))
+    assert(b.pg.text().contains("[garlic bread________]"))
     assert(b.model().contains("\"changed\":[{q}]"))
     b.act("check", "{node_with(b, "input", "name", "exact")}")
     b.act("check", "{node_with(b, "input", "value", "old")}")
@@ -1032,6 +1036,25 @@ fn node_with(b Browser, tag str, attr str, value str) int
     assert(small.chars().len() <= 900 and small.chars().len() < full.chars().len())
     assert(small.contains("\"name\":\"Second page\"") and small.contains("\"role\":\"heading\",\"name\":\"Features\""))
     assert(not small.contains("\"omitted\":0"))
+
+## A page shaped like google.com's home page, which Garlic first drew as
+## "Gmail[1]Images[2]" and "  | [____]".
+@test fn flex_items_margins_nbsp_and_scripts_lay_out_like_a_browser()
+    src := """
+        <style>.bar \{ display: flex } .m \{ margin: 0 8px }</style>
+        <div class=bar><a href=/m>Gmail</a><a href=/i>Images</a><a role=button href=/apps>Apps</a></div>
+        <p><span class=m>About</span><span class=m>Store</span></p>
+        <table><tr><td>&nbsp;</td><td><textarea name=q title=Search></textarea><script>var x='y'</script></td></tr></table>
+        """
+    p := lay(src, 60)
+    assert_eq(p.text(), "Gmail[1] Images[2] Apps[3]\n\nAbout Store\n\n[____________________]")
+    apps := p.boxes[p.links[2]]
+    assert_eq(apps.role, "button")
+    icon := lay("<a href=/apps aria-label='Google apps'><svg><path d='M0'/></svg></a>", 40)
+    assert_eq(icon.text(), "Google apps[1]")
+    assert(p.to_json(0, 10, false).contains("\"link\":3,\"actions\":[\"follow\"]"))
+    cells := [b.name for b in p.boxes if b.role == "cell"]
+    assert(not cells.join(" ").contains("var x"))
 
 @test fn browser_finds_text_and_scrolls()
     dir := testdata()
