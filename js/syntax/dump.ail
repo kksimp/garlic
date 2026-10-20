@@ -75,7 +75,7 @@ fn Dump.stmt(self, s Stmt) str
                 field("body", stmt(body)),
             ]
             node("ForStatement", p, fields)
-        ForIn(left, right, body, of, p) =>
+        ForIn(left, right, body, of, is_await, p) =>
             left_text := match left
                 LeftDecl(d) => var_decl(d)
                 LeftPat(t) => pat(t)
@@ -85,7 +85,7 @@ fn Dump.stmt(self, s Stmt) str
                 field("body", stmt(body)),
             ]
             if of
-                fields.push(field("await", "false"))
+                fields.push(field("await", if is_await then "true" else "false"))
                 return node("ForOfStatement", p, fields)
             node("ForInStatement", p, fields)
         While(test, body, p) => node("WhileStatement", p, [

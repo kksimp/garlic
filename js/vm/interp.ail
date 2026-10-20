@@ -57,6 +57,8 @@ pub struct Vm
     pub frame_seq int
     ## Generators running now, to catch one that resumes itself.
     pub running Set[int]
+    ## Requests waiting for each async generator, by frame id.
+    pub agen_queues Map[int, List[AgenRequest]]
 
 ## How a statement ended (§6.2.4 Completion Records); a throw is the `Thrown` error.
 pub enum Flow
@@ -416,7 +418,7 @@ fn Vm.hoist_stmt(mut self, s syntax.Stmt, env ref Env, top bool)
                     InitDecl(d) => hoist_stmt(syntax.Stmt.Var(d), env, false)
                     InitExpr => return
             hoist_stmt(b, env, false)
-        ForIn(left, _, b, _, _) =>
+        ForIn(left, _, b, _, _, _) =>
             if d := left_decl(left)
                 hoist_stmt(syntax.Stmt.Var(d), env, false)
             hoist_stmt(b, env, false)
@@ -559,7 +561,7 @@ fn Vm.exec_in(mut self, s syntax.Stmt, env ref Env, labels List[str]) Flow ! Thr
         Empty => Normal
         Debugger => Normal
         For(init, test, update, body, _) => for_loop(init, test, update, body, env, labels)
-        ForIn(left, right, body, of, _) => for_in(left, right, body, of, env, labels)
+        ForIn(left, right, body, of, _, _) => for_in(left, right, body, of, env, labels)
         While(test, body, _) =>
             while truthy(eval(test, env)?)
                 f := exec(body, env)?
@@ -1457,9 +1459,12 @@ pub fn Vm.make_function(mut self, f syntax.Func, env ref Env, home Value, kind s
         )
     elif f.is_gen
         # Each generator function has its own prototype for the generators
-        # it makes (§27.3.4.3), with no `constructor`.
+        # it makes (§27.3.4.3, §27.4.4.3), with no `constructor`.
         o.props["prototype"] = Prop(
-            value: Obj(object("Object", proto_of("Generator"))),
+            value: Obj(object(
+                "Object",
+                proto_of(if f.is_async then "AsyncGenerator" else "Generator"),
+            )),
             get: Undef,
             set: Undef,
             accessor: false,

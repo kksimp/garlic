@@ -620,8 +620,10 @@ fn Parser.for_statement(mut self) Stmt ! JsError
 fn Parser.for_in_scope(mut self) Stmt ! JsError
     mut p := pos()
     next()?
+    mut is_await := false
     if is_kw("await") and in_async
-        return fail("for await is not supported yet")
+        is_await = true
+        next()?
     expect("(")?
     mut init := none
     if is_p(";")
@@ -643,7 +645,16 @@ fn Parser.for_in_scope(mut self) Stmt ! JsError
             next()?
             right := if of then assign(false)? else expression(false)?
             expect(")")?
-            return ForIn(LeftDecl(d), right, loop_body(false)?, of, p)
+            if is_await and not of
+                return fail("Unexpected token 'in'")
+            return ForIn(
+                left: LeftDecl(d),
+                right: right,
+                body: loop_body(false)?,
+                of: of,
+                is_await: is_await,
+                pos: p,
+            )
         for dc in d.decls
             if dc.init == none
                 if kind == "const"
@@ -663,9 +674,20 @@ fn Parser.for_in_scope(mut self) Stmt ! JsError
             next()?
             right := if of then assign(false)? else expression(false)?
             expect(")")?
-            return ForIn(LeftPat(target), right, loop_body(false)?, of, p)
+            if is_await and not of
+                return fail("Unexpected token 'in'")
+            return ForIn(
+                left: LeftPat(target),
+                right: right,
+                body: loop_body(false)?,
+                of: of,
+                is_await: is_await,
+                pos: p,
+            )
         check_covers(before)?
         init = ForInit.InitExpr(e)
+    if is_await
+        return fail("Unexpected token ';'")
     expect(";")?
     test := if is_p(";") then none else expression(false)?
     expect(";")?

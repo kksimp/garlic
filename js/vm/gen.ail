@@ -89,9 +89,16 @@ pub enum Op
     ## Leave a `finally`: go on with what entered it.
     EndFinally
     ## [subject] -> [iterator] for `for-of`, or the keys for `for-in`.
-    IterInit(of bool)
+    IterInit(of bool, is_await bool)
     ## [iterator] -> [iterator, value], or [] at `end` when it is done.
     IterNext(end int)
+    ## [iterator] -> [iterator, result]: call `next` (for `for await`).
+    IterCall
+    ## [iterator, result] -> [iterator, value], or [] at `end` when done.
+    IterResult(end int)
+    ## [iterator] -> [value]: leave a loop early, calling the iterator's
+    ## `return` (§7.4.11); the value is what it gave, to await.
+    IterClose
     ## [value] -> []: bind a `for-in`/`for-of` head.
     BindLeft(left syntax.ForLeft)
     ## [discriminant, test] -> [discriminant], or [] at `to` when they match.
@@ -127,6 +134,8 @@ struct Compiler
     scopes int
     handlers int
     depth int
+    ## In an async generator, `yield` awaits its value first (§27.6.3.8).
+    async_gen bool
 
 ## Compile a generator's or async function's body.
 pub fn compile_body(f syntax.Func) Code ! Thrown
@@ -139,6 +148,7 @@ pub fn compile_body(f syntax.Func) Code ! Thrown
         scopes: 0,
         handlers: 0,
         depth: 0,
+        async_gen: f.is_gen and f.is_async,
     )
     if e := f.expr
         c.expr(e)?
@@ -180,10 +190,11 @@ fn Compiler.patch(mut self, at int, to int)
         JumpIfNot => JumpIfNot(to)
         JumpIfNotNullish => JumpIfNotNullish(to)
         IterNext => IterNext(to)
+        IterResult => IterResult(to)
         Delegate => Delegate(to)
         CaseTest => CaseTest(to)
         Jump => Jump(to)
-        Eval | Exec | Pop | Dup | Push | Yield | Await | GetIter | Binary | Unary | GetProp | GetElem | PutProp | PutElem | AssignPat | BindPat | NewList | Append | AppendSpread | Call | Construct | NewObject | ObjProp | ObjInit | ObjComputed | ObjSpread | Concat | Return | Throw | PushScope | PopScope | CopyScope | TryPush | TryPop | CatchParam | NormalCompletion | EndFinally | IterInit | BindLeft =>
+        Eval | Exec | Pop | Dup | Push | Yield | Await | GetIter | Binary | Unary | GetProp | GetElem | PutProp | PutElem | AssignPat | BindPat | NewList | Append | AppendSpread | Call | Construct | NewObject | ObjProp | ObjInit | ObjComputed | ObjSpread | Concat | Return | Throw | PushScope | PopScope | CopyScope | TryPush | TryPop | CatchParam | NormalCompletion | EndFinally | IterInit | IterCall | IterClose | BindLeft =>
             ops[at]
 
 fn Compiler.new_target(mut self, kind str, labels List[str], unlabelled bool) int
@@ -298,7 +309,7 @@ fn Compiler.stmt(mut self, s syntax.Stmt) ! Thrown
             emit(JumpIf(top), -1)
             land(brk)
         For(init, test, update, body, _) => for_loop(init, test, update, body)?
-        ForIn(left, right, body, of, _) => for_in(left, right, body, of)?
+        ForIn(left, right, body, of, is_await, _) => for_in(left, right, body, of, is_await)?
         Try(block, param, handler, finalizer, _) => try_stmt(block, param, handler, finalizer)?
         Switch(disc, cases, _) => switch_stmt(disc, cases)?
         ClassDecl => return unsupported("A class declaration")
@@ -316,7 +327,7 @@ fn stmt_pos(s syntax.Stmt) syntax.Pos
         Block(_, p) => p
         Empty(p) => p
         For(_, _, _, _, p) => p
-        ForIn(_, _, _, _, p) => p
+        ForIn(_, _, _, _, _, p) => p
         While(_, _, p) => p
         DoWhile(_, _, p) => p
         Break(_, p) => p
@@ -408,6 +419,7 @@ fn Compiler.for_in(
     right syntax.Expr,
     body syntax.Stmt,
     of bool,
+    is_await bool,
 ) ! Thrown
     labels := take_labels()
     mut head := List[syntax.Stmt]()
@@ -425,13 +437,20 @@ fn Compiler.for_in(
     expr(right)?
     emit(PopScope, 0)
     scopes -= 1
-    emit(IterInit(of), 0)
+    emit(IterInit(of: of, is_await: is_await), 0)
+    # A `break` lands with the iterator still on the stack, to close it.
     brk := new_target("break", labels, true)
-    targets[brk].depth = depth - 1
     cont := new_target("continue", labels, true)
     land(cont)
     next := here()
-    emit(IterNext(-1), 1)
+    mut end_at := next
+    if is_await
+        emit(IterCall, 1)
+        emit(Await, 0)
+        end_at = here()
+        emit(IterResult(-1), 0)
+    else
+        emit(IterNext(-1), 1)
     emit(PushScope(head), 0)
     scopes += 1
     emit(BindLeft(left), -1)
@@ -443,9 +462,12 @@ fn Compiler.for_in(
     emit(PopScope, 0)
     scopes -= 1
     emit(Jump(next), 0)
-    patch(next, here())
-    depth -= 1
     land(brk)
+    emit(IterClose, 0)
+    if is_await
+        emit(Await, 0)
+    emit(Pop, -1)
+    patch(end_at, here())
 
 fn Compiler.try_stmt(
     mut self,
@@ -551,6 +573,8 @@ fn Compiler.expr(mut self, e syntax.Expr) ! Thrown
                 expr(a)?
             else
                 emit(Push(Undef), 1)
+            if delegate and async_gen
+                return unsupported("yield* in an async generator")
             if delegate
                 emit(GetIter, 0)
                 emit(Push(Undef), 1)
@@ -560,6 +584,8 @@ fn Compiler.expr(mut self, e syntax.Expr) ! Thrown
                 patch(top, here())
                 depth -= 1
             else
+                if async_gen
+                    emit(Await, 0)
                 emit(Yield, 0)
         Await(arg, _) =>
             expr(arg)?
@@ -761,6 +787,21 @@ fn Vm.generator_setup(mut self)
     protos["Generator"] = Obj(proto)
     methods(proto, "Generator.prototype", "next:1 return:1 throw:1")
     proto.props[well_known("toStringTag")] = hidden(Str("Generator"))
+    # %AsyncIteratorPrototype% and %AsyncGeneratorPrototype% (§27.1.3, §27.6.1).
+    async_iter := object("Object", proto_of("Object"))
+    async_iter.props[well_known("asyncIterator")] = hidden(native_fn(
+        "Iterator.prototype.self",
+        "[Symbol.asyncIterator]",
+        0,
+    ))
+    protos["AsyncIterator"] = Obj(async_iter)
+    agen := object("Object", Obj(async_iter))
+    protos["AsyncGenerator"] = Obj(agen)
+    methods(agen, "AsyncGenerator.prototype", "next:1 return:1 throw:1")
+    agen.props[well_known("toStringTag")] = hidden(Str("AsyncGenerator"))
+    from_sync := object("Object", Obj(async_iter))
+    protos["AsyncFromSyncIterator"] = Obj(from_sync)
+    methods(from_sync, "AsyncFromSync", "next:1 return:1")
 
 ## A function stopped at a `yield` or `await`, or not started yet.
 pub struct Frame
@@ -822,7 +863,14 @@ pub fn Vm.start_resumable(
     args List[Value],
 ) Value ! Thrown
     if fun.is_gen and fun.is_async
-        return syntax_error("Async generators are not supported yet")
+        f := prepare_frame(fobj, fun, env, args)?
+        frame_seq += 1
+        frames[frame_seq] = f
+        agen_queues[frame_seq] = []
+        proto := get(Obj(fobj), "prototype")?
+        g := object("AsyncGenerator", if is_obj(proto) then proto else proto_of("AsyncGenerator"))
+        g.prim = Num(frame_seq.to_float())
+        return Value.Obj(g)
     if fun.is_async
         promise := Value.Obj(new_promise())
         p := obj_of(promise) else return promise
@@ -1210,9 +1258,11 @@ fn Vm.step(mut self, mut f Frame, code Code) Stop ! Thrown
             c := f.completions.pop() else return GO
             if c.kind != "normal"
                 return leave(mut f, c)
-        IterInit(of) =>
+        IterInit(of, is_await) =>
             subject := pop_value(mut f)
-            if of
+            if is_await
+                f.stack.push(open_async_iterator(subject)?)
+            elif of
                 f.stack.push(open_iterator(subject)?)
             else
                 mut keys := List[Value]()
@@ -1230,6 +1280,22 @@ fn Vm.step(mut self, mut f Frame, code Code) Stop ! Thrown
                 f.pc = end
             else
                 f.stack.push(get(r, "value")?)
+        IterCall =>
+            it := f.stack[f.stack.len() - 1]
+            f.stack.push(call(get(it, "next")?, it, [])?)
+        IterResult(end) =>
+            r := pop_value(mut f)
+            if not is_obj(r)
+                return type_error("Iterator result {describe(r)} is not an object")
+            if truthy(get(r, "done")?)
+                pop_value(mut f)
+                f.pc = end
+            else
+                f.stack.push(get(r, "value")?)
+        IterClose =>
+            it := pop_value(mut f)
+            m := get(it, "return")?
+            f.stack.push(if is_nullish(m) then Value.Undef else call(m, it, [])?)
         BindLeft(left) =>
             v := pop_value(mut f)
             match left
@@ -1249,6 +1315,180 @@ fn Vm.leave(mut self, mut f Frame, c Completion) Stop ! Thrown
     if left.kind == "throw"
         return thrown(left.value)
     Stop(kind: "return", value: left.value)
+
+# ------------------------------------------------------ async iteration
+
+## An iterator for `for await` over `v`: its `Symbol.asyncIterator`, or its
+## sync iterator with each value awaited (§7.4.3, §27.1.4.1).
+fn Vm.open_async_iterator(mut self, v Value) Value ! Thrown
+    if is_nullish(v)
+        return type_error("{describe(v)} is not async iterable")
+    m := get(v, well_known("asyncIterator"))?
+    if is_nullish(m)
+        sync := open_iterator(v)?
+        w := object("AsyncFromSyncIterator", proto_of("AsyncFromSyncIterator"))
+        w.prim = sync
+        return Obj(w)
+    if not is_callable(m)
+        return type_error("{describe(v)} is not async iterable")
+    it := call(m, v, [])?
+    if not is_obj(it)
+        return type_error("Result of the Symbol.asyncIterator method is not an object")
+    it
+
+## The methods of an async-from-sync iterator, and `result` (this: done),
+## which makes an iterator result from an awaited value.
+pub fn Vm.async_from_sync_native(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    if m == "result"
+        return iter_result(arg_at(args, 0), truthy(this_val))
+    p := new_promise()
+    w := obj_of(this_val) else return Obj(p)
+    sync := w.prim
+    r := step_sync(sync, m, arg_at(args, 0)) else err
+        if err.limit
+            return err
+        reject_promise(p, err.value)
+        return Obj(p)
+    if not is_obj(r)
+        reject_promise(p, type_error("Iterator result {describe(r)} is not an object").value)
+        return Obj(p)
+    done := truthy(get(r, "done")?)
+    value := get(r, "value")?
+    promise_then(
+        promise_resolve(value),
+        closure_native("AsyncFromSync.result", Bool(done), [], 1),
+        Undef,
+        Obj(p),
+    )
+    Obj(p)
+
+fn Vm.step_sync(mut self, sync Value, m str, v Value) Value ! Thrown
+    f := get(sync, m)?
+    if is_nullish(f)
+        return iter_result(v, true)
+    call(f, sync, [v])
+
+## A request waiting for an async generator: `next`, `return` or `throw`
+## with its value, and the promise it answers.
+pub struct AgenRequest
+    kind str
+    value Value
+    promise ref JsObject
+
+## AsyncGenerator.prototype.next, return and throw (§27.6.1): queue the
+## request and answer it with a promise.
+pub fn Vm.async_generator_native(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    p := new_promise()
+    g := obj_of(this_val) else
+        reject_promise(
+            p,
+            type_error("{m} method called on incompatible receiver {describe(this_val)}").value,
+        )
+        return Obj(p)
+    if g.class != "AsyncGenerator"
+        reject_promise(
+            p,
+            type_error("{m} method called on incompatible receiver {describe(this_val)}").value,
+        )
+        return Obj(p)
+    id := int_of(num_of(g.prim) else -1.0)
+    mut q := agen_queues.get(id) else List[AgenRequest]()
+    q.push(AgenRequest(kind: m, value: arg_at(args, 0), promise: p))
+    agen_queues[id] = q
+    if not running.contains(id)
+        agen_drain(id)
+    Obj(p)
+
+fn Vm.agen_pop(mut self, id int) AgenRequest?
+    mut q := agen_queues.get(id) else return none
+    if q.len() == 0
+        return none
+    first := q.remove_at(0)
+    agen_queues[id] = q
+    first
+
+## Answer queued requests until the generator has to run.
+fn Vm.agen_drain(mut self, id int)
+    while true
+        q := agen_queues.get(id) else return
+        if q.len() == 0 or running.contains(id)
+            return
+        req := q[0]
+        mut finished := true
+        if f := frames.get(id)
+            finished = f.state == "start" and req.kind != "next"
+            if finished
+                frames.remove(id)
+        if not finished
+            kind := match req.kind
+                "next" => "normal"
+                "return" => "return"
+                _ => "throw"
+            running.add(id)
+            agen_run(id, Completion(kind: kind, value: req.value, target: -1))
+            return
+        agen_pop(id)
+        match req.kind
+            "next" => resolve_promise(req.promise, iter_result(Undef, true))
+            "throw" => reject_promise(req.promise, req.value)
+            _ =>
+                promise_then(
+                    promise_resolve(req.value),
+                    closure_native("AsyncFromSync.result", Bool(true), [], 1),
+                    Undef,
+                    Obj(req.promise),
+                )
+
+## Run an async generator from where it stopped until it yields, awaits or
+## ends, and answer the request at the front of its queue.
+fn Vm.agen_run(mut self, id int, resume Completion)
+    mut f := take_frame(id) else
+        running.remove(id)
+        return
+    r := run_frame(mut f, resume) else err
+        running.remove(id)
+        if err.limit
+            stopped = true
+            report(uncaught_text(err))
+            return
+        if req := agen_pop(id)
+            reject_promise(req.promise, err.value)
+        agen_drain(id)
+        return
+    match r.kind
+        "await" =>
+            frames[id] = f
+            idv := Value.Num(id.to_float())
+            ok := closure_native("AsyncGen.resume", idv, [Bool(true)], 1)
+            fail := closure_native("AsyncGen.resume", idv, [Bool(false)], 1)
+            promise_then(promise_resolve(r.value), ok, fail, Undef)
+        "yield" =>
+            frames[id] = f
+            running.remove(id)
+            if req := agen_pop(id)
+                resolve_promise(req.promise, iter_result(r.value, false))
+            agen_drain(id)
+        _ =>
+            running.remove(id)
+            if req := agen_pop(id)
+                promise_then(
+                    promise_resolve(r.value),
+                    closure_native("AsyncFromSync.result", Bool(true), [], 1),
+                    Undef,
+                    Obj(req.promise),
+                )
+            agen_drain(id)
+
+## An awaited value came back to an async generator.
+pub fn Vm.async_gen_resume(mut self, this_val Value, args List[Value]) Value ! Thrown
+    id := int_of(num_of(this_val) else -1.0)
+    ok := truthy(arg_at(args, 0))
+    agen_run(id, Completion(
+        kind: if ok then "normal" else "throw",
+        value: arg_at(args, 1),
+        target: -1,
+    ))
+    Undef
 
 ## An iterator for `for-of` over `v` (§7.4.2 GetIterator).
 pub fn Vm.open_iterator(mut self, v Value) Value ! Thrown
