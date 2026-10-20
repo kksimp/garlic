@@ -1,0 +1,18 @@
+tick 0
+tick 1
+tick 2
+{ value: 0, done: false } { value: 1, done: false } { value: 'done', done: true } { value: undefined, done: true }
+sync source 1
+sync source 2
+sync source 3
+queued 0,1,2
+{ value: 'early', done: true } { value: undefined, done: true }
+x 1
+agen cleanup
+before 1
+caught agen boom
+rejected x { value: undefined, done: true }
+ab [object AsyncGenerator] function
+function
+y 1
+sync closed

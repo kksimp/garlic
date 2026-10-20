@@ -23,7 +23,8 @@ pub enum Stmt
     Empty(pos Pos)
     For(init ForInit?, test Expr?, update Expr?, body Stmt, pos Pos)
     ## `for (left in right)`, or with `of`: `for (left of right)`.
-    ForIn(left ForLeft, right Expr, body Stmt, of bool, pos Pos)
+    ## `of` for `for-of`; `is_await` for `for await` (§14.7.5).
+    ForIn(left ForLeft, right Expr, body Stmt, of bool, is_await bool, pos Pos)
     While(test Expr, body Stmt, pos Pos)
     DoWhile(body Stmt, test Expr, pos Pos)
     Break(label str?, pos Pos)
@@ -370,11 +371,11 @@ pub fn stmt_suspends(s Stmt) bool
             if u := update
                 r = r or expr_suspends(u)
             r
-        ForIn(left, right, body, _, _) =>
+        ForIn(left, right, body, _, is_await, _) =>
             l := match left
                 LeftDecl(d) => decl_suspends(d)
                 LeftPat(p) => pat_suspends(p)
-            l or expr_suspends(right) or stmt_suspends(body)
+            is_await or l or expr_suspends(right) or stmt_suspends(body)
         While(test, body, _) => expr_suspends(test) or stmt_suspends(body)
         DoWhile(body, test, _) => expr_suspends(test) or stmt_suspends(body)
         Throw(value, _) => expr_suspends(value)

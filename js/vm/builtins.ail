@@ -59,6 +59,7 @@ pub fn new_vm() Vm
         codes: [],
         frame_seq: 0,
         running: Set[int](),
+        agen_queues: {},
     )
     vm.setup()
     vm
@@ -376,6 +377,12 @@ pub fn Vm.native(
         return generator_native(m, this_val, args)
     if name == "Async.resume"
         return async_native(name, this_val, args)
+    if m := name.strip_prefix("AsyncGenerator.prototype.")
+        return async_generator_native(m, this_val, args)
+    if name == "AsyncGen.resume"
+        return async_gen_resume(this_val, args)
+    if m := name.strip_prefix("AsyncFromSync.")
+        return async_from_sync_native(m, this_val, args)
     if m := name.strip_prefix("dom.")
         return dom_native(m, this_val, args, new_target)
     if m := name.strip_prefix("Array.prototype.")
