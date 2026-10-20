@@ -16,6 +16,8 @@ pub struct Style
     pub quiet bool
     pub link int
     pub heading int
+    ## The target's number (1-based) for focus, 0 if none.
+    pub target int
 
 ## Text drawn in one style on one row, starting at column `col`.
 pub struct Run
@@ -34,6 +36,10 @@ pub struct Box
     pub level int
     ## The link's number (1-based), 0 if not a link.
     pub link int
+    ## A form control's current value (`textbox`, `combobox`), or "".
+    pub value str
+    ## Whether a `checkbox` or `radio` is checked.
+    pub checked bool
     pub row int
     pub col int
     pub end_row int
@@ -48,6 +54,11 @@ pub struct Page
     pub boxes List[Box]
     ## For each link number n, `links[n - 1]` is its box's index.
     pub links List[int]
+    ## The boxes an agent or the keyboard can act on (links and form
+    ## controls), in document order: `targets[n - 1]` for focus number n.
+    pub targets List[int]
+    ## The ids of nodes changed since the page was parsed (`html.Doc.changed`).
+    pub changed List[int]
 
 ## Elements never drawn: metadata, scripts and templates.
 HIDDEN := {
@@ -157,6 +168,26 @@ ROLES := {
     "ul": "list",
 }
 
+## Roles that take an action, so Tab stops on them, and their actions.
+ACTIONS := {
+    "link": ["follow"],
+    "button": ["submit"],
+    "textbox": ["type", "submit"],
+    "checkbox": ["check"],
+    "radio": ["check"],
+    "combobox": ["select"],
+}
+
+## Input types and their roles; any other type is a `textbox`.
+INPUT_ROLES := {
+    "checkbox": "checkbox",
+    "radio": "radio",
+    "submit": "button",
+    "button": "button",
+    "reset": "button",
+    "image": "button",
+}
+
 ## Roles whose name is their text in full; other roles' names are cut to
 ## NAME_CUT characters, since the text is on the page already.
 FULL_NAMES := {"button", "combobox", "heading", "image", "link", "textbox"}
@@ -183,6 +214,7 @@ struct Flow
     style Style
     pre int
     boxes List[Box]
+    targets List[int]
     open List[int]
     links List[int]
     base str
@@ -221,7 +253,15 @@ fn Flow.start_row(mut self)
             ind.used = true
     text := parts.join("")
     if text != ""
-        q := Style(bold: false, italic: false, code: false, quiet: true, link: 0, heading: 0)
+        q := Style(
+            bold: false,
+            italic: false,
+            code: false,
+            quiet: true,
+            link: 0,
+            heading: 0,
+            target: 0,
+        )
         cur.push(Run(col: 0, text, style: q))
     col = text.chars().len()
 
@@ -310,30 +350,97 @@ fn Flow.text(mut self, s str)
 ## Opens a box for element `id` if it has a role.
 fn Flow.open_box(mut self, id int, tag str) int?
     n := d.nodes[id]
-    role := d.attr(id, "role") else (ROLES.get(tag) else return none)
+    mut role := d.attr(id, "role") else (ROLES.get(tag) else return none)
     if tag == "a" and d.attr(id, "href") == none
         return none
+    kind := input_type(d, id)
+    if tag == "input"
+        if kind == "hidden"
+            return none
+        role = INPUT_ROLES.get(kind) else "textbox"
     mut href := ""
     if h := d.attr(id, "href")
         href = resolve(base, h)
     level := if HEADINGS_LEVEL.contains(tag) then HEADINGS_LEVEL[tag] else 0
     mut name := d.attr(id, "aria-label") else (d.attr(id, "alt") else "")
-    if name == "" and not CONTAINERS.contains(role)
+    if name == "" and (tag == "input" or tag == "select" or tag == "textarea")
+        name = label_of(d, id)
+    if name == "" and tag == "input" and role == "button"
+        name = d.attr(id, "value") else (if kind == "reset" then "Reset" else "Submit")
+    if name == "" and not CONTAINERS.contains(role) and tag != "select" and tag != "textarea"
         name = html.collapse(d.text(id))
     if name == "" and tag != "img"
         name = d.attr(
             id,
             "title",
-        ) else (d.attr(id, "placeholder") else (d.attr(id, "value") else ""))
+        ) else (d.attr(id, "placeholder") else (d.attr(id, "name") else ""))
     if not FULL_NAMES.contains(role) and name.chars().len() > NAME_CUT
         name = "{name.slice(0, NAME_CUT)}..."
     link := if n.tag == "a" then links.len() + 1 else 0
-    boxes.push(Box(id, role, name, href, level, link, row: -1, col: -1, end_row: -1, end_col: -1))
+    value := control_value(d, id)
+    checked := d.attr(id, "checked") != none
+    boxes.push(Box(
+        id,
+        role,
+        name,
+        href,
+        level,
+        link,
+        value,
+        checked,
+        row: -1,
+        col: -1,
+        end_row: -1,
+        end_col: -1,
+    ))
     b := boxes.len() - 1
     open.push(b)
     if n.tag == "a"
         links.push(b)
+    if ACTIONS.contains(role)
+        targets.push(b)
+        style.target = targets.len()
     b
+
+## The `type` of an `input`, lowercase; "text" when absent.
+pub fn input_type(d html.Doc, id int) str
+    (d.attr(id, "type") else "text").to_lower()
+
+## A form control's value: an input's `value`, a textarea's text (or the
+## `value` typed into it), a select's selected option (or its first).
+pub fn control_value(d html.Doc, id int) str
+    tag := d.nodes[id].tag
+    if tag == "textarea"
+        return d.attr(id, "value") else d.text(id)
+    if tag == "select"
+        mut first := ""
+        for o in d.all("option")
+            if not d.within(o, id)
+                continue
+            text := html.collapse(d.text(o))
+            v := d.attr(o, "value") else text
+            if d.attr(o, "selected") != none
+                return v
+            if first == ""
+                first = v
+        return first
+    if tag == "input"
+        return d.attr(id, "value") else ""
+    ""
+
+## The text of the `label` for control `id`: `<label for=ID>`, else a
+## label around it.
+fn label_of(d html.Doc, id int) str
+    if key := d.attr(id, "id")
+        for l in d.all("label")
+            if d.attr(l, "for") == key
+                return html.collapse(d.text(l))
+    mut p := d.nodes[id].parent
+    while p > 0
+        if d.nodes[p].tag == "label"
+            return html.collapse(d.text(p))
+        p = d.nodes[p].parent
+    ""
 
 HEADINGS_LEVEL := {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
 
@@ -393,8 +500,8 @@ fn Flow.element(mut self, id int)
         "code" | "kbd" | "samp" | "tt" => style.code = true
         "pre" => pre += 1
         "a" =>
-            if b != none
-                style.link = links.len()
+            if bi := b
+                style.link = boxes[bi].link
         _ => style.bold = style.bold
     match tag
         "br" =>
@@ -410,19 +517,39 @@ fn Flow.element(mut self, id int)
             if alt != ""
                 word("[{alt}]")
         "input" =>
-            kind := (d.attr(id, "type") else "text").to_lower()
-            if kind != "hidden"
-                label := d.attr(id, "value") else (d.attr(id, "placeholder") else "")
-                word(if kind == "submit" or kind == "button" then "[{label}]" else "[{label}____]")
+            kind := input_type(d, id)
+            checked := d.attr(id, "checked") != none
+            if kind == "checkbox"
+                word(if checked then "[x]" else "[ ]")
+            elif kind == "radio"
+                word(if checked then "(*)" else "( )")
+            elif kind == "submit" or kind == "button" or kind == "reset" or kind == "image"
+                fallback := if kind == "reset" then "Reset" else "Submit"
+                word("[{d.attr(id, "value") else (d.attr(id, "alt") else fallback)}]")
+            elif kind != "hidden"
+                v := d.attr(id, "value") else ""
+                shown := if kind == "password" then "*".repeat(v.chars().len()) else v
+                ph := d.attr(id, "placeholder") else ""
+                hint := if v == "" then ph else ""
+                word("[{shown}{hint}____]")
+        "textarea" => word("[{control_value(d, id).replace("\n", " ")}____]")
+        "select" => word("[{control_value(d, id)} v]")
+        "button" =>
+            word("[")
+            space = false
+            children(id)
+            space = false
+            put("]")
         "td" | "th" =>
             if col > 0 and dirty()
                 put_sep(" | ")
             space = false
             children(id)
         _ => children(id)
-    if tag == "a" and b != none
-        style = saved
-        put("[{links.len()}]")
+    if tag == "a"
+        if bi := b
+            style = saved
+            put("[{boxes[bi].link}]")
     style = saved
     if tag == "pre"
         pre -= 1
@@ -459,7 +586,15 @@ fn Flow.list_marker(self, id int) str
 
 ## Lays `d` out at `width` columns; `url` resolves relative links.
 pub fn layout(d html.Doc, url str, width int) Page
-    plain := Style(bold: false, italic: false, code: false, quiet: false, link: 0, heading: 0)
+    plain := Style(
+        bold: false,
+        italic: false,
+        code: false,
+        quiet: false,
+        link: 0,
+        heading: 0,
+        target: 0,
+    )
     mut f := Flow(
         d,
         width: width.max(10),
@@ -472,6 +607,7 @@ pub fn layout(d html.Doc, url str, width int) Page
         style: plain,
         pre: 0,
         boxes: [],
+        targets: [],
         open: [],
         links: [],
         base: url,
@@ -480,7 +616,16 @@ pub fn layout(d html.Doc, url str, width int) Page
     f.break_row()
     while f.rows.len() > 0 and f.rows[f.rows.len() - 1].len() == 0
         f.rows.pop()
-    Page(url, title: d.title(), width: f.width, rows: f.rows, boxes: f.boxes, links: f.links)
+    Page(
+        url,
+        title: d.title(),
+        width: f.width,
+        rows: f.rows,
+        boxes: f.boxes,
+        links: f.links,
+        targets: f.targets,
+        changed: d.changed,
+    )
 
 ## Row `r` as plain text.
 pub fn Page.row_text(self, r int) str
@@ -524,10 +669,18 @@ pub fn Page.to_json(self, scroll int, height int, viewport_only bool) str
             parts.push("\"href\":{quote(b.href)}")
         parts.push("\"row\":{b.row},\"col\":{b.col},\"end_row\":{b.end_row},\"end_col\":{b.end_col}")
         parts.push("\"visible\":{vis}")
-        if b.role == "link"
-            parts.push("\"link\":{b.link},\"actions\":[\"follow\"]")
+        if b.link > 0
+            parts.push("\"link\":{b.link}")
+        if b.role == "textbox" or b.role == "combobox"
+            parts.push("\"value\":{quote(b.value)}")
+        if b.role == "checkbox" or b.role == "radio"
+            parts.push("\"checked\":{b.checked}")
+        if acts := ACTIONS.get(b.role)
+            parts.push("\"actions\":[{[quote(a) for a in acts].join(",")}]")
         out.push("\{{parts.join(",")}}")
-    head := "\"api\":1,\"url\":{quote(url)},\"title\":{quote(title)},\"width\":{width},\"height\":{height},\"scroll\":{scroll},\"rows\":{rows.len()}"
+    mut head := "\"api\":1,\"url\":{quote(url)},\"title\":{quote(title)},\"width\":{width},\"height\":{height},\"scroll\":{scroll},\"rows\":{rows.len()}"
+    if changed.len() > 0
+        head = "{head},\"changed\":[{changed.join(",")}]"
     "\{{head},\"nodes\":[{out.join(",")}]}"
 
 ## `s` as a JSON string.

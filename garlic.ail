@@ -15,8 +15,8 @@ use page
 
 ## The keys, as `--keys` prints them.
 KEYS := [
-    "Tab, Shift-Tab    next, previous link",
-    "Enter             follow the selected link",
+    "Tab, Shift-Tab    next, previous link or form control",
+    "Enter, click      follow a link, edit a field, press a button, toggle a box",
     "Backspace, Alt-Left  back",
     "Up, Down, PageUp, PageDown, Home, End, Space  scroll",
     "g                 open a URL or file",
@@ -32,20 +32,23 @@ LINK_FG := 0x569cd6
 FOCUS_BG := 0x264f78
 HEADING_FG := 0xdcdcaa
 CODE_FG := 0xce9178
+CONTROL_FG := 0x4ec9b0
 STATUS_BG := 0x007acc
 STATUS_FG := 0xffffff
 
-## What the bottom row is doing: showing the status, or reading a URL or
-## a search.
+## What the bottom row is doing: showing the status, or reading a URL, a
+## search, or the text for form field `id`.
 enum Prompt
     Status
     Url(text str)
     Find(text str)
+    Field(id int, text str)
 
-## The browser: the page shown, where it is scrolled, the selected link
-## (0 for none) and the pages to go back to.
+## The browser: the page shown (its tree and layout), where it is scrolled,
+## the focused target (0 for none) and the pages to go back to.
 struct Browser
     url str
+    doc html.Doc
     pg page.Page
     scroll int
     focus int
@@ -58,18 +61,31 @@ struct Browser
     ## Whether the page model lists only the viewport's nodes (`--viewport`).
     viewport_only bool
 
-## The text of `url`: `http` and `https` through `net.get` (which follows
-## redirects), `file://` and anything without a scheme from the file
-## system. A failure is shown as a page, so the browser keeps going.
-fn fetch(url str) str
+## The headers Garlic sends: who it is, and that it wants HTML.
+fn options() net.Options
+    mut o := net.options()
+    o.headers["user-agent"] = "Garlic/0.1 (AIL; text)"
+    o.headers["accept"] = "text/html,application/xhtml+xml;q=0.9,text/plain;q=0.8,*/*;q=0.5"
+    o.headers["accept-language"] = "en"
+    o
+
+## The text of `url`: `http` and `https` through `net.request` (which
+## follows redirects), with `method` and a form `body`; `file://` and
+## anything without a scheme from the file system. A failure is shown as a
+## page, so the browser keeps going.
+fn fetch(url str, method str, body str) str
     s := page.scheme(url)
     if s == "http" or s == "https"
-        r := net.get(url) else err
+        mut o := options()
+        if method == "POST"
+            o.body = body
+            o.headers["content-type"] = "application/x-www-form-urlencoded"
+        r := net.request(method, url, o) else err
             return error_page(url, "{err}")
         if r.status >= 400
             return "{r.body}<p>(HTTP status {r.status})"
         return r.body
-    file := url.strip_prefix("file://") else url
+    file := (url.strip_prefix("file://") else url).split("?")[0].split("#")[0]
     text := fs.read_text(file) else err
         return error_page(url, "{err}")
     text
@@ -77,14 +93,12 @@ fn fetch(url str) str
 fn error_page(url str, why str) str
     "<title>Can't open {url}</title><h1>Can't open this page</h1><p>{url}</p><p>{why}</p>"
 
-## Loads and lays out `url` at `width` columns.
-fn open_page(url str, width int) page.Page
-    page.layout(html.parse(fetch(url)), url, width)
-
 fn Browser.new(url str, width int, height int) Browser
+    d := html.parse(fetch(url, "GET", ""))
     Browser(
         url,
-        pg: open_page(url, width),
+        doc: d,
+        pg: page.layout(d, url, width),
         scroll: 0,
         focus: 0,
         width,
@@ -106,14 +120,20 @@ fn Browser.max_scroll(self) int
 fn Browser.scroll_to(mut self, row int)
     scroll = row.max(0).min(max_scroll())
 
+## Lays the page out again, after a resize or a change to a form control.
+fn Browser.relayout(mut self)
+    pg = page.layout(doc, url, width)
+    scroll_to(scroll)
+
 ## Opens `target`, remembering the current page for Back.
 fn Browser.go(mut self, target str)
     back.push(url)
-    load(target)
+    load(target, "GET", "")
 
-fn Browser.load(mut self, target str)
+fn Browser.load(mut self, target str, method str, body str)
     url = target
-    pg = open_page(target, width)
+    doc = html.parse(fetch(target, method, body))
+    pg = page.layout(doc, url, width)
     scroll = 0
     focus = 0
     message = ""
@@ -122,7 +142,7 @@ fn Browser.go_back(mut self)
     prev := back.pop() else
         message = "no page to go back to"
         return
-    load(prev)
+    load(prev, "GET", "")
 
 ## Follows link `n` (1-based).
 fn Browser.follow(mut self, n int)
@@ -134,18 +154,18 @@ fn Browser.follow(mut self, n int)
         return
     go(href)
 
-## Selects the next link (`forward`) or the previous one, wrapping, and
-## scrolls it into view.
-fn Browser.step_link(mut self, forward bool)
-    n := pg.links.len()
+## Moves focus to the next target (`forward`) or the previous one,
+## wrapping, and scrolls it into view.
+fn Browser.step_focus(mut self, forward bool)
+    n := pg.targets.len()
     if n == 0
-        message = "no links on this page"
+        message = "nothing to focus on this page"
         return
     if forward
         focus = focus % n + 1
     else
         focus = if focus <= 1 then n else focus - 1
-    b := pg.boxes[pg.links[focus - 1]]
+    b := pg.boxes[pg.targets[focus - 1]]
     if b.row < scroll or b.end_row > scroll + view()
         scroll_to(b.row - view() / 3)
 
@@ -163,6 +183,17 @@ fn Browser.find(mut self, needle str)
     else
         message = "`{needle}` not found"
 
+## `text` after a key typed into a prompt: Backspace deletes, a character
+## adds; none when the key does neither.
+fn edit_text(text str, key str) str?
+    if key == "backspace"
+        return text.slice(0, (text.chars().len() - 1).max(0))
+    if key == "space"
+        return "{text} "
+    if key.chars().len() == 1
+        return "{text}{key}"
+    none
+
 ## Handles a key; false when the browser should close.
 fn Browser.key(mut self, key str, alt bool, shift bool) bool
     match prompt
@@ -171,35 +202,34 @@ fn Browser.key(mut self, key str, alt bool, shift bool) bool
             if key == "enter"
                 if text != ""
                     go(text)
-            elif key == "escape"
-                return true
-            elif key == "backspace"
-                prompt = Url(text.slice(0, (text.chars().len() - 1).max(0)))
-            elif key.chars().len() == 1
-                prompt = Url("{text}{key}")
-            else
-                prompt = Url(text)
+            elif key != "escape"
+                prompt = Url(edit_text(text, key) else text)
             return true
         Find(text) =>
             prompt = Status
             if key == "enter"
                 find(text)
-            elif key == "escape"
-                return true
-            elif key == "backspace"
-                prompt = Find(text.slice(0, (text.chars().len() - 1).max(0)))
-            elif key.chars().len() == 1
-                prompt = Find("{text}{key}")
-            else
-                prompt = Find(text)
+            elif key != "escape"
+                prompt = Find(edit_text(text, key) else text)
+            return true
+        Field(id, text) =>
+            prompt = Status
+            if key == "enter"
+                type_into(id, text)
+                submit(id)
+            elif key == "tab"
+                type_into(id, text)
+                step_focus(not shift)
+            elif key != "escape"
+                prompt = Field(id, edit_text(text, key) else text)
             return true
         Status => message = ""
     match key
         "q" | "escape" => return false
-        "tab" => step_link(not shift)
+        "tab" => step_focus(not shift)
         "enter" =>
             if focus > 0
-                follow(focus)
+                activate(pg.boxes[pg.targets[focus - 1]].id)
         "backspace" => go_back()
         "left" =>
             if alt
@@ -213,35 +243,180 @@ fn Browser.key(mut self, key str, alt bool, shift bool) bool
         "g" => prompt = Url("")
         "/" => prompt = Find("")
         "n" => find(last_find)
-        "r" => load(url)
+        "r" => load(url, "GET", "")
         _ => return true
     true
 
+## The box of target node `id`, or none when `id` takes no action.
+fn Browser.target(self, id int) page.Box?
+    for t in pg.targets
+        if pg.boxes[t].id == id
+            return pg.boxes[t]
+    none
+
+## Acts on target node `id` as Enter or a click does: follows a link,
+## edits a text field (in the window), submits with a button, toggles a
+## check box, chooses a radio button.
+fn Browser.activate(mut self, id int)
+    b := target(id) else
+        message = "node {id} has no action"
+        return
+    match b.role
+        "link" => follow(b.link)
+        "textbox" => prompt = Field(id, b.value)
+        "button" => submit(id)
+        "checkbox" | "radio" => check(id)
+        _ => message = "use select:{id}=OPTION to choose an option"
+
+## Types `text` into text field `id`, replacing its value.
+fn Browser.type_into(mut self, id int, text str)
+    b := target(id) else
+        message = "node {id} has no action"
+        return
+    if b.role != "textbox"
+        message = "node {id} is a {b.role}, not a textbox"
+        return
+    doc.set_attr(id, "value", text)
+    relayout()
+
+## Toggles check box `id`, or checks radio button `id` and unchecks the
+## others of its group (same `name` in the same form).
+fn Browser.check(mut self, id int)
+    b := target(id) else
+        message = "node {id} has no action"
+        return
+    if b.role == "checkbox"
+        if b.checked
+            doc.remove_attr(id, "checked")
+        else
+            doc.set_attr(id, "checked", "")
+    elif b.role == "radio"
+        group := doc.attr(id, "name") else ""
+        form := doc.enclosing(id, "form") else 0
+        for r in doc.all("input")
+            if page.input_type(doc, r) == "radio" and doc.attr(
+                r,
+                "name",
+            ) == group and doc.within(r, form)
+                doc.remove_attr(r, "checked")
+        doc.set_attr(id, "checked", "")
+    else
+        message = "node {id} is a {b.role}, not a checkbox or radio"
+        return
+    relayout()
+
+## Chooses the option of select `id` whose text or value is `choice`.
+fn Browser.choose(mut self, id int, choice str)
+    for o in doc.all("option")
+        if not doc.within(o, id)
+            continue
+        text := html.collapse(doc.text(o))
+        if text == choice or doc.attr(o, "value") == choice
+            for other in doc.all("option")
+                if doc.within(other, id)
+                    doc.remove_attr(other, "selected")
+            doc.set_attr(o, "selected", "")
+            relayout()
+            return
+    message = "node {id} has no option `{choice}`"
+
+## Submits the form that control `id` is in (HTML 4.10.21, simplified):
+## GET puts the fields in the query of the form's `action`, POST sends them
+## as the body. `id` itself counts as the submitter when it is a button.
+fn Browser.submit(mut self, id int)
+    form := doc.enclosing(id, "form") else
+        message = "node {id} is not in a form"
+        return
+    fields := form_fields(doc, form, id)
+    action := page.resolve(url, doc.attr(form, "action") else "")
+    method := (doc.attr(form, "method") else "get").to_upper()
+    back.push(url)
+    if method == "POST"
+        load(action, "POST", fields)
+    else
+        base := action.split("#")[0].split("?")[0]
+        load("{base}?{fields}", "GET", "")
+
+## The form's fields, URL-encoded (`application/x-www-form-urlencoded`):
+## named, enabled controls; checked boxes and radios; the submitter only
+## among buttons.
+fn form_fields(d html.Doc, form int, submitter int) str
+    mut out := List[str]()
+    for i in 0..d.nodes.len()
+        n := d.nodes[i]
+        if n.kind != html.Kind.Element or not d.within(i, form)
+            continue
+        if n.tag != "input" and n.tag != "select" and n.tag != "textarea" and n.tag != "button"
+            continue
+        name := d.attr(i, "name") else continue
+        if name == "" or d.attr(i, "disabled") != none
+            continue
+        kind := page.input_type(d, i)
+        if n.tag == "button"
+            or (n.tag == "input" and (kind == "submit" or kind == "image" or kind == "button" or kind == "reset"))
+            if i != submitter or kind == "reset" or kind == "button"
+                continue
+        if (kind == "checkbox" or kind == "radio") and n.tag == "input"
+            if d.attr(i, "checked") == none
+                continue
+            out.push("{urlencode(name)}={urlencode(d.attr(i, "value") else "on")}")
+            continue
+        out.push("{urlencode(name)}={urlencode(page.control_value(d, i))}")
+    out.join("&")
+
+## `s` encoded for a form: letters, digits and `*-._` as they are, space as
+## `+`, every other byte of its UTF-8 as `%XX`.
+fn urlencode(s str) str
+    mut out := List[str]()
+    for c in s.chars()
+        k := c.code()
+        if c.is_alpha() and k < 128 or c.is_digit() or c == '*' or c == '-' or c == '.' or c == '_'
+            out.push("{c}")
+        elif c == ' '
+            out.push("+")
+        else
+            for byte in utf8(k)
+                out.push("%{byte:0>2x}".to_upper())
+    out.join("")
+
+## The UTF-8 bytes of code point `k`.
+fn utf8(k int) List[int]
+    if k < 0x80
+        return [k]
+    if k < 0x800
+        return [0xC0 + k / 64, 0x80 + k % 64]
+    if k < 0x10000
+        return [0xE0 + k / 4096, 0x80 + k / 64 % 64, 0x80 + k % 64]
+    [0xF0 + k / 262144, 0x80 + k / 4096 % 64, 0x80 + k / 64 % 64, 0x80 + k % 64]
+
 ## Does one agent action (docs/design/garlic-browser.md, "Agent actions"):
-## `follow` a link number, `click` a node id, `open` a URL, `back`, `find`
-## text, `scroll` to a row, `reload`. False for an unknown action.
+## `follow` a link number, `click` a node id (as Enter does), `type`
+## `ID=TEXT`, `submit` the form of node ID, `check` ID, `select`
+## `ID=OPTION`, `open` a URL, `back`, `find` text, `scroll` to a row,
+## `reload`. False for an unknown action.
 fn Browser.act(mut self, name str, arg str) bool
     message = ""
+    eq := arg.find("=") else arg.chars().len()
+    id := arg.slice(0, eq).to_int() else -1
+    rest := arg.slice((eq + 1).min(arg.chars().len()), arg.chars().len())
     match name
         "follow" => follow(arg.to_int() else 0)
-        "click" => click(arg.to_int() else -1)
+        "click" => activate(id)
+        "type" => type_into(id, rest)
+        "submit" => submit(id)
+        "check" => check(id)
+        "select" => choose(id, rest)
         "open" => go(arg)
         "back" => go_back()
         "find" => find(arg)
         "scroll" => scroll_to(arg.to_int() else 0)
-        "reload" => load(url)
+        "reload" => load(url, "GET", "")
         _ =>
-            message = "unknown action `{name}`: try follow, click, open, back, find, scroll or reload"
+            message = "unknown action `{name}`: try follow, click, type, submit, check, select, open, back, find, scroll or reload"
             return false
+    if prompt != Status
+        prompt = Status
     true
-
-## Clicks node `id`: follows it when it is a link.
-fn Browser.click(mut self, id int)
-    for n in 1..=pg.links.len()
-        if pg.boxes[pg.links[n - 1]].id == id
-            follow(n)
-            return
-    message = "node {id} has no action"
 
 ## The page model of the viewport, with the last action's message.
 fn Browser.model(self) str
@@ -250,8 +425,9 @@ fn Browser.model(self) str
         return j
     j.replace(",\"nodes\":[", ",\"message\":{page.quote(message)},\"nodes\":[")
 
-## One action from a session line: `\{"do":"follow","link":3}`; the argument
-## is `link`, `id` or `row` (a number), or `url` or `text`.
+## One action from a session line: `\{"do":"follow","link":3}`. The
+## argument is `link`, `id` or `row` (a number), or `url` or `text`; with
+## both `id` and `text` (`type`, `select`), `ID=TEXT`.
 fn Browser.act_json(mut self, line str)
     j := parse_json(line) else err
         message = "bad JSON: {err}"
@@ -263,7 +439,7 @@ fn Browser.act_json(mut self, line str)
             arg = "{n.to_int()}"
     for key in ["url", "text"]
         if t := j.str(key)
-            arg = t
+            arg = if j.num("id") != none then "{arg}={t}" else t
     act(name, arg)
 
 ## `--session`: reads one JSON action per line on stdin and answers each
@@ -277,28 +453,31 @@ fn Browser.session(mut self)
         act_json(line)
         print(model())
 
-## The link drawn at window cell (`col`, `row`), or 0.
-fn Browser.link_at(self, col int, row int) int
+## The target node drawn at window cell (`col`, `row`), or none.
+fn Browser.target_at(self, col int, row int) int?
     r := row + scroll
-    for n in 1..=pg.links.len()
-        b := pg.boxes[pg.links[n - 1]]
+    for t in pg.targets
+        b := pg.boxes[t]
         if r >= b.row and r < b.end_row
             starts := r > b.row or col >= b.col
             ends := r < b.end_row - 1 or col < b.end_col
             if starts and ends
-                return n
-    0
+                return b.id
+    none
 
 ## The status row's text.
 fn Browser.status(self) str
     match prompt
         Url(text) => "Open: {text}_"
         Find(text) => "Find: {text}_"
+        Field(_, text) => "Type: {text}_  (Enter submits, Tab moves on, Esc cancels)"
         Status =>
             if message != ""
                 return message
             if focus > 0
-                return "[{focus}] {pg.boxes[pg.links[focus - 1]].href}"
+                b := pg.boxes[pg.targets[focus - 1]]
+                return if b.role
+                    == "link" then "[{b.link}] {b.href}" else "{b.role} {b.name}: Enter to use"
             last := (scroll + view()).min(pg.rows.len())
             "{url}  rows {scroll + 1}-{last} of {pg.rows.len()}"
 
@@ -306,6 +485,8 @@ fn Browser.status(self) str
 fn color(st page.Style) int
     if st.link > 0
         return LINK_FG
+    if st.target > 0
+        return CONTROL_FG
     if st.heading > 0
         return HEADING_FG
     if st.code
@@ -321,7 +502,7 @@ fn Browser.draw(self, mut w ui.Window)
         if at >= pg.rows.len()
             break
         for run in pg.rows[at]
-            bg := if run.style.link > 0 and run.style.link == focus then FOCUS_BG else BG
+            bg := if run.style.target > 0 and run.style.target == focus then FOCUS_BG else BG
             st := ui.Style(
                 bold: run.style.bold,
                 italic: run.style.italic,
@@ -337,26 +518,23 @@ fn window_main(mut b Browser) !
     w.set_title("{b.pg.title} - Garlic")
     b.draw(mut w)
     while true
+        was := b.url
         match w.next_event()
             Key(key, _, alt, shift) =>
-                was := b.url
                 if not b.key(key, alt, shift)
                     break
-                if b.url != was
-                    w.set_title("{b.pg.title} - Garlic")
             Resize(cols, rows) =>
                 b.width = cols
                 b.height = rows
-                b.pg = page.layout(html.parse(fetch(b.url)), b.url, cols)
-                b.scroll_to(b.scroll)
+                b.relayout()
             Mouse(col, row, _, kind) =>
                 if kind == "down"
-                    n := b.link_at(col, row)
-                    if n > 0
-                        b.follow(n)
-                        w.set_title("{b.pg.title} - Garlic")
+                    if id := b.target_at(col, row)
+                        b.activate(id)
             Scroll(lines) => b.scroll_to(b.scroll + lines)
             Close => break
+        if b.url != was
+            w.set_title("{b.pg.title} - Garlic")
         b.draw(mut w)
     w.close()
 
@@ -647,6 +825,79 @@ fn testdata() str
     assert(b.model().contains("\"message\":\"node 0 has no action\""))
     b.act_json("not json")
     assert(b.message.starts_with("bad JSON"))
+
+## The id of the first element `tag` whose `attr` is `value` in `b`'s page.
+fn node_with(b Browser, tag str, attr str, value str) int
+    for i in b.doc.all(tag)
+        if b.doc.attr(i, attr) == value
+            return i
+    -1
+
+@test fn forms_render_and_join_the_model()
+    b := Browser.new("{testdata()}/form.html", 80, 30)
+    text := b.pg.text()
+    assert(text.contains("Query [words____] [ ] Exact (*) New ( ) Old [en v] [hi____] [Search] [Clear]"))
+    q := node_with(b, "input", "name", "q")
+    box := b.target(q)?
+    assert_eq([box.role, box.name, box.value], ["textbox", "Query", ""])
+    assert(b.model().contains("\"role\":\"textbox\",\"name\":\"Query\""))
+    assert(b.model().contains("\"actions\":[\"type\",\"submit\"]"))
+    assert_eq(b.target(node_with(b, "input", "name", "exact"))?.name, "Exact")
+
+@test fn typing_checking_selecting_and_submitting_with_get()
+    mut b := Browser.new("{testdata()}/form.html", 80, 30)
+    q := node_with(b, "input", "name", "q")
+    assert(b.act("type", "{q}=garlic bread"))
+    assert(b.pg.text().contains("[garlic bread____]"))
+    assert(b.model().contains("\"changed\":[{q}]"))
+    b.act("check", "{node_with(b, "input", "name", "exact")}")
+    b.act("check", "{node_with(b, "input", "value", "old")}")
+    b.act("select", "{node_with(b, "select", "name", "lang")}=French")
+    assert(b.pg.text().contains("[x] Exact ( ) New (*) Old [fr v]"))
+    b.act("submit", "{node_with(b, "input", "name", "go")}")
+    assert_eq(b.pg.title, "Results")
+    assert(b.url.ends_with("/result.html?q=garlic+bread&src=garlic&exact=on&sort=old&lang=fr&note=hi&go=Search"))
+    b.act("back", "")
+    assert_eq(b.pg.title, "Search form")
+
+@test fn enter_in_a_field_types_then_submits()
+    mut b := Browser.new("{testdata()}/form.html", 80, 30)
+    b.key("tab", false, false)
+    b.key("enter", false, false)
+    for k in ["x", "space", "y", "enter"]
+        b.key(k, false, false)
+    assert_eq(b.pg.title, "Results")
+    assert(b.url.contains("?q=x+y&"))
+    assert(not b.url.contains("go=Search"))
+
+@test fn post_forms_send_the_body()
+    mut b := Browser.new("{testdata()}/form.html", 80, 30)
+    b.act_json("\{\"do\":\"click\",\"id\":{node_with(b, "button", "name", "b")}}")
+    assert_eq(b.pg.title, "Posted")
+    assert_eq(
+        form_fields(
+            html.parse("<form><input name=who value='a b&c'><button name=b value=1>x</button></form>"),
+            1,
+            -1,
+        ),
+        "who=a+b%26c",
+    )
+
+@test fn urlencode_escapes_utf8()
+    assert_eq(urlencode("a b~é€/"), "a+b%7E%C3%A9%E2%82%AC%2F")
+
+@test fn dom_mutations_are_recorded()
+    mut d := html.parse("<p id=a>one</p>")
+    p := d.first("p")?
+    d.set_text(p, "two")
+    li := d.create("LI")
+    d.append(d.first("body")?, li)
+    d.append(li, d.create_text("x"))
+    d.insert_before(d.first("body")?, li, p)
+    assert_eq(d.text(d.first("body")?), "xtwo")
+    assert(d.changed.contains(p) and d.changed.contains(li))
+    d.detach(p)
+    assert_eq(d.text(0), "x")
 
 @test fn browser_finds_text_and_scrolls()
     dir := testdata()
