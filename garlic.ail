@@ -550,6 +550,14 @@ fn testdata() str
     assert_eq(b.pg.title, "Garlic test page")
     assert(b.status().contains("index.html"))
 
+@test fn shift_tab_wraps_to_the_last_link()
+    mut b := Browser.new("{testdata()}/index.html", 60, 12)
+    b.key("tab", false, true)
+    assert_eq(b.focus, b.pg.links.len())
+    b.key("tab", false, false)
+    assert_eq(b.focus, 1)
+    assert(b.status().starts_with("[1] "))
+
 @test fn browser_finds_text_and_scrolls()
     dir := testdata()
     mut b := Browser.new("{dir}/index.html", 60, 6)
