@@ -1,0 +1,283 @@
+## How console.log shows a value: the layout of Node's util.inspect
+## (depth 2, 80 columns, compact 3), so output can be compared with Node's.
+## It reads data properties only and never runs script code.
+use syntax
+
+struct Inspector
+    ## The ids of the objects being shown, outermost first.
+    stack List[int]
+    ## Objects found inside themselves, numbered as Node numbers them.
+    circular Map[int, int]
+    indent int
+    ## The depth of the object most recently started (Node's currentDepth).
+    current int
+
+pub fn Vm.inspect(self, v Value) str
+    mut st := Inspector(stack: [], circular: {}, indent: 0, current: 0)
+    show(mut st, v, 0, false)
+
+## A value as it shows inside an object: strings in quotes.
+pub fn Vm.inspect_nested(self, v Value) str
+    mut st := Inspector(stack: [], circular: {}, indent: 0, current: 0)
+    show(mut st, v, 0, true)
+
+fn ident_like(k str) bool
+    cs := k.chars()
+    if cs.len() == 0
+        return false
+    for i in 0..cs.len()
+        c := cs[i]
+        ok := (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_' or c == '$' or (i > 0 and c.is_digit())
+        if not ok
+            return false
+    true
+
+## A string in quotes, as Node writes it: single quotes unless the text has
+## them and no double quotes.
+pub fn quote_js(s str) str
+    mut q := '\''
+    if s.contains('\'')
+        if not s.contains('"')
+            q = '"'
+        elif not s.contains('`')
+            q = '`'
+    mut out := List[str]()
+    out.push("{q}")
+    for c in s.chars()
+        if c == q or c == '\\'
+            out.push("\\{c}")
+        elif c == '\n'
+            out.push("\\n")
+        elif c == '\t'
+            out.push("\\t")
+        elif c == '\r'
+            out.push("\\r")
+        elif c == '\u{8}'
+            out.push("\\b")
+        elif c == '\u{c}'
+            out.push("\\f")
+        elif c == '\u{b}'
+            out.push("\\v")
+        elif c.code() < 0x20 or c.code() == 0x7f
+            out.push("\\x{c.code().to_hex().to_upper().pad_left(2, '0')}")
+        else
+            out.push("{c}")
+    out.push("{q}")
+    out.join("")
+
+fn show_key(k str) str
+    if ident_like(k)
+        return k
+    quote_js(k)
+
+## The name of the constructor whose prototype `o` inherits, or none for a
+## null prototype.
+fn Vm.constructor_name(self, o ref JsObject) str?
+    mut p := o.proto
+    while true
+        po := obj_of(p) else return none
+        if c := po.props.get("constructor")
+            if co := obj_of(c.value)
+                if n := co.props.get("name")
+                    if s := str_of(n.value)
+                        if s != ""
+                            return s
+        p = po.proto
+    none
+
+fn Vm.show(self, mut st Inspector, v Value, depth int, nested bool) str
+    match v
+        Undef => "undefined"
+        Null => "null"
+        Bool(b) => if b then "true" else "false"
+        Num(n) => if n == 0.0 and 1.0 / n < 0.0 then "-0" else syntax.number_to_string(n)
+        Str(s) => if nested then quote_js(s) else s
+        Obj(o) => show_object(mut st, o, depth)
+
+fn Vm.fn_base(self, o ref JsObject) str
+    name := if p := o.props.get("name") then (str_of(p.value) else "") else ""
+    if c := o.call
+        if class_info_of(c) != none
+            mut base := if name == "" then "[class (anonymous)" else "[class {name}"
+            if po := obj_of(o.proto)
+                if po.call != none and po.class == "Function"
+                    if pn := po.props.get("name")
+                        if s := str_of(pn.value)
+                            if s != ""
+                                base = "{base} extends {s}"
+            return "{base}]"
+    if name == ""
+        return "[Function (anonymous)]"
+    "[Function: {name}]"
+
+fn Vm.show_object(self, mut st Inspector, o ref JsObject, depth int) str
+    if st.stack.contains(o.id)
+        if st.circular.get(o.id) == none
+            st.circular[o.id] = st.circular.len() + 1
+        return "[Circular *{st.circular[o.id]}]"
+    ctor := constructor_name(o)
+    cname := ctor else ""
+    is_fn := o.call != none
+    if o.class == "Error"
+        return "[{error_text(Obj(o))}]"
+    empty := o.props.len() == 0 and o.elems.len() == 0
+    if depth > 2 and not is_fn and not (empty and (o.class == "Array" or (o.class == "Object" and cname == "Object")))
+        label := if o.class == "Array" then "Array" else (if cname != "" then cname else "Object")
+        return "[{label}]"
+    if empty and o.class == "Array" and cname == "Array"
+        return "[]"
+    if empty and o.class == "Object" and cname == "Object"
+        return "\{}"
+    st.stack.push(o.id)
+    st.current = depth
+    mut output := List[str]()
+    mut base := ""
+    mut open := "\{"
+    mut close := "}"
+    mut is_array_kind := false
+    mut numbers_only := true
+    st.indent += 2
+    if o.class == "Array" or o.class == "Arguments"
+        is_array_kind = true
+        open = "["
+        close = "]"
+        if o.class == "Arguments"
+            open = "[Arguments] ["
+        elif cname != "Array"
+            open = if ctor == none then "[Array({o.elems.len()}): null prototype] [" else "{cname}({o.elems.len()}) ["
+        mut shown := 0
+        for x in o.elems
+            if shown == 100
+                break
+            if num_of(x) == none
+                numbers_only = false
+            output.push(show(mut st, x, depth + 1, true))
+            shown += 1
+        if o.elems.len() > 100
+            more := o.elems.len() - 100
+            output.push("... {more} more item{if more > 1 then "s" else ""}")
+    elif o.class == "Map"
+        open = "Map({o.elems.len() / 2}) \{"
+        mut i := 0
+        while i + 1 < o.elems.len()
+            k := show(mut st, o.elems[i], depth + 1, true)
+            val := show(mut st, o.elems[i + 1], depth + 1, true)
+            output.push("{k} => {val}")
+            i += 2
+    elif o.class == "Set"
+        open = "Set({o.elems.len()}) \{"
+        for x in o.elems
+            output.push(show(mut st, x, depth + 1, true))
+    elif is_fn
+        base = fn_base(o)
+    elif o.class == "Number" or o.class == "String" or o.class == "Boolean"
+        base = "[{o.class}: {show(mut st, o.prim, depth + 1, true)}]"
+    elif o.class == "RegExp"
+        src := if p := o.props.get("source") then (str_of(p.value) else "") else ""
+        fl := if p := o.props.get("flags") then (str_of(p.value) else "") else ""
+        base = "/{src}/{fl}"
+    elif o.class == "Date"
+        base = if t := num_of(o.prim) then iso_date(t) else "Invalid Date"
+    elif ctor == none
+        open = "[Object: null prototype] \{"
+    elif cname != "Object"
+        open = "{cname} \{"
+    for k in own_keys(o)
+        p := o.props.get(k) else continue
+        if not p.enumerable
+            continue
+        if is_array_kind and index_of_key(k) != none
+            continue
+        shown_value := if p.accessor then accessor_label(p) else show(mut st, p.value, depth + 1, true)
+        output.push("{show_key(k)}: {shown_value}")
+    st.indent -= 2
+    st.stack.pop()
+    mut text := ""
+    if base != "" and output.len() == 0
+        text = base
+    else
+        if base != ""
+            open = "{base} \{"
+        if output.len() == 0
+            text = "{open}{close}"
+        else
+            entries := output.len()
+            mut lines := output
+            if is_array_kind and entries > 6
+                lines = group_elements(output, st.indent, numbers_only)
+            text = reduce_line(st, lines, entries, open, close, depth)
+    if n := st.circular.get(o.id)
+        return "<ref *{n}> {text}"
+    text
+
+## Node's reduceToSingleString: one line when the entries fit in 80
+## columns and the object holds no more than two levels of nesting.
+fn reduce_line(st Inspector, output List[str], entries int, open str, close str, depth int) str
+    if st.current - depth < 3 and entries == output.len()
+        start := output.len() + st.indent + open.chars().len() + 10
+        mut total := output.len() + start
+        mut fits := total + output.len() <= 80
+        for x in output
+            total += x.chars().len()
+            if total > 80
+                fits = false
+        joined := output.join(", ")
+        if fits and not joined.contains('\n')
+            return "{open} {joined} {close}"
+    pad := " ".repeat(st.indent)
+    "{open}\n{pad}  {output.join(",\n{pad}  ")}\n{pad}{close}"
+
+## Node's groupArrayElements: long arrays of short items in columns.
+fn group_elements(output List[str], indent int, numbers_only bool) List[str]
+    mut total := 0
+    mut max_len := 0
+    mut count := output.len()
+    if count > 0 and output[count - 1].starts_with("... ")
+        count -= 1
+    mut lens := List[int]()
+    for i in 0..count
+        n := output[i].chars().len()
+        lens.push(n)
+        total += n + 2
+        if n > max_len
+            max_len = n
+    actual_max := max_len + 2
+    if actual_max * 3 + indent >= 80 or not (total.to_float() / actual_max.to_float() > 5.0 or max_len <= 6)
+        return output
+    bias := (actual_max.to_float() - total.to_float() / output.len().to_float()).sqrt()
+    biased_max := (actual_max.to_float() - 3.0 - bias).max(1.0)
+    by_area := ((2.5 * biased_max * count.to_float()).sqrt() / biased_max).round().to_int()
+    columns := by_area.min((80 - indent) / actual_max).min(12).min(15)
+    if columns <= 1
+        return output
+    mut widths := List[int]()
+    for i in 0..columns
+        mut w := 0
+        mut j := i
+        while j < count
+            if lens[j] > w
+                w = lens[j]
+            j += columns
+        widths.push(w + 2)
+    mut rows := List[str]()
+    mut i := 0
+    while i < count
+        end := (i + columns).min(count)
+        mut row := ""
+        for j in i..end - 1
+            cell := "{output[j]}, "
+            row = "{row}{if numbers_only then cell.pad_left(widths[j - i], ' ') else cell.pad_right(widths[j - i], ' ')}"
+        last := output[end - 1]
+        row = "{row}{if numbers_only then last.pad_left(widths[end - 1 - i] - 2, ' ') else last}"
+        rows.push(row)
+        i += columns
+    if count < output.len()
+        rows.push(output[count])
+    rows
+
+fn accessor_label(p Prop) str
+    if p.get != Undef and p.set != Undef
+        return "[Getter/Setter]"
+    if p.get != Undef
+        return "[Getter]"
+    "[Setter]"

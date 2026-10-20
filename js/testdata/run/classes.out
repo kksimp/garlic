@@ -1,0 +1,10 @@
+Rex makes a sound (woof) [ 'sit', 'roll' ] 1 1 true
+BONE true true true
+function Dog [ 'constructor', 'speak', 'learn' ] [ 'name', 'tricks' ]
+Class constructor Animal cannot be invoked without 'new'
+Square(9) Shape(0)
+E custom true true E: custom
+Anon
+Derived
+ReferenceError
+own proto hi

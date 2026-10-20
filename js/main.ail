@@ -4,9 +4,12 @@
 #   ail run tools/garlic/js --check FILE...       "ok", or the SyntaxError
 #   ail run tools/garlic/js --test DIR            each DIR/NAME.js against NAME.ast or NAME.err
 #   ail run tools/garlic/js --test262 DIR [--bless]  the packed test262 parser tests (suite.ail)
+#   ail run tools/garlic/js --run [--max-steps N] FILE...  run scripts; console.log to stdout
+#   ail run tools/garlic/js --test-run DIR        each DIR/NAME.js's output against NAME.out
 # With several files, each output starts with a line `== PATH`. Exit 1 on
 # any SyntaxError (or failed test).
 use syntax
+use vm
 
 fn main() !
     mut args := env.args()
@@ -16,6 +19,11 @@ fn main() !
     mut loc := false
     if args.len() > 0 and args[0] == "--loc"
         loc = true
+        args.remove_at(0)
+    mut max_steps := 0
+    if args.len() > 1 and args[0] == "--max-steps"
+        max_steps = args[1].to_int()? "--max-steps {args[1]}"
+        args.remove_at(0)
         args.remove_at(0)
     mut failed := false
     match mode
@@ -30,12 +38,21 @@ fn main() !
                 print(out)
         "--test" => failed = not test_dir(args[0])?
         "--test262" => failed = not run_suite(args[0], args.len() > 1 and args[1] == "--bless")?
+        "--run" =>
+            for path in args
+                if args.len() > 1
+                    print("== {path}")
+                out := run_script(fs.read_text(path)?, max_steps, true)
+                if out.failed
+                    io.eprint(out.message)
+                    failed = true
+        "--test-run" => failed = not test_runs(args[0])?
         _ => usage()
     if failed
         io.exit(1)
 
 fn usage()
-    io.eprint("usage: ail run tools/garlic/js (--tokens | --ast [--loc] | --check) FILE... | --test DIR | --test262 DIR")
+    io.eprint("usage: ail run tools/garlic/js (--tokens | --ast [--loc] | --check | --run [--max-steps N]) FILE... | --test DIR | --test262 DIR | --test-run DIR")
     io.exit(2)
 
 ## One file's output for `mode`.
@@ -74,6 +91,59 @@ fn test_dir(dir str) !bool
             passed += 1
         else
             print("FAIL {file}\n  expected: {expected}\n  actual:   {actual}")
+            failures += 1
+    print("{passed} passed, {failures} failed")
+    failures == 0
+
+## What running a script did.
+struct RunResult
+    ## console.log's lines, when not echoed.
+    lines List[str]
+    failed bool
+    ## "Uncaught TypeError: ...", or the SyntaxError.
+    message str
+
+## Parse and run one script in a new interpreter.
+fn run_script(source str, max_steps int, echo bool) RunResult
+    prog := syntax.parse(source) else err
+        return RunResult(lines: [], failed: true, message: "{err}")
+    mut machine := vm.new_vm()
+    machine.echo = echo
+    machine.step_limit = max_steps
+    if result := machine.run_program(prog)
+        result
+    else err
+        return RunResult(lines: machine.console_out, failed: true, message: machine.uncaught_text(err))
+    RunResult(lines: machine.console_out, failed: false, message: "")
+
+## Run every `NAME.js` in `dir` and compare what it printed with `NAME.out`
+## (written by Node; an uncaught error is the last line). True if all match.
+fn test_runs(dir str) !bool
+    mut passed := 0
+    mut failures := 0
+    for name in fs.list_dir(dir)?
+        if not name.ends_with(".js")
+            continue
+        file := path.join(dir, name)
+        stem := name.slice(0, name.chars().len() - 3)
+        out := run_script(fs.read_text(file)?, 10000000, false)
+        mut lines := out.lines
+        if out.failed
+            lines.push(out.message)
+        actual := lines.join("\n").trim()
+        expected := fs.read_text(path.join(dir, "{stem}.out"))?.trim()
+        if actual == expected
+            passed += 1
+        else
+            print("FAIL {file}")
+            exp_lines := expected.lines()
+            act_lines := actual.lines()
+            for i in 0..exp_lines.len().max(act_lines.len())
+                e := if i < exp_lines.len() then exp_lines[i] else "<none>"
+                a := if i < act_lines.len() then act_lines[i] else "<none>"
+                if e != a
+                    print("  line {i + 1}\n    expected: {e}\n    actual:   {a}")
+                    break
             failures += 1
     print("{passed} passed, {failures} failed")
     failures == 0

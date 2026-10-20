@@ -1,0 +1,19 @@
+hoisted undefined
+2
+3:1|2|3 0:
+[ 1, 2, [] ] [ 1, 5, [ 6, 7 ] ] 1
+o object [ 'o' ]
+true
+5 true true [ 'x', 'y' ]
+15 bound  named 
+f g
+object undefined
+9 [ 1, 2, 3 ]
+ReferenceError Cannot access 'tdz' before initialization
+TypeError Assignment to constant variable.
+2432902008176640000 1.5511210043330986e+25
+11
+iife function
+local global
+42
+200

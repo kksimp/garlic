@@ -1,0 +1,997 @@
+## The global object and the built-ins (ECMA-262 §19-§24): setup and the
+## dispatch of native functions by name. Arrays are in `array.ail`, strings
+## and numbers in `string.ail`, JSON in `json.ail`.
+use syntax
+use std.io
+
+## A new interpreter with its global object.
+pub fn new_vm() Vm
+    global := ref JsObject(
+        class: "global",
+        proto: Null,
+        props: {},
+        elems: [],
+        extensible: true,
+        call: none,
+        prim: Undef,
+        id: 1,
+        frozen: false,
+    )
+    env := new_env(none, true)
+    env.has_this = true
+    env.this_val = Obj(global)
+    env.object = Obj(global)
+    mut vm := Vm(
+        global_obj: global,
+        global_env: env,
+        protos: {},
+        ctors: {},
+        console_out: [],
+        echo: false,
+        step_count: 0,
+        step_limit: 0,
+        next_id: 1,
+        call_depth: 0,
+        chain_shorted: false,
+        rand_state: 88172645463325252,
+        busy: Set[int](),
+        clock_ms: 1767225600000.0,
+    )
+    vm.setup()
+    vm
+
+pub fn arg_at(args List[Value], i int) Value
+    if i < args.len()
+        return args[i]
+    Undef
+
+## A function object that runs the native `name`.
+pub fn Vm.native_fn(mut self, name str, display str, length int) Value
+    o := object("Function", proto_of("Function"))
+    o.call = Native(name)
+    o.props["length"] = Prop(value: Num(length.to_float()), get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: true)
+    o.props["name"] = Prop(value: Str(display), get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: true)
+    Obj(o)
+
+## Methods from a spec like "push:1 pop:0": native `PREFIX.push`, length 1.
+fn Vm.methods(mut self, target ref JsObject, prefix str, spec str)
+    for item in spec.split(" ")
+        parts := item.split(":")
+        n := parts[1].to_int() else 0
+        target.props[parts[0]] = hidden(native_fn("{prefix}.{parts[0]}", parts[0], n))
+
+fn Vm.constant(mut self, target ref JsObject, key str, v Value)
+    target.props[key] = Prop(value: v, get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: false)
+
+fn Vm.getter(mut self, target ref JsObject, key str, native str)
+    target.props[key] = Prop(value: Undef, get: native_fn(native, "get {key}", 0), set: Undef, accessor: true, enumerable: false, writable: true, configurable: true)
+
+## A constructor `name` with its prototype (already in `protos` or made
+## here), installed on the global object.
+fn Vm.constructor(mut self, name str, length int) ref JsObject
+    existing := protos.get(name) else Null
+    proto := match existing
+        Obj(p) => p
+        Undef | Null | Bool | Num | Str =>
+            p := object("Object", proto_of("Object"))
+            protos[name] = Obj(p)
+            p
+    c := obj_of(native_fn(name, name, length)) else return proto
+    c.props["prototype"] = Prop(value: Obj(proto), get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: false)
+    proto.props["constructor"] = hidden(Obj(c))
+    ctors[name] = Obj(c)
+    global_obj.props[name] = hidden(Obj(c))
+    c
+
+fn Vm.setup(mut self)
+    object_proto := object("Object", Null)
+    protos["Object"] = Obj(object_proto)
+    global_obj.proto = Obj(object_proto)
+    func_proto := object("Function", Obj(object_proto))
+    func_proto.call = Native("Function.prototype")
+    protos["Function"] = Obj(func_proto)
+    array_proto := object("Array", Obj(object_proto))
+    protos["Array"] = Obj(array_proto)
+    for name in ["String", "Number", "Boolean"]
+        p := object(name, Obj(object_proto))
+        p.prim = match name
+            "String" => Str("")
+            "Number" => Num(0.0)
+            _ => Bool(false)
+        protos[name] = Obj(p)
+
+    object_ctor := constructor("Object", 1)
+    methods(object_ctor, "Object", "keys:1 values:1 entries:1 assign:2 create:2 getPrototypeOf:1 setPrototypeOf:2 defineProperty:3 defineProperties:2 getOwnPropertyNames:1 getOwnPropertyDescriptor:2 getOwnPropertyDescriptors:1 freeze:1 isFrozen:1 seal:1 isSealed:1 preventExtensions:1 isExtensible:1 fromEntries:1 is:2")
+    methods(object_proto, "Object.prototype", "hasOwnProperty:1 isPrototypeOf:1 propertyIsEnumerable:1 toString:0 toLocaleString:0 valueOf:0")
+    object_proto.props["__proto__"] = Prop(
+        value: Undef,
+        get: native_fn("Object.prototype.__proto__get", "get __proto__", 0),
+        set: native_fn("Object.prototype.__proto__set", "set __proto__", 1),
+        accessor: true,
+        enumerable: false,
+        writable: true,
+        configurable: true,
+    )
+
+    constructor("Function", 1)
+    func_proto.props["length"] = Prop(value: Num(0.0), get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: true)
+    func_proto.props["name"] = Prop(value: Str(""), get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: true)
+    methods(func_proto, "Function.prototype", "call:1 apply:2 bind:1 toString:0")
+
+    array_ctor := constructor("Array", 1)
+    methods(array_ctor, "Array", "isArray:1 of:0 from:1")
+    methods(array_proto, "Array.prototype", "push:1 pop:0 shift:0 unshift:1 slice:2 splice:2 concat:1 join:1 reverse:0 indexOf:1 lastIndexOf:1 includes:1 find:1 findIndex:1 findLast:1 findLastIndex:1 filter:1 map:1 forEach:1 reduce:1 reduceRight:1 some:1 every:1 sort:1 fill:1 flat:0 flatMap:1 toString:0 at:1 keys:0 values:0 entries:0 copyWithin:2 toReversed:0 toSorted:1 with:2")
+
+    string_ctor := constructor("String", 1)
+    methods(string_ctor, "String", "fromCharCode:1 fromCodePoint:1 raw:1")
+    methods(obj_of(proto_of("String")) else object_proto, "String.prototype", "charAt:1 charCodeAt:1 codePointAt:1 indexOf:1 lastIndexOf:1 includes:1 startsWith:1 endsWith:1 slice:2 substring:2 substr:2 toUpperCase:0 toLowerCase:0 toLocaleUpperCase:0 toLocaleLowerCase:0 trim:0 trimStart:0 trimEnd:0 padStart:2 padEnd:2 repeat:1 split:2 concat:1 at:1 replace:2 replaceAll:2 toString:0 valueOf:0 localeCompare:1 normalize:0 match:1 matchAll:1 search:1")
+
+    number_ctor := constructor("Number", 1)
+    methods(number_ctor, "Number", "isInteger:1 isSafeInteger:1 isFinite:1 isNaN:1 parseFloat:1 parseInt:2")
+    constant(number_ctor, "MAX_SAFE_INTEGER", Num(9007199254740991.0))
+    constant(number_ctor, "MIN_SAFE_INTEGER", Num(-9007199254740991.0))
+    constant(number_ctor, "EPSILON", Num(2.220446049250313e-16))
+    constant(number_ctor, "MAX_VALUE", Num(1.7976931348623157e308))
+    constant(number_ctor, "MIN_VALUE", Num(5e-324))
+    constant(number_ctor, "POSITIVE_INFINITY", Num(infinity()))
+    constant(number_ctor, "NEGATIVE_INFINITY", Num(0.0 - infinity()))
+    constant(number_ctor, "NaN", Num(nan()))
+    methods(obj_of(proto_of("Number")) else object_proto, "Number.prototype", "toString:1 toFixed:1 toExponential:1 toPrecision:1 valueOf:0 toLocaleString:0")
+
+    constructor("Boolean", 1)
+    methods(obj_of(proto_of("Boolean")) else object_proto, "Boolean.prototype", "toString:0 valueOf:0")
+
+    error_ctor := constructor("Error", 1)
+    error_proto := obj_of(proto_of("Error")) else object_proto
+    error_proto.props["name"] = hidden(Str("Error"))
+    error_proto.props["message"] = hidden(Str(""))
+    methods(error_proto, "Error.prototype", "toString:0")
+    for kind in ["TypeError", "RangeError", "SyntaxError", "ReferenceError", "EvalError", "URIError"]
+        p := object("Object", Obj(error_proto))
+        p.props["name"] = hidden(Str(kind))
+        p.props["message"] = hidden(Str(""))
+        protos[kind] = Obj(p)
+        c := constructor(kind, 1)
+        c.proto = Obj(error_ctor)
+
+    map_ctor := constructor("Map", 0)
+    map_proto := obj_of(proto_of("Map")) else object_proto
+    methods(map_proto, "Map.prototype", "get:1 set:2 has:1 delete:1 clear:0 forEach:1 keys:0 values:0 entries:0")
+    getter(map_proto, "size", "Map.prototype.size")
+    set_ctor := constructor("Set", 0)
+    set_proto := obj_of(proto_of("Set")) else object_proto
+    methods(set_proto, "Set.prototype", "add:1 has:1 delete:1 clear:0 forEach:1 keys:0 values:0 entries:0")
+    getter(set_proto, "size", "Set.prototype.size")
+    map_ctor.props["length"] = hidden(Num(0.0))
+    set_ctor.props["length"] = hidden(Num(0.0))
+
+    constructor("RegExp", 2)
+    regexp_proto := obj_of(proto_of("RegExp")) else object_proto
+    methods(regexp_proto, "RegExp.prototype", "test:1 exec:1 toString:0")
+
+    date_ctor := constructor("Date", 7)
+    methods(date_ctor, "Date", "now:0 UTC:7 parse:1")
+    methods(obj_of(proto_of("Date")) else object_proto, "Date.prototype", "getTime:0 valueOf:0 toISOString:0 toJSON:1 getFullYear:0 getMonth:0 getDate:0 getDay:0 getHours:0 getMinutes:0 getSeconds:0 getMilliseconds:0 getUTCFullYear:0 getUTCMonth:0 getUTCDate:0 getUTCDay:0 getUTCHours:0 getUTCMinutes:0 getUTCSeconds:0 getUTCMilliseconds:0 getTimezoneOffset:0 setTime:1 toString:0 toUTCString:0")
+
+    math := plain()
+    math.props["PI"] = hidden(Num(PI))
+    for name in ["PI", "E", "LN2", "LN10", "LOG2E", "LOG10E", "SQRT2", "SQRT1_2"]
+        v := match name
+            "PI" => PI
+            "E" => 2.718281828459045
+            "LN2" => LN2
+            "LN10" => LN10
+            "LOG2E" => 1.4426950408889634
+            "LOG10E" => 0.4342944819032518
+            "SQRT2" => 1.4142135623730951
+            _ => 0.7071067811865476
+        constant(math, name, Num(v))
+    methods(math, "Math", "abs:1 floor:1 ceil:1 round:1 trunc:1 sign:1 sqrt:1 cbrt:1 pow:2 exp:1 expm1:1 log:1 log2:1 log10:1 log1p:1 sin:1 cos:1 tan:1 asin:1 acos:1 atan:1 atan2:2 sinh:1 cosh:1 tanh:1 min:2 max:2 random:0 hypot:2 fround:1 clz32:1 imul:2")
+    global_obj.props["Math"] = hidden(Obj(math))
+
+    json := plain()
+    methods(json, "JSON", "parse:2 stringify:3")
+    global_obj.props["JSON"] = hidden(Obj(json))
+
+    console := plain()
+    methods(console, "console", "log:0 info:0 debug:0 warn:0 error:0")
+    global_obj.props["console"] = hidden(Obj(console))
+
+    methods(global_obj, "global", "parseInt:2 parseFloat:1 isNaN:1 isFinite:1 encodeURIComponent:1 encodeURI:1 decodeURIComponent:1 decodeURI:1")
+    # Number.parseInt and parseInt are the same function (§21.1.2.13).
+    number_ctor.props["parseInt"] = global_obj.props["parseInt"]
+    number_ctor.props["parseFloat"] = global_obj.props["parseFloat"]
+    global_obj.props["globalThis"] = hidden(Obj(global_obj))
+    constant(global_obj, "NaN", Num(nan()))
+    constant(global_obj, "Infinity", Num(infinity()))
+    constant(global_obj, "undefined", Undef)
+
+## Natives that `new` may call.
+pub fn native_is_ctor(name str) bool
+    match name
+        "Object" | "Function" | "Array" | "String" | "Number" | "Boolean" | "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" | "Map" | "Set" | "RegExp" | "Date" =>
+            true
+        _ => false
+
+## Run the native function `name`. `new_target` is Undef for a plain call.
+pub fn Vm.native(mut self, name str, f ref JsObject, this_val Value, args List[Value], new_target Value) Value ! Thrown
+    tick()?
+    if m := name.strip_prefix("Array.prototype.")
+        return array_method(m, this_val, args)
+    if m := name.strip_prefix("String.prototype.")
+        return string_method(m, this_val, args)
+    if m := name.strip_prefix("Number.prototype.")
+        return number_method(m, this_val, args)
+    if m := name.strip_prefix("Math.")
+        return math_function(m, args)
+    if m := name.strip_prefix("Object.prototype.")
+        return object_proto_method(m, this_val, args)
+    if m := name.strip_prefix("Object.")
+        return object_function(m, args)
+    if m := name.strip_prefix("Map.prototype.")
+        return map_method(m, this_val, args)
+    if m := name.strip_prefix("Set.prototype.")
+        return set_method(m, this_val, args)
+    if m := name.strip_prefix("Date.prototype.")
+        return date_method(m, this_val, args)
+    if m := name.strip_prefix("RegExp.prototype.")
+        return regexp_method(m, this_val, args)
+    a0 := arg_at(args, 0)
+    match name
+        "Function.prototype" => Undef
+        "Function.prototype.call" =>
+            call(this_val, a0, if args.len() > 1 then args[1..] else List[Value]())
+        "Function.prototype.apply" =>
+            list := if is_nullish(arg_at(args, 1)) then List[Value]() else iterate(arg_at(args, 1))?
+            call(this_val, a0, list)
+        "Function.prototype.bind" =>
+            if not is_callable(this_val)
+                return type_error("Bind must be called on a function")
+            b := object("Function", proto_of("Function"))
+            b.call = Bound(target: this_val, this_val: a0, args: if args.len() > 1 then args[1..] else List[Value]())
+            target_name := get(this_val, "name")?
+            n := if t := str_of(target_name) then t else ""
+            b.props["name"] = Prop(value: Str("bound {n}"), get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: true)
+            len := to_number(get(this_val, "length")?)? - (args.len() - 1).max(0).to_float()
+            b.props["length"] = Prop(value: Num(if len > 0.0 then len else 0.0), get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: true)
+            Obj(b)
+        "Function.prototype.toString" =>
+            n := if o := obj_of(this_val) then (plain_string(o, "name") else "") else ""
+            Value.Str("function {n}() \{ [native code] }")
+        "Function" => function_constructor(args)
+        "Object" =>
+            if is_nullish(a0)
+                return Obj(plain())
+            Obj(to_object(a0)?)
+        "Array" => array_constructor(args)
+        "Array.isArray" => Value.Bool(is_array(a0))
+        "Array.of" => array(args)
+        "Array.from" => array_from(args)
+        "String" =>
+            s := if args.len() == 0 then "" else to_string(a0)?
+            if new_target == Undef
+                return Value.Str(s)
+            Obj(wrap_with(new_target, "String", Str(s))?)
+        "String.fromCharCode" =>
+            mut us := List[int]()
+            for a in args
+                us.push(to_uint32(to_number(a)?).bit_and(0xFFFF))
+            Value.Str(from_units(us))
+        "String.fromCodePoint" =>
+            mut cs := List[char]()
+            for a in args
+                n := to_number(a)?
+                if n != n.floor() or n < 0.0 or n > 1114111.0
+                    return range_error("Invalid code point {to_string(a)?}")
+                cs.push(char.from_code(n.to_int()) else '\u{fffd}')
+            Value.Str(cs.join(""))
+        "String.raw" =>
+            raw := get(a0, "raw")?
+            parts := iterate(raw)?
+            mut out := ""
+            for i in 0..parts.len()
+                out = "{out}{to_string(parts[i])?}"
+                if i + 1 < parts.len() and i + 1 < args.len()
+                    out = "{out}{to_string(args[i + 1])?}"
+            Value.Str(out)
+        "Number" =>
+            n := if args.len() == 0 then 0.0 else to_number(a0)?
+            if new_target == Undef
+                return Value.Num(n)
+            Obj(wrap_with(new_target, "Number", Num(n))?)
+        "Number.isInteger" => Value.Bool(is_integral(a0))
+        "Number.isSafeInteger" =>
+            n := match a0
+                Num(x) => x
+                Undef | Null | Bool | Str | Obj => return Value.Bool(false)
+            Value.Bool(is_integral(a0) and n.abs() <= 9007199254740991.0)
+        "Number.isFinite" =>
+            match a0
+                Num(x) => Value.Bool(is_finite(x))
+                Undef | Null | Bool | Str | Obj => Value.Bool(false)
+        "Number.isNaN" =>
+            match a0
+                Num(x) => Value.Bool(is_nan(x))
+                Undef | Null | Bool | Str | Obj => Value.Bool(false)
+        "Boolean" =>
+            if new_target == Undef
+                return Value.Bool(truthy(a0))
+            Obj(wrap_with(new_target, "Boolean", Bool(truthy(a0)))?)
+        "Boolean.prototype.toString" => Value.Str(if this_bool(this_val)? then "true" else "false")
+        "Boolean.prototype.valueOf" => Value.Bool(this_bool(this_val)?)
+        "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" =>
+            nt := if new_target == Undef then ctors[name] else new_target
+            proto := get(nt, "prototype")?
+            o := object("Error", if is_obj(proto) then proto else proto_of(name))
+            if a0 != Undef
+                o.props["message"] = hidden(Str(to_string(a0)?))
+            opts := arg_at(args, 1)
+            if ob := obj_of(opts)
+                if has_property(ob, "cause")
+                    o.props["cause"] = hidden(get(opts, "cause")?)
+            stack_name := to_string(get(Obj(o), "name")?)?
+            msg := to_string(get(Obj(o), "message")?)?
+            o.props["stack"] = hidden(Str(if msg == "" then "{stack_name}\n    at <anonymous>" else "{stack_name}: {msg}\n    at <anonymous>"))
+            Obj(o)
+        "Error.prototype.toString" =>
+            if not is_obj(this_val)
+                return type_error("Error.prototype.toString called on non-object")
+            n := get(this_val, "name")?
+            m := get(this_val, "message")?
+            ns := if n == Undef then "Error" else to_string(n)?
+            ms := if m == Undef then "" else to_string(m)?
+            if ns == ""
+                return Value.Str(ms)
+            if ms == ""
+                return Value.Str(ns)
+            Value.Str("{ns}: {ms}")
+        "Map" | "Set" =>
+            if new_target == Undef
+                return type_error("Constructor {name} requires 'new'")
+            proto := get(new_target, "prototype")?
+            o := object(name, if is_obj(proto) then proto else proto_of(name))
+            if not is_nullish(a0)
+                for item in iterate(a0)?
+                    if name == "Map"
+                        if not is_obj(item)
+                            return type_error("Iterator value {describe(item)} is not an entry object")
+                        map_set(o, get(item, "0")?, get(item, "1")?)
+                    else
+                        set_add(o, item)
+            Obj(o)
+        "RegExp" =>
+            src := if a0 == Undef then "(?:)" else to_string(a0)?
+            flags := if arg_at(args, 1) == Undef then "" else to_string(arg_at(args, 1))?
+            make_regexp(src, flags)
+        "Date" => date_constructor(args, new_target)
+        "Date.now" => Value.Num(clock_ms)
+        "Date.UTC" => date_utc(args)
+        "Date.parse" => Value.Num(parse_date(to_string(a0)?))
+        "JSON.parse" => json_parse(to_string(a0)?, arg_at(args, 1))
+        "JSON.stringify" => json_stringify(a0, arg_at(args, 1), arg_at(args, 2))
+        "console.log" | "console.info" | "console.debug" | "console.warn" | "console.error" =>
+            mut parts := List[str]()
+            for a in args
+                parts.push(if s := str_of(a) then s else inspect(a))
+            line := parts.join(" ")
+            if echo
+                if name == "console.warn" or name == "console.error"
+                    io.eprint(line)
+                else
+                    print(line)
+            else
+                console_out.push(line)
+            Undef
+        "global.parseInt" => Value.Num(parse_int(to_string(a0)?, to_int32(to_number(arg_at(args, 1))?)))
+        "global.parseFloat" => Value.Num(parse_float(to_string(a0)?))
+        "global.isNaN" => Value.Bool(is_nan(to_number(a0)?))
+        "global.isFinite" => Value.Bool(is_finite(to_number(a0)?))
+        "global.encodeURIComponent" => Value.Str(uri_encode(to_string(a0)?, URI_UNRESERVED))
+        "global.encodeURI" => Value.Str(uri_encode(to_string(a0)?, "{URI_UNRESERVED};/?:@&=+$,#"))
+        "global.decodeURIComponent" => Value.Str(uri_decode(to_string(a0)?, "")?)
+        "global.decodeURI" => Value.Str(uri_decode(to_string(a0)?, ";/?:@&=+$,#")?)
+        _ => return type_error("{name} is not supported yet")
+
+## A wrapper object made by `new String(s)`, `new Number(n)`, ...
+fn Vm.wrap_with(mut self, new_target Value, class str, v Value) ref JsObject ! Thrown
+    proto := get(new_target, "prototype")?
+    o := object(class, if is_obj(proto) then proto else proto_of(class))
+    o.prim = v
+    o
+
+fn Vm.this_bool(mut self, v Value) bool ! Thrown
+    match v
+        Bool(b) => b
+        Obj(o) =>
+            if o.class == "Boolean"
+                if b := bool_of(o.prim)
+                    return b
+            return type_error("Boolean.prototype.valueOf requires that 'this' be a Boolean")
+        Undef | Null | Num | Str => return type_error("Boolean.prototype.valueOf requires that 'this' be a Boolean")
+
+fn bool_of(v Value) bool?
+    match v
+        Bool(b) => b
+        Undef | Null | Num | Str | Obj => none
+
+pub fn is_array(v Value) bool
+    if o := obj_of(v)
+        return o.class == "Array"
+    false
+
+fn is_integral(v Value) bool
+    match v
+        Num(x) => is_finite(x) and x.floor() == x
+        Undef | Null | Bool | Str | Obj => false
+
+## `new Function("a", "b", "return a + b")` (§20.2.1.1.1).
+fn Vm.function_constructor(mut self, args List[Value]) Value ! Thrown
+    mut params := List[str]()
+    for i in 0..args.len() - 1
+        params.push(to_string(args[i])?)
+    body := if args.len() > 0 then to_string(args[args.len() - 1])? else ""
+    source := "(function anonymous({params.join(",")}\n) \{\n{body}\n})"
+    prog := syntax.parse(source) else err
+        return throw_error("SyntaxError", err.msg)
+    v := run_program_value(prog)?
+    if o := obj_of(v)
+        o.props["name"] = Prop(value: Str("anonymous"), get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: true)
+    v
+
+## The value of a script made of one expression statement.
+fn Vm.run_program_value(mut self, prog syntax.Program) Value ! Thrown
+    if prog.body.len() == 1
+        match prog.body[0]
+            Exp(e, _) => return eval(e, global_env)
+            Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger =>
+                return Undef
+    Undef
+
+# ---------------------------------------------------------------- Object
+
+fn Vm.object_function(mut self, m str, args List[Value]) Value ! Thrown
+    a0 := arg_at(args, 0)
+    match m
+        "keys" => array([Value.Str(k) for k in enum_keys(to_object(a0)?)])
+        "values" =>
+            o := to_object(a0)?
+            mut out := List[Value]()
+            for k in enum_keys(o)
+                out.push(get(Obj(o), k)?)
+            array(out)
+        "entries" =>
+            o := to_object(a0)?
+            mut out := List[Value]()
+            for k in enum_keys(o)
+                out.push(array([Value.Str(k), get(Obj(o), k)?]))
+            array(out)
+        "assign" =>
+            target := to_object(a0)?
+            for i in 1..args.len()
+                if not is_nullish(args[i])
+                    src := to_object(args[i])?
+                    for k in enum_keys(src)
+                        put_obj(target, k, get(Obj(src), k)?, Obj(target))?
+            Obj(target)
+        "create" =>
+            if not is_obj(a0) and a0 != Null
+                return type_error("Object prototype may only be an Object or null: {describe(a0)}")
+            o := object("Object", a0)
+            if p := obj_of(arg_at(args, 1))
+                define_properties(o, p)?
+            Obj(o)
+        "getPrototypeOf" => to_object(a0)?.proto
+        "setPrototypeOf" =>
+            proto := arg_at(args, 1)
+            if not is_obj(proto) and proto != Null
+                return type_error("Object prototype may only be an Object or null: {describe(proto)}")
+            if o := obj_of(a0)
+                o.proto = proto
+            a0
+        "defineProperty" =>
+            o := obj_of(a0) else return type_error("Object.defineProperty called on non-object")
+            key := to_key(arg_at(args, 1))?
+            desc := obj_of(arg_at(args, 2)) else return type_error("Property description must be an object: {describe(arg_at(args, 2))}")
+            define_from(o, key, desc)?
+            a0
+        "defineProperties" =>
+            o := obj_of(a0) else return type_error("Object.defineProperties called on non-object")
+            p := to_object(arg_at(args, 1))?
+            define_properties(o, p)?
+            a0
+        "getOwnPropertyNames" =>
+            o := to_object(a0)?
+            mut keys := own_keys(o)
+            if o.class == "Array" or o.class == "String"
+                keys.push("length")
+            array([Value.Str(k) for k in keys])
+        "getOwnPropertyDescriptor" =>
+            o := to_object(a0)?
+            key := to_key(arg_at(args, 1))?
+            p := own(o, key) else return Undef
+            descriptor(p)
+        "getOwnPropertyDescriptors" =>
+            o := to_object(a0)?
+            out := plain()
+            for k in own_keys(o)
+                if p := own(o, k)
+                    out.props[k] = data(descriptor(p))
+            Obj(out)
+        "freeze" =>
+            if o := obj_of(a0)
+                o.extensible = false
+                o.frozen = true
+                for k in o.props.keys()
+                    mut p := o.props[k]
+                    p.configurable = false
+                    if not p.accessor
+                        p.writable = false
+                    o.props[k] = p
+            a0
+        "isFrozen" =>
+            if o := obj_of(a0)
+                if o.frozen
+                    return Value.Bool(true)
+                if o.extensible or o.elems.len() > 0
+                    return Value.Bool(false)
+                for p in o.props.values()
+                    if p.configurable or (not p.accessor and p.writable)
+                        return Value.Bool(false)
+            Value.Bool(true)
+        "seal" | "preventExtensions" =>
+            if o := obj_of(a0)
+                o.extensible = false
+                if m == "seal"
+                    for k in o.props.keys()
+                        mut p := o.props[k]
+                        p.configurable = false
+                        o.props[k] = p
+            a0
+        "isSealed" =>
+            if o := obj_of(a0)
+                if o.extensible
+                    return Value.Bool(false)
+                for p in o.props.values()
+                    if p.configurable
+                        return Value.Bool(false)
+            Value.Bool(true)
+        "isExtensible" => Value.Bool(if o := obj_of(a0) then o.extensible else false)
+        "fromEntries" =>
+            o := plain()
+            for item in iterate(a0)?
+                key := to_key(get(item, "0")?)?
+                define(o, key, data(get(item, "1")?))?
+            Obj(o)
+        "is" =>
+            a := a0
+            b := arg_at(args, 1)
+            if x := num_of(a)
+                if y := num_of(b)
+                    if is_nan(x) and is_nan(y)
+                        return Value.Bool(true)
+                    if x == 0.0 and y == 0.0
+                        return Value.Bool((1.0 / x > 0.0) == (1.0 / y > 0.0))
+            Value.Bool(a == b)
+        _ => return type_error("Object.{m} is not supported yet")
+
+pub fn num_of(v Value) float?
+    match v
+        Num(x) => x
+        Undef | Null | Bool | Str | Obj => none
+
+## A property descriptor object (§6.2.6.4 FromPropertyDescriptor).
+fn Vm.descriptor(mut self, p Prop) Value
+    d := plain()
+    if p.accessor
+        d.props["get"] = data(p.get)
+        d.props["set"] = data(p.set)
+    else
+        d.props["value"] = data(p.value)
+        d.props["writable"] = data(Bool(p.writable))
+    d.props["enumerable"] = data(Bool(p.enumerable))
+    d.props["configurable"] = data(Bool(p.configurable))
+    Obj(d)
+
+fn Vm.define_properties(mut self, o ref JsObject, props ref JsObject) ! Thrown
+    for k in enum_keys(props)
+        desc := obj_of(get(Obj(props), k)?) else return type_error("Property description must be an object")
+        define_from(o, k, desc)?
+
+## Object.defineProperty with a descriptor object (§10.1.6.3, simplified:
+## absent fields keep the old value, or default to false).
+fn Vm.define_from(mut self, o ref JsObject, key str, desc ref JsObject) ! Thrown
+    old := own(o, key)
+    mut p := old else Prop(value: Undef, get: Undef, set: Undef, accessor: false, enumerable: false, writable: false, configurable: false)
+    d := Value.Obj(desc)
+    if has_property(desc, "get") or has_property(desc, "set")
+        if has_property(desc, "value") or has_property(desc, "writable")
+            return type_error("Invalid property descriptor. Cannot both specify accessors and a value or writable attribute")
+        if not p.accessor
+            p.get = Undef
+            p.set = Undef
+        p.accessor = true
+        p.value = Undef
+        if has_property(desc, "get")
+            g := get(d, "get")?
+            if g != Undef and not is_callable(g)
+                return type_error("Getter must be a function: {describe(g)}")
+            p.get = g
+        if has_property(desc, "set")
+            s := get(d, "set")?
+            if s != Undef and not is_callable(s)
+                return type_error("Setter must be a function: {describe(s)}")
+            p.set = s
+    elif has_property(desc, "value") or has_property(desc, "writable")
+        p.accessor = false
+        if has_property(desc, "value")
+            p.value = get(d, "value")?
+        if has_property(desc, "writable")
+            p.writable = truthy(get(d, "writable")?)
+    if has_property(desc, "enumerable")
+        p.enumerable = truthy(get(d, "enumerable")?)
+    if has_property(desc, "configurable")
+        p.configurable = truthy(get(d, "configurable")?)
+    if o.class == "Array" and (index_of_key(key) != none or key == "length")
+        set_own(o, key, p.value)?
+        return
+    if old == none and not o.extensible
+        return type_error("Cannot define property {key}, object is not extensible")
+    o.props[key] = p
+
+fn Vm.object_proto_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    a0 := arg_at(args, 0)
+    match m
+        "hasOwnProperty" =>
+            key := to_key(a0)?
+            Value.Bool(own(to_object(this_val)?, key) != none)
+        "isPrototypeOf" =>
+            v := obj_of(a0) else return Value.Bool(false)
+            mut p := v.proto
+            while is_obj(p)
+                if p == this_val
+                    return Value.Bool(true)
+                p = (obj_of(p) else return Value.Bool(false)).proto
+            Value.Bool(false)
+        "propertyIsEnumerable" =>
+            key := to_key(a0)?
+            p := own(to_object(this_val)?, key) else return Value.Bool(false)
+            Value.Bool(p.enumerable)
+        "toString" | "toLocaleString" =>
+            tag := match this_val
+                Undef => "Undefined"
+                Null => "Null"
+                Bool => "Boolean"
+                Num => "Number"
+                Str => "String"
+                Obj(o) =>
+                    if o.call != none
+                        "Function"
+                    elif o.class == "Error" or o.class == "Array" or o.class == "Date" or o.class == "RegExp" or o.class == "Arguments" or o.class == "Boolean" or o.class == "Number" or o.class == "String"
+                        o.class
+                    elif o.class == "Map" or o.class == "Set"
+                        o.class
+                    else
+                        "Object"
+            Value.Str("[object {tag}]")
+        "valueOf" => Obj(to_object(this_val)?)
+        "__proto__get" => to_object(this_val)?.proto
+        "__proto__set" =>
+            if o := obj_of(this_val)
+                if is_obj(a0) or a0 == Null
+                    o.proto = a0
+            Undef
+        _ => return type_error("Object.prototype.{m} is not supported yet")
+
+# ------------------------------------------------------------ Map and Set
+
+## A Map keeps its entries as key, value, key, value in `elems`.
+pub fn map_entries(o ref JsObject) List[Value]
+    mut out := List[Value]()
+    mut i := 0
+    while i + 1 < o.elems.len()
+        out.push(Undef)
+        i += 2
+    out
+
+fn map_index(o ref JsObject, key Value) int?
+    mut i := 0
+    while i + 1 < o.elems.len()
+        if same_value_zero(o.elems[i], key)
+            return i
+        i += 2
+    none
+
+fn map_set(o ref JsObject, key Value, v Value)
+    k := if key == Value.Num(-0.0) then Value.Num(0.0) else key
+    if i := map_index(o, k)
+        o.elems[i + 1] = v
+        return
+    o.elems.push(k)
+    o.elems.push(v)
+
+fn set_add(o ref JsObject, v Value)
+    for x in o.elems
+        if same_value_zero(x, v)
+            return
+    o.elems.push(if v == Value.Num(-0.0) then Value.Num(0.0) else v)
+
+fn Vm.this_class(mut self, v Value, class str, method str) ref JsObject ! Thrown
+    if o := obj_of(v)
+        if o.class == class
+            return o
+    return type_error("Method {class}.prototype.{method} called on incompatible receiver {describe(v)}")
+
+fn Vm.map_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    o := this_class(this_val, "Map", m)?
+    a0 := arg_at(args, 0)
+    match m
+        "get" =>
+            i := map_index(o, a0) else return Undef
+            o.elems[i + 1]
+        "set" =>
+            map_set(o, a0, arg_at(args, 1))
+            this_val
+        "has" => Value.Bool(map_index(o, a0) != none)
+        "delete" =>
+            i := map_index(o, a0) else return Value.Bool(false)
+            o.elems.remove_at(i)
+            o.elems.remove_at(i)
+            Value.Bool(true)
+        "clear" =>
+            o.elems.clear()
+            Undef
+        "size" => Value.Num((o.elems.len() / 2).to_float())
+        "forEach" =>
+            mut i := 0
+            while i + 1 < o.elems.len()
+                call(a0, arg_at(args, 1), [o.elems[i + 1], o.elems[i], this_val])?
+                i += 2
+            Undef
+        "keys" | "values" | "entries" =>
+            mut out := List[Value]()
+            mut i := 0
+            while i + 1 < o.elems.len()
+                item := match m
+                    "keys" => o.elems[i]
+                    "values" => o.elems[i + 1]
+                    _ => array([o.elems[i], o.elems[i + 1]])
+                out.push(item)
+                i += 2
+            array(out)
+        _ => return type_error("Map.prototype.{m} is not supported yet")
+
+fn Vm.set_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    o := this_class(this_val, "Set", m)?
+    a0 := arg_at(args, 0)
+    match m
+        "add" =>
+            set_add(o, a0)
+            this_val
+        "has" =>
+            for x in o.elems
+                if same_value_zero(x, a0)
+                    return Value.Bool(true)
+            Value.Bool(false)
+        "delete" =>
+            for i in 0..o.elems.len()
+                if same_value_zero(o.elems[i], a0)
+                    o.elems.remove_at(i)
+                    return Value.Bool(true)
+            Value.Bool(false)
+        "clear" =>
+            o.elems.clear()
+            Undef
+        "size" => Value.Num(o.elems.len().to_float())
+        "forEach" =>
+            for x in o.elems
+                call(a0, arg_at(args, 1), [x, x, this_val])?
+            Undef
+        "keys" | "values" => array(o.elems)
+        "entries" => array([array([x, x]) for x in o.elems])
+        _ => return type_error("Set.prototype.{m} is not supported yet")
+
+# ---------------------------------------------------------------- Math
+
+fn Vm.math_function(mut self, m str, args List[Value]) Value ! Thrown
+    if m == "random"
+        # xorshift64*, seeded the same way each run, so runs repeat.
+        mut x := rand_state
+        x = x.bit_xor(x.shr(12).bit_and(0xFFFFFFFFFFFFF))
+        x = x.bit_xor(x.shl(25))
+        x = x.bit_xor(x.shr(27).bit_and(0x1FFFFFFFFF))
+        rand_state = x
+        bits := x.wrapping_mul(2685821657736338717).shr(11).bit_and(0x1FFFFFFFFFFFFF)
+        return Value.Num(bits.to_float() / 9007199254740992.0)
+    if m == "max" or m == "min"
+        mut best := if m == "max" then 0.0 - infinity() else infinity()
+        mut saw_nan := false
+        for a in args
+            n := to_number(a)?
+            if is_nan(n)
+                saw_nan = true
+            elif m == "max" and (n > best or (n == 0.0 and best == 0.0 and 1.0 / best < 0.0))
+                best = n
+            elif m == "min" and (n < best or (n == 0.0 and best == 0.0 and 1.0 / n < 0.0))
+                best = n
+        return Value.Num(if saw_nan then nan() else best)
+    if m == "hypot"
+        mut sum := 0.0
+        mut inf := false
+        for a in args
+            n := to_number(a)?
+            if not is_finite(n) and not is_nan(n)
+                inf = true
+            sum = sum + n * n
+        return Value.Num(if inf then infinity() else sum.sqrt())
+    x := to_number(arg_at(args, 0))?
+    y := if m == "pow" or m == "atan2" or m == "imul" then to_number(arg_at(args, 1))? else 0.0
+    r := match m
+        "abs" => x.abs()
+        "floor" => if is_finite(x) then x.floor() else x
+        "ceil" =>
+            if not is_finite(x)
+                x
+            else
+                c := x.ceil()
+                if c == 0.0 and x < 0.0 then -0.0 else c
+        "round" =>
+            if not is_finite(x) or x == 0.0
+                x
+            else
+                r := (x + 0.5).floor()
+                if r == 0.0 and x < 0.0 then -0.0 else r
+        "trunc" => trunc(x)
+        "sign" => if x > 0.0 then 1.0 else (if x < 0.0 then -1.0 else x)
+        "sqrt" => if x < 0.0 then nan() else x.sqrt()
+        "cbrt" => cbrt(x)
+        "pow" => pow(x, y)
+        "exp" => exp(x)
+        "expm1" => expm1(x)
+        "log" => log(x)
+        "log2" => log2(x)
+        "log10" => log10(x)
+        "log1p" => log1p(x)
+        "sin" => sin(x)
+        "cos" => cos(x)
+        "tan" => tan(x)
+        "asin" => asin(x)
+        "acos" => acos(x)
+        "atan" => atan(x)
+        "atan2" => atan2(x, y)
+        "sinh" => sinh(x)
+        "cosh" => cosh(x)
+        "tanh" => tanh(x)
+        "fround" => x
+        "clz32" =>
+            mut n := to_uint32(x)
+            mut count := 32
+            while n > 0
+                n = n.shr(1)
+                count -= 1
+            count.to_float()
+        "imul" => to_int32((to_int32(x) * to_int32(y)).bit_and(0xFFFFFFFF).to_float()).to_float()
+        _ => return type_error("Math.{m} is not supported yet")
+    Value.Num(r)
+
+# ----------------------------------------------------- numbers from text
+
+## parseInt (§19.2.5).
+pub fn parse_int(text str, radix_in int) float
+    cs := trim_js(text).chars()
+    mut i := 0
+    mut sign := 1.0
+    if i < cs.len() and (cs[i] == '+' or cs[i] == '-')
+        if cs[i] == '-'
+            sign = -1.0
+        i += 1
+    mut radix := radix_in
+    mut strip_prefix := true
+    if radix != 0
+        if radix < 2 or radix > 36
+            return nan()
+        if radix != 16
+            strip_prefix = false
+    else
+        radix = 10
+    if strip_prefix and i + 1 < cs.len() and cs[i] == '0' and (cs[i + 1] == 'x' or cs[i + 1] == 'X')
+        i += 2
+        radix = 16
+    start := i
+    mut v := 0.0
+    while i < cs.len()
+        d := cs[i].to_digit(radix) else break
+        v = v * radix.to_float() + d.to_float()
+        i += 1
+    if i == start
+        return nan()
+    # Decimal digits past 2^53 must round as the spec's exact value does.
+    if radix == 10 and v >= 9007199254740992.0
+        v = string_to_number(cs[start..i].join(""))
+    sign * v
+
+## parseFloat (§19.2.4): the longest prefix that is a decimal literal.
+pub fn parse_float(text str) float
+    cs := trim_js(text).chars()
+    mut i := 0
+    if i < cs.len() and (cs[i] == '+' or cs[i] == '-')
+        i += 1
+    rest := cs[i..].join("")
+    if rest.starts_with("Infinity")
+        return if i > 0 and cs[0] == '-' then 0.0 - infinity() else infinity()
+    mut digits := 0
+    while i < cs.len() and cs[i].is_digit()
+        i += 1
+        digits += 1
+    if i < cs.len() and cs[i] == '.'
+        i += 1
+        while i < cs.len() and cs[i].is_digit()
+            i += 1
+            digits += 1
+    if digits == 0
+        return nan()
+    if i < cs.len() and (cs[i] == 'e' or cs[i] == 'E')
+        mut k := i + 1
+        if k < cs.len() and (cs[k] == '+' or cs[k] == '-')
+            k += 1
+        if k < cs.len() and cs[k].is_digit()
+            while k < cs.len() and cs[k].is_digit()
+                k += 1
+            i = k
+    text_part := cs[0..i].join("")
+    # "5." and ".5" are valid here but not to string_to_number's parser.
+    string_to_number(text_part)
+
+URI_UNRESERVED := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()"
+
+## Encode (§19.2.6.5): characters outside `keep` become UTF-8 %XX escapes.
+pub fn uri_encode(s str, keep str) str
+    mut out := List[str]()
+    for c in s.chars()
+        if keep.contains(c)
+            out.push("{c}")
+        else
+            for b in "{c}".to_bytes()
+                out.push("%{b.to_int().to_hex().to_upper().pad_left(2, '0')}")
+    out.join("")
+
+## Decode (§19.2.6.6): %XX escapes of UTF-8, except those in `reserved`.
+pub fn Vm.uri_decode(mut self, s str, reserved str) str ! Thrown
+    cs := s.chars()
+    mut out := List[str]()
+    mut i := 0
+    while i < cs.len()
+        if cs[i] != '%'
+            out.push("{cs[i]}")
+            i += 1
+            continue
+        mut bytes_list := List[int]()
+        start := i
+        while i < cs.len() and cs[i] == '%'
+            if i + 2 >= cs.len()
+                return throw_error("URIError", "URI malformed")
+            hi := cs[i + 1].to_digit(16) else return throw_error("URIError", "URI malformed")
+            lo := cs[i + 2].to_digit(16) else return throw_error("URIError", "URI malformed")
+            b := hi * 16 + lo
+            if b < 128 and bytes_list.len() == 0
+                ch := char.from_code(b) else '?'
+                if reserved.contains(ch)
+                    out.push(cs[i..i + 3].join(""))
+                else
+                    out.push("{ch}")
+                i += 3
+                break
+            bytes_list.push(b)
+            i += 3
+            if utf8_complete(bytes_list)
+                break
+        if bytes_list.len() > 0
+            text := bytes.from_list([b.to_u8() for b in bytes_list]).to_str() else return throw_error("URIError", "URI malformed")
+            if start == i
+                break
+            out.push(text)
+    out.join("")
+
+fn utf8_complete(bs List[int]) bool
+    first := bs[0]
+    need := if first < 0xE0 then 2 else (if first < 0xF0 then 3 else 4)
+    bs.len() >= need

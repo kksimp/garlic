@@ -1,0 +1,251 @@
+## RegExp (ECMA-262 §22.2) on top of std.regex. JavaScript patterns are
+## translated to RE2 syntax; what RE2 can't run in linear time
+## (backreferences, lookaround) is a SyntaxError for now.
+use syntax
+use std.regex
+
+pub fn is_regexp(v Value) bool
+    if o := obj_of(v)
+        return o.class == "RegExp"
+    false
+
+## A JavaScript pattern in RE2 syntax, with the flags as inline groups.
+fn translate(pattern str, flags str) str
+    cs := pattern.chars()
+    mut out := List[str]()
+    mut prefix := ""
+    if flags.contains('i')
+        prefix = "{prefix}i"
+    if flags.contains('m')
+        prefix = "{prefix}m"
+    if flags.contains('s')
+        prefix = "{prefix}s"
+    if prefix != ""
+        out.push("(?{prefix})")
+    mut i := 0
+    mut in_class := false
+    while i < cs.len()
+        c := cs[i]
+        if c == '\\' and i + 1 < cs.len()
+            n := cs[i + 1]
+            if n == 'u' and i + 5 < cs.len() and cs[i + 2] != '{'
+                out.push("\\x\{{cs[i + 2..i + 6].join("")}}")
+                i += 6
+                continue
+            if n == 'u' and i + 2 < cs.len() and cs[i + 2] == '{'
+                mut j := i + 3
+                while j < cs.len() and cs[j] != '}'
+                    j += 1
+                out.push("\\x\{{cs[i + 3..j].join("")}}")
+                i = j + 1
+                continue
+            if n == '/' or n == '-' and not in_class
+                out.push("{n}")
+                i += 2
+                continue
+            out.push("\\{n}")
+            i += 2
+            continue
+        if in_class
+            if c == ']'
+                in_class = false
+            out.push("{c}")
+            i += 1
+            continue
+        if c == '['
+            if i + 2 < cs.len() and cs[i + 1] == '^' and cs[i + 2] == ']'
+                out.push("[\\s\\S]")
+                i += 3
+                continue
+            if i + 1 < cs.len() and cs[i + 1] == ']'
+                # `[]` matches nothing.
+                out.push("[^\\s\\S]")
+                i += 2
+                continue
+            in_class = true
+            out.push("[")
+            i += 1
+            continue
+        if c == '(' and i + 2 < cs.len() and cs[i + 1] == '?' and cs[i + 2] == '<' and i + 3 < cs.len() and cs[i + 3] != '=' and cs[i + 3] != '!'
+            out.push("(?P<")
+            i += 3
+            continue
+        out.push("{c}")
+        i += 1
+    out.join("")
+
+fn Vm.regexp_parts(mut self, v Value) RegexParts ! Thrown
+    o := obj_of(v) else return type_error("not a regular expression")
+    src := plain_string(o, "source") else ""
+    fl := plain_string(o, "flags") else ""
+    re := regex.compile(translate(src, fl)) else err
+        return throw_error("SyntaxError", "Invalid regular expression: /{src}/{fl}: {err.message}")
+    RegexParts(o: o, re: re, global: fl.contains('g') or fl.contains('y'))
+
+struct RegexParts
+    o ref JsObject
+    re regex.Regex
+    global bool
+
+## One match: where it is in code units, and its groups.
+struct Found
+    start int
+    end int
+    groups List[str?]
+    named Map[str, str]
+
+## The first match at or after code unit `from`.
+fn find_from(re regex.Regex, s str, from int) Found?
+    us := units(s)
+    if from > us.len()
+        return none
+    tail := from_units(us[from..])
+    c := regex.captures(re, tail) else return none
+    before := unit_len(tail.slice(0, c.start))
+    len := unit_len(tail.slice(c.start, c.end))
+    groups := if c.groups.len() > 1 then c.groups[1..] else List[str?]()
+    Found(start: from + before, end: from + before + len, groups: groups, named: c.named)
+
+## The match array `exec` returns (§22.2.7.2 RegExpBuiltinExec).
+fn Vm.match_array(mut self, f Found, s str) Value
+    us := units(s)
+    mut items := [Value.Str(from_units(us[f.start..f.end]))]
+    for g in f.groups
+        items.push(if t := g then Value.Str(t) else Undef)
+    a := array(items)
+    if o := obj_of(a)
+        o.props["index"] = data(Num(f.start.to_float()))
+        o.props["input"] = data(Str(s))
+        if f.named.len() == 0
+            o.props["groups"] = data(Undef)
+        else
+            g := plain()
+            for k in f.named.keys()
+                g.props[k] = data(Str(f.named[k]))
+            o.props["groups"] = data(Obj(g))
+    a
+
+fn Vm.last_index(mut self, o ref JsObject) int ! Thrown
+    n := to_number(get(Obj(o), "lastIndex")?)?
+    if is_nan(n) or n < 0.0
+        return 0
+    int_of(n)
+
+## RegExp.prototype.exec as a Found, updating lastIndex for /g and /y.
+fn Vm.exec_found(mut self, rv Value, s str) Found? ! Thrown
+    p := regexp_parts(rv)?
+    from := if p.global then last_index(p.o)? else 0
+    if f := find_from(p.re, s, from)
+        if p.global
+            set_own(p.o, "lastIndex", Num(f.end.to_float()))?
+        return f
+    if p.global
+        set_own(p.o, "lastIndex", Num(0.0))?
+    none
+
+fn Vm.regexp_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    if not is_regexp(this_val)
+        return type_error("RegExp.prototype.{m} requires that 'this' be a RegExp object")
+    match m
+        "test" =>
+            s := to_string(arg_at(args, 0))?
+            Value.Bool(exec_found(this_val, s)? != none)
+        "exec" =>
+            s := to_string(arg_at(args, 0))?
+            f := exec_found(this_val, s)? else return Null
+            match_array(f, s)
+        "toString" =>
+            o := obj_of(this_val) else return Value.Str("/(?:)/")
+            Value.Str("/{plain_string(o, "source") else ""}/{plain_string(o, "flags") else ""}")
+        _ => return type_error("RegExp.prototype.{m} is not supported yet")
+
+## Every match from the start, as `g` finds them (§22.2.6.8 step 6).
+fn all_matches(re regex.Regex, s str) List[Found]
+    mut out := List[Found]()
+    mut from := 0
+    n := unit_len(s)
+    while from <= n
+        f := find_from(re, s, from) else break
+        out.push(f)
+        from = if f.end == f.start then f.end + 1 else f.end
+    out
+
+## String.prototype.match, matchAll and search with a pattern.
+fn Vm.regexp_string_method(mut self, m str, s str, pattern Value) Value ! Thrown
+    rv := if is_regexp(pattern) then pattern else make_regexp(if pattern == Undef then "(?:)" else to_string(pattern)?, if m == "matchAll" then "g" else "")
+    p := regexp_parts(rv)?
+    match m
+        "search" =>
+            f := find_from(p.re, s, 0) else return Value.Num(-1.0)
+            Value.Num(f.start.to_float())
+        "match" =>
+            if p.global
+                found := all_matches(p.re, s)
+                set_own(p.o, "lastIndex", Num(0.0))?
+                if found.len() == 0
+                    return Null
+                us := units(s)
+                return array([Value.Str(from_units(us[f.start..f.end])) for f in found])
+            f := find_from(p.re, s, 0) else return Null
+            match_array(f, s)
+        _ =>
+            if not p.global
+                return type_error("String.prototype.matchAll called with a non-global RegExp argument")
+            array([match_array(f, s) for f in all_matches(p.re, s)])
+
+fn Vm.regexp_split(mut self, rv Value, s str, limit int) Value ! Thrown
+    p := regexp_parts(rv)?
+    us := units(s)
+    mut out := List[Value]()
+    if limit == 0
+        return array(out)
+    if us.len() == 0
+        if find_from(p.re, s, 0) != none
+            return array(out)
+        return array([Value.Str(s)])
+    mut start := 0
+    mut q := 0
+    while q < us.len()
+        f := find_from(p.re, s, q) else break
+        if f.end == f.start and f.start >= us.len()
+            break
+        if f.end == start or (f.end == f.start and f.start == start)
+            q = f.start + 1
+            continue
+        out.push(Str(from_units(us[start..f.start])))
+        if out.len() >= limit
+            return array(out)
+        for g in f.groups
+            out.push(if t := g then Value.Str(t) else Undef)
+            if out.len() >= limit
+                return array(out)
+        start = f.end
+        q = if f.end == f.start then f.end + 1 else f.end
+    out.push(Str(from_units(us[start..])))
+    array(out)
+
+fn Vm.regexp_replace(mut self, rv Value, s str, replacement Value, all bool) Value ! Thrown
+    p := regexp_parts(rv)?
+    if all and not p.global
+        return type_error("replaceAll must be called with a global RegExp")
+    us := units(s)
+    found := if p.global then all_matches(p.re, s) else (if f := find_from(p.re, s, 0) then [f] else List[Found]())
+    if p.global
+        set_own(p.o, "lastIndex", Num(0.0))?
+    mut out := List[str]()
+    mut last := 0
+    for f in found
+        out.push(from_units(us[last..f.start]))
+        matched := from_units(us[f.start..f.end])
+        if is_callable(replacement)
+            mut cargs := [Value.Str(matched)]
+            for g in f.groups
+                cargs.push(if t := g then Value.Str(t) else Undef)
+            cargs.push(Num(f.start.to_float()))
+            cargs.push(Str(s))
+            out.push(to_string(call(replacement, Undef, cargs)?)?)
+        else
+            out.push(expand_replacement(to_string(replacement)?, matched, from_units(us[0..f.start]), from_units(us[f.end..]), f.groups))
+        last = f.end
+    out.push(from_units(us[last..]))
+    Value.Str(out.join(""))

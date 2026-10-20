@@ -1,0 +1,20 @@
+TypeError: Cannot read properties of undefined (reading 'foo')
+TypeError: Cannot set properties of null (setting 'foo')
+TypeError: {}.method is not a function
+ReferenceError: notDeclared is not defined
+TypeError: (intermediate value) is not a constructor
+TypeError: Reduce of empty array with no initial value
+RangeError: Invalid array length
+RangeError: toFixed() digits argument must be between 0 and 100
+RangeError: Invalid count value: -1
+ReferenceError: undeclaredStrict is not defined
+ReferenceError: Symbolish is not defined
+SyntaxError: Unexpected end of JSON input
+URIError: URI malformed
+Error: plain
+TypeError: Right-hand side of 'instanceof' is not an object
+TypeError: Cannot use 'in' operator to search for 'a' in abc
+ReferenceError: Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+true true [object Error] TypeError: boom TypeError: boom
+1 true no new
+Uncaught SyntaxError: thrown at top level

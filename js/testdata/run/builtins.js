@@ -1,0 +1,24 @@
+// Object, Array and String built-ins.
+const o = { b: 2, a: 1 };
+console.log(Object.keys(o), Object.values(o), Object.entries(o), Object.assign({}, o, { c: 3 }));
+console.log(Object.fromEntries([["x", 1], ["y", 2]]), Object.create(null), Object.getPrototypeOf([]) === Array.prototype);
+const frozen = Object.freeze({ v: 1 }); frozen.v = 2; console.log(frozen.v, Object.isFrozen(frozen));
+const withGetter = {}; Object.defineProperty(withGetter, "x", { get() { return 42; }, enumerable: false });
+console.log(withGetter.x, Object.keys(withGetter), JSON.stringify(Object.getOwnPropertyDescriptor({ q: 1 }, "q")));
+console.log({}.hasOwnProperty.call(o, "a"), o.propertyIsEnumerable("b"), Object.prototype.toString.call([]), Object.prototype.toString.call(null));
+const arr = [5, 1, 4, 2, 3];
+console.log(arr.slice(1, -1), arr.indexOf(4), arr.includes(9), arr.find(x => x > 3), arr.findIndex(x => x > 3), arr.findLast(x => x < 3));
+console.log([...arr].sort((a, b) => a - b), arr.join("-"), arr.some(x => x > 4), arr.every(x => x > 0), arr.at(-1));
+const sp = [1, 2, 3, 4, 5]; console.log(sp.splice(1, 2, "a", "b", "c"), sp, sp.reverse(), sp.length);
+console.log([1, [2, [3, [4]]]].flat(), [1, [2, [3, [4]]]].flat(Infinity), [1, 2].flatMap(x => [x, x * 10]));
+console.log(Array.from({ length: 3 }, (_, i) => i * i), Array.of(7, 8), Array.isArray([]), new Array(3).fill(0), Array(2, 3));
+console.log([3, 20, 100].sort(), ["b", "a", "C"].sort(), [1, 2, 3].reduceRight((a, b) => a + b, ""), [].concat(1, [2], [[3]]));
+const a2 = [1, 2, 3]; a2.length = 1; console.log(a2, a2.push(9, 8), a2.shift(), a2.unshift(0), a2, a2.pop(), a2.lastIndexOf(9));
+const s = "Hello, World";
+console.log(s.length, s.charAt(4), s.charCodeAt(0), s.indexOf("o"), s.lastIndexOf("o"), s.slice(-5), s.substring(7, 3), s.substr(1, 3));
+console.log(s.toLowerCase(), s.startsWith("Hell"), s.endsWith("ld"), s.includes(", "), s.split(", "), s.split(""), s.split(",", 1));
+console.log("  pad ".trim() + "|", "5".padStart(3, "0"), "ab".padEnd(5, "xy"), "na".repeat(3), "a,b,,c".split(","), "x".concat(1, 2));
+console.log("aXbXc".replaceAll("X", "-"), "aaa".replace("a", "$&$&"), "price: 5".replace("5", (m) => m * 2), "abc".at(-1));
+console.log(String.fromCharCode(72, 105), "😀".length, "😀".codePointAt(0), [..."😀a"].length, String.fromCodePoint(128512) === "😀");
+console.log("b".localeCompare("a"), "a" < "B", "abc".split("").reverse().join(""), String.raw`a\nb${1}`);
+console.log([1, 2, 3].toString(), String([1, [2, 3]]), [null, undefined, 1].join());

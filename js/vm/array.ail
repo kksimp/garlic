@@ -1,0 +1,370 @@
+## Array and Array.prototype (ECMA-262 §23.1).
+use syntax
+
+## `new Array(n)` or `Array(a, b, c)`.
+fn Vm.array_constructor(mut self, args List[Value]) Value ! Thrown
+    if args.len() == 1
+        if n := num_of(args[0])
+            len := as_index(n) else return range_error("Invalid array length")
+            if len > 100000000
+                return range_error("Invalid array length")
+            mut items := List[Value]()
+            for _ in 0..len
+                items.push(Undef)
+            return array(items)
+    array(args)
+
+## Array.from(items, mapFn, thisArg) (§23.1.2.1).
+fn Vm.array_from(mut self, args List[Value]) Value ! Thrown
+    src := arg_at(args, 0)
+    if is_nullish(src)
+        return type_error("{describe(src)} is not iterable (cannot read property Symbol(Symbol.iterator))")
+    items := iterate(src)?
+    f := arg_at(args, 1)
+    if f == Undef
+        return array(items)
+    if not is_callable(f)
+        return type_error("{describe(f)} is not a function")
+    mut out := List[Value]()
+    for i in 0..items.len()
+        out.push(call(f, arg_at(args, 2), [items[i], Num(i.to_float())])?)
+    array(out)
+
+## The elements of `this` for a method that reads them: an array's own
+## list, or an array-like's indexed properties.
+fn Vm.elements_of(mut self, this_val Value) List[Value] ! Thrown
+    o := to_object(this_val)?
+    if o.class == "Array" or o.class == "Arguments"
+        return o.elems
+    n := length_of(Obj(o))?
+    mut out := List[Value]()
+    for i in 0..n
+        out.push(get(Obj(o), "{i}")?)
+    out
+
+fn Vm.length_of(mut self, v Value) int ! Thrown
+    n := to_number(get(v, "length")?)?
+    if is_nan(n) or n <= 0.0
+        return 0
+    if n > 9007199254740991.0
+        return 9007199254740991
+    trunc(n).to_int()
+
+## A relative index argument (§23.1.3 steps "relativeStart"): negative counts
+## from the end; the result is clamped to 0..len.
+fn Vm.relative(mut self, v Value, len int, default int) int ! Thrown
+    if v == Undef
+        return default
+    n := trunc(to_number(v)?)
+    if is_nan(n)
+        return 0
+    if n < 0.0
+        r := len.to_float() + n
+        return if r < 0.0 then 0 else r.to_int()
+    if n > len.to_float() then len else n.to_int()
+
+fn Vm.callback(mut self, f Value) Value ! Thrown
+    if not is_callable(f)
+        return type_error("{describe(f)} is not a function")
+    f
+
+## The array `this`, for the methods that change it.
+fn Vm.this_array(mut self, this_val Value, m str) ref JsObject ! Thrown
+    o := to_object(this_val)?
+    if o.class != "Array" and o.class != "Arguments"
+        return type_error("Array.prototype.{m} is only supported on arrays")
+    if o.frozen
+        return type_error("Cannot add property {o.elems.len()}, object is not extensible")
+    o
+
+fn Vm.array_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    a0 := arg_at(args, 0)
+    a1 := arg_at(args, 1)
+    match m
+        "push" =>
+            o := this_array(this_val, m)?
+            o.elems.extend(args)
+            Value.Num(o.elems.len().to_float())
+        "pop" =>
+            o := this_array(this_val, m)?
+            o.elems.pop() else Undef
+        "shift" =>
+            o := this_array(this_val, m)?
+            if o.elems.len() == 0
+                return Undef
+            o.elems.remove_at(0)
+        "unshift" =>
+            o := this_array(this_val, m)?
+            mut items := args
+            items.extend(o.elems)
+            o.elems = items
+            Value.Num(o.elems.len().to_float())
+        "slice" =>
+            xs := elements_of(this_val)?
+            start := relative(a0, xs.len(), 0)?
+            end := relative(a1, xs.len(), xs.len())?
+            if start >= end
+                return array([])
+            array(xs[start..end])
+        "splice" =>
+            o := this_array(this_val, m)?
+            len := o.elems.len()
+            start := relative(a0, len, 0)?
+            mut count := 0
+            if args.len() == 1
+                count = len - start
+            elif args.len() > 1
+                n := trunc(to_number(a1)?)
+                count = if is_nan(n) or n < 0.0 then 0 else (if n > (len - start).to_float() then len - start else n.to_int())
+            removed := o.elems[start..start + count]
+            mut out := o.elems[0..start]
+            if args.len() > 2
+                out.extend(args[2..])
+            out.extend(o.elems[start + count..])
+            o.elems = out
+            array(removed)
+        "concat" =>
+            mut out := elements_of(this_val)?
+            for a in args
+                if is_array(a)
+                    out.extend(elements_of(a)?)
+                else
+                    out.push(a)
+            array(out)
+        "join" | "toString" =>
+            if m == "toString" and not is_array(this_val)
+                return Value.Str("[object Object]")
+            sep := if a0 == Undef or m == "toString" then "," else to_string(a0)?
+            o := to_object(this_val)?
+            if busy.contains(o.id)
+                return Value.Str("")
+            busy.add(o.id)
+            mut parts := List[str]()
+            for x in elements_of(this_val)?
+                if is_nullish(x)
+                    parts.push("")
+                else
+                    t := to_string(x) else err
+                        busy.remove(o.id)
+                        return err
+                    parts.push(t)
+            busy.remove(o.id)
+            Value.Str(parts.join(sep))
+        "reverse" =>
+            o := this_array(this_val, m)?
+            o.elems.reverse()
+            this_val
+        "toReversed" =>
+            mut xs := elements_of(this_val)?
+            xs.reverse()
+            array(xs)
+        "indexOf" | "lastIndexOf" | "includes" =>
+            xs := elements_of(this_val)?
+            if m == "lastIndexOf"
+                mut i := if args.len() > 1 then relative(a1, xs.len(), xs.len())? else xs.len() - 1
+                if i >= xs.len()
+                    i = xs.len() - 1
+                while i >= 0
+                    if xs[i] == a0
+                        return Value.Num(i.to_float())
+                    i -= 1
+                return Value.Num(-1.0)
+            start := relative(a1, xs.len(), 0)?
+            for i in start..xs.len()
+                found := if m == "includes" then same_value_zero(xs[i], a0) else xs[i] == a0
+                if found
+                    return if m == "includes" then Value.Bool(true) else Value.Num(i.to_float())
+            if m == "includes" then Value.Bool(false) else Value.Num(-1.0)
+        "find" | "findIndex" | "findLast" | "findLastIndex" =>
+            f := callback(a0)?
+            xs := elements_of(this_val)?
+            backwards := m == "findLast" or m == "findLastIndex"
+            for k in 0..xs.len()
+                i := if backwards then xs.len() - 1 - k else k
+                if truthy(call(f, a1, [xs[i], Num(i.to_float()), this_val])?)
+                    return if m == "find" or m == "findLast" then xs[i] else Value.Num(i.to_float())
+            if m == "find" or m == "findLast" then Undef else Value.Num(-1.0)
+        "filter" =>
+            f := callback(a0)?
+            xs := elements_of(this_val)?
+            mut out := List[Value]()
+            for i in 0..xs.len()
+                if truthy(call(f, a1, [xs[i], Num(i.to_float()), this_val])?)
+                    out.push(xs[i])
+            array(out)
+        "map" =>
+            f := callback(a0)?
+            xs := elements_of(this_val)?
+            mut out := List[Value]()
+            for i in 0..xs.len()
+                out.push(call(f, a1, [xs[i], Num(i.to_float()), this_val])?)
+            array(out)
+        "forEach" =>
+            f := callback(a0)?
+            # The length is read once; later pushes are not visited (§23.1.3.15).
+            n := elements_of(this_val)?.len()
+            for i in 0..n
+                xs := elements_of(this_val)?
+                if i < xs.len()
+                    call(f, a1, [xs[i], Num(i.to_float()), this_val])?
+            Undef
+        "some" | "every" =>
+            f := callback(a0)?
+            xs := elements_of(this_val)?
+            want := m == "some"
+            for i in 0..xs.len()
+                if truthy(call(f, a1, [xs[i], Num(i.to_float()), this_val])?) == want
+                    return Value.Bool(want)
+            Value.Bool(not want)
+        "reduce" | "reduceRight" =>
+            f := callback(a0)?
+            xs := elements_of(this_val)?
+            n := xs.len()
+            mut k := 0
+            mut acc := a1
+            if args.len() < 2
+                if n == 0
+                    return type_error("Reduce of empty array with no initial value")
+                acc = if m == "reduce" then xs[0] else xs[n - 1]
+                k = 1
+            while k < n
+                i := if m == "reduce" then k else n - 1 - k
+                acc = call(f, Undef, [acc, xs[i], Num(i.to_float()), this_val])?
+                k += 1
+            acc
+        "sort" | "toSorted" =>
+            if a0 != Undef and not is_callable(a0)
+                return type_error("The comparison function must be either a function or undefined")
+            xs := elements_of(this_val)?
+            sorted_xs := merge_sort(xs, a0)?
+            if m == "toSorted"
+                return array(sorted_xs)
+            o := this_array(this_val, m)?
+            o.elems = sorted_xs
+            this_val
+        "fill" =>
+            o := this_array(this_val, m)?
+            len := o.elems.len()
+            start := relative(a1, len, 0)?
+            end := relative(arg_at(args, 2), len, len)?
+            for i in start..end
+                o.elems[i] = a0
+            this_val
+        "flat" =>
+            depth := if a0 == Undef then 1 else int_of(to_number(a0)?)
+            array(flatten(elements_of(this_val)?, depth)?)
+        "flatMap" =>
+            f := callback(a0)?
+            xs := elements_of(this_val)?
+            mut mapped := List[Value]()
+            for i in 0..xs.len()
+                mapped.push(call(f, a1, [xs[i], Num(i.to_float()), this_val])?)
+            array(flatten(mapped, 1)?)
+        "at" =>
+            xs := elements_of(this_val)?
+            n := trunc(to_number(a0)?)
+            i := if is_nan(n) then 0.0 else (if n < 0.0 then xs.len().to_float() + n else n)
+            if i < 0.0 or i >= xs.len().to_float()
+                return Undef
+            xs[i.to_int()]
+        "with" =>
+            mut xs := elements_of(this_val)?
+            n := trunc(to_number(a0)?)
+            i := if n < 0.0 then xs.len().to_float() + n else n
+            if i < 0.0 or i >= xs.len().to_float()
+                return range_error("Invalid index : {syntax.number_to_string(n)}")
+            xs[i.to_int()] = a1
+            array(xs)
+        "keys" =>
+            n := elements_of(this_val)?.len()
+            array([Value.Num(i.to_float()) for i in 0..n])
+        "values" => array(elements_of(this_val)?)
+        "entries" =>
+            xs := elements_of(this_val)?
+            mut out := List[Value]()
+            for i in 0..xs.len()
+                out.push(array([Value.Num(i.to_float()), xs[i]]))
+            array(out)
+        "copyWithin" =>
+            o := this_array(this_val, m)?
+            len := o.elems.len()
+            to := relative(a0, len, 0)?
+            from := relative(a1, len, 0)?
+            end := relative(arg_at(args, 2), len, len)?
+            copy := o.elems[from..end]
+            for i in 0..copy.len()
+                if to + i < len
+                    o.elems[to + i] = copy[i]
+            this_val
+        _ => return type_error("Array.prototype.{m} is not supported yet")
+
+fn Vm.flatten(mut self, xs List[Value], depth int) List[Value] ! Thrown
+    mut out := List[Value]()
+    for x in xs
+        if depth > 0 and is_array(x)
+            out.extend(flatten(elements_of(x)?, depth - 1)?)
+        else
+            out.push(x)
+    out
+
+## A stable merge sort (§23.1.3.30 SortIndexedProperties): undefined last,
+## then by the comparator or by string order.
+fn Vm.merge_sort(mut self, xs List[Value], cmp Value) List[Value] ! Thrown
+    mut defined := List[Value]()
+    mut undefs := 0
+    for x in xs
+        if x == Undef
+            undefs += 1
+        else
+            defined.push(x)
+    mut keys := List[str]()
+    if cmp == Undef
+        for x in defined
+            keys.push(to_string(x)?)
+    mut order := [i for i in 0..defined.len()]
+    mut width := 1
+    while width < order.len()
+        mut merged := List[int]()
+        mut lo := 0
+        while lo < order.len()
+            mid := (lo + width).min(order.len())
+            hi := (lo + 2 * width).min(order.len())
+            mut i := lo
+            mut j := mid
+            while i < mid and j < hi
+                if sort_before(defined, keys, order[j], order[i], cmp)?
+                    merged.push(order[j])
+                    j += 1
+                else
+                    merged.push(order[i])
+                    i += 1
+            while i < mid
+                merged.push(order[i])
+                i += 1
+            while j < hi
+                merged.push(order[j])
+                j += 1
+            lo = hi
+        order = merged
+        width = width * 2
+    mut out := [defined[i] for i in order]
+    for _ in 0..undefs
+        out.push(Undef)
+    out
+
+## Whether element `a` must come strictly before element `b`.
+fn Vm.sort_before(mut self, xs List[Value], keys List[str], a int, b int, cmp Value) bool ! Thrown
+    if cmp == Undef
+        return utf16_less(keys[a], keys[b])
+    r := to_number(call(cmp, Undef, [xs[a], xs[b]])?)?
+    r < 0.0
+
+## String order by UTF-16 code units (§7.2.13 step 3).
+pub fn utf16_less(a str, b str) bool
+    ua := units(a)
+    ub := units(b)
+    n := ua.len().min(ub.len())
+    for i in 0..n
+        if ua[i] != ub[i]
+            return ua[i] < ub[i]
+    ua.len() < ub.len()

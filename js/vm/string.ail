@@ -1,0 +1,333 @@
+## String.prototype (ECMA-262 §22.1.3) and Number.prototype (§21.1.3).
+## Indexes count UTF-16 code units, as JavaScript does.
+use syntax
+
+## `this` as a string (§22.1.3 RequireObjectCoercible, then ToString).
+fn Vm.this_string(mut self, v Value, m str) str ! Thrown
+    match v
+        Str(s) => s
+        Undef | Null => return type_error("String.prototype.{m} called on null or undefined")
+        Bool | Num | Obj => to_string(v)
+
+## Where `needle` first occurs in `hay` at or after `from`, in code units.
+fn find_units(hay List[int], needle List[int], from int) int?
+    if needle.len() == 0
+        return if from <= hay.len() then from else hay.len()
+    mut i := from
+    while i + needle.len() <= hay.len()
+        if hay[i] == needle[0]
+            mut k := 1
+            while k < needle.len() and hay[i + k] == needle[k]
+                k += 1
+            if k == needle.len()
+                return i
+        i += 1
+    none
+
+fn find_last_units(hay List[int], needle List[int], from int) int?
+    mut i := (hay.len() - needle.len()).min(from)
+    while i >= 0
+        mut k := 0
+        while k < needle.len() and hay[i + k] == needle[k]
+            k += 1
+        if k == needle.len()
+            return i
+        i -= 1
+    none
+
+fn Vm.integer_arg(mut self, v Value, default int) int ! Thrown
+    if v == Undef
+        return default
+    n := trunc(to_number(v)?)
+    if is_nan(n)
+        return 0
+    if n > 9007199254740991.0
+        return 9007199254740991
+    if n < -9007199254740991.0
+        return -9007199254740991
+    n.to_int()
+
+fn clamp(i int, lo int, hi int) int
+    i.max(lo).min(hi)
+
+fn Vm.string_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    a0 := arg_at(args, 0)
+    a1 := arg_at(args, 1)
+    if m == "toString" or m == "valueOf"
+        if str_of(this_val) != none
+            return this_val
+        if o := obj_of(this_val)
+            if o.class == "String"
+                return o.prim
+        return type_error("String.prototype.{m} requires that 'this' be a String")
+    s := this_string(this_val, m)?
+    us := units(s)
+    n := us.len()
+    match m
+        "charAt" =>
+            i := integer_arg(a0, 0)?
+            if i < 0 or i >= n
+                return Value.Str("")
+            Value.Str(from_units([us[i]]))
+        "charCodeAt" =>
+            i := integer_arg(a0, 0)?
+            if i < 0 or i >= n
+                return Value.Num(nan())
+            Value.Num(us[i].to_float())
+        "codePointAt" =>
+            i := integer_arg(a0, 0)?
+            if i < 0 or i >= n
+                return Undef
+            c := us[i]
+            if c >= 0xD800 and c <= 0xDBFF and i + 1 < n and us[i + 1] >= 0xDC00 and us[i + 1] <= 0xDFFF
+                return Value.Num((0x10000 + (c - 0xD800) * 0x400 + (us[i + 1] - 0xDC00)).to_float())
+            Value.Num(c.to_float())
+        "at" =>
+            k := integer_arg(a0, 0)?
+            i := if k < 0 then n + k else k
+            if i < 0 or i >= n
+                return Undef
+            Value.Str(from_units([us[i]]))
+        "indexOf" =>
+            needle := units(to_string(a0)?)
+            from := clamp(integer_arg(a1, 0)?, 0, n)
+            Value.Num((find_units(us, needle, from) else -1).to_float())
+        "lastIndexOf" =>
+            needle := units(to_string(a0)?)
+            pos := to_number(a1)?
+            from := if is_nan(pos) then n else clamp(int_of(pos), 0, n)
+            Value.Num((find_last_units(us, needle, from) else -1).to_float())
+        "includes" =>
+            if is_regexp(a0)
+                return type_error("First argument to String.prototype.includes must not be a regular expression")
+            needle := units(to_string(a0)?)
+            from := clamp(integer_arg(a1, 0)?, 0, n)
+            Value.Bool(find_units(us, needle, from) != none)
+        "startsWith" | "endsWith" =>
+            if is_regexp(a0)
+                return type_error("First argument to String.prototype.{m} must not be a regular expression")
+            needle := units(to_string(a0)?)
+            if m == "startsWith"
+                start := clamp(integer_arg(a1, 0)?, 0, n)
+                if start + needle.len() > n
+                    return Value.Bool(false)
+                return Value.Bool(us[start..start + needle.len()] == needle)
+            end := clamp(integer_arg(a1, n)?, 0, n)
+            if needle.len() > end
+                return Value.Bool(false)
+            Value.Bool(us[end - needle.len()..end] == needle)
+        "slice" =>
+            start := relative(a0, n, 0)?
+            end := relative(a1, n, n)?
+            if start >= end
+                return Value.Str("")
+            Value.Str(from_units(us[start..end]))
+        "substring" =>
+            a := clamp(integer_arg(a0, 0)?, 0, n)
+            b := clamp(integer_arg(a1, n)?, 0, n)
+            Value.Str(from_units(us[a.min(b)..a.max(b)]))
+        "substr" =>
+            start := relative(a0, n, 0)?
+            len := clamp(integer_arg(a1, n)?, 0, n - start)
+            Value.Str(from_units(us[start..start + len]))
+        "toUpperCase" | "toLocaleUpperCase" => Value.Str(s.to_upper())
+        "toLowerCase" | "toLocaleLowerCase" => Value.Str(s.to_lower())
+        "trim" => Value.Str(trim_js(s))
+        "trimStart" | "trimEnd" =>
+            cs := s.chars()
+            mut a := 0
+            mut b := cs.len()
+            if m == "trimStart"
+                while a < b and js_space(cs[a])
+                    a += 1
+            else
+                while b > a and js_space(cs[b - 1])
+                    b -= 1
+            Value.Str(cs[a..b].join(""))
+        "padStart" | "padEnd" =>
+            target := integer_arg(a0, 0)?
+            fill := if a1 == Undef then " " else to_string(a1)?
+            if target <= n or fill == ""
+                return Value.Str(s)
+            fu := units(fill)
+            mut pad := List[int]()
+            while pad.len() < target - n
+                pad.push(fu[pad.len() % fu.len()])
+            p := from_units(pad)
+            Value.Str(if m == "padStart" then "{p}{s}" else "{s}{p}")
+        "repeat" =>
+            k := to_number(a0)?
+            if k < 0.0 or not is_finite(k)
+                return range_error("Invalid count value: {syntax.number_to_string(k)}")
+            Value.Str(s.repeat(trunc(k).to_int()))
+        "concat" =>
+            mut out := s
+            for a in args
+                out = "{out}{to_string(a)?}"
+            Value.Str(out)
+        "split" =>
+            limit := if a1 == Undef then 4294967295 else to_uint32(to_number(a1)?)
+            if is_regexp(a0)
+                return regexp_split(a0, s, limit)
+            if a0 == Undef
+                return array([Value.Str(s)])
+            sep := units(to_string(a0)?)
+            mut out := List[Value]()
+            if limit == 0
+                return array(out)
+            if sep.len() == 0
+                for u in us
+                    if out.len() >= limit
+                        break
+                    out.push(Str(from_units([u])))
+                return array(out)
+            mut start := 0
+            while true
+                i := find_units(us, sep, start) else break
+                out.push(Str(from_units(us[start..i])))
+                if out.len() >= limit
+                    return array(out)
+                start = i + sep.len()
+            out.push(Str(from_units(us[start..])))
+            array(out)
+        "replace" | "replaceAll" =>
+            if is_regexp(a0)
+                return regexp_replace(a0, s, a1, m == "replaceAll")
+            needle := units(to_string(a0)?)
+            mut out := List[str]()
+            mut start := 0
+            mut pos := find_units(us, needle, 0)
+            while true
+                i := pos else break
+                out.push(from_units(us[start..i]))
+                matched := from_units(us[i..i + needle.len()])
+                if is_callable(a1)
+                    out.push(to_string(call(a1, Undef, [Value.Str(matched), Num(i.to_float()), Value.Str(s)])?)?)
+                else
+                    out.push(expand_replacement(to_string(a1)?, matched, from_units(us[0..i]), from_units(us[i + needle.len()..]), []))
+                start = i + needle.len()
+                if m == "replace"
+                    break
+                pos = find_units(us, needle, if needle.len() == 0 then start + 1 else start)
+                if needle.len() == 0 and start >= n
+                    if start == n
+                        # An empty needle also matches at the very end.
+                        out.push("")
+                    break
+            out.push(from_units(us[start.min(n)..]))
+            Value.Str(out.join(""))
+        "localeCompare" =>
+            t := to_string(a0)?
+            Value.Num(if s == t then 0.0 else (if utf16_less(s, t) then -1.0 else 1.0))
+        "normalize" => Value.Str(s)
+        "match" | "matchAll" | "search" => regexp_string_method(m, s, a0)
+        _ => return type_error("String.prototype.{m} is not supported yet")
+
+## GetSubstitution (§22.1.3.19.1): `$&`, `` $` ``, `$'`, `$1`.., `$$`.
+pub fn expand_replacement(rep str, matched str, before str, after str, groups List[str?]) str
+    cs := rep.chars()
+    mut out := List[str]()
+    mut i := 0
+    while i < cs.len()
+        c := cs[i]
+        if c == '$' and i + 1 < cs.len()
+            next := cs[i + 1]
+            if next == '$'
+                out.push("$")
+                i += 2
+                continue
+            if next == '&'
+                out.push(matched)
+                i += 2
+                continue
+            if next == '`'
+                out.push(before)
+                i += 2
+                continue
+            if next == '\''
+                out.push(after)
+                i += 2
+                continue
+            if next.is_digit()
+                mut k := next.code() - 48
+                mut used := 2
+                if i + 2 < cs.len() and cs[i + 2].is_digit()
+                    two := k * 10 + cs[i + 2].code() - 48
+                    if two >= 1 and two <= groups.len()
+                        k = two
+                        used = 3
+                if k >= 1 and k <= groups.len()
+                    out.push(groups[k - 1] else "")
+                    i += used
+                    continue
+        out.push("{c}")
+        i += 1
+    out.join("")
+
+fn Vm.this_number(mut self, v Value, m str) float ! Thrown
+    match v
+        Num(n) => n
+        Obj(o) =>
+            if o.class == "Number"
+                if n := num_of(o.prim)
+                    return n
+            return type_error("Number.prototype.{m} requires that 'this' be a Number")
+        Undef | Null | Bool | Str => return type_error("Number.prototype.{m} requires that 'this' be a Number")
+
+fn Vm.number_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    x := this_number(this_val, m)?
+    a0 := arg_at(args, 0)
+    match m
+        "valueOf" => Value.Num(x)
+        "toString" =>
+            radix := if a0 == Undef then 10 else integer_arg(a0, 10)?
+            if radix < 2 or radix > 36
+                return range_error("toString() radix must be between 2 and 36")
+            if radix == 10
+                return Value.Str(syntax.number_to_string(x))
+            Value.Str(to_radix(x, radix))
+        "toFixed" =>
+            f := integer_arg(a0, 0)?
+            if f < 0 or f > 100
+                return range_error("toFixed() digits argument must be between 0 and 100")
+            Value.Str(to_fixed(x, f))
+        "toExponential" =>
+            f := integer_arg(a0, 0)?
+            if not is_finite(x)
+                return Value.Str(syntax.number_to_string(x))
+            if f < 0 or f > 100
+                return range_error("toExponential() argument must be between 0 and 100")
+            Value.Str(to_exponential(x, if a0 == Undef then none else f))
+        "toPrecision" =>
+            if a0 == Undef
+                return Value.Str(syntax.number_to_string(x))
+            p := integer_arg(a0, 0)?
+            if not is_finite(x)
+                return Value.Str(syntax.number_to_string(x))
+            if p < 1 or p > 100
+                return range_error("toPrecision() argument must be between 1 and 100")
+            Value.Str(to_precision(x, p))
+        "toLocaleString" => Value.Str(locale_number(x))
+        _ => return type_error("Number.prototype.{m} is not supported yet")
+
+## Number.prototype.toLocaleString as en-US writes it: groups of three
+## digits and at most three decimals.
+pub fn locale_number(x float) str
+    if not is_finite(x)
+        return if is_nan(x) then "NaN" else (if x > 0.0 then "∞" else "-∞")
+    t := to_fixed(x.abs(), 3)
+    parts := t.split(".")
+    mut frac := parts[1]
+    while frac.ends_with("0")
+        frac = frac.slice(0, frac.chars().len() - 1)
+    digits := parts[0].chars()
+    mut out := List[char]()
+    for i in 0..digits.len()
+        if i > 0 and (digits.len() - i) % 3 == 0
+            out.push(',')
+        out.push(digits[i])
+    sign := if x < 0.0 and t != "0.000" then "-" else ""
+    head := out.join("")
+    if frac == ""
+        return "{sign}{head}"
+    "{sign}{head}.{frac}"

@@ -1,0 +1,279 @@
+## Objects and their properties (ECMA-262 §10.1 ordinary objects, §10.4.2
+## arrays, §10.4.3 strings): get, set, define, delete, keys.
+use syntax
+
+## A new object with the given internal kind and prototype.
+pub fn Vm.object(mut self, class str, proto Value) ref JsObject
+    next_id += 1
+    ref JsObject(
+        class: class,
+        proto: proto,
+        props: {},
+        elems: [],
+        extensible: true,
+        call: none,
+        prim: Undef,
+        id: next_id,
+        frozen: false,
+    )
+
+## A plain object: `{}`.
+pub fn Vm.plain(mut self) ref JsObject
+    object("Object", proto_of("Object"))
+
+## An array of the values.
+pub fn Vm.array(mut self, items List[Value]) Value
+    mut a := object("Array", proto_of("Array"))
+    a.elems = items
+    Obj(a)
+
+## The built-in prototype for `name` ("Object", "Array", ...).
+pub fn Vm.proto_of(self, name str) Value
+    protos.get(name) else Null
+
+fn is_array_like(o ref JsObject) bool
+    o.class == "Array" or o.class == "Arguments"
+
+## The property `key` of `o` itself, as a Prop, if it has one.
+pub fn Vm.own(self, o ref JsObject, key str) Prop?
+    if is_array_like(o)
+        if i := index_of_key(key)
+            if i < o.elems.len()
+                return Prop(value: o.elems[i], get: Undef, set: Undef, accessor: false, enumerable: true, writable: not o.frozen, configurable: not o.frozen)
+            return none
+        if key == "length"
+            return Prop(value: Num(o.elems.len().to_float()), get: Undef, set: Undef, accessor: false, enumerable: false, writable: not o.frozen, configurable: false)
+    if o.class == "String"
+        s := match o.prim
+            Str(t) => t
+            Undef | Null | Bool | Num | Obj => ""
+        if key == "length"
+            return hidden(Num(unit_len(s).to_float()))
+        if i := index_of_key(key)
+            us := units(s)
+            if i < us.len()
+                return Prop(value: Str(from_units([us[i]])), get: Undef, set: Undef, accessor: false, enumerable: true, writable: false, configurable: false)
+    o.props.get(key)
+
+## [[Get]] (§10.1.8): from `o` or its prototypes, with `receiver` as the
+## `this` of a getter.
+pub fn Vm.get_from(mut self, start ref JsObject, key str, receiver Value) Value ! Thrown
+    mut o := start
+    while true
+        if p := own(o, key)
+            if p.accessor
+                if is_callable(p.get)
+                    return call(p.get, receiver, [])
+                return Undef
+            return p.value
+        match o.proto
+            Obj(next) => o = next
+            Undef | Null | Bool | Num | Str => return Undef
+    Undef
+
+## The property `key` of any value (§7.3.2 GetV): primitives look in their
+## prototype; `undefined` and `null` throw.
+pub fn Vm.get(mut self, base Value, key str) Value ! Thrown
+    match base
+        Obj(o) => get_from(o, key, base)
+        Str(s) =>
+            if key == "length"
+                return Num(unit_len(s).to_float())
+            if i := index_of_key(key)
+                us := units(s)
+                if i < us.len()
+                    return Str(from_units([us[i]]))
+                return Undef
+            proto_get("String", key, base)
+        Num(_) => proto_get("Number", key, base)
+        Bool(_) => proto_get("Boolean", key, base)
+        Undef | Null =>
+            what := if base == Undef then "undefined" else "null"
+            return type_error("Cannot read properties of {what} (reading '{key}')")
+
+fn Vm.proto_get(mut self, name str, key str, receiver Value) Value ! Thrown
+    match proto_of(name)
+        Obj(p) => get_from(p, key, receiver)
+        Undef | Null | Bool | Num | Str => Undef
+
+## [[Set]] (§10.1.9): a setter on the chain, else an own data property.
+pub fn Vm.put(mut self, base Value, key str, v Value) ! Thrown
+    match base
+        Obj(o) => put_obj(o, key, v, base)?
+        Undef | Null =>
+            what := if base == Undef then "undefined" else "null"
+            return type_error("Cannot set properties of {what} (setting '{key}')")
+        Bool | Num | Str => return
+
+pub fn Vm.put_obj(mut self, target ref JsObject, key str, v Value, receiver Value) ! Thrown
+    # A setter or a read-only property on the prototype chain wins.
+    mut o := target
+    while true
+        if p := own(o, key)
+            if p.accessor
+                if is_callable(p.set)
+                    call(p.set, receiver, [v])?
+                return
+            if not p.writable
+                return
+            break
+        match o.proto
+            Obj(next) => o = next
+            Undef | Null | Bool | Num | Str => break
+    set_own(target, key, v)?
+
+## Write an own data property, keeping its attributes if it exists.
+pub fn Vm.set_own(mut self, o ref JsObject, key str, v Value) ! Thrown
+    if o.frozen
+        return
+    if is_array_like(o)
+        if i := index_of_key(key)
+            while o.elems.len() <= i
+                o.elems.push(Undef)
+            o.elems[i] = v
+            return
+        if key == "length"
+            n := to_number(v)?
+            len := as_index(n) else return range_error("Invalid array length")
+            while o.elems.len() > len
+                o.elems.pop()
+            while o.elems.len() < len
+                o.elems.push(Undef)
+            return
+    if p := o.props.get(key)
+        if p.accessor or not p.writable
+            return
+        mut q := p
+        q.value = v
+        o.props[key] = q
+        return
+    if o.extensible
+        o.props[key] = data(v)
+
+## Define a property outright (§10.1.6, simplified: no validation).
+pub fn Vm.define(mut self, o ref JsObject, key str, p Prop) ! Thrown
+    if is_array_like(o) and not p.accessor
+        if index_of_key(key) != none or key == "length"
+            set_own(o, key, p.value)?
+            return
+    o.props[key] = p
+
+## `key in o` (§7.3.12 HasProperty).
+pub fn Vm.has_property(self, start ref JsObject, key str) bool
+    mut o := start
+    while true
+        if own(o, key) != none
+            return true
+        match o.proto
+            Obj(next) => o = next
+            Undef | Null | Bool | Num | Str => return false
+    false
+
+## `delete o[key]` (§10.1.10).
+pub fn Vm.delete(mut self, o ref JsObject, key str) bool
+    if o.frozen
+        return false
+    if is_array_like(o)
+        if i := index_of_key(key)
+            if i < o.elems.len()
+                o.elems[i] = Undef
+            return true
+        if key == "length"
+            return false
+    if p := o.props.get(key)
+        if not p.configurable
+            return false
+        o.props.remove(key)
+    true
+
+## Own property keys in the order §10.1.11.1 gives: array indexes ascending,
+## then the other keys in creation order.
+pub fn Vm.own_keys(self, o ref JsObject) List[str]
+    mut out := List[str]()
+    if is_array_like(o)
+        for i in 0..o.elems.len()
+            out.push("{i}")
+    if o.class == "String"
+        s := match o.prim
+            Str(t) => t
+            Undef | Null | Bool | Num | Obj => ""
+        for i in 0..unit_len(s)
+            out.push("{i}")
+    mut indexes := List[int]()
+    for k in o.props.keys()
+        if i := index_of_key(k)
+            indexes.push(i)
+    for i in indexes.sorted()
+        out.push("{i}")
+    for k in o.props.keys()
+        if index_of_key(k) == none and not k.starts_with(PRIVATE)
+            out.push(k)
+    out
+
+## Own enumerable keys (§7.3.23 EnumerableOwnProperties): `Object.keys`.
+pub fn Vm.enum_keys(self, o ref JsObject) List[str]
+    mut out := List[str]()
+    for k in own_keys(o)
+        if p := own(o, k)
+            if p.enumerable
+                out.push(k)
+    out
+
+## The keys `for (k in o)` visits: own, then inherited, each once (§14.7.5.9).
+pub fn Vm.for_in_keys(self, start ref JsObject) List[str]
+    mut out := List[str]()
+    mut seen := Set[str]()
+    mut o := start
+    while true
+        for k in own_keys(o)
+            if seen.add(k)
+                if p := own(o, k)
+                    if p.enumerable
+                        out.push(k)
+        match o.proto
+            Obj(next) => o = next
+            Undef | Null | Bool | Num | Str => return out
+    out
+
+## The elements of an iterable value, for spread, `for-of` and array
+## patterns. Arrays, strings, `arguments` and array-likes with a numeric
+## `length` are supported until symbols and iterators arrive.
+pub fn Vm.iterate(mut self, v Value) List[Value] ! Thrown
+    match v
+        Str(s) =>
+            mut out := List[Value]()
+            for c in s.chars()
+                out.push(Str("{c}"))
+            out
+        Obj(o) =>
+            if is_array_like(o)
+                return o.elems
+            if o.class == "Set"
+                return o.elems
+            if o.class == "Map"
+                return map_entries(o)
+            len := get(v, "length")?
+            if len == Undef
+                return type_error("{describe(v)} is not iterable")
+            n := as_index(to_number(len)?) else 0
+            mut out := List[Value]()
+            for i in 0..n
+                out.push(get(v, "{i}")?)
+            out
+        Undef | Null | Bool | Num => type_error("{describe(v)} is not iterable")
+
+## A short description of a value for error messages.
+pub fn Vm.describe(self, v Value) str
+    match v
+        Undef => "undefined"
+        Null => "null"
+        Bool(b) => if b then "true" else "false"
+        Num(n) => syntax.number_to_string(n)
+        Str(s) => "\"{s}\""
+        Obj(o) =>
+            if o.call != none
+                "function"
+            elif o.class == "Array"
+                "object"
+            else
+                "#<{o.class}>"
