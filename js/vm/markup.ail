@@ -152,9 +152,7 @@ pub fn Vm.parse_into(mut self, parent int, src str)
                                 j += 1
                             value = decode_entities(cs[vstart..j].join(""))
                     if name != "" and attr_of(el, name) == none
-                        dom[el].attrs.push(DomAttr(name: name, value: value))
-                        if name.starts_with("on")
-                            handler_set(el, name)
+                        set_attr(el, name, value)
                 self_closing := j > 0 and j - 1 < cs.len() and cs[j - 1] == '/'
                 i = j + 1
                 dom_append(current, el)
