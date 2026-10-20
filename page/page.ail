@@ -1,0 +1,632 @@
+## page: Garlic's text-cell layout and the page model agents read
+## (docs/design/garlic-browser.md, "First milestone" and "The page model").
+##
+## `layout` flows a parsed document into rows of styled runs at a width,
+## and records a `Box` for each perceivable element: its role, accessible
+## name and the cells it was drawn in.
+
+use html
+
+## How a run is drawn. `link` is the link's number (1-based), 0 if none;
+## `heading` the heading level, 0 if none.
+pub struct Style
+    pub bold bool
+    pub italic bool
+    pub code bool
+    pub quiet bool
+    pub link int
+    pub heading int
+
+## Text drawn in one style on one row, starting at column `col`.
+pub struct Run
+    pub col int
+    pub text str
+    pub style Style
+
+## A perceivable element and where it was drawn. Rows and columns are
+## 0-based; `end_row` and `end_col` are exclusive, as in `ail api` spans,
+## and `end_col` is the end on the last row.
+pub struct Box
+    pub id int
+    pub role str
+    pub name str
+    pub href str
+    pub level int
+    ## The link's number (1-based), 0 if not a link.
+    pub link int
+    pub row int
+    pub col int
+    pub end_row int
+    pub end_col int
+
+## A laid-out page.
+pub struct Page
+    pub url str
+    pub title str
+    pub width int
+    pub rows List[List[Run]]
+    pub boxes List[Box]
+    ## For each link number n, `links[n - 1]` is its box's index.
+    pub links List[int]
+
+## Elements never drawn: metadata, scripts and templates.
+HIDDEN := {
+    "head",
+    "script",
+    "style",
+    "template",
+    "title",
+    "meta",
+    "link",
+    "base",
+    "datalist",
+    "option",
+}
+
+## Elements laid out as blocks; the rest flow inline.
+BLOCKS := {
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "body",
+    "center",
+    "dd",
+    "details",
+    "dialog",
+    "div",
+    "dl",
+    "dt",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hgroup",
+    "hr",
+    "html",
+    "li",
+    "main",
+    "menu",
+    "nav",
+    "noscript",
+    "ol",
+    "p",
+    "pre",
+    "section",
+    "summary",
+    "table",
+    "tbody",
+    "tfoot",
+    "thead",
+    "tr",
+    "ul",
+}
+
+## Blocks with an empty row before and after them.
+SPACED := {
+    "blockquote",
+    "dl",
+    "figure",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hr",
+    "ol",
+    "p",
+    "pre",
+    "table",
+    "ul",
+}
+
+## The ARIA role of an element that gets a box, when it has no `role=`.
+ROLES := {
+    "a": "link",
+    "blockquote": "blockquote",
+    "button": "button",
+    "h1": "heading",
+    "h2": "heading",
+    "h3": "heading",
+    "h4": "heading",
+    "h5": "heading",
+    "h6": "heading",
+    "hr": "separator",
+    "img": "image",
+    "input": "textbox",
+    "li": "listitem",
+    "nav": "navigation",
+    "ol": "list",
+    "p": "paragraph",
+    "pre": "code",
+    "select": "combobox",
+    "table": "table",
+    "td": "cell",
+    "textarea": "textbox",
+    "th": "cell",
+    "tr": "row",
+    "ul": "list",
+}
+
+## Roles whose name is their text in full; other roles' names are cut to
+## NAME_CUT characters, since the text is on the page already.
+FULL_NAMES := {"button", "combobox", "heading", "image", "link", "textbox"}
+NAME_CUT := 40
+## Roles named only by `aria-label`: their text is their children's.
+CONTAINERS := {"list", "navigation", "row", "table"}
+
+## One level of indentation: `first` on the next row that starts, `rest`
+## on the rows after it.
+struct Indent
+    first str
+    rest str
+    used bool
+
+struct Flow
+    d html.Doc
+    width int
+    rows List[List[Run]]
+    cur List[Run]
+    col int
+    indents List[Indent]
+    space bool
+    blank bool
+    style Style
+    pre int
+    boxes List[Box]
+    open List[int]
+    links List[int]
+    base str
+
+## Whether the current row has text beyond its indentation.
+fn Flow.dirty(self) bool
+    for r in cur
+        if not r.style.quiet
+            return true
+    false
+
+## Ends the current row if it has anything on it.
+fn Flow.break_row(mut self)
+    if cur.len() > 0
+        rows.push(cur)
+        cur = []
+        col = 0
+    space = false
+
+## Ends the row, then leaves one empty row unless one is already there or
+## nothing has been drawn yet (margins collapse).
+fn Flow.gap(mut self)
+    break_row()
+    if rows.len() > 0 and not blank
+        rows.push([])
+        blank = true
+
+## Starts a row: draws the indentation.
+fn Flow.start_row(mut self)
+    mut parts := List[str]()
+    for mut ind in indents
+        if ind.used
+            parts.push(ind.rest)
+        else
+            parts.push(ind.first)
+            ind.used = true
+    text := parts.join("")
+    if text != ""
+        q := Style(bold: false, italic: false, code: false, quiet: true, link: 0, heading: 0)
+        cur.push(Run(col: 0, text, style: q))
+    col = text.chars().len()
+
+## Puts `text` (no newlines) on the current row in the current style, and
+## widens the open boxes to cover it.
+fn Flow.put(mut self, text str)
+    place(text, true)
+
+## Puts a separator, which no open box covers.
+fn Flow.put_sep(mut self, text str)
+    place(text, false)
+
+fn Flow.place(mut self, text str, mark bool)
+    if cur.len() == 0
+        start_row()
+    n := text.chars().len()
+    last := cur.len() - 1
+    if last >= 0
+        and cur[last].style == style
+        and cur[last].col + cur[last].text.chars().len() == col
+        cur[last].text = "{cur[last].text}{text}"
+    else
+        cur.push(Run(col, text, style))
+    row := rows.len()
+    for b in open
+        if not mark
+            break
+        if boxes[b].row < 0
+            boxes[b].row = row
+            boxes[b].col = col
+        boxes[b].end_row = row + 1
+        boxes[b].end_col = col + n
+    col += n
+    blank = false
+
+## Flows one word, wrapping before it when it doesn't fit, and breaking a
+## word longer than the width.
+fn Flow.word(mut self, w str)
+    mut cs := w.chars()
+    while true
+        if cur.len() == 0
+            start_row()
+        sep := if space and dirty() then 1 else 0
+        left := width - col - sep
+        if cs.len() > left and dirty()
+            break_row()
+            continue
+        if space and dirty()
+            put_sep(" ")
+        space = false
+        if cs.len() <= width - col or width - col <= 0
+            put(cs.join(""))
+            return
+        k := width - col
+        put(cs[..k].join(""))
+        cs = cs[k..]
+        break_row()
+
+## Flows text: words wrapped with whitespace collapsed, or kept as is
+## inside `pre`.
+fn Flow.text(mut self, s str)
+    if pre > 0
+        lines := s.split("\n")
+        for k in 0..lines.len()
+            if k > 0
+                if cur.len() == 0
+                    start_row()
+                rows.push(cur)
+                cur = []
+                col = 0
+            if lines[k] != ""
+                put(lines[k].replace("\t", "    "))
+        return
+    mut buf := List[char]()
+    for c in s.chars()
+        if html.is_space(c)
+            if buf.len() > 0
+                word(buf.join(""))
+                buf.clear()
+            space = true
+        else
+            buf.push(if c == '\u{a0}' then ' ' else c)
+    if buf.len() > 0
+        word(buf.join(""))
+
+## Opens a box for element `id` if it has a role.
+fn Flow.open_box(mut self, id int, tag str) int?
+    n := d.nodes[id]
+    role := d.attr(id, "role") else (ROLES.get(tag) else return none)
+    if tag == "a" and d.attr(id, "href") == none
+        return none
+    mut href := ""
+    if h := d.attr(id, "href")
+        href = resolve(base, h)
+    level := if HEADINGS_LEVEL.contains(tag) then HEADINGS_LEVEL[tag] else 0
+    mut name := d.attr(id, "aria-label") else (d.attr(id, "alt") else "")
+    if name == "" and not CONTAINERS.contains(role)
+        name = html.collapse(d.text(id))
+    if name == "" and tag != "img"
+        name = d.attr(
+            id,
+            "title",
+        ) else (d.attr(id, "placeholder") else (d.attr(id, "value") else ""))
+    if not FULL_NAMES.contains(role) and name.chars().len() > NAME_CUT
+        name = "{name.slice(0, NAME_CUT)}..."
+    link := if n.tag == "a" then links.len() + 1 else 0
+    boxes.push(Box(id, role, name, href, level, link, row: -1, col: -1, end_row: -1, end_col: -1))
+    b := boxes.len() - 1
+    open.push(b)
+    if n.tag == "a"
+        links.push(b)
+    b
+
+HEADINGS_LEVEL := {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
+
+## Whether element `id` is hidden: by its tag, `hidden`, or an inline
+## `display: none`.
+fn Flow.hidden(self, id int, tag str) bool
+    if HIDDEN.contains(tag) or d.attr(id, "hidden") != none
+        return true
+    css := (d.attr(id, "style") else "").replace(" ", "").to_lower()
+    css.contains("display:none")
+
+fn Flow.node(mut self, id int)
+    n := d.nodes[id]
+    match n.kind
+        Text => text(n.text)
+        Comment => return
+        Document | Element => element(id)
+
+fn Flow.children(mut self, id int)
+    for c in d.nodes[id].children
+        node(c)
+
+fn Flow.element(mut self, id int)
+    tag := d.nodes[id].tag
+    if tag != "#document" and hidden(id, tag)
+        return
+    block := BLOCKS.contains(tag)
+    nested := (tag == "ul" or tag == "ol") and nested_list(id)
+    spaced := SPACED.contains(tag) and not nested
+    if spaced
+        gap()
+    elif block
+        break_row()
+    saved := style
+    if level := HEADINGS_LEVEL.get(tag)
+        style.heading = level
+        style.bold = true
+        put("{"#".repeat(level)} ")
+    b := open_box(id, tag)
+    mut indented := false
+    if tag == "li"
+        marker := list_marker(id)
+        indents.push(Indent(first: marker, rest: " ".repeat(marker.chars().len()), used: false))
+        indented = true
+    elif tag == "blockquote"
+        indents.push(Indent(first: "> ", rest: "> ", used: false))
+        indented = true
+    elif tag == "dd" or nested
+        indents.push(Indent(first: "  ", rest: "  ", used: false))
+        indented = true
+    elif tag == "pre"
+        indents.push(Indent(first: "    ", rest: "    ", used: false))
+        indented = true
+    match tag
+        "b" | "strong" | "th" => style.bold = true
+        "i" | "em" | "cite" | "var" => style.italic = true
+        "code" | "kbd" | "samp" | "tt" => style.code = true
+        "pre" => pre += 1
+        "a" =>
+            if b != none
+                style.link = links.len()
+        _ => style.bold = style.bold
+    match tag
+        "br" =>
+            if cur.len() == 0
+                start_row()
+            rows.push(cur)
+            cur = []
+            col = 0
+        "hr" =>
+            put("-".repeat((width - col).max(1)))
+        "img" =>
+            alt := d.attr(id, "alt") else ""
+            if alt != ""
+                word("[{alt}]")
+        "input" =>
+            kind := (d.attr(id, "type") else "text").to_lower()
+            if kind != "hidden"
+                label := d.attr(id, "value") else (d.attr(id, "placeholder") else "")
+                word(if kind == "submit" or kind == "button" then "[{label}]" else "[{label}____]")
+        "td" | "th" =>
+            if col > 0 and dirty()
+                put_sep(" | ")
+            space = false
+            children(id)
+        _ => children(id)
+    if tag == "a" and b != none
+        style = saved
+        put("[{links.len()}]")
+    style = saved
+    if tag == "pre"
+        pre -= 1
+    if indented
+        indents.pop()
+    if b != none
+        open.pop()
+    if spaced
+        gap()
+    elif block or tag == "tr"
+        break_row()
+
+## Whether list `id` sits inside a list item, so it indents further.
+fn Flow.nested_list(self, id int) bool
+    mut p := d.nodes[id].parent
+    while p > 0
+        if d.nodes[p].tag == "li"
+            return true
+        p = d.nodes[p].parent
+    false
+
+## "* " in an unordered list; "N. " in an ordered one, counting from `start`.
+fn Flow.list_marker(self, id int) str
+    parent := d.nodes[id].parent
+    if parent < 0 or d.nodes[parent].tag != "ol"
+        return "* "
+    mut n := (d.attr(parent, "start") else "1").to_int() else 1
+    for c in d.nodes[parent].children
+        if c == id
+            break
+        if d.nodes[c].kind == html.Kind.Element and d.nodes[c].tag == "li"
+            n += 1
+    "{n}. "
+
+## Lays `d` out at `width` columns; `url` resolves relative links.
+pub fn layout(d html.Doc, url str, width int) Page
+    plain := Style(bold: false, italic: false, code: false, quiet: false, link: 0, heading: 0)
+    mut f := Flow(
+        d,
+        width: width.max(10),
+        rows: [],
+        cur: [],
+        col: 0,
+        indents: [],
+        space: false,
+        blank: true,
+        style: plain,
+        pre: 0,
+        boxes: [],
+        open: [],
+        links: [],
+        base: url,
+    )
+    f.node(0)
+    f.break_row()
+    while f.rows.len() > 0 and f.rows[f.rows.len() - 1].len() == 0
+        f.rows.pop()
+    Page(url, title: d.title(), width: f.width, rows: f.rows, boxes: f.boxes, links: f.links)
+
+## Row `r` as plain text.
+pub fn Page.row_text(self, r int) str
+    mut out := List[str]()
+    mut at := 0
+    for run in rows[r]
+        if run.col > at
+            out.push(" ".repeat(run.col - at))
+        out.push(run.text)
+        at = run.col + run.text.chars().len()
+    out.join("")
+
+## The whole page as plain text, one row per line.
+pub fn Page.text(self) str
+    [row_text(r) for r in 0..rows.len()].join("\n")
+
+## The first row at or after `from` whose text contains `needle`, ignoring
+## case, or none.
+pub fn Page.find(self, needle str, from int) int?
+    want := needle.to_lower()
+    for r in from..rows.len()
+        if row_text(r).to_lower().contains(want)
+            return r
+    none
+
+## The page model as one JSON object (api 1): the viewport `height` rows
+## from row `scroll`, and every box with whether it shows in the viewport.
+pub fn Page.to_json(self, scroll int, height int) str
+    mut out := List[str]()
+    for b in boxes
+        if b.row < 0
+            continue
+        vis := b.row < scroll + height and b.end_row > scroll
+        mut parts := ["\"id\":{b.id}", "\"role\":{quote(b.role)}", "\"name\":{quote(b.name)}"]
+        if b.level > 0
+            parts.push("\"level\":{b.level}")
+        if b.href != ""
+            parts.push("\"href\":{quote(b.href)}")
+        parts.push("\"row\":{b.row},\"col\":{b.col},\"end_row\":{b.end_row},\"end_col\":{b.end_col}")
+        parts.push("\"visible\":{vis}")
+        if b.role == "link"
+            parts.push("\"link\":{b.link},\"actions\":[\"follow\"]")
+        out.push("\{{parts.join(",")}}")
+    head := "\"api\":1,\"url\":{quote(url)},\"title\":{quote(title)},\"width\":{width},\"height\":{height},\"scroll\":{scroll},\"rows\":{rows.len()}"
+    "\{{head},\"nodes\":[{out.join(",")}]}"
+
+## `s` as a JSON string.
+pub fn quote(s str) str
+    mut out := List[str]()
+    for c in s.chars()
+        k := c.code()
+        if c == '"'
+            out.push("\\\"")
+        elif c == '\\'
+            out.push("\\\\")
+        elif c == '\n'
+            out.push("\\n")
+        elif k < 32
+            out.push("\\u{k:0>4x}")
+        else
+            out.push("{c}")
+    "\"{out.join("")}\""
+
+## The scheme of `u` (`https`), or "" when it has none (RFC 3986 3.1).
+pub fn scheme(u str) str
+    mut out := List[char]()
+    for c in u.chars()
+        if c == ':'
+            return if out.len() > 0 then out.join("") else ""
+        if not (c.is_alpha() or c.is_digit() or c == '+' or c == '-' or c == '.')
+            return ""
+        out.push(c.to_lower())
+    ""
+
+## `rel` resolved against `base` (RFC 3986 5.2): absolute URLs as they are,
+## `//host`, `/path`, `?query`, `#fragment` and relative paths merged with
+## dot segments removed. A `base` without a scheme is a file path.
+pub fn resolve(base str, rel str) str
+    r := rel.trim()
+    if scheme(r) != ""
+        return r
+    s := scheme(base)
+    if s == ""
+        if r.starts_with("/") or r.starts_with("#") or r.starts_with("?")
+            return r
+        dir := path.dir(base)
+        return if dir == "." then r else "{dir}/{r}"
+    rest := base.slice(s.chars().len() + 1, base.chars().len())
+    if r.starts_with("//")
+        return "{s}:{r}"
+    mut authority := ""
+    mut bpath := rest
+    if rest.starts_with("//")
+        after := rest.slice(2, rest.chars().len())
+        cut := first_of(after, ["/", "?", "#"]) else after.chars().len()
+        authority = "//{after.slice(0, cut)}"
+        bpath = after.slice(cut, after.chars().len())
+    no_frag := bpath.split("#")[0]
+    if r == ""
+        return "{s}:{authority}{no_frag}"
+    if r.starts_with("#")
+        return "{s}:{authority}{no_frag}{r}"
+    only_path := no_frag.split("?")[0]
+    if r.starts_with("?")
+        return "{s}:{authority}{only_path}{r}"
+    if r.starts_with("/")
+        return "{s}:{authority}{remove_dots(r)}"
+    slash := last_slash(only_path)
+    dir := if slash >= 0 then only_path.slice(0, slash + 1) else "/"
+    "{s}:{authority}{remove_dots("{dir}{r}")}"
+
+fn first_of(s str, needles List[str]) int?
+    mut best := -1
+    for n in needles
+        if k := s.find(n)
+            if best < 0 or k < best
+                best = k
+    if best < 0 then none else best
+
+fn last_slash(s str) int
+    cs := s.chars()
+    mut k := cs.len() - 1
+    while k >= 0
+        if cs[k] == '/'
+            return k
+        k -= 1
+    -1
+
+## The path with `.` and `..` segments removed (RFC 3986 5.2.4); the query
+## and fragment are kept as they are.
+pub fn remove_dots(p str) str
+    cut := first_of(p, ["?", "#"]) else p.chars().len()
+    tail := p.slice(cut, p.chars().len())
+    segs := p.slice(0, cut).split("/")
+    mut out := List[str]()
+    for k in 0..segs.len()
+        seg := segs[k]
+        last := k == segs.len() - 1
+        if seg == "."
+            if last
+                out.push("")
+        elif seg == ".."
+            if out.len() > 1
+                out.pop()
+            if last
+                out.push("")
+        else
+            out.push(seg)
+    "{out.join("/")}{tail}"
