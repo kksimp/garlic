@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Garlic test page</title>
+<style>body { font-family: serif; }</style>
+<script>document.title = "never runs";</script>
+</head>
+<body>
+<nav><a href="second.html">Second page</a> | <a href="https://example.com/">Example</a></nav>
+<h1>Garlic</h1>
+<p>Garlic is a web browser written in <b>AIL</b>. It draws pages in text
+cells, and every page is also a <em>page model</em> that an agent can read
+without screenshots.</p>
+<h2>Features</h2>
+<ul>
+<li>HTML tokenizer and tree builder
+<li>Text layout with wrapping, lists and quotes
+<li>Numbered links and history
+</ul>
+<pre>
+./ail run tools/garlic/garlic.ail --json PAGE
+</pre>
+<table>
+<tr><th>Key<th>Does
+<tr><td>Tab<td>next link
+<tr><td>Enter<td>follow
+</table>
+<p>The end.</p>
+</body>
+</html>

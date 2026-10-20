@@ -1,0 +1,742 @@
+## html: Garlic's HTML tokenizer and tree builder (docs/design/garlic-browser.md).
+##
+## Written from the WHATWG HTML Living Standard: tokenization (13.2.5) and a
+## simplified tree construction (13.2.6). The document is a flat list of
+## nodes; `nodes[0]` is the document and children are indexes into the list.
+
+## A node's kind.
+pub enum Kind
+    Document
+    Element
+    Text
+    Comment
+
+## One attribute; names are lowercase.
+pub struct Attr
+    pub name str
+    pub value str
+
+## One node of the tree: `tag` is the lowercase element name, `text` the
+## content of a text or comment node, `parent` -1 for the document.
+pub struct Node
+    pub kind Kind
+    pub tag str
+    pub attrs List[Attr]
+    pub text str
+    pub parent int
+    pub children List[int]
+
+## A token, as the tokenizer emits it (13.2.5).
+pub enum Token
+    Start(name str, attrs List[Attr], self_closing bool)
+    End(name str)
+    Chars(text str)
+    Note(text str)
+    Doctype(name str)
+
+## A parsed document.
+pub struct Doc
+    pub nodes List[Node]
+    pub doctype str
+
+## Elements whose content is raw text up to their end tag.
+RAW_TEXT := {"script", "style", "xmp", "iframe", "noembed", "noframes"}
+## Raw text in which character references are decoded.
+RCDATA := {"title", "textarea"}
+
+## Elements that never have content (13.1.2).
+pub VOID := {
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "source",
+    "track",
+    "wbr",
+}
+
+## Elements that belong in `head` when they come before the body.
+HEAD_TAGS := {"base", "link", "meta", "noscript", "script", "style", "template", "title"}
+
+## Start tags that close an open `p` (13.2.6.4.7, "in body").
+CLOSES_P := {
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "center",
+    "details",
+    "dialog",
+    "dir",
+    "div",
+    "dl",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hgroup",
+    "hr",
+    "main",
+    "menu",
+    "nav",
+    "ol",
+    "p",
+    "pre",
+    "section",
+    "summary",
+    "table",
+    "ul",
+}
+
+HEADINGS := {"h1", "h2", "h3", "h4", "h5", "h6"}
+
+## Elements that bound a search for an open element to close implicitly.
+SCOPE := {
+    "html",
+    "table",
+    "td",
+    "th",
+    "caption",
+    "marquee",
+    "object",
+    "applet",
+    "template",
+    "button",
+}
+
+## Named character references Garlic decodes (a subset of 13.5).
+NAMED := {
+    "amp": "&",
+    "lt": "<",
+    "gt": ">",
+    "quot": "\"",
+    "apos": "'",
+    "nbsp": "\u{a0}",
+    "copy": "\u{a9}",
+    "reg": "\u{ae}",
+    "trade": "\u{2122}",
+    "hellip": "\u{2026}",
+    "mdash": "\u{2014}",
+    "ndash": "\u{2013}",
+    "lsquo": "\u{2018}",
+    "rsquo": "\u{2019}",
+    "ldquo": "\u{201c}",
+    "rdquo": "\u{201d}",
+    "laquo": "\u{ab}",
+    "raquo": "\u{bb}",
+    "bull": "\u{2022}",
+    "middot": "\u{b7}",
+    "times": "\u{d7}",
+    "divide": "\u{f7}",
+    "deg": "\u{b0}",
+    "euro": "\u{20ac}",
+    "pound": "\u{a3}",
+    "yen": "\u{a5}",
+    "cent": "\u{a2}",
+    "sect": "\u{a7}",
+    "para": "\u{b6}",
+    "shy": "\u{ad}",
+    "larr": "\u{2190}",
+    "rarr": "\u{2192}",
+    "uarr": "\u{2191}",
+    "darr": "\u{2193}",
+    "eacute": "\u{e9}",
+    "egrave": "\u{e8}",
+    "aacute": "\u{e1}",
+    "agrave": "\u{e0}",
+    "ouml": "\u{f6}",
+    "uuml": "\u{fc}",
+    "auml": "\u{e4}",
+    "ccedil": "\u{e7}",
+    "ntilde": "\u{f1}",
+    "szlig": "\u{df}",
+    "zwj": "\u{200d}",
+    "zwnj": "\u{200c}",
+    "ensp": "\u{2002}",
+    "emsp": "\u{2003}",
+    "thinsp": "\u{2009}",
+}
+
+## Names decoded without a closing `;`, outside attributes (13.5).
+LEGACY := {"amp", "lt", "gt", "quot", "nbsp", "copy", "reg"}
+
+## Whether `c` is HTML whitespace (13.2.5: tab, LF, FF, CR, space).
+pub fn is_space(c char) bool
+    c == ' ' or c == '\n' or c == '\t' or c == '\r' or c == '\u{c}'
+
+## `c` with ASCII upper case lowered.
+fn lower(c char) char
+    k := c.code()
+    if k < 65 or k > 90
+        return c
+    char.from_code(k + 32) else c
+
+## Whether `c` is an ASCII letter.
+fn is_letter(c char) bool
+    k := c.code()
+    (k >= 65 and k <= 90) or (k >= 97 and k <= 122)
+
+## Whether `c` is an ASCII letter or digit.
+fn is_alnum(c char) bool
+    k := c.code()
+    is_letter(c) or (k >= 48 and k <= 57)
+
+struct Lexer
+    cs List[char]
+    i int
+    out List[Token]
+    text List[char]
+
+## The character `k` places ahead, or U+0000 past the end.
+fn Lexer.at(self, k int) char
+    if i + k < cs.len() then cs[i + k] else '\u{0}'
+
+## Whether the input continues with `word`, ignoring ASCII case.
+fn Lexer.looking_at(self, word str) bool
+    mut k := 0
+    for w in word.chars()
+        if i + k >= cs.len() or lower(cs[i + k]) != w
+            return false
+        k += 1
+    true
+
+## Emits the pending text as one `Chars` token.
+fn Lexer.flush(mut self)
+    if text.len() > 0
+        out.push(Chars(text.join("")))
+        text.clear()
+
+## Reads up to and past `end`, returning what came before it (all the rest
+## when `end` never comes).
+fn Lexer.until(mut self, end str) str
+    mut buf := List[char]()
+    while i < cs.len()
+        if looking_at(end)
+            i += end.chars().len()
+            return buf.join("")
+        buf.push(cs[i])
+        i += 1
+    buf.join("")
+
+## Decodes the character reference at `&` (13.2.5.72-80), or gives "&"
+## when there is none. In an attribute, a legacy name without `;` followed
+## by `=` or a letter or digit stays literal.
+fn Lexer.char_ref(mut self, in_attr bool) str
+    if at(1) == '#'
+        mut k := 2
+        hex := at(2) == 'x' or at(2) == 'X'
+        base := if hex then 16 else 10
+        if hex
+            k = 3
+        mut n := 0
+        mut digits := 0
+        while true
+            c := at(k)
+            d := c.to_digit(base) else break
+            if n < 0x110000
+                n = n * base + d
+            digits += 1
+            k += 1
+        if digits == 0
+            i += 1
+            return "&"
+        if at(k) == ';'
+            k += 1
+        i += k
+        return "{numeric_char(n)}"
+    mut k := 1
+    mut name := List[char]()
+    while is_alnum(at(k)) and k < 33
+        name.push(at(k))
+        k += 1
+    word := name.join("")
+    if at(k) == ';'
+        if v := NAMED.get(word)
+            i += k + 1
+            return v
+    elif LEGACY.contains(word) and not (in_attr and (at(k) == '=' or is_alnum(at(k))))
+        i += k
+        return NAMED[word]
+    i += 1
+    "&"
+
+## The character a numeric reference names, with the replacements of
+## 13.2.5.80: NUL, surrogates and out-of-range values become U+FFFD, and
+## C1 controls take their windows-1252 meaning.
+fn numeric_char(n int) char
+    if n == 0 or n > 0x10FFFF or (n >= 0xD800 and n <= 0xDFFF)
+        return '\u{fffd}'
+    if n >= 0x80 and n <= 0x9F
+        return match n
+            0x80 => '\u{20ac}'
+            0x85 => '\u{2026}'
+            0x91 => '\u{2018}'
+            0x92 => '\u{2019}'
+            0x93 => '\u{201c}'
+            0x94 => '\u{201d}'
+            0x95 => '\u{2022}'
+            0x96 => '\u{2013}'
+            0x97 => '\u{2014}'
+            0x99 => '\u{2122}'
+            _ => '\u{fffd}'
+    char.from_code(n) else '\u{fffd}'
+
+## Reads a tag or attribute name: up to whitespace, `/`, `>` (and `=` for
+## an attribute after its first character), lowered.
+fn Lexer.name(mut self, attr bool) str
+    mut buf := List[char]()
+    while i < cs.len()
+        c := cs[i]
+        if is_space(c) or c == '/' or c == '>' or (attr and c == '=' and buf.len() > 0)
+            break
+        buf.push(lower(c))
+        i += 1
+    buf.join("")
+
+fn Lexer.skip_space(mut self)
+    while i < cs.len() and is_space(cs[i])
+        i += 1
+
+## An attribute value: quoted or unquoted, references decoded (13.2.5.36-38).
+fn Lexer.value(mut self) str
+    q := at(0)
+    mut buf := List[char]()
+    if q == '"' or q == '\''
+        i += 1
+        while i < cs.len() and cs[i] != q
+            if cs[i] == '&'
+                buf.extend(char_ref(true).chars())
+            else
+                buf.push(cs[i])
+                i += 1
+        i += 1
+        return buf.join("")
+    while i < cs.len() and not is_space(cs[i]) and cs[i] != '>'
+        if cs[i] == '&'
+            buf.extend(char_ref(true).chars())
+        else
+            buf.push(cs[i])
+            i += 1
+    buf.join("")
+
+## A start tag from `<` plus a letter (13.2.5.6-40). Gives none at the end
+## of input inside the tag, which drops it.
+fn Lexer.start_tag(mut self) Token?
+    i += 1
+    tag := name(false)
+    mut attrs := List[Attr]()
+    mut seen := Set[str]()
+    while true
+        skip_space()
+        if i >= cs.len()
+            return none
+        c := cs[i]
+        if c == '>'
+            i += 1
+            return Start(name: tag, attrs, self_closing: false)
+        if c == '/'
+            i += 1
+            if at(0) == '>'
+                i += 1
+                return Start(name: tag, attrs, self_closing: true)
+            continue
+        attr := name(true)
+        skip_space()
+        mut v := ""
+        if at(0) == '='
+            i += 1
+            skip_space()
+            v = value()
+        if seen.add(attr)
+            attrs.push(Attr(name: attr, value: v))
+    none
+
+## The raw text of a `script`, `style`, `title` or `textarea` element, up
+## to its end tag (13.2.5.2-3, 13.2.5.9-23); references decoded in RCDATA.
+fn Lexer.raw(mut self, tag str, refs bool)
+    mut buf := List[char]()
+    while i < cs.len()
+        if cs[i] == '<' and at(1) == '/' and raw_end(cs, i + 2, tag)
+            break
+        if refs and cs[i] == '&'
+            buf.extend(char_ref(false).chars())
+        else
+            buf.push(cs[i])
+            i += 1
+    if buf.len() > 0
+        out.push(Chars(buf.join("")))
+    if i < cs.len()
+        until(">")
+    out.push(End(tag))
+
+## Whether `cs[at..]` is `tag` (any case) followed by whitespace, `/` or `>`.
+fn raw_end(cs List[char], at int, tag str) bool
+    mut k := at
+    for t in tag.chars()
+        if k >= cs.len() or lower(cs[k]) != t
+            return false
+        k += 1
+    k >= cs.len() or is_space(cs[k]) or cs[k] == '/' or cs[k] == '>'
+
+fn Lexer.run(mut self)
+    while i < cs.len()
+        c := cs[i]
+        if c == '&'
+            text.extend(char_ref(false).chars())
+            continue
+        if c != '<'
+            text.push(c)
+            i += 1
+            continue
+        d := at(1)
+        if is_letter(d)
+            flush()
+            tok := start_tag() else
+                i = cs.len()
+                continue
+            out.push(tok)
+            match tok
+                Start(tag, _, _) =>
+                    if RAW_TEXT.contains(tag)
+                        raw(tag, false)
+                    elif RCDATA.contains(tag)
+                        raw(tag, true)
+                End(_) | Chars(_) | Note(_) | Doctype(_) => continue
+            continue
+        if d == '/' and is_letter(at(2))
+            flush()
+            i += 2
+            tag := name(false)
+            until(">")
+            out.push(End(tag))
+            continue
+        if d == '/' and at(2) == '>'
+            i += 3
+            continue
+        if d == '!' or d == '?' or d == '/'
+            flush()
+            if looking_at("<!--")
+                i += 4
+                if at(0) == '>'
+                    i += 1
+                    out.push(Note(""))
+                elif at(0) == '-' and at(1) == '>'
+                    i += 2
+                    out.push(Note(""))
+                else
+                    out.push(Note(until("-->")))
+            elif looking_at("<!doctype")
+                i += 9
+                skip_space()
+                out.push(Doctype(name(false)))
+                until(">")
+            else
+                i += 2
+                out.push(Note(until(">")))
+            continue
+        text.push(c)
+        i += 1
+    flush()
+
+## Splits `src` into tokens (13.2.5).
+pub fn tokenize(src str) List[Token]
+    mut lx := Lexer(cs: src.chars(), i: 0, out: [], text: [])
+    lx.run()
+    lx.out
+
+struct Builder
+    nodes List[Node]
+    stack List[int]
+    html int
+    head int
+    body int
+    doctype str
+    skip_newline bool
+
+fn Builder.top(self) int
+    stack[stack.len() - 1]
+
+fn Builder.add(mut self, parent int, node Node) int
+    id := nodes.len()
+    nodes.push(node)
+    nodes[parent].children.push(id)
+    id
+
+fn Builder.element(mut self, parent int, tag str, attrs List[Attr]) int
+    add(parent, Node(kind: Element, tag, attrs, text: "", parent, children: []))
+
+## Opens `html` if it isn't yet.
+fn Builder.ensure_html(mut self)
+    if html < 0
+        html = element(0, "html", [])
+        stack = [0, html]
+
+## Opens `head` if neither `head` nor `body` is open yet.
+fn Builder.ensure_head(mut self)
+    ensure_html()
+    if head < 0 and body < 0
+        head = element(html, "head", [])
+        stack.push(head)
+
+## Closes `head` and opens `body` if it isn't yet: "after head" (13.2.6.4.6).
+fn Builder.ensure_body(mut self)
+    ensure_html()
+    if body >= 0
+        return
+    if head < 0
+        head = element(html, "head", [])
+    while stack.len() > 2
+        stack.pop()
+    body = element(html, "body", [])
+    stack.push(body)
+
+## Where `tag` is open, searching down from the current node and stopping
+## at a scope boundary (13.2.4.2), or none.
+fn Builder.open_in_scope(self, tags Set[str], bounds Set[str]) int?
+    mut k := stack.len() - 1
+    while k > 0
+        t := nodes[stack[k]].tag
+        if tags.contains(t)
+            return k
+        if bounds.contains(t)
+            return none
+        k -= 1
+    none
+
+## Pops the stack down to and including position `k`.
+fn Builder.close_to(mut self, k int)
+    while stack.len() > k
+        stack.pop()
+
+## The implied end tags of 13.2.6.4.7 for a start tag `tag`.
+fn Builder.close_implied(mut self, tag str)
+    if CLOSES_P.contains(tag)
+        if k := open_in_scope({"p"}, SCOPE)
+            close_to(k)
+    if HEADINGS.contains(tag) and HEADINGS.contains(nodes[top()].tag)
+        stack.pop()
+    if tag == "li"
+        if k := open_in_scope({"li"}, SCOPE.union({"ul", "ol"}))
+            close_to(k)
+    elif tag == "dt" or tag == "dd"
+        if k := open_in_scope({"dt", "dd"}, SCOPE.union({"dl"}))
+            close_to(k)
+    elif tag == "option" or tag == "optgroup"
+        if nodes[top()].tag == "option"
+            stack.pop()
+    elif tag == "tr"
+        if k := open_in_scope({"tr"}, {"table"})
+            close_to(k)
+    elif tag == "td" or tag == "th"
+        if k := open_in_scope({"td", "th"}, {"table", "tr"})
+            close_to(k)
+    elif tag == "tbody" or tag == "thead" or tag == "tfoot"
+        if k := open_in_scope({"tbody", "thead", "tfoot", "tr", "td", "th"}, {"table"})
+            close_to(k)
+    elif tag == "a"
+        if k := open_in_scope({"a"}, SCOPE)
+            close_to(k)
+
+## Whether the current node is inside `svg` or `math`, where `/>` closes.
+fn Builder.foreign(self) bool
+    for k in stack
+        t := nodes[k].tag
+        if t == "svg" or t == "math"
+            return true
+    false
+
+fn Builder.start(mut self, tag str, attrs List[Attr], self_closing bool)
+    if tag == "html"
+        ensure_html()
+        for a in attrs
+            if not nodes[html].attrs.contains(a)
+                nodes[html].attrs.push(a)
+        return
+    if tag == "head"
+        ensure_head()
+        return
+    if tag == "body"
+        ensure_body()
+        for a in attrs
+            nodes[body].attrs.push(a)
+        return
+    mut parent := 0
+    if body < 0 and HEAD_TAGS.contains(tag)
+        ensure_head()
+        parent = top()
+    else
+        ensure_body()
+        close_implied(tag)
+        parent = top()
+    id := element(parent, tag, attrs)
+    if not VOID.contains(tag) and not (self_closing and foreign())
+        stack.push(id)
+    skip_newline = tag == "pre" or tag == "textarea" or tag == "listing"
+
+fn Builder.end(mut self, tag str)
+    if tag == "br"
+        start("br", [], false)
+        return
+    if tag == "html" or tag == "body" or tag == "head"
+        if tag == "head" and body < 0 and head >= 0 and top() == head
+            stack.pop()
+        return
+    mut k := stack.len() - 1
+    while k > 1
+        if nodes[stack[k]].tag == tag
+            close_to(k)
+            return
+        k -= 1
+
+fn Builder.chars(mut self, s str)
+    mut text := s
+    if skip_newline
+        skip_newline = false
+        text = text.strip_prefix("\n") else text
+        if text == ""
+            return
+    blank := all_space(text)
+    at := if stack.len() > 0 then top() else 0
+    if at == 0 or at == html or (at == head and body < 0)
+        if blank
+            return
+        ensure_body()
+    parent := top()
+    kids := nodes[parent].children
+    if kids.len() > 0
+        last := kids[kids.len() - 1]
+        if nodes[last].kind == Text
+            nodes[last].text = "{nodes[last].text}{text}"
+            return
+    add(parent, Node(kind: Text, tag: "", attrs: [], text, parent, children: []))
+
+fn all_space(s str) bool
+    for c in s.chars()
+        if not is_space(c)
+            return false
+    true
+
+## Builds the tree from tokens: a simplified 13.2.6 with implied `html`,
+## `head` and `body`, void elements, implied end tags and lenient end tags.
+pub fn build(tokens List[Token]) Doc
+    root := Node(kind: Document, tag: "#document", attrs: [], text: "", parent: -1, children: [])
+    mut b := Builder(
+        nodes: [root],
+        stack: [0],
+        html: -1,
+        head: -1,
+        body: -1,
+        doctype: "",
+        skip_newline: false,
+    )
+    for t in tokens
+        match t
+            Start(tag, attrs, sc) => b.start(tag, attrs, sc)
+            End(tag) => b.end(tag)
+            Chars(s) => b.chars(s)
+            Note(s) =>
+                b.skip_newline = false
+                at := b.top()
+                b.add(at, Node(
+                    kind: Comment,
+                    tag: "",
+                    attrs: [],
+                    text: s,
+                    parent: at,
+                    children: [],
+                ))
+            Doctype(name) => b.doctype = name
+    b.ensure_body()
+    Doc(nodes: b.nodes, doctype: b.doctype)
+
+## Parses an HTML document.
+pub fn parse(src str) Doc
+    build(tokenize(src))
+
+## The value of attribute `name` of node `id`, or none.
+pub fn Doc.attr(self, id int, name str) str?
+    for a in nodes[id].attrs
+        if a.name == name
+            return a.value
+    none
+
+## Every element named `tag`, in document order.
+pub fn Doc.all(self, tag str) List[int]
+    [i for i in 0..nodes.len() if nodes[i].kind == Element and nodes[i].tag == tag]
+
+## The first element named `tag`, or none.
+pub fn Doc.first(self, tag str) int?
+    for i in 0..nodes.len()
+        if nodes[i].kind == Element and nodes[i].tag == tag
+            return i
+    none
+
+## The text of node `id` and its descendants, concatenated.
+pub fn Doc.text(self, id int) str
+    mut out := List[str]()
+    collect_text(self, id, mut out)
+    out.join("")
+
+fn collect_text(d Doc, id int, mut out List[str])
+    n := d.nodes[id]
+    if n.kind == Text
+        out.push(n.text)
+    for c in n.children
+        collect_text(d, c, mut out)
+
+## The document's title, whitespace collapsed; "" when it has none.
+pub fn Doc.title(self) str
+    t := first("title") else return ""
+    collapse(text(t))
+
+## `s` with each run of whitespace made one space, trimmed.
+pub fn collapse(s str) str
+    mut out := List[char]()
+    mut gap := false
+    for c in s.chars()
+        if is_space(c)
+            gap = out.len() > 0
+        else
+            if gap
+                out.push(' ')
+                gap = false
+            out.push(c)
+    out.join("")
+
+## The tree in the html5lib-tests format: one node per line, `| ` and two
+## spaces per depth, attributes sorted under their element.
+pub fn Doc.dump(self) str
+    mut out := List[str]()
+    if doctype != ""
+        out.push("| <!DOCTYPE {doctype}>")
+    for c in nodes[0].children
+        dump_node(self, c, 1, mut out)
+    out.join("\n")
+
+fn dump_node(d Doc, id int, depth int, mut out List[str])
+    n := d.nodes[id]
+    pad := "| {"  ".repeat(depth - 1)}"
+    match n.kind
+        Element =>
+            out.push("{pad}<{n.tag}>")
+            for a in n.attrs.sorted(by: |a| a.name)
+                out.push("{pad}  {a.name}=\"{a.value}\"")
+        Text => out.push("{pad}\"{n.text}\"")
+        Comment => out.push("{pad}<!-- {n.text} -->")
+        Document => out.push("{pad}#document")
+    for c in n.children
+        dump_node(d, c, depth + 1, mut out)
