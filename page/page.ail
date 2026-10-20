@@ -6,6 +6,7 @@
 ## name and the cells it was drawn in.
 
 use html
+use css
 
 ## How a run is drawn. `link` is the link's number (1-based), 0 if none;
 ## `heading` the heading level, 0 if none.
@@ -16,6 +17,10 @@ pub struct Style
     pub quiet bool
     pub link int
     pub heading int
+    ## The target's number (1-based) for focus, 0 if none.
+    pub target int
+    ## `text-transform: uppercase`.
+    pub upper bool
 
 ## Text drawn in one style on one row, starting at column `col`.
 pub struct Run
@@ -34,6 +39,10 @@ pub struct Box
     pub level int
     ## The link's number (1-based), 0 if not a link.
     pub link int
+    ## A form control's current value (`textbox`, `combobox`), or "".
+    pub value str
+    ## Whether a `checkbox` or `radio` is checked.
+    pub checked bool
     pub row int
     pub col int
     pub end_row int
@@ -48,6 +57,11 @@ pub struct Page
     pub boxes List[Box]
     ## For each link number n, `links[n - 1]` is its box's index.
     pub links List[int]
+    ## The boxes an agent or the keyboard can act on (links and form
+    ## controls), in document order: `targets[n - 1]` for focus number n.
+    pub targets List[int]
+    ## The ids of nodes changed since the page was parsed (`html.Doc.changed`).
+    pub changed List[int]
 
 ## Elements never drawn: metadata, scripts and templates.
 HIDDEN := {
@@ -157,6 +171,26 @@ ROLES := {
     "ul": "list",
 }
 
+## Roles that take an action, so Tab stops on them, and their actions.
+ACTIONS := {
+    "link": ["follow"],
+    "button": ["submit"],
+    "textbox": ["type", "submit"],
+    "checkbox": ["check"],
+    "radio": ["check"],
+    "combobox": ["select"],
+}
+
+## Input types and their roles; any other type is a `textbox`.
+INPUT_ROLES := {
+    "checkbox": "checkbox",
+    "radio": "radio",
+    "submit": "button",
+    "button": "button",
+    "reset": "button",
+    "image": "button",
+}
+
 ## Roles whose name is their text in full; other roles' names are cut to
 ## NAME_CUT characters, since the text is on the page already.
 FULL_NAMES := {"button", "combobox", "heading", "image", "link", "textbox"}
@@ -183,9 +217,14 @@ struct Flow
     style Style
     pre int
     boxes List[Box]
+    targets List[int]
     open List[int]
     links List[int]
     base str
+    sheet css.Sheet
+    ## Whether the current element lays its children out as flex or grid
+    ## items, which are set apart by a space.
+    flex bool
 
 ## Whether the current row has text beyond its indentation.
 fn Flow.dirty(self) bool
@@ -221,7 +260,16 @@ fn Flow.start_row(mut self)
             ind.used = true
     text := parts.join("")
     if text != ""
-        q := Style(bold: false, italic: false, code: false, quiet: true, link: 0, heading: 0)
+        q := Style(
+            bold: false,
+            italic: false,
+            code: false,
+            quiet: true,
+            link: 0,
+            heading: 0,
+            target: 0,
+            upper: false,
+        )
         cur.push(Run(col: 0, text, style: q))
     col = text.chars().len()
 
@@ -282,7 +330,8 @@ fn Flow.word(mut self, w str)
 
 ## Flows text: words wrapped with whitespace collapsed, or kept as is
 ## inside `pre`.
-fn Flow.text(mut self, s str)
+fn Flow.text(mut self, raw str)
+    s := if style.upper then raw.to_upper() else raw
     if pre > 0
         lines := s.split("\n")
         for k in 0..lines.len()
@@ -297,53 +346,119 @@ fn Flow.text(mut self, s str)
         return
     mut buf := List[char]()
     for c in s.chars()
-        if html.is_space(c)
+        if html.is_space(c) or c == '\u{a0}'
             if buf.len() > 0
                 word(buf.join(""))
                 buf.clear()
             space = true
         else
-            buf.push(if c == '\u{a0}' then ' ' else c)
+            buf.push(c)
     if buf.len() > 0
         word(buf.join(""))
 
 ## Opens a box for element `id` if it has a role.
 fn Flow.open_box(mut self, id int, tag str) int?
     n := d.nodes[id]
-    role := d.attr(id, "role") else (ROLES.get(tag) else return none)
+    mut role := d.attr(id, "role") else (ROLES.get(tag) else return none)
     if tag == "a" and d.attr(id, "href") == none
         return none
+    kind := input_type(d, id)
+    if tag == "input"
+        if kind == "hidden"
+            return none
+        role = INPUT_ROLES.get(kind) else "textbox"
     mut href := ""
     if h := d.attr(id, "href")
         href = resolve(base, h)
     level := if HEADINGS_LEVEL.contains(tag) then HEADINGS_LEVEL[tag] else 0
     mut name := d.attr(id, "aria-label") else (d.attr(id, "alt") else "")
-    if name == "" and not CONTAINERS.contains(role)
-        name = html.collapse(d.text(id))
+    if name == "" and (tag == "input" or tag == "select" or tag == "textarea")
+        name = label_of(d, id)
+    if name == "" and tag == "input" and role == "button"
+        name = d.attr(id, "value") else (if kind == "reset" then "Reset" else "Submit")
+    if name == "" and not CONTAINERS.contains(role) and tag != "select" and tag != "textarea"
+        name = html.collapse(d.visible_text(id))
     if name == "" and tag != "img"
         name = d.attr(
             id,
             "title",
-        ) else (d.attr(id, "placeholder") else (d.attr(id, "value") else ""))
+        ) else (d.attr(id, "placeholder") else (d.attr(id, "name") else ""))
     if not FULL_NAMES.contains(role) and name.chars().len() > NAME_CUT
         name = "{name.slice(0, NAME_CUT)}..."
     link := if n.tag == "a" then links.len() + 1 else 0
-    boxes.push(Box(id, role, name, href, level, link, row: -1, col: -1, end_row: -1, end_col: -1))
+    value := control_value(d, id)
+    checked := d.attr(id, "checked") != none
+    boxes.push(Box(
+        id,
+        role,
+        name,
+        href,
+        level,
+        link,
+        value,
+        checked,
+        row: -1,
+        col: -1,
+        end_row: -1,
+        end_col: -1,
+    ))
     b := boxes.len() - 1
     open.push(b)
     if n.tag == "a"
         links.push(b)
+    if ACTIONS.contains(role)
+        targets.push(b)
+        style.target = targets.len()
     b
+
+## The `type` of an `input`, lowercase; "text" when absent.
+pub fn input_type(d html.Doc, id int) str
+    (d.attr(id, "type") else "text").to_lower()
+
+## A form control's value: an input's `value`, a textarea's text (or the
+## `value` typed into it), a select's selected option (or its first).
+pub fn control_value(d html.Doc, id int) str
+    tag := d.nodes[id].tag
+    if tag == "textarea"
+        return d.attr(id, "value") else d.text(id)
+    if tag == "select"
+        mut first := ""
+        for o in d.all("option")
+            if not d.within(o, id)
+                continue
+            text := html.collapse(d.visible_text(o))
+            v := d.attr(o, "value") else text
+            if d.attr(o, "selected") != none
+                return v
+            if first == ""
+                first = v
+        return first
+    if tag == "input"
+        return d.attr(id, "value") else ""
+    ""
+
+## The text of the `label` for control `id`: `<label for=ID>`, else a
+## label around it.
+fn label_of(d html.Doc, id int) str
+    if key := d.attr(id, "id")
+        for l in d.all("label")
+            if d.attr(l, "for") == key
+                return html.collapse(d.visible_text(l))
+    mut p := d.nodes[id].parent
+    while p > 0
+        if d.nodes[p].tag == "label"
+            return html.collapse(d.visible_text(p))
+        p = d.nodes[p].parent
+    ""
 
 HEADINGS_LEVEL := {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
 
-## Whether element `id` is hidden: by its tag, `hidden`, or an inline
-## `display: none`.
+## Whether element `id` is hidden by its tag or `hidden`.
 fn Flow.hidden(self, id int, tag str) bool
-    if HIDDEN.contains(tag) or d.attr(id, "hidden") != none
-        return true
-    css := (d.attr(id, "style") else "").replace(" ", "").to_lower()
-    css.contains("display:none")
+    HIDDEN.contains(tag) or d.attr(id, "hidden") != none
+
+## Display values that start a block; `none` and the inline ones don't.
+BLOCK_DISPLAY := {"block", "flex", "grid", "list-item", "table", "table-row", "flow-root"}
 
 fn Flow.node(mut self, id int)
     n := d.nodes[id]
@@ -360,9 +475,19 @@ fn Flow.element(mut self, id int)
     tag := d.nodes[id].tag
     if tag != "#document" and hidden(id, tag)
         return
-    block := BLOCKS.contains(tag)
+    cs := if tag == "#document" then Map[str, str]() else css.cascade(d, id, sheet)
+    display := cs.get("display") else ""
+    if display == "none" or cs.get("visibility") == "hidden"
+        return
+    block := if display == "" then BLOCKS.contains(tag) else BLOCK_DISPLAY.contains(display)
+    inline_block := display.starts_with("inline-") or (display == "" and CONTROLS.contains(tag))
+    gappy := not block and (flex or inline_block or spaced_x(cs))
+    outer_flex := flex
+    flex = FLEX.contains(display)
+    if gappy
+        space = true
     nested := (tag == "ul" or tag == "ol") and nested_list(id)
-    spaced := SPACED.contains(tag) and not nested
+    spaced := SPACED.contains(tag) and not nested and block
     if spaced
         gap()
     elif block
@@ -392,9 +517,26 @@ fn Flow.element(mut self, id int)
         "i" | "em" | "cite" | "var" => style.italic = true
         "code" | "kbd" | "samp" | "tt" => style.code = true
         "pre" => pre += 1
+        _ => style.bold = style.bold
+    if w := cs.get("font-weight")
+        style.bold = w == "bold"
+            or w == "bolder"
+            or w == "600"
+            or w == "700"
+            or w == "800"
+            or w == "900"
+    if fs := cs.get("font-style")
+        style.italic = fs == "italic" or fs == "oblique"
+    if tt := cs.get("text-transform")
+        style.upper = tt == "uppercase"
+    ws := cs.get("white-space") else ""
+    styled_pre := tag != "pre" and (ws == "pre" or ws == "pre-wrap")
+    if styled_pre
+        pre += 1
+    match tag
         "a" =>
-            if b != none
-                style.link = links.len()
+            if bi := b
+                style.link = boxes[bi].link
         _ => style.bold = style.bold
     match tag
         "br" =>
@@ -410,22 +552,50 @@ fn Flow.element(mut self, id int)
             if alt != ""
                 word("[{alt}]")
         "input" =>
-            kind := (d.attr(id, "type") else "text").to_lower()
-            if kind != "hidden"
-                label := d.attr(id, "value") else (d.attr(id, "placeholder") else "")
-                word(if kind == "submit" or kind == "button" then "[{label}]" else "[{label}____]")
+            kind := input_type(d, id)
+            checked := d.attr(id, "checked") != none
+            if kind == "checkbox"
+                word(if checked then "[x]" else "[ ]")
+            elif kind == "radio"
+                word(if checked then "(*)" else "( )")
+            elif kind == "submit" or kind == "button" or kind == "reset" or kind == "image"
+                fallback := if kind == "reset" then "Reset" else "Submit"
+                word("[{d.attr(id, "value") else (d.attr(id, "alt") else fallback)}]")
+            elif kind != "hidden"
+                v := d.attr(id, "value") else ""
+                shown := if kind == "password" then "*".repeat(v.chars().len()) else v
+                ph := d.attr(id, "placeholder") else ""
+                hint := if v == "" then ph else ""
+                size := (d.attr(id, "size") else "20").to_int() else 20
+                word(field("{shown}{hint}", size))
+        "textarea" =>
+            cols := (d.attr(id, "cols") else "20").to_int() else 20
+            word(field(control_value(d, id).replace("\n", " "), cols))
+        "select" => word("[{control_value(d, id)} v]")
+        "button" =>
+            word("[")
+            space = false
+            children(id)
+            space = false
+            put("]")
         "td" | "th" =>
             if col > 0 and dirty()
                 put_sep(" | ")
             space = false
             children(id)
         _ => children(id)
-    if tag == "a" and b != none
-        style = saved
-        put("[{links.len()}]")
+    if tag == "a"
+        if bi := b
+            if boxes[bi].row < 0 and boxes[bi].name != ""
+                word(boxes[bi].name)
+            style = saved
+            put("[{boxes[bi].link}]")
     style = saved
-    if tag == "pre"
+    if tag == "pre" or styled_pre
         pre -= 1
+    flex = outer_flex
+    if gappy
+        space = true
     if indented
         indents.pop()
     if b != none
@@ -434,6 +604,36 @@ fn Flow.element(mut self, id int)
         gap()
     elif block or tag == "tr"
         break_row()
+
+## A text field drawn as `[text___]`, padded with `_` to `size` characters
+## (at least 4 underscores, at most 40 cells).
+fn field(text str, size int) str
+    pad := (size.min(40) - text.chars().len()).max(4)
+    "[{text}{"_".repeat(pad)}]"
+
+## Whether a horizontal margin or padding in `cs` is non-zero, so an inline
+## element is set apart from its neighbours by a space.
+fn spaced_x(cs Map[str, str]) bool
+    for key in ["margin", "padding"]
+        if v := cs.get(key)
+            parts := [p for p in v.split(" ") if p != ""]
+            x := if parts.len() >= 2 then parts[1] else (if parts.len() == 1 then parts[0] else "0")
+            if nonzero(x)
+                return true
+        for side in ["-left", "-right", "-inline", "-inline-start", "-inline-end"]
+            if v := cs.get("{key}{side}")
+                if nonzero(v.split(" ")[0])
+                    return true
+    false
+
+fn nonzero(v str) bool
+    v != "" and v != "auto" and not v.starts_with("0") and not v.starts_with("-")
+
+## Form controls, which browsers draw as inline blocks.
+CONTROLS := {"button", "input", "select", "textarea"}
+
+## Display values whose children are laid out as items with gaps.
+FLEX := {"flex", "inline-flex", "grid", "inline-grid"}
 
 ## Whether list `id` sits inside a list item, so it indents further.
 fn Flow.nested_list(self, id int) bool
@@ -457,9 +657,23 @@ fn Flow.list_marker(self, id int) str
             n += 1
     "{n}. "
 
-## Lays `d` out at `width` columns; `url` resolves relative links.
+## Lays `d` out at `width` columns; `url` resolves relative links. The
+## document's own `<style>` sheets apply.
 pub fn layout(d html.Doc, url str, width int) Page
-    plain := Style(bold: false, italic: false, code: false, quiet: false, link: 0, heading: 0)
+    layout_with(d, url, width, css.parse("", 0))
+
+## Lays `d` out with `sheet` (its linked style sheets) before its own.
+pub fn layout_with(d html.Doc, url str, width int, sheet css.Sheet) Page
+    plain := Style(
+        bold: false,
+        italic: false,
+        code: false,
+        quiet: false,
+        link: 0,
+        heading: 0,
+        target: 0,
+        upper: false,
+    )
     mut f := Flow(
         d,
         width: width.max(10),
@@ -472,15 +686,27 @@ pub fn layout(d html.Doc, url str, width int) Page
         style: plain,
         pre: 0,
         boxes: [],
+        targets: [],
         open: [],
         links: [],
         base: url,
+        sheet: css.concat(sheet, css.document_sheet(d)),
+        flex: false,
     )
     f.node(0)
     f.break_row()
     while f.rows.len() > 0 and f.rows[f.rows.len() - 1].len() == 0
         f.rows.pop()
-    Page(url, title: d.title(), width: f.width, rows: f.rows, boxes: f.boxes, links: f.links)
+    Page(
+        url,
+        title: d.title(),
+        width: f.width,
+        rows: f.rows,
+        boxes: f.boxes,
+        links: f.links,
+        targets: f.targets,
+        changed: d.changed,
+    )
 
 ## Row `r` as plain text.
 pub fn Page.row_text(self, r int) str
@@ -510,12 +736,30 @@ pub fn Page.find(self, needle str, from int) int?
 ## from row `scroll`, and every box with whether it shows in the viewport;
 ## only the boxes in the viewport when `viewport_only`, to save tokens.
 pub fn Page.to_json(self, scroll int, height int, viewport_only bool) str
+    nodes := node_objects(scroll, height)
     mut out := List[str]()
     for b in boxes
+        if text := nodes.get(b.id)
+            if not viewport_only or is_visible(b, scroll, height)
+                out.push(text)
+    "\{{head_json(scroll, height)},\"nodes\":[{out.join(",")}]}"
+
+## Whether any of box `b` is in the viewport.
+fn is_visible(b Box, scroll int, height int) bool
+    b.row >= 0 and b.row < scroll + height and b.end_row > scroll
+
+## The model's members before `nodes`: where the page is and what changed.
+pub fn Page.head_json(self, scroll int, height int) str
+    mut head := "\"api\":1,\"url\":{quote(url)},\"title\":{quote(title)},\"width\":{width},\"height\":{height},\"scroll\":{scroll},\"rows\":{rows.len()}"
+    if changed.len() > 0
+        head = "{head},\"changed\":[{changed.join(",")}]"
+    head
+
+## Each drawn box as its JSON object, by node id, in document order.
+pub fn Page.node_objects(self, scroll int, height int) Map[int, str]
+    mut out := Map[int, str]()
+    for b in boxes
         if b.row < 0
-            continue
-        vis := b.row < scroll + height and b.end_row > scroll
-        if viewport_only and not vis
             continue
         mut parts := ["\"id\":{b.id}", "\"role\":{quote(b.role)}", "\"name\":{quote(b.name)}"]
         if b.level > 0
@@ -523,12 +767,44 @@ pub fn Page.to_json(self, scroll int, height int, viewport_only bool) str
         if b.href != ""
             parts.push("\"href\":{quote(b.href)}")
         parts.push("\"row\":{b.row},\"col\":{b.col},\"end_row\":{b.end_row},\"end_col\":{b.end_col}")
-        parts.push("\"visible\":{vis}")
-        if b.role == "link"
-            parts.push("\"link\":{b.link},\"actions\":[\"follow\"]")
-        out.push("\{{parts.join(",")}}")
-    head := "\"api\":1,\"url\":{quote(url)},\"title\":{quote(title)},\"width\":{width},\"height\":{height},\"scroll\":{scroll},\"rows\":{rows.len()}"
-    "\{{head},\"nodes\":[{out.join(",")}]}"
+        parts.push("\"visible\":{is_visible(b, scroll, height)}")
+        if b.link > 0
+            parts.push("\"link\":{b.link}")
+        if b.role == "textbox" or b.role == "combobox"
+            parts.push("\"value\":{quote(b.value)}")
+        if b.role == "checkbox" or b.role == "radio"
+            parts.push("\"checked\":{b.checked}")
+        mut acts := ACTIONS.get(b.role) else List[str]()
+        if b.link > 0
+            acts = ["follow"]
+        if acts.len() > 0
+            parts.push("\"actions\":[{[quote(a) for a in acts].join(",")}]")
+        out[b.id] = "\{{parts.join(",")}}"
+    out
+
+## The model in at most about `max_chars` characters: the viewport's nodes
+## first, then headings, links and form controls, then the rest, each in
+## document order; `"omitted"` counts the nodes left out.
+pub fn Page.to_json_budget(self, scroll int, height int, max_chars int) str
+    nodes := node_objects(scroll, height)
+    mut keep := Set[int]()
+    mut size := head_json(scroll, height).chars().len() + 40
+    for pass in 0..3
+        for b in boxes
+            text := nodes.get(b.id) else continue
+            vis := is_visible(b, scroll, height)
+            key := b.role == "heading" or ACTIONS.contains(b.role)
+            wanted := if pass == 0 then vis else (if pass == 1 then key else true)
+            if not wanted or keep.contains(b.id)
+                continue
+            n := text.chars().len() + 1
+            if size + n > max_chars
+                continue
+            keep.add(b.id)
+            size += n
+    out := [nodes[b.id] for b in boxes if keep.contains(b.id)]
+    omitted := nodes.len() - out.len()
+    "\{{head_json(scroll, height)},\"omitted\":{omitted},\"nodes\":[{out.join(",")}]}"
 
 ## `s` as a JSON string.
 pub fn quote(s str) str

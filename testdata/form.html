@@ -1,0 +1,14 @@
+<title>Search form</title>
+<h1>Search</h1>
+<form action="result.html" method="get">
+<label for="q">Query</label> <input id="q" name="q" placeholder="words">
+<input type="hidden" name="src" value="garlic">
+<label><input type="checkbox" name="exact"> Exact</label>
+<input type="radio" name="sort" value="new" checked> New
+<input type="radio" name="sort" value="old"> Old
+<select name="lang"><option value="en">English<option value="fr">French</select>
+<textarea name="note">hi</textarea>
+<input type="submit" name="go" value="Search">
+<button type="reset">Clear</button>
+</form>
+<form action="post.html" method="post"><input name="who" value="a b&c"><button name="b" value="1">Send</button></form>
