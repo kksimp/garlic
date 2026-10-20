@@ -50,6 +50,13 @@ pub struct Vm
     pub stopped bool
     ## Promises rejected with no handler yet.
     pub unhandled List[Value]
+    ## Generators and async functions stopped part way (gen.ail), by id, and
+    ## the compiled bodies they run.
+    pub frames Map[int, Frame]
+    pub codes List[Code]
+    pub frame_seq int
+    ## Generators running now, to catch one that resumes itself.
+    pub running Set[int]
 
 ## How a statement ended (§6.2.4 Completion Records); a throw is the `Thrown` error.
 pub enum Flow
@@ -336,7 +343,7 @@ pub fn Vm.assign_name(mut self, name str, v Value, env ref Env) ! Thrown
         e = e.parent else break
     put_obj(global_obj, name, v, Obj(global_obj))?
 
-fn copy_env(e ref Env) ref Env
+pub fn copy_env(e ref Env) ref Env
     ref Env(
         vars: e.vars,
         parent: e.parent,
@@ -672,6 +679,14 @@ fn Vm.for_in(
     subject := eval(right, head_env)?
     mut items := List[Value]()
     if of
+        if o := obj_of(subject)
+            eager := is_array_like(o)
+                or o.class == "Set"
+                or o.class == "Map"
+                or o.class == "Iterator" and o.props.get(ITERATOR) == none
+            if not eager
+                it := open_iterator(subject)?
+                return for_of_lazy(left, it, body, env, labels)
         items = iterate(subject)?
     else
         match subject
@@ -680,22 +695,68 @@ fn Vm.for_in(
                 for k in for_in_keys(to_object(subject)?)
                     items.push(Str(k))
     for item in items
-        iter_env := new_env(env, false)
-        match left
-            LeftDecl(d) =>
-                target := d.decls[0].target
-                if d.kind == "var"
-                    bind_pattern(target, item, iter_env, "var")?
-                else
-                    bind_pattern(target, item, iter_env, d.kind)?
-            LeftPat(p) => bind_pattern(p, item, iter_env, "assign")?
-        f := exec(body, iter_env)?
+        f := loop_turn(left, item, body, env)?
         act := loop_action(f, labels)
         if act == "break"
             break
         if act == "out"
             return f
     Normal
+
+## One turn of a `for-in` or `for-of` body with `item` bound.
+fn Vm.loop_turn(
+    mut self,
+    left syntax.ForLeft,
+    item Value,
+    body syntax.Stmt,
+    env ref Env,
+) Flow ! Thrown
+    iter_env := new_env(env, false)
+    match left
+        LeftDecl(d) => bind_pattern(d.decls[0].target, item, iter_env, d.kind)?
+        LeftPat(p) => bind_pattern(p, item, iter_env, "assign")?
+    exec(body, iter_env)
+
+## `for-of` over an iterator that is stepped as the loop goes, so it may be
+## endless; leaving early closes it (§7.4.11 IteratorClose).
+fn Vm.for_of_lazy(
+    mut self,
+    left syntax.ForLeft,
+    it Value,
+    body syntax.Stmt,
+    env ref Env,
+    labels List[str],
+) Flow ! Thrown
+    next := get(it, "next")?
+    while true
+        r := call(next, it, [])?
+        if not is_obj(r)
+            return type_error("Iterator result {describe(r)} is not an object")
+        if truthy(get(r, "done")?)
+            break
+        item := get(r, "value")?
+        f := loop_turn(left, item, body, env) else err
+            if not err.limit
+                close_iterator(it) else ignored
+                    return err
+            return err
+        act := loop_action(f, labels)
+        if act == "break"
+            close_iterator(it)?
+            break
+        if act == "out"
+            close_iterator(it)?
+            return f
+    Normal
+
+## Call an iterator's `return`, if it has one.
+pub fn Vm.close_iterator(mut self, it Value) ! Thrown
+    m := get(it, "return")?
+    if is_nullish(m)
+        return
+    r := call(m, it, [])?
+    if not is_obj(r)
+        return type_error("Iterator result {describe(r)} is not an object")
 
 fn decl_init(d syntax.VarDecl) syntax.Expr?
     if d.decls.len() == 0
@@ -1282,22 +1343,37 @@ fn Vm.assignment(mut self, op str, target syntax.Pat, value syntax.Expr, env ref
 fn Vm.object_literal(mut self, props List[syntax.Prop], env ref Env) Value ! Thrown
     o := plain()
     for p in props
-        match p
-            Init(key, value, _, _) =>
-                k := prop_key(key, env)?
-                if k == "__proto__" and not is_computed(key)
-                    v := eval(value, env)?
-                    if is_obj(v) or v == Null
-                        o.proto = v
-                    continue
-                v := eval_named(value, k, env)?
-                define(o, k, data(v))?
-            Method(key, kind, f, _) =>
-                k := prop_key(key, env)?
-                fv := make_function(f, env, Obj(o), "method")
-                if kind == "get" or kind == "set"
-                    set_fn_name(fv, "{kind} {k}")
-                    mut acc := o.props.get(k) else Prop(
+        literal_prop(o, p, env)?
+    Obj(o)
+
+## Add one property of an object literal to `o`.
+pub fn Vm.literal_prop(mut self, o ref JsObject, p syntax.Prop, env ref Env) ! Thrown
+    match p
+        Init(key, value, _, _) =>
+            k := prop_key(key, env)?
+            if k == "__proto__" and not is_computed(key)
+                v := eval(value, env)?
+                if is_obj(v) or v == Null
+                    o.proto = v
+                return
+            v := eval_named(value, k, env)?
+            define(o, k, data(v))?
+        Method(key, kind, f, _) =>
+            k := prop_key(key, env)?
+            fv := make_function(f, env, Obj(o), "method")
+            if kind == "get" or kind == "set"
+                set_fn_name(fv, "{kind} {k}")
+                mut acc := o.props.get(k) else Prop(
+                    value: Undef,
+                    get: Undef,
+                    set: Undef,
+                    accessor: true,
+                    enumerable: true,
+                    writable: true,
+                    configurable: true,
+                )
+                if not acc.accessor
+                    acc = Prop(
                         value: Undef,
                         get: Undef,
                         set: Undef,
@@ -1306,32 +1382,21 @@ fn Vm.object_literal(mut self, props List[syntax.Prop], env ref Env) Value ! Thr
                         writable: true,
                         configurable: true,
                     )
-                    if not acc.accessor
-                        acc = Prop(
-                            value: Undef,
-                            get: Undef,
-                            set: Undef,
-                            accessor: true,
-                            enumerable: true,
-                            writable: true,
-                            configurable: true,
-                        )
-                    if kind == "get"
-                        acc.get = fv
-                    else
-                        acc.set = fv
-                    o.props[k] = acc
+                if kind == "get"
+                    acc.get = fv
                 else
-                    set_fn_name(fv, k)
-                    define(o, k, data(fv))?
-            PropSpread(operand, _) =>
-                v := eval(operand, env)?
-                if not is_nullish(v)
-                    src := to_object(v)?
-                    for k in enum_keys(src)
-                        define(o, k, data(get(v, k)?))?
-            CoverInit(_, _, _) => return syntax_error("Invalid shorthand property initializer")
-    Obj(o)
+                    acc.set = fv
+                o.props[k] = acc
+            else
+                set_fn_name(fv, k)
+                define(o, k, data(fv))?
+        PropSpread(operand, _) =>
+            v := eval(operand, env)?
+            if not is_nullish(v)
+                src := to_object(v)?
+                for k in enum_keys(src)
+                    define(o, k, data(get(v, k)?))?
+        CoverInit(_, _, _) => return syntax_error("Invalid shorthand property initializer")
 
 fn is_computed(k syntax.Key) bool
     match k
@@ -1369,6 +1434,18 @@ pub fn Vm.make_function(mut self, f syntax.Func, env ref Env, home Value, kind s
         proto.props["constructor"] = hidden(Obj(o))
         o.props["prototype"] = Prop(
             value: Obj(proto),
+            get: Undef,
+            set: Undef,
+            accessor: false,
+            enumerable: false,
+            writable: true,
+            configurable: false,
+        )
+    elif f.is_gen
+        # Each generator function has its own prototype for the generators
+        # it makes (§27.3.4.3), with no `constructor`.
+        o.props["prototype"] = Prop(
+            value: Obj(object("Object", proto_of("Generator"))),
             get: Undef,
             set: Undef,
             accessor: false,
@@ -1415,6 +1492,8 @@ pub fn Vm.call(mut self, f Value, this_val Value, args List[Value]) Value ! Thro
                 name := fun.name else "anonymous"
                 return type_error("Class constructor {name} cannot be invoked without 'new'")
             env := function_env(o, fun, scope, home, this_val, Undef)
+            if fun.is_gen or fun.is_async
+                return start_resumable(o, fun, env, args)
             run_body(fun, env, args)
 
 ## A function's scope for one call (§10.2.1.1 PrepareForOrdinaryCall,
@@ -1445,8 +1524,6 @@ fn Vm.function_env(
 
 ## Bind the parameters and run the body (§10.2.11 FunctionDeclarationInstantiation).
 fn Vm.run_body(mut self, fun syntax.Func, env ref Env, args List[Value]) Value ! Thrown
-    if fun.is_gen or fun.is_async
-        return syntax_error("Generators and async functions are not supported yet")
     saved := call_depth
     if call_depth >= MAX_DEPTH
         return range_error("Maximum call stack size exceeded")

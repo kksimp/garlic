@@ -1,0 +1,31 @@
+[ 0, 1, 2, 3 ]
+{ value: 0, done: false } { value: 10, done: false } { value: 20, done: false } { value: 'end', done: true } { value: undefined, done: true }
+{ value: 'a', done: false } { value: 'sent', done: false } { value: 'inner-done', done: false } { value: 1, done: false } { value: 2, done: false } { value: undefined, done: true }
+{ value: 1, done: false }
+cleanup
+{ value: 9, done: true }
+{ value: undefined, done: true }
+caught boom
+{ value: 'recovered', done: false }
+{ value: 'waiting', done: false }
+early throw: early
+{ value: undefined, done: true }
+v 0
+v 1
+sum 55
+x 1
+closed
+[ 'items', 'a', 'b' ]
+[ 1, 2, 3, 4 ]
+00 10 sw one true
+[ 0, 1, 2 ]
+[ 3, 6 ]
+true [object Generator]
+object true
+TypeError Generator is already running
+0 1 [ 2, 3, 4 ]
+[ 0, 2, 4 ]
+{ value: { a: 'A', key: 'C' }, done: true }
+{ value: 'x1y2z', done: true }
+[ 'yes' ] [ 'no' ]
+sum 20

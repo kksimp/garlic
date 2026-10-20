@@ -55,6 +55,10 @@ pub fn new_vm() Vm
         ready_state: "complete",
         stopped: false,
         unhandled: [],
+        frames: {},
+        codes: [],
+        frame_seq: 0,
+        running: Set[int](),
     )
     vm.setup()
     vm
@@ -338,6 +342,7 @@ fn Vm.setup(mut self)
     constant(global_obj, "undefined", Undef)
     symbol_setup()
     promise_setup()
+    generator_setup()
     methods(
         global_obj,
         "dom.window",
@@ -367,6 +372,10 @@ pub fn Vm.native(
         return symbol_native(name, this_val, args, new_target)
     if name.starts_with("Iterator.")
         return iterator_native(name, this_val)
+    if m := name.strip_prefix("Generator.prototype.")
+        return generator_native(m, this_val, args)
+    if name == "Async.resume"
+        return async_native(name, this_val, args)
     if m := name.strip_prefix("dom.")
         return dom_native(m, this_val, args, new_target)
     if m := name.strip_prefix("Array.prototype.")

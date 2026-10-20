@@ -1,0 +1,20 @@
+[object Promise] true
+inner catch TypeError
+finally runs
+static
+early
+default
+caught bad
+guarded -> handled
+method 42
+late
+order 1234
+b1, a1, sync, a1, a1, a2, a2, a2, b2 A, b done
+thenable value
+K7
+arrow 42
+all [ 'x', 'y', 3 ]
+settled [{"status":"rejected","reason":1},{"status":"fulfilled","value":2}]
+fin before reject
+rejected with s
+loop 66

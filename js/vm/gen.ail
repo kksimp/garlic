@@ -1,0 +1,1263 @@
+## Generators (ECMA-262 §27.5) and async functions (§27.7): code that can
+## stop at `yield` or `await` and go on later. The tree-walker keeps its
+## place on AIL's own stack, so such a function's body is compiled to a list
+## of instructions that keeps its place in a `Frame` instead. Only the parts
+## that can suspend are compiled: every expression and statement without
+## `yield` or `await` in it is one instruction that the tree-walker runs.
+use syntax
+
+## One instruction. Each notes how it changes the operand stack.
+pub enum Op
+    ## +1: the value of an expression that can't suspend.
+    Eval(e syntax.Expr)
+    ## 0: run a statement that can't suspend; `ctx` lists where its `break`
+    ## and `continue` go.
+    Exec(s syntax.Stmt, ctx int)
+    ## -1
+    Pop
+    ## +1
+    Dup
+    ## +1
+    Push(v Value)
+    ## 0: suspend with the top value; resuming replaces it with the value sent.
+    Yield
+    ## 0: the same, for `await`.
+    Await
+    ## [iterator, sent] -> [iterator, sent] after a suspension, or [value]
+    ## at `end` when the inner iterator is done (`yield*`, §15.5.5).
+    Delegate(end int)
+    ## [iterable] -> [iterator]
+    GetIter
+    Jump(to int)
+    ## -1: jump when the popped value is truthy (`JumpIf`) or falsy.
+    JumpIf(to int)
+    JumpIfNot(to int)
+    ## -1: jump when the popped value is not null or undefined.
+    JumpIfNotNullish(to int)
+    ## [a, b] -> [a op b]
+    Binary(op str)
+    ## [a] -> [op a]
+    Unary(op str)
+    ## [base] -> [base.key]
+    GetProp(key str)
+    ## [base, key] -> [base[key]]
+    GetElem
+    ## [base, value] -> [value]
+    PutProp(key str)
+    ## [base, key, value] -> [value]
+    PutElem
+    ## [value] -> [value]: assign to a pattern with no `yield` in it.
+    AssignPat(p syntax.Pat)
+    ## [value] -> []: bind a declaration's pattern (`kind` var, let, const).
+    BindPat(p syntax.Pat, kind str)
+    ## +1: a new array, for arguments and array literals.
+    NewList
+    ## [list, value] -> [list]
+    Append
+    AppendSpread
+    ## [this, f, list] -> [result]; `callee` names it in errors.
+    Call(callee syntax.Expr)
+    ## [f, list] -> [result]
+    Construct(callee syntax.Expr)
+    ## +1
+    NewObject
+    ## [object] -> [object]: a property that can't suspend.
+    ObjProp(p syntax.Prop)
+    ## [object, value] -> [object]
+    ObjInit(key str)
+    ## [object, key, value] -> [object]
+    ObjComputed
+    ## [object, value] -> [object]: `...value`
+    ObjSpread
+    ## [n values] -> [string]: a template's pieces between its quasis.
+    Concat(quasis List[str])
+    ## [value] -> []: leave the function.
+    Return
+    Throw
+    ## A new block scope with the declarations of `body` (§14.2.2).
+    PushScope(body List[syntax.Stmt])
+    PopScope
+    ## A copy of the current scope: the next turn of a `for (let ...)`.
+    CopyScope
+    ## Catch with the code at `catch_pc` (or not, -1), then run `finally_pc`.
+    TryPush(catch_pc int, finally_pc int)
+    TryPop
+    ## [value] -> []: bind a `catch` parameter in a new scope.
+    CatchParam(p syntax.Pat?)
+    ## Enter a `finally` normally.
+    NormalCompletion
+    ## Leave a `finally`: go on with what entered it.
+    EndFinally
+    ## [subject] -> [iterator] for `for-of`, or the keys for `for-in`.
+    IterInit(of bool)
+    ## [iterator] -> [iterator, value], or [] at `end` when it is done.
+    IterNext(end int)
+    ## [value] -> []: bind a `for-in`/`for-of` head.
+    BindLeft(left syntax.ForLeft)
+    ## [discriminant, test] -> [discriminant], or [] at `to` when they match.
+    CaseTest(to int)
+
+## Where a `break` or `continue` lands, with what it unwinds to.
+pub struct Target
+    labels List[str]
+    ## "break" or "continue".
+    kind str
+    ## A loop or `switch`: an unlabelled `break` (or loop `continue`) lands here.
+    unlabelled bool
+    pc int
+    scopes int
+    handlers int
+    depth int
+
+pub struct Code
+    ops List[Op]
+    targets List[Target]
+    ## For each `Exec`, the targets around it, innermost last.
+    ctxs List[List[int]]
+
+## The compiler's state for one function.
+struct Compiler
+    ops List[Op]
+    targets List[Target]
+    ctxs List[List[int]]
+    ## The targets around the code being compiled, innermost last.
+    open List[int]
+    ## Labels waiting for the statement after them.
+    pending List[str]
+    scopes int
+    handlers int
+    depth int
+
+## Compile a generator's or async function's body.
+pub fn compile_body(f syntax.Func) Code ! Thrown
+    mut c := Compiler(
+        ops: [],
+        targets: [],
+        ctxs: [],
+        open: [],
+        pending: [],
+        scopes: 0,
+        handlers: 0,
+        depth: 0,
+    )
+    if e := f.expr
+        c.expr(e)?
+        c.emit(Return, -1)
+    else
+        for s in f.body
+            c.stmt(s)?
+        c.emit(Push(Undef), 1)
+        c.emit(Return, -1)
+    Code(ops: c.ops, targets: c.targets, ctxs: c.ctxs)
+
+fn unsupported(what str) Thrown
+    Thrown(
+        value: Undef,
+        text: "SyntaxError: {what} with yield or await in it is not supported yet",
+        limit: false,
+    )
+
+fn Compiler.emit(mut self, op Op, delta int)
+    ops.push(op)
+    depth += delta
+
+fn Compiler.here(self) int
+    ops.len()
+
+## A jump whose destination is set later with `patch`.
+fn Compiler.jump(mut self, kind str) int
+    at := ops.len()
+    match kind
+        "if" => emit(JumpIf(-1), -1)
+        "ifnot" => emit(JumpIfNot(-1), -1)
+        "notnullish" => emit(JumpIfNotNullish(-1), -1)
+        _ => emit(Jump(-1), 0)
+    at
+
+fn Compiler.patch(mut self, at int, to int)
+    ops[at] = match ops[at]
+        JumpIf => JumpIf(to)
+        JumpIfNot => JumpIfNot(to)
+        JumpIfNotNullish => JumpIfNotNullish(to)
+        IterNext => IterNext(to)
+        Delegate => Delegate(to)
+        CaseTest => CaseTest(to)
+        Jump => Jump(to)
+        Eval | Exec | Pop | Dup | Push | Yield | Await | GetIter | Binary | Unary | GetProp | GetElem | PutProp | PutElem | AssignPat | BindPat | NewList | Append | AppendSpread | Call | Construct | NewObject | ObjProp | ObjInit | ObjComputed | ObjSpread | Concat | Return | Throw | PushScope | PopScope | CopyScope | TryPush | TryPop | CatchParam | NormalCompletion | EndFinally | IterInit | BindLeft =>
+            ops[at]
+
+fn Compiler.new_target(mut self, kind str, labels List[str], unlabelled bool) int
+    targets.push(Target(
+        labels: labels,
+        kind: kind,
+        unlabelled: unlabelled,
+        pc: -1,
+        scopes: scopes,
+        handlers: handlers,
+        depth: depth,
+    ))
+    targets.len() - 1
+
+fn Compiler.land(mut self, t int)
+    targets[t].pc = ops.len()
+
+fn Compiler.take_labels(mut self) List[str]
+    labels := pending
+    pending = []
+    labels
+
+# ------------------------------------------------------------ statements
+
+fn Compiler.stmt(mut self, s syntax.Stmt) ! Thrown
+    if not syntax.stmt_suspends(s)
+        labels := take_labels()
+        if labels.len() > 0
+            # A labelled statement that can't suspend: the tree-walker
+            # handles its labels itself.
+            mut wrapped := s
+            mut i := labels.len() - 1
+            while i >= 0
+                wrapped = syntax.Stmt.Labeled(label: labels[i], body: wrapped, pos: stmt_pos(s))
+                i -= 1
+            ctxs.push(open)
+            emit(Exec(wrapped, ctxs.len() - 1), 0)
+            return
+        ctxs.push(open)
+        emit(Exec(s, ctxs.len() - 1), 0)
+        return
+    match s
+        Exp(e, _) =>
+            take_labels()
+            expr(e)?
+            emit(Pop, -1)
+        Var(d) =>
+            take_labels()
+            var_decl(d)?
+        Return(value, _) =>
+            take_labels()
+            if v := value
+                expr(v)?
+            else
+                emit(Push(Undef), 1)
+            emit(Return, -1)
+        Throw(value, _) =>
+            take_labels()
+            expr(value)?
+            emit(Throw, -1)
+        If(test, yes, no, _) =>
+            labels := take_labels()
+            brk := new_target("break", labels, false)
+            open.push(brk)
+            expr(test)?
+            to_else := jump("ifnot")
+            stmt(yes)?
+            to_end := jump("")
+            patch(to_else, here())
+            if n := no
+                stmt(n)?
+            patch(to_end, here())
+            open.pop()
+            land(brk)
+        Block(body, _) =>
+            labels := take_labels()
+            brk := new_target("break", labels, false)
+            open.push(brk)
+            block(body)?
+            open.pop()
+            land(brk)
+        Labeled(label, body, _) =>
+            pending.push(label)
+            stmt(body)?
+        While(test, body, _) =>
+            labels := take_labels()
+            brk := new_target("break", labels, true)
+            cont := new_target("continue", labels, true)
+            land(cont)
+            expr(test)?
+            out := jump("ifnot")
+            open.push(brk)
+            open.push(cont)
+            stmt(body)?
+            open.pop()
+            open.pop()
+            emit(Jump(targets[cont].pc), 0)
+            patch(out, here())
+            land(brk)
+        DoWhile(body, test, _) =>
+            labels := take_labels()
+            brk := new_target("break", labels, true)
+            cont := new_target("continue", labels, true)
+            top := here()
+            open.push(brk)
+            open.push(cont)
+            stmt(body)?
+            open.pop()
+            open.pop()
+            land(cont)
+            expr(test)?
+            emit(JumpIf(top), -1)
+            land(brk)
+        For(init, test, update, body, _) => for_loop(init, test, update, body)?
+        ForIn(left, right, body, of, _) => for_in(left, right, body, of)?
+        Try(block, param, handler, finalizer, _) => try_stmt(block, param, handler, finalizer)?
+        Switch(disc, cases, _) => switch_stmt(disc, cases)?
+        ClassDecl => return unsupported("A class declaration")
+        With => return unsupported("A with statement")
+        FuncDecl | Empty | Break | Continue | Debugger => return
+
+fn stmt_pos(s syntax.Stmt) syntax.Pos
+    match s
+        Exp(_, p) => p
+        Var(d) => d.pos
+        FuncDecl(f) => f.pos
+        ClassDecl(c) => c.pos
+        Return(_, p) => p
+        If(_, _, _, p) => p
+        Block(_, p) => p
+        Empty(p) => p
+        For(_, _, _, _, p) => p
+        ForIn(_, _, _, _, p) => p
+        While(_, _, p) => p
+        DoWhile(_, _, p) => p
+        Break(_, p) => p
+        Continue(_, p) => p
+        Throw(_, p) => p
+        Try(_, _, _, _, p) => p
+        Switch(_, _, p) => p
+        Labeled(_, _, p) => p
+        With(_, _, p) => p
+        Debugger(p) => p
+
+## A block's statements in their own scope.
+fn Compiler.block(mut self, body List[syntax.Stmt]) ! Thrown
+    emit(PushScope(body), 0)
+    scopes += 1
+    for s in body
+        stmt(s)?
+    emit(PopScope, 0)
+    scopes -= 1
+
+fn Compiler.var_decl(mut self, d syntax.VarDecl) ! Thrown
+    for x in d.decls
+        if init := x.init
+            if syntax.expr_suspends(init) or syntax.pat_suspends(x.target)
+                if syntax.pat_suspends(x.target)
+                    return unsupported("A destructuring pattern")
+                expr(init)?
+                emit(BindPat(x.target, d.kind), -1)
+                continue
+        one := syntax.Stmt.Var(syntax.VarDecl(kind: d.kind, decls: [x], pos: d.pos))
+        ctxs.push(open)
+        emit(Exec(one, ctxs.len() - 1), 0)
+
+fn Compiler.for_loop(
+    mut self,
+    init syntax.ForInit?,
+    test syntax.Expr?,
+    update syntax.Expr?,
+    body syntax.Stmt,
+) ! Thrown
+    labels := take_labels()
+    mut lexical := List[syntax.Stmt]()
+    mut per_iteration := false
+    if i := init
+        match i
+            InitDecl(d) =>
+                if d.kind != "var"
+                    lexical.push(syntax.Stmt.Var(d))
+                    per_iteration = d.kind == "let"
+            InitExpr => per_iteration = false
+    emit(PushScope(lexical), 0)
+    scopes += 1
+    if i := init
+        match i
+            InitDecl(d) => var_decl(d)?
+            InitExpr(e) =>
+                expr(e)?
+                emit(Pop, -1)
+    if per_iteration
+        emit(CopyScope, 0)
+    brk := new_target("break", labels, true)
+    cont := new_target("continue", labels, true)
+    top := here()
+    mut out := -1
+    if t := test
+        expr(t)?
+        out = jump("ifnot")
+    open.push(brk)
+    open.push(cont)
+    stmt(body)?
+    open.pop()
+    open.pop()
+    land(cont)
+    if per_iteration
+        emit(CopyScope, 0)
+    if u := update
+        expr(u)?
+        emit(Pop, -1)
+    emit(Jump(top), 0)
+    if out >= 0
+        patch(out, here())
+    land(brk)
+    emit(PopScope, 0)
+    scopes -= 1
+
+fn Compiler.for_in(
+    mut self,
+    left syntax.ForLeft,
+    right syntax.Expr,
+    body syntax.Stmt,
+    of bool,
+) ! Thrown
+    labels := take_labels()
+    mut head := List[syntax.Stmt]()
+    match left
+        LeftDecl(d) =>
+            if d.kind != "var"
+                head.push(syntax.Stmt.Var(d))
+        LeftPat(p) =>
+            if syntax.pat_suspends(p)
+                return unsupported("A for-in or for-of target")
+    # The subject is evaluated where the head's `let` names are in their
+    # dead zone (§14.7.5.6).
+    emit(PushScope(head), 0)
+    scopes += 1
+    expr(right)?
+    emit(PopScope, 0)
+    scopes -= 1
+    emit(IterInit(of), 0)
+    brk := new_target("break", labels, true)
+    targets[brk].depth = depth - 1
+    cont := new_target("continue", labels, true)
+    land(cont)
+    next := here()
+    emit(IterNext(-1), 1)
+    emit(PushScope(head), 0)
+    scopes += 1
+    emit(BindLeft(left), -1)
+    open.push(brk)
+    open.push(cont)
+    stmt(body)?
+    open.pop()
+    open.pop()
+    emit(PopScope, 0)
+    scopes -= 1
+    emit(Jump(next), 0)
+    patch(next, here())
+    depth -= 1
+    land(brk)
+
+fn Compiler.try_stmt(
+    mut self,
+    block List[syntax.Stmt],
+    param syntax.Pat?,
+    handler List[syntax.Stmt]?,
+    finalizer List[syntax.Stmt]?,
+) ! Thrown
+    labels := take_labels()
+    brk := new_target("break", labels, false)
+    open.push(brk)
+    push_at := here()
+    emit(TryPush(catch_pc: -1, finally_pc: -1), 0)
+    handlers += 1
+    self.block(block)?
+    emit(TryPop, 0)
+    handlers -= 1
+    mut to_finally := List[int]()
+    to_finally.push(jump(""))
+    mut catch_pc := -1
+    if h := handler
+        catch_pc = here()
+        depth += 1
+        if finalizer != none
+            emit(TryPush(catch_pc: -1, finally_pc: -1), 0)
+            handlers += 1
+        emit(CatchParam(param), -1)
+        scopes += 1
+        for s in h
+            stmt(s)?
+        emit(PopScope, 0)
+        scopes -= 1
+        if finalizer != none
+            emit(TryPop, 0)
+            handlers -= 1
+        to_finally.push(jump(""))
+    mut finally_pc := -1
+    if f := finalizer
+        normal := here()
+        emit(NormalCompletion, 0)
+        finally_pc = here()
+        self.block(f)?
+        emit(EndFinally, 0)
+        for j in to_finally
+            patch(j, normal)
+        # The handler around the `catch` block only has the `finally`.
+        if handler != none
+            ops[catch_pc] = TryPush(catch_pc: -1, finally_pc: finally_pc)
+    else
+        for j in to_finally
+            patch(j, here())
+    ops[push_at] = TryPush(catch_pc: catch_pc, finally_pc: finally_pc)
+    open.pop()
+    land(brk)
+
+fn Compiler.switch_stmt(mut self, disc syntax.Expr, cases List[syntax.Case]) ! Thrown
+    labels := take_labels()
+    brk := new_target("break", labels, true)
+    mut all := List[syntax.Stmt]()
+    for c in cases
+        all.extend(c.body)
+    emit(PushScope(all), 0)
+    scopes += 1
+    targets[brk].scopes = scopes - 1
+    expr(disc)?
+    mut tests := List[int]()
+    for c in cases
+        if t := c.test
+            emit(Dup, 1)
+            expr(t)?
+            tests.push(here())
+            emit(CaseTest(-1), -2)
+            # CaseTest pops the test, and the discriminant too when it jumps.
+            depth += 1
+        else
+            tests.push(-1)
+    emit(Pop, -1)
+    to_default := jump("")
+    open.push(brk)
+    mut default_pc := -1
+    for i in 0..cases.len()
+        if tests[i] >= 0
+            patch(tests[i], here())
+        else
+            default_pc = here()
+        for s in cases[i].body
+            stmt(s)?
+    open.pop()
+    patch(to_default, if default_pc >= 0 then default_pc else here())
+    land(brk)
+    emit(PopScope, 0)
+    scopes -= 1
+
+# ----------------------------------------------------------- expressions
+
+fn Compiler.expr(mut self, e syntax.Expr) ! Thrown
+    if not syntax.expr_suspends(e)
+        emit(Eval(e), 1)
+        return
+    match e
+        Yield(arg, delegate, _) =>
+            if a := arg
+                expr(a)?
+            else
+                emit(Push(Undef), 1)
+            if delegate
+                emit(GetIter, 0)
+                emit(Push(Undef), 1)
+                top := here()
+                emit(Delegate(-1), 0)
+                emit(Jump(top), 0)
+                patch(top, here())
+                depth -= 1
+            else
+                emit(Yield, 0)
+        Await(arg, _) =>
+            expr(arg)?
+            emit(Await, 0)
+        Paren(inner, _) => expr(inner)?
+        Seq(items, _) =>
+            for i in 0..items.len()
+                expr(items[i])?
+                if i + 1 < items.len()
+                    emit(Pop, -1)
+        Binary(op, l, r, _) =>
+            expr(l)?
+            expr(r)?
+            emit(Binary(op), -1)
+        Logical(op, l, r, _) =>
+            expr(l)?
+            emit(Dup, 1)
+            kind := match op
+                "&&" => "ifnot"
+                "||" => "if"
+                _ => "notnullish"
+            out := jump(kind)
+            emit(Pop, -1)
+            expr(r)?
+            patch(out, here())
+        Cond(test, yes, no, _) =>
+            expr(test)?
+            to_no := jump("ifnot")
+            expr(yes)?
+            to_end := jump("")
+            depth -= 1
+            patch(to_no, here())
+            expr(no)?
+            patch(to_end, here())
+        Unary(op, arg, _) =>
+            if op == "delete"
+                return unsupported("delete")
+            expr(arg)?
+            emit(Unary(op), 0)
+        Assign(op, target, value, _) => assign(op, target, value)?
+        Call(callee, args, optional, _) =>
+            if optional or syntax.expr_kind(callee) == "Super"
+                return unsupported("This call")
+            callee_and_this(callee)?
+            arguments(args)?
+            emit(Call(callee), -2)
+        New(callee, args, _) =>
+            expr(callee)?
+            arguments(args)?
+            emit(Construct(callee), -1)
+        Member(object, prop, computed, optional, _) =>
+            if optional or syntax.expr_kind(object) == "Super"
+                return unsupported("This member expression")
+            expr(object)?
+            if computed
+                expr(prop)?
+                emit(GetElem, -1)
+            else
+                emit(GetProp(prop_name(prop)), 0)
+        Array(items, _, _) =>
+            emit(NewList, 1)
+            for item in items
+                if x := item
+                    if inner := spread_arg(x)
+                        expr(inner)?
+                        emit(AppendSpread, -1)
+                    else
+                        expr(x)?
+                        emit(Append, -1)
+                else
+                    emit(Push(Undef), 1)
+                    emit(Append, -1)
+        Object(props, _) =>
+            emit(NewObject, 1)
+            for p in props
+                object_prop(p)?
+        Template(quasis, exprs, _) =>
+            for x in exprs
+                expr(x)?
+            emit(Concat([q.cooked else "" for q in quasis]), 1 - exprs.len())
+        Num | Str | Regex | Bool | Null | Ident | This | Super | NewTarget | PrivName | Function | Arrow =>
+            emit(Eval(e), 1)
+        Tagged | ClassExpr | Update | Spread | Chain => return unsupported("This expression")
+
+fn prop_name(prop syntax.Expr) str
+    match prop
+        Ident(name, _) => name
+        PrivName(name, _) => "{PRIVATE}{name}"
+        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | Paren | Yield | Await =>
+            ""
+
+fn spread_arg(e syntax.Expr) syntax.Expr?
+    match e
+        Spread(arg, _) => arg
+        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Chain | PrivName | Paren | Yield | Await =>
+            none
+
+## [this, f] for a call: `a.b()` calls `b` with `a`.
+fn Compiler.callee_and_this(mut self, callee syntax.Expr) ! Thrown
+    match callee
+        Member(object, prop, computed, optional, _) =>
+            if optional or syntax.expr_kind(object) == "Super"
+                return unsupported("This call")
+            expr(object)?
+            emit(Dup, 1)
+            if computed
+                expr(prop)?
+                emit(GetElem, -1)
+            else
+                emit(GetProp(prop_name(prop)), 0)
+        Paren(inner, _) => callee_and_this(inner)?
+        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
+            emit(Push(Undef), 1)
+            expr(callee)?
+
+fn Compiler.arguments(mut self, args List[syntax.Expr]) ! Thrown
+    emit(NewList, 1)
+    for a in args
+        if inner := spread_arg(a)
+            expr(inner)?
+            emit(AppendSpread, -1)
+        else
+            expr(a)?
+            emit(Append, -1)
+
+fn Compiler.assign(mut self, op str, target syntax.Pat, value syntax.Expr) ! Thrown
+    if syntax.pat_suspends(target)
+        return unsupported("An assignment target")
+    if op == "="
+        expr(value)?
+        emit(AssignPat(target), 0)
+        return
+    if op == "&&=" or op == "||=" or op == "??="
+        return unsupported("A logical assignment")
+    binop := op.slice(0, op.chars().len() - 1)
+    match target
+        PatTarget(t) =>
+            match t
+                Member(object, prop, computed, _, _) =>
+                    expr(object)?
+                    if computed
+                        expr(prop)?
+                        return unsupported("A compound assignment to a computed member")
+                    emit(Dup, 1)
+                    key := prop_name(prop)
+                    emit(GetProp(key), 0)
+                    expr(value)?
+                    emit(Binary(binop), -1)
+                    emit(PutProp(key), -1)
+                Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Paren | Yield | Await =>
+                    emit(Eval(t), 1)
+                    expr(value)?
+                    emit(Binary(binop), -1)
+                    emit(AssignPat(target), 0)
+        PatId(name, p) =>
+            emit(Eval(syntax.Expr.Ident(name: name, pos: p)), 1)
+            expr(value)?
+            emit(Binary(binop), -1)
+            emit(AssignPat(target), 0)
+        PatObj | PatArr | PatDefault => return unsupported("A compound assignment")
+
+fn Compiler.object_prop(mut self, p syntax.Prop) ! Thrown
+    match p
+        Init(key, value, _, _) =>
+            if not syntax.expr_suspends(value)
+                match key
+                    Computed(k, _) =>
+                        if not syntax.expr_suspends(k)
+                            emit(ObjProp(p), 0)
+                            return
+                    KeyName | KeyStr | KeyNum | KeyPriv =>
+                        emit(ObjProp(p), 0)
+                        return
+            match key
+                KeyName(name, _) =>
+                    expr(value)?
+                    emit(ObjInit(name), -1)
+                KeyStr(name, _) =>
+                    expr(value)?
+                    emit(ObjInit(name), -1)
+                KeyNum(n, _) =>
+                    expr(value)?
+                    emit(ObjInit(syntax.number_to_string(n)), -1)
+                Computed(k, _) =>
+                    expr(k)?
+                    expr(value)?
+                    emit(ObjComputed, -2)
+                KeyPriv => return unsupported("A private name")
+        PropSpread(arg, _) =>
+            expr(arg)?
+            emit(ObjSpread, -1)
+        Method | CoverInit => emit(ObjProp(p), 0)
+
+# ---------------------------------------------------------------- frames
+
+## %GeneratorPrototype% (§27.5.1).
+fn Vm.generator_setup(mut self)
+    proto := object("Object", proto_of("Iterator"))
+    protos["Generator"] = Obj(proto)
+    methods(proto, "Generator.prototype", "next:1 return:1 throw:1")
+    proto.props[well_known("toStringTag")] = hidden(Str("Generator"))
+
+## A function stopped at a `yield` or `await`, or not started yet.
+pub struct Frame
+    code int
+    pc int
+    stack List[Value]
+    env ref Env
+    ## The scopes outside the current one, innermost last.
+    scopes List[ref Env]
+    handlers List[Handler]
+    completions List[Completion]
+    ## "start", "suspended", "running" or "done".
+    state str
+    ## The promise an async function gives (none for a generator).
+    promise Value
+
+struct Handler
+    catch_pc int
+    finally_pc int
+    scopes int
+    depth int
+
+## How code is being left: "normal", "return", "throw", or "jump" to `target`.
+pub struct Completion
+    kind str
+    value Value
+    target int
+
+## Why a frame stopped: "yield", "await" or "return" (with `value`); ""
+## while it goes on.
+pub struct Stop
+    kind str
+    value Value
+
+GO := Stop(kind: "", value: Undef)
+
+fn Vm.take_frame(mut self, id int) Frame?
+    frames.remove(id)
+
+## The code of a generator or async function, compiled once per function
+## object.
+fn Vm.code_for(mut self, fobj ref JsObject, fun syntax.Func) int ! Thrown
+    if p := fobj.props.get("{PRIVATE}code")
+        if n := num_of(p.value)
+            return n.to_int()
+    code := compile_body(fun) else err
+        return syntax_error(err.text.strip_prefix("SyntaxError: ") else err.text)
+    codes.push(code)
+    fobj.props["{PRIVATE}code"] = hidden(Num((codes.len() - 1).to_float()))
+    codes.len() - 1
+
+## Call a generator or async function: bind its parameters now, and run
+## its body in a frame (§10.2.11, §27.5.3.1, §27.7.5.1).
+pub fn Vm.start_resumable(
+    mut self,
+    fobj ref JsObject,
+    fun syntax.Func,
+    env ref Env,
+    args List[Value],
+) Value ! Thrown
+    if fun.is_gen and fun.is_async
+        return syntax_error("Async generators are not supported yet")
+    if fun.is_async
+        promise := Value.Obj(new_promise())
+        p := obj_of(promise) else return promise
+        mut f := prepare_frame(fobj, fun, env, args) else err
+            if err.limit
+                return err
+            reject_promise(p, err.value)
+            return promise
+        f.promise = promise
+        frame_seq += 1
+        frames[frame_seq] = f
+        step_async(frame_seq, Completion(kind: "normal", value: Undef, target: -1))
+        return promise
+    f := prepare_frame(fobj, fun, env, args)?
+    frame_seq += 1
+    frames[frame_seq] = f
+    proto := get(Obj(fobj), "prototype")?
+    g := object("Generator", if is_obj(proto) then proto else proto_of("Generator"))
+    g.prim = Num(frame_seq.to_float())
+    Value.Obj(g)
+
+fn Vm.prepare_frame(
+    mut self,
+    fobj ref JsObject,
+    fun syntax.Func,
+    env ref Env,
+    args List[Value],
+) Frame ! Thrown
+    env.args = args
+    for i in 0..fun.params.len()
+        v := if i < args.len() then args[i] else Undef
+        bind_pattern(fun.params[i], v, env, "param")?
+    if r := fun.rest
+        tail := if fun.params.len() < args.len() then args[fun.params.len()..] else List[Value]()
+        bind_pattern(r, array(tail), env, "param")?
+    if fun.expr == none
+        hoist_vars(fun.body, env, true)
+        declare_block(fun.body, env)?
+    code := code_for(fobj, fun)?
+    Frame(
+        code: code,
+        pc: 0,
+        stack: [],
+        env: env,
+        scopes: [],
+        handlers: [],
+        completions: [],
+        state: "start",
+        promise: Undef,
+    )
+
+## Run an async function until it awaits or ends.
+fn Vm.step_async(mut self, id int, resume Completion)
+    mut f := take_frame(id) else return
+    p := obj_of(f.promise) else return
+    r := run_frame(mut f, resume) else err
+        if err.limit
+            stopped = true
+            report(uncaught_text(err))
+            return
+        reject_promise(p, err.value)
+        return
+    if r.kind == "return"
+        resolve_promise(p, r.value)
+        return
+    frames[id] = f
+    awaited := promise_resolve(r.value)
+    idv := Value.Num(id.to_float())
+    ok := closure_native("Async.resume", idv, [Bool(true)], 1)
+    fail := closure_native("Async.resume", idv, [Bool(false)], 1)
+    promise_then(awaited, ok, fail, Undef)
+
+pub fn Vm.async_native(mut self, name str, this_val Value, args List[Value]) Value ! Thrown
+    id := int_of(num_of(this_val) else -1.0)
+    ok := truthy(arg_at(args, 0))
+    step_async(id, Completion(
+        kind: if ok then "normal" else "throw",
+        value: arg_at(args, 1),
+        target: -1,
+    ))
+    Undef
+
+## Generator.prototype.next, return and throw (§27.5.1).
+pub fn Vm.generator_native(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    g := obj_of(this_val) else return type_error("next method called on incompatible receiver {describe(this_val)}")
+    if g.class != "Generator"
+        return type_error("next method called on incompatible receiver {describe(this_val)}")
+    id := int_of(num_of(g.prim) else -1.0)
+    a0 := arg_at(args, 0)
+    mut f := take_frame(id) else
+        # Finished, or running (taken out while it runs).
+        if self.running.contains(id)
+            return type_error("Generator is already running")
+        if m == "throw"
+            return thrown(a0)
+        return iter_result(if m == "return" then a0 else Undef, true)
+    if f.state == "start" and m != "next"
+        # Never started: it just ends (§27.5.3.3 step 8).
+        if m == "throw"
+            return thrown(a0)
+        return iter_result(a0, true)
+    kind := match m
+        "next" => "normal"
+        "return" => "return"
+        _ => "throw"
+    running.add(id)
+    r := run_frame(mut f, Completion(kind: kind, value: a0, target: -1)) else err
+        running.remove(id)
+        return err
+    running.remove(id)
+    if r.kind == "return"
+        return iter_result(r.value, true)
+    frames[id] = f
+    iter_result(r.value, false)
+
+fn Vm.iter_result(mut self, v Value, done bool) Value
+    r := plain()
+    r.props["value"] = data(v)
+    r.props["done"] = data(Bool(done))
+    Obj(r)
+
+## Run a frame from where it stopped until it suspends or ends. A throw out
+## of the frame is the error.
+pub fn Vm.run_frame(mut self, mut f Frame, resume Completion) Stop ! Thrown
+    if f.state == "start"
+        f.state = "running"
+        if resume.kind != "normal"
+            f.state = "done"
+            if resume.kind == "throw"
+                return thrown(resume.value)
+            return Stop(kind: "return", value: resume.value)
+    else
+        f.state = "running"
+        if resume.kind == "normal"
+            f.stack.push(resume.value)
+        else
+            if c := unwind(mut f, resume)
+                f.state = "done"
+                if c.kind == "throw"
+                    return thrown(c.value)
+                return Stop(kind: "return", value: c.value)
+    code := codes[f.code]
+    while true
+        stop := step(mut f, code) else err
+            if err.limit
+                return err
+            if c := unwind(mut f, Completion(kind: "throw", value: err.value, target: -1))
+                f.state = "done"
+                return thrown(c.value)
+            continue
+        if stop.kind == "return"
+            f.state = "done"
+            return stop
+        if stop.kind != ""
+            f.state = "suspended"
+            return stop
+    Stop(kind: "return", value: Undef)
+
+fn Vm.pop_value(mut self, mut f Frame) Value
+    f.stack.pop() else Undef
+
+## Leave code with completion `c`: run the `catch` or `finally` it meets,
+## or give it back when it leaves the frame (none: code goes on).
+fn Vm.unwind(mut self, mut f Frame, c Completion) Completion?
+    code := codes[f.code]
+    while f.handlers.len() > 0
+        if c.kind == "jump" and f.handlers.len() <= code.targets[c.target].handlers
+            break
+        h := f.handlers.pop() else break
+        restore(mut f, h.scopes, h.depth)
+        if c.kind == "throw" and h.catch_pc >= 0
+            f.stack.push(c.value)
+            f.pc = h.catch_pc
+            return none
+        if h.finally_pc >= 0
+            f.completions.push(c)
+            f.pc = h.finally_pc
+            return none
+    if c.kind == "jump"
+        t := code.targets[c.target]
+        restore(mut f, t.scopes, t.depth)
+        f.pc = t.pc
+        return none
+    c
+
+fn Vm.restore(mut self, mut f Frame, scopes int, depth int)
+    while f.scopes.len() > scopes
+        f.env = f.scopes.pop() else f.env
+    while f.stack.len() > depth
+        f.stack.pop()
+
+## Where a `break` or `continue` out of an `Exec` goes.
+fn find_target(code Code, ctx int, kind str, label str) int?
+    ids := code.ctxs[ctx]
+    mut i := ids.len() - 1
+    while i >= 0
+        t := code.targets[ids[i]]
+        if t.kind == kind
+            if label == "" and t.unlabelled or label != "" and t.labels.contains(label)
+                return ids[i]
+        i -= 1
+    none
+
+## Run one instruction; a `Stop` when the frame suspends or returns.
+fn Vm.step(mut self, mut f Frame, code Code) Stop ! Thrown
+    tick()?
+    ins := code.ops[f.pc]
+    f.pc += 1
+    match ins
+        Eval(e) => f.stack.push(eval(e, f.env)?)
+        Exec(s, ctx) =>
+            flow := exec(s, f.env)?
+            match flow
+                Normal => return GO
+                Ret(v) => return leave(mut f, Completion(kind: "return", value: v, target: -1))
+                Brk(label) =>
+                    t := find_target(
+                        code,
+                        ctx,
+                        "break",
+                        label,
+                    ) else return syntax_error("Illegal break statement")
+                    return leave(mut f, Completion(kind: "jump", value: Undef, target: t))
+                Cont(label) =>
+                    t := find_target(
+                        code,
+                        ctx,
+                        "continue",
+                        label,
+                    ) else return syntax_error("Illegal continue statement")
+                    return leave(mut f, Completion(kind: "jump", value: Undef, target: t))
+        Pop => pop_value(mut f)
+        Dup => f.stack.push(f.stack[f.stack.len() - 1])
+        Push(v) => f.stack.push(v)
+        Yield => return Stop(kind: "yield", value: pop_value(mut f))
+        Await => return Stop(kind: "await", value: pop_value(mut f))
+        Delegate(end) =>
+            sent := pop_value(mut f)
+            it := f.stack[f.stack.len() - 1]
+            r := call(get(it, "next")?, it, [sent])?
+            if not is_obj(r)
+                return type_error("Iterator result {describe(r)} is not an object")
+            if truthy(get(r, "done")?)
+                pop_value(mut f)
+                f.stack.push(get(r, "value")?)
+                f.pc = end
+                return GO
+            return Stop(kind: "yield", value: get(r, "value")?)
+        GetIter =>
+            v := pop_value(mut f)
+            m := get(v, ITERATOR)?
+            if not is_callable(m)
+                return type_error("{describe(v)} is not iterable")
+            f.stack.push(call(m, v, [])?)
+        Jump(to) => f.pc = to
+        JumpIf(to) =>
+            if truthy(pop_value(mut f))
+                f.pc = to
+        JumpIfNot(to) =>
+            if not truthy(pop_value(mut f))
+                f.pc = to
+        JumpIfNotNullish(to) =>
+            if not is_nullish(pop_value(mut f))
+                f.pc = to
+        Binary(op) =>
+            b := pop_value(mut f)
+            a := pop_value(mut f)
+            f.stack.push(binary(op, a, b)?)
+        Unary(op) =>
+            v := pop_value(mut f)
+            r := match op
+                "typeof" => Value.Str(type_of(v))
+                "!" => Value.Bool(not truthy(v))
+                "-" => Value.Num(-to_number(v)?)
+                "+" => Value.Num(to_number(v)?)
+                "~" => Value.Num(to_int32(to_number(v)?).bit_not().to_float())
+                _ => Value.Undef
+            f.stack.push(r)
+        GetProp(key) =>
+            base := pop_value(mut f)
+            f.stack.push(get(base, key)?)
+        GetElem =>
+            key := pop_value(mut f)
+            base := pop_value(mut f)
+            f.stack.push(get(base, to_key(key)?)?)
+        PutProp(key) =>
+            v := pop_value(mut f)
+            base := pop_value(mut f)
+            put(base, key, v)?
+            f.stack.push(v)
+        PutElem =>
+            v := pop_value(mut f)
+            key := pop_value(mut f)
+            base := pop_value(mut f)
+            put(base, to_key(key)?, v)?
+            f.stack.push(v)
+        AssignPat(p) => bind_pattern(p, f.stack[f.stack.len() - 1], f.env, "assign")?
+        BindPat(p, kind) => bind_pattern(p, pop_value(mut f), f.env, kind)?
+        NewList => f.stack.push(array([]))
+        Append =>
+            v := pop_value(mut f)
+            if o := obj_of(f.stack[f.stack.len() - 1])
+                o.elems.push(v)
+        AppendSpread =>
+            v := pop_value(mut f)
+            items := iterate(v)?
+            if o := obj_of(f.stack[f.stack.len() - 1])
+                o.elems.extend(items)
+        Call(callee) =>
+            list := pop_value(mut f)
+            fv := pop_value(mut f)
+            this_val := pop_value(mut f)
+            args := if o := obj_of(list) then o.elems else List[Value]()
+            if not is_callable(fv)
+                return type_error("{expr_text(callee)} is not a function")
+            f.stack.push(call(fv, this_val, args)?)
+        Construct(callee) =>
+            list := pop_value(mut f)
+            fv := pop_value(mut f)
+            args := if o := obj_of(list) then o.elems else List[Value]()
+            if not is_constructor(fv)
+                return type_error("{expr_text(callee)} is not a constructor")
+            f.stack.push(construct(fv, args, fv)?)
+        NewObject => f.stack.push(Obj(plain()))
+        ObjProp(p) =>
+            if o := obj_of(f.stack[f.stack.len() - 1])
+                literal_prop(o, p, f.env)?
+        ObjInit(key) =>
+            v := pop_value(mut f)
+            if o := obj_of(f.stack[f.stack.len() - 1])
+                define(o, key, data(v))?
+        ObjComputed =>
+            v := pop_value(mut f)
+            key := to_key(pop_value(mut f))?
+            if o := obj_of(f.stack[f.stack.len() - 1])
+                define(o, key, data(v))?
+        ObjSpread =>
+            v := pop_value(mut f)
+            if o := obj_of(f.stack[f.stack.len() - 1])
+                if not is_nullish(v)
+                    src := to_object(v)?
+                    for k in enum_keys(src)
+                        define(o, k, data(get(v, k)?))?
+        Concat(quasis) =>
+            n := quasis.len() - 1
+            mut parts := List[Value]()
+            for _ in 0..n
+                parts.push(pop_value(mut f))
+            parts.reverse()
+            mut out := quasis[0]
+            for i in 0..n
+                out = "{out}{to_string(parts[i])?}{quasis[i + 1]}"
+            f.stack.push(Str(out))
+        Return => return leave(mut f, Completion(
+            kind: "return",
+            value: pop_value(mut f),
+            target: -1,
+        ))
+        Throw => return thrown(pop_value(mut f))
+        PushScope(body) =>
+            f.scopes.push(f.env)
+            f.env = new_env(f.env, false)
+            declare_block(body, f.env)?
+        PopScope =>
+            f.env = f.scopes.pop() else f.env
+        CopyScope => f.env = copy_env(f.env)
+        TryPush(catch_pc, finally_pc) =>
+            f.handlers.push(Handler(
+                catch_pc: catch_pc,
+                finally_pc: finally_pc,
+                scopes: f.scopes.len(),
+                depth: f.stack.len(),
+            ))
+        TryPop => f.handlers.pop()
+        CatchParam(param) =>
+            v := pop_value(mut f)
+            f.scopes.push(f.env)
+            f.env = new_env(f.env, false)
+            if p := param
+                for name in pattern_names(p)
+                    f.env.vars[name] = Binding(value: Undef, mutable: true, ready: true)
+                bind_pattern(p, v, f.env, "let")?
+        NormalCompletion => f.completions.push(Completion(kind: "normal", value: Undef, target: -1))
+        EndFinally =>
+            c := f.completions.pop() else return GO
+            if c.kind != "normal"
+                return leave(mut f, c)
+        IterInit(of) =>
+            subject := pop_value(mut f)
+            if of
+                f.stack.push(open_iterator(subject)?)
+            else
+                mut keys := List[Value]()
+                if not is_nullish(subject)
+                    for k in for_in_keys(to_object(subject)?)
+                        keys.push(Str(k))
+                f.stack.push(list_iterator(keys, "Array Iterator"))
+        IterNext(end) =>
+            it := f.stack[f.stack.len() - 1]
+            r := call(get(it, "next")?, it, [])?
+            if not is_obj(r)
+                return type_error("Iterator result {describe(r)} is not an object")
+            if truthy(get(r, "done")?)
+                pop_value(mut f)
+                f.pc = end
+            else
+                f.stack.push(get(r, "value")?)
+        BindLeft(left) =>
+            v := pop_value(mut f)
+            match left
+                LeftDecl(d) => bind_pattern(d.decls[0].target, v, f.env, d.kind)?
+                LeftPat(p) => bind_pattern(p, v, f.env, "assign")?
+        CaseTest(to) =>
+            test := pop_value(mut f)
+            if f.stack[f.stack.len() - 1] == test
+                pop_value(mut f)
+                f.pc = to
+    GO
+
+## A return or a jump out of compiled code: through the `finally` blocks in
+## the way. A `Stop` when it leaves the frame.
+fn Vm.leave(mut self, mut f Frame, c Completion) Stop ! Thrown
+    left := unwind(mut f, c) else return GO
+    if left.kind == "throw"
+        return thrown(left.value)
+    Stop(kind: "return", value: left.value)
+
+## An iterator for `for-of` over `v` (§7.4.2 GetIterator).
+pub fn Vm.open_iterator(mut self, v Value) Value ! Thrown
+    if is_nullish(v)
+        return type_error("{describe(v)} is not iterable")
+    m := get(v, ITERATOR)?
+    if not is_callable(m)
+        return type_error("{describe(v)} is not iterable")
+    it := call(m, v, [])?
+    if not is_obj(it)
+        return type_error("Result of the Symbol.iterator method is not an object")
+    it

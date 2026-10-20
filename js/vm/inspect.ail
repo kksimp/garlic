@@ -180,6 +180,18 @@ fn Vm.show_object(self, mut st Inspector, o ref JsObject, depth int) str
             output.push(show(mut st, x, depth + 1, true))
     elif is_fn
         base = fn_base(o)
+    elif o.class == "Promise"
+        open = "Promise \{"
+        state := state_of(o)
+        result := hidden_of(o, "{PRIVATE}result")
+        shown := show(mut st, result, depth + 1, true)
+        entry := match state
+            "pending" => "<pending>"
+            "rejected" => "<rejected> {shown}"
+            _ => shown
+        output.push(entry)
+    elif o.class == "Generator"
+        open = "Object [Generator] \{"
     elif o.class == "Number" or o.class == "String" or o.class == "Boolean"
         base = "[{o.class}: {show(mut st, o.prim, depth + 1, true)}]"
     elif o.class == "RegExp"
