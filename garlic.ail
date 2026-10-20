@@ -12,6 +12,7 @@ use std.net
 use std.ui
 use html
 use page
+use css
 
 ## The keys, as `--keys` prints them.
 KEYS := [
@@ -49,6 +50,8 @@ enum Prompt
 struct Browser
     url str
     doc html.Doc
+    ## The page's linked style sheets (`<link rel=stylesheet>`), as one.
+    sheet css.Sheet
     pg page.Page
     scroll int
     focus int
@@ -60,6 +63,12 @@ struct Browser
     last_find str
     ## Whether the page model lists only the viewport's nodes (`--viewport`).
     viewport_only bool
+    ## The page model's size limit in tokens (`--budget N`), 0 for none.
+    budget int
+    ## Whether `--session` answers with diffs (`--diff`), and what it last sent.
+    diff bool
+    last_url str
+    last_nodes Map[int, str]
 
 ## The headers Garlic sends: who it is, and that it wants HTML.
 fn options() net.Options
@@ -93,12 +102,43 @@ fn fetch(url str, method str, body str) str
 fn error_page(url str, why str) str
     "<title>Can't open {url}</title><h1>Can't open this page</h1><p>{url}</p><p>{why}</p>"
 
+## At most this many linked style sheets are fetched per page.
+MAX_SHEETS := 8
+
+## The page's linked style sheets, fetched and parsed in document order.
+fn linked_sheets(d html.Doc, url str) css.Sheet
+    mut all := css.parse("", 0)
+    mut n := 0
+    for l in d.all("link")
+        rel := (d.attr(l, "rel") else "").to_lower().split(" ")
+        media := (d.attr(l, "media") else "all").to_lower()
+        if not rel.contains("stylesheet")
+            or rel.contains("alternate")
+            or not (media.contains("all") or media.contains("screen"))
+            continue
+        href := d.attr(l, "href") else continue
+        if n == MAX_SHEETS
+            break
+        n += 1
+        all = css.concat(all, css.parse(fetch_text(page.resolve(url, href)), 0))
+    all
+
+## The text of a sub-resource, or "" when it can't be fetched.
+fn fetch_text(url str) str
+    s := page.scheme(url)
+    if s == "http" or s == "https"
+        r := net.request("GET", url, options()) else return ""
+        return if r.status < 400 then r.body else ""
+    fs.read_text(url.strip_prefix("file://") else url) else ""
+
 fn Browser.new(url str, width int, height int) Browser
     d := html.parse(fetch(url, "GET", ""))
+    sheet := linked_sheets(d, url)
     Browser(
         url,
         doc: d,
-        pg: page.layout(d, url, width),
+        sheet,
+        pg: page.layout_with(d, url, width, sheet),
         scroll: 0,
         focus: 0,
         width,
@@ -108,6 +148,10 @@ fn Browser.new(url str, width int, height int) Browser
         prompt: Status,
         last_find: "",
         viewport_only: false,
+        budget: 0,
+        diff: false,
+        last_url: "",
+        last_nodes: {},
     )
 
 ## Rows of page the window shows: all but the status row.
@@ -122,7 +166,7 @@ fn Browser.scroll_to(mut self, row int)
 
 ## Lays the page out again, after a resize or a change to a form control.
 fn Browser.relayout(mut self)
-    pg = page.layout(doc, url, width)
+    pg = page.layout_with(doc, url, width, sheet)
     scroll_to(scroll)
 
 ## Opens `target`, remembering the current page for Back.
@@ -133,7 +177,8 @@ fn Browser.go(mut self, target str)
 fn Browser.load(mut self, target str, method str, body str)
     url = target
     doc = html.parse(fetch(target, method, body))
-    pg = page.layout(doc, url, width)
+    sheet = linked_sheets(doc, url)
+    pg = page.layout_with(doc, url, width, sheet)
     scroll = 0
     focus = 0
     message = ""
@@ -418,12 +463,38 @@ fn Browser.act(mut self, name str, arg str) bool
         prompt = Status
     true
 
-## The page model of the viewport, with the last action's message.
+## The page model, within the token budget if one is set, with the last
+## action's message.
 fn Browser.model(self) str
-    j := pg.to_json(scroll, view(), viewport_only)
+    if budget > 0
+        return with_message(pg.to_json_budget(scroll, view(), budget * 4))
+    with_message(pg.to_json(scroll, view(), viewport_only))
+
+fn Browser.with_message(self, j str) str
     if message == ""
         return j
     j.replace(",\"nodes\":[", ",\"message\":{page.quote(message)},\"nodes\":[")
+
+## The page model as a diff from the last one sent on this page: the nodes
+## that are new or changed (`visible` included), and the ids `removed`.
+## The whole model after loading a page.
+fn Browser.diff_model(mut self) str
+    now := pg.node_objects(scroll, view())
+    if url != last_url
+        last_url = url
+        last_nodes = now
+        return model()
+    changed := [now[k] for k in now.keys() if last_nodes.get(k) != now[k]]
+    removed := [k for k in last_nodes.keys() if not now.contains(k)]
+    last_nodes = now
+    head := pg.head_json(scroll, view())
+    with_message("\{{head},\"diff\":true,\"removed\":[{removed.join(",")}],\"nodes\":[{changed.join(",")}]}")
+
+## The model `--session` sends: a diff with `--diff`, else the whole model.
+fn Browser.answer(mut self) str
+    if diff
+        return diff_model()
+    model()
 
 ## One action from a session line: `\{"do":"follow","link":3}`. The
 ## argument is `link`, `id` or `row` (a number), or `url` or `text`; with
@@ -445,13 +516,13 @@ fn Browser.act_json(mut self, line str)
 ## `--session`: reads one JSON action per line on stdin and answers each
 ## with the page model on one line, so an agent keeps one browser open.
 fn Browser.session(mut self)
-    print(model())
+    print(answer())
     while true
         line := io.read_line() else break
         if line.trim() == ""
             continue
         act_json(line)
-        print(model())
+        print(answer())
 
 ## The target node drawn at window cell (`col`, `row`), or none.
 fn Browser.target_at(self, col int, row int) int?
@@ -544,7 +615,7 @@ fn flag(args List[str], name str) str?
     if at + 1 < args.len() then args[at + 1] else none
 
 fn usage()
-    print("usage: ail run tools/garlic/garlic.ail [--width N] [--height N] [--follow N | --find TEXT | --do ACTION:ARG]... [--viewport] [--print | --json | --links | --session | --keys] URL|FILE")
+    print("usage: ail run tools/garlic/garlic.ail [--width N] [--height N] [--follow N | --find TEXT | --do ACTION:ARG]... [--viewport] [--budget TOKENS] [--diff] [--print | --json | --links | --session | --keys] URL|FILE")
 
 fn main() !
     args := env.args()
@@ -559,6 +630,8 @@ fn main() !
     height := (flag(args, "--height") else "32").to_int() else 32
     mut b := Browser.new(args[args.len() - 1], width, height)
     b.viewport_only = args.contains("--viewport")
+    b.diff = args.contains("--diff")
+    b.budget = (flag(args, "--budget") else "0").to_int() else 0
     for k in 0..args.len() - 1
         if args[k] == "--follow"
             b.follow(args[k + 1].to_int() else 0)
@@ -898,6 +971,67 @@ fn node_with(b Browser, tag str, attr str, value str) int
     assert(d.changed.contains(p) and d.changed.contains(li))
     d.detach(p)
     assert_eq(d.text(0), "x")
+
+@test fn css_selectors_parse_and_match()
+    d := html.parse("<div id=m class='a b'><p class=x>1</p><ul><li><a href=h>2</a></ul></div>")
+    p := d.first("p")?
+    a := d.first("a")?
+    assert(css.matches(d, p, css.selector("div#m > p.x")?))
+    assert(css.matches(d, a, css.selector("#m a[href]")?))
+    assert(css.matches(d, a, css.selector(".a.b li a[href=h]")?))
+    assert(not css.matches(d, a, css.selector("div > a")?))
+    assert(not css.matches(d, p, css.selector("p.y")?))
+    assert(css.selector("a:hover") == none)
+
+@test fn css_cascade_specificity_order_important_and_inline()
+    sheet := css.parse(
+        "p \{ display: none } .x \{ display: block; font-weight: bold } /* c */ @media print \{ p \{ display: inline } } p \{ font-style: italic !important } #y \{ font-style: normal }",
+        0,
+    )
+    d := html.parse("<p class=x id=y style='font-weight: normal'>t</p>")
+    got := css.cascade(d, d.first("p")?, sheet)
+    assert_eq(got["display"], "block")
+    assert_eq(got["font-weight"], "normal")
+    assert_eq(got["font-style"], "italic")
+
+@test fn css_hides_inlines_and_styles_text()
+    src := """
+        <style>.skip, nav \{ display: none } .tag \{ display: inline } .up \{ text-transform: uppercase } b.plain \{ font-weight: normal }</style>
+        <nav>menu</nav><a class=skip href=x>skip</a>
+        <p>one</p><p class=tag>two</p>
+        <span class=up>loud</span> <b class=plain>soft</b>
+        """
+    p := lay(src, 40)
+    assert_eq(p.text(), "one\n\ntwo LOUD soft")
+    assert_eq(p.links.len(), 0)
+    soft := [r for r in p.rows[p.rows.len() - 1] if r.text.contains("soft")]
+    assert(not soft[0].style.bold)
+
+@test fn linked_style_sheets_apply()
+    b := Browser.new("{testdata()}/styled.html", 60, 12)
+    assert_eq(b.pg.text(), "# Styled\n\nshown")
+
+@test fn session_diffs_report_only_what_changed()
+    mut b := Browser.new("{testdata()}/form.html", 80, 30)
+    b.diff = true
+    first := b.answer()
+    assert(first.contains("\"nodes\":[") and not first.contains("\"diff\""))
+    q := node_with(b, "input", "name", "q")
+    b.act("type", "{q}=x")
+    d := b.answer()
+    assert(d.contains("\"diff\":true,\"removed\":[],\"nodes\":[\{\"id\":{q},"))
+    assert(d.split("\"id\":").len() < first.split("\"id\":").len())
+    assert_eq(b.answer().split("\"id\":").len(), 1)
+
+@test fn budgets_keep_the_viewport_then_key_nodes()
+    pg := Browser.new("/dev/null", 60, 4).pg
+    assert(pg.to_json_budget(0, 4, 400).contains("\"omitted\":0"))
+    mut b := Browser.new("{testdata()}/index.html", 60, 4)
+    full := b.pg.to_json(0, 3, false)
+    small := b.pg.to_json_budget(0, 3, 900)
+    assert(small.chars().len() <= 900 and small.chars().len() < full.chars().len())
+    assert(small.contains("\"name\":\"Second page\"") and small.contains("\"role\":\"heading\",\"name\":\"Features\""))
+    assert(not small.contains("\"omitted\":0"))
 
 @test fn browser_finds_text_and_scrolls()
     dir := testdata()

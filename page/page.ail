@@ -6,6 +6,7 @@
 ## name and the cells it was drawn in.
 
 use html
+use css
 
 ## How a run is drawn. `link` is the link's number (1-based), 0 if none;
 ## `heading` the heading level, 0 if none.
@@ -18,6 +19,8 @@ pub struct Style
     pub heading int
     ## The target's number (1-based) for focus, 0 if none.
     pub target int
+    ## `text-transform: uppercase`.
+    pub upper bool
 
 ## Text drawn in one style on one row, starting at column `col`.
 pub struct Run
@@ -218,6 +221,7 @@ struct Flow
     open List[int]
     links List[int]
     base str
+    sheet css.Sheet
 
 ## Whether the current row has text beyond its indentation.
 fn Flow.dirty(self) bool
@@ -261,6 +265,7 @@ fn Flow.start_row(mut self)
             link: 0,
             heading: 0,
             target: 0,
+            upper: false,
         )
         cur.push(Run(col: 0, text, style: q))
     col = text.chars().len()
@@ -322,7 +327,8 @@ fn Flow.word(mut self, w str)
 
 ## Flows text: words wrapped with whitespace collapsed, or kept as is
 ## inside `pre`.
-fn Flow.text(mut self, s str)
+fn Flow.text(mut self, raw str)
+    s := if style.upper then raw.to_upper() else raw
     if pre > 0
         lines := s.split("\n")
         for k in 0..lines.len()
@@ -444,13 +450,12 @@ fn label_of(d html.Doc, id int) str
 
 HEADINGS_LEVEL := {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
 
-## Whether element `id` is hidden: by its tag, `hidden`, or an inline
-## `display: none`.
+## Whether element `id` is hidden by its tag or `hidden`.
 fn Flow.hidden(self, id int, tag str) bool
-    if HIDDEN.contains(tag) or d.attr(id, "hidden") != none
-        return true
-    css := (d.attr(id, "style") else "").replace(" ", "").to_lower()
-    css.contains("display:none")
+    HIDDEN.contains(tag) or d.attr(id, "hidden") != none
+
+## Display values that start a block; `none` and the inline ones don't.
+BLOCK_DISPLAY := {"block", "flex", "grid", "list-item", "table", "table-row", "flow-root"}
 
 fn Flow.node(mut self, id int)
     n := d.nodes[id]
@@ -467,9 +472,13 @@ fn Flow.element(mut self, id int)
     tag := d.nodes[id].tag
     if tag != "#document" and hidden(id, tag)
         return
-    block := BLOCKS.contains(tag)
+    cs := if tag == "#document" then Map[str, str]() else css.cascade(d, id, sheet)
+    display := cs.get("display") else ""
+    if display == "none" or cs.get("visibility") == "hidden"
+        return
+    block := if display == "" then BLOCKS.contains(tag) else BLOCK_DISPLAY.contains(display)
     nested := (tag == "ul" or tag == "ol") and nested_list(id)
-    spaced := SPACED.contains(tag) and not nested
+    spaced := SPACED.contains(tag) and not nested and block
     if spaced
         gap()
     elif block
@@ -499,6 +508,23 @@ fn Flow.element(mut self, id int)
         "i" | "em" | "cite" | "var" => style.italic = true
         "code" | "kbd" | "samp" | "tt" => style.code = true
         "pre" => pre += 1
+        _ => style.bold = style.bold
+    if w := cs.get("font-weight")
+        style.bold = w == "bold"
+            or w == "bolder"
+            or w == "600"
+            or w == "700"
+            or w == "800"
+            or w == "900"
+    if fs := cs.get("font-style")
+        style.italic = fs == "italic" or fs == "oblique"
+    if tt := cs.get("text-transform")
+        style.upper = tt == "uppercase"
+    ws := cs.get("white-space") else ""
+    styled_pre := tag != "pre" and (ws == "pre" or ws == "pre-wrap")
+    if styled_pre
+        pre += 1
+    match tag
         "a" =>
             if bi := b
                 style.link = boxes[bi].link
@@ -551,7 +577,7 @@ fn Flow.element(mut self, id int)
             style = saved
             put("[{boxes[bi].link}]")
     style = saved
-    if tag == "pre"
+    if tag == "pre" or styled_pre
         pre -= 1
     if indented
         indents.pop()
@@ -584,8 +610,13 @@ fn Flow.list_marker(self, id int) str
             n += 1
     "{n}. "
 
-## Lays `d` out at `width` columns; `url` resolves relative links.
+## Lays `d` out at `width` columns; `url` resolves relative links. The
+## document's own `<style>` sheets apply.
 pub fn layout(d html.Doc, url str, width int) Page
+    layout_with(d, url, width, css.parse("", 0))
+
+## Lays `d` out with `sheet` (its linked style sheets) before its own.
+pub fn layout_with(d html.Doc, url str, width int, sheet css.Sheet) Page
     plain := Style(
         bold: false,
         italic: false,
@@ -594,6 +625,7 @@ pub fn layout(d html.Doc, url str, width int) Page
         link: 0,
         heading: 0,
         target: 0,
+        upper: false,
     )
     mut f := Flow(
         d,
@@ -611,6 +643,7 @@ pub fn layout(d html.Doc, url str, width int) Page
         open: [],
         links: [],
         base: url,
+        sheet: css.concat(sheet, css.document_sheet(d)),
     )
     f.node(0)
     f.break_row()
@@ -655,12 +688,30 @@ pub fn Page.find(self, needle str, from int) int?
 ## from row `scroll`, and every box with whether it shows in the viewport;
 ## only the boxes in the viewport when `viewport_only`, to save tokens.
 pub fn Page.to_json(self, scroll int, height int, viewport_only bool) str
+    nodes := node_objects(scroll, height)
     mut out := List[str]()
     for b in boxes
+        if text := nodes.get(b.id)
+            if not viewport_only or is_visible(b, scroll, height)
+                out.push(text)
+    "\{{head_json(scroll, height)},\"nodes\":[{out.join(",")}]}"
+
+## Whether any of box `b` is in the viewport.
+fn is_visible(b Box, scroll int, height int) bool
+    b.row >= 0 and b.row < scroll + height and b.end_row > scroll
+
+## The model's members before `nodes`: where the page is and what changed.
+pub fn Page.head_json(self, scroll int, height int) str
+    mut head := "\"api\":1,\"url\":{quote(url)},\"title\":{quote(title)},\"width\":{width},\"height\":{height},\"scroll\":{scroll},\"rows\":{rows.len()}"
+    if changed.len() > 0
+        head = "{head},\"changed\":[{changed.join(",")}]"
+    head
+
+## Each drawn box as its JSON object, by node id, in document order.
+pub fn Page.node_objects(self, scroll int, height int) Map[int, str]
+    mut out := Map[int, str]()
+    for b in boxes
         if b.row < 0
-            continue
-        vis := b.row < scroll + height and b.end_row > scroll
-        if viewport_only and not vis
             continue
         mut parts := ["\"id\":{b.id}", "\"role\":{quote(b.role)}", "\"name\":{quote(b.name)}"]
         if b.level > 0
@@ -668,7 +719,7 @@ pub fn Page.to_json(self, scroll int, height int, viewport_only bool) str
         if b.href != ""
             parts.push("\"href\":{quote(b.href)}")
         parts.push("\"row\":{b.row},\"col\":{b.col},\"end_row\":{b.end_row},\"end_col\":{b.end_col}")
-        parts.push("\"visible\":{vis}")
+        parts.push("\"visible\":{is_visible(b, scroll, height)}")
         if b.link > 0
             parts.push("\"link\":{b.link}")
         if b.role == "textbox" or b.role == "combobox"
@@ -677,11 +728,32 @@ pub fn Page.to_json(self, scroll int, height int, viewport_only bool) str
             parts.push("\"checked\":{b.checked}")
         if acts := ACTIONS.get(b.role)
             parts.push("\"actions\":[{[quote(a) for a in acts].join(",")}]")
-        out.push("\{{parts.join(",")}}")
-    mut head := "\"api\":1,\"url\":{quote(url)},\"title\":{quote(title)},\"width\":{width},\"height\":{height},\"scroll\":{scroll},\"rows\":{rows.len()}"
-    if changed.len() > 0
-        head = "{head},\"changed\":[{changed.join(",")}]"
-    "\{{head},\"nodes\":[{out.join(",")}]}"
+        out[b.id] = "\{{parts.join(",")}}"
+    out
+
+## The model in at most about `max_chars` characters: the viewport's nodes
+## first, then headings, links and form controls, then the rest, each in
+## document order; `"omitted"` counts the nodes left out.
+pub fn Page.to_json_budget(self, scroll int, height int, max_chars int) str
+    nodes := node_objects(scroll, height)
+    mut keep := Set[int]()
+    mut size := head_json(scroll, height).chars().len() + 40
+    for pass in 0..3
+        for b in boxes
+            text := nodes.get(b.id) else continue
+            vis := is_visible(b, scroll, height)
+            key := b.role == "heading" or ACTIONS.contains(b.role)
+            wanted := if pass == 0 then vis else (if pass == 1 then key else true)
+            if not wanted or keep.contains(b.id)
+                continue
+            n := text.chars().len() + 1
+            if size + n > max_chars
+                continue
+            keep.add(b.id)
+            size += n
+    out := [nodes[b.id] for b in boxes if keep.contains(b.id)]
+    omitted := nodes.len() - out.len()
+    "\{{head_json(scroll, height)},\"omitted\":{omitted},\"nodes\":[{out.join(",")}]}"
 
 ## `s` as a JSON string.
 pub fn quote(s str) str
