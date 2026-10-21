@@ -247,16 +247,17 @@ fn linked_sheets(d html.Doc, url str) css.Sheet
     mut n := 0
     for l in d.all("link")
         rel := (d.attr(l, "rel") else "").to_lower().split(" ")
-        media := (d.attr(l, "media") else "all").to_lower()
-        if not rel.contains("stylesheet")
-            or rel.contains("alternate")
-            or not (media.contains("all") or media.contains("screen"))
+        media := (d.attr(l, "media") else "").trim()
+        ## A sheet for print, or for no window width at all, isn't fetched;
+        ## the rest apply by the window's width at layout.
+        fits := css.media_matches(media, 320) or css.media_matches(media, 2000)
+        if not rel.contains("stylesheet") or rel.contains("alternate") or not fits
             continue
         href := d.attr(l, "href") else continue
         if n == MAX_SHEETS
             break
         n += 1
-        all = css.concat(all, css.parse(fetch_text(page.resolve(url, href)), 0))
+        all = css.concat(all, css.parse_in(fetch_text(page.resolve(url, href)), 0, media))
     all
 
 ## The text of a sub-resource, or "" when it can't be fetched.
@@ -1133,6 +1134,39 @@ fn testdata() str
         all_headers: {},
     )
     assert_eq(body_text(raw), doc)
+
+@test fn data_tables_line_up_in_columns()
+    src := """
+        <table><thead><tr><th>Lang</th><th>Site</th></tr></thead>
+        <tr><td>AIL</td><td><a href=/ail>home</a></td></tr>
+        <tr><td>Go</td><td><a href=/go>go.dev</a> and more</td></tr></table>
+        """
+    assert_eq(lay(src, 60).text(), "Lang | Site\nAIL  | home[1]\nGo   | go.dev[2] and more")
+    narrow := lay(src, 12)
+    assert(narrow.text().starts_with("Lang | Site\nAIL | home[1]"))
+    layout := "<table><tr><td><p>Menu</p></td><td>x</td></tr><tr><td>a</td><td>bb</td></tr></table>"
+    assert(lay(layout, 60).text().ends_with("a | bb"))
+    span := "<table><tr><td colspan=2>Wide</td></tr><tr><td>a</td><td>b</td></tr><tr><td>ccc</td><td>d</td></tr></table>"
+    assert(lay(span, 60).text().ends_with("ccc | d"))
+    p := lay(src, 60)
+    cells := [b for b in p.boxes if b.role == "cell"]
+    assert_eq(cells[2].col, cells[4].col)
+
+@test fn media_queries_follow_the_window_width()
+    assert(css.media_matches("", 800))
+    assert(css.media_matches("screen and (max-width: 600px)", 480))
+    assert(not css.media_matches("screen and (max-width: 600px)", 800))
+    assert(css.media_matches("print, (min-width: 40em)", 800))
+    assert(not css.media_matches("print", 800))
+    assert(css.media_matches("not print", 800))
+    assert(css.media_matches("(width >= 700px)", 800))
+    assert(not css.media_matches("(prefers-color-scheme: dark)", 800))
+    src := """
+        <style>.wide \{ display: none } @media (min-width: 640px) \{ .wide \{ display: block } .narrow \{ display: none } }</style>
+        <p class=wide>Wide layout</p><p class=narrow>Narrow layout</p>
+        """
+    assert_eq(lay(src, 100).text(), "Wide layout")
+    assert_eq(lay(src, 60).text(), "Narrow layout")
 
 @test fn agent_actions_follow_click_back_and_report()
     mut b := Browser.new("{testdata()}/index.html", 60, 12)
