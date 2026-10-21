@@ -18,6 +18,7 @@ use html
 use page
 use css
 use draw
+use gfx
 use jsdom
 
 ## The keys, as `--keys` prints them.
@@ -66,6 +67,8 @@ struct Browser
     last_nodes Map[int, str]
     ## Cookies from responses and scripts, sent back to their sites.
     cj jar.Jar
+    ## Counts page layouts, so the pixel window knows when to lay out again.
+    stamp int
 
 ## The headers Garlic sends: who it is, and that it wants HTML.
 fn options() net.Options
@@ -344,6 +347,7 @@ fn Browser.new(url str, width int, height int) Browser
         last_url: "",
         last_nodes: {},
         cj: jar.new(),
+        stamp: 0,
     )
     b.load(url, "GET", "")
     b
@@ -361,6 +365,7 @@ fn Browser.scroll_to(mut self, row int)
 ## Lays the page out again, after a resize or a change to a form control.
 fn Browser.relayout(mut self)
     pg = page.layout_with(doc, url, width, sheet)
+    stamp += 1
     scroll_to(scroll)
 
 ## Opens `target`, remembering the current page for Back.
@@ -374,6 +379,7 @@ fn Browser.load(mut self, target str, method str, body str)
     doc = loaded.doc
     sheet = linked_sheets(doc, url)
     pg = page.layout_with(doc, url, width, sheet)
+    stamp += 1
     scroll = 0
     focus = 0
     message = ""
@@ -820,9 +826,33 @@ struct Gui
     ## The page area's size in points, as the host last reported it.
     area_w float
     area_h float
+    ## Pixel layout (`gfx`) instead of text cells: the laid-out page, the
+    ## page layout it was made from (`Browser.stamp`) and its width, and how
+    ## far down it is scrolled, in points.
+    pixel bool
+    scene gfx.Scene
+    scene_stamp int
+    scene_w float
+    scene_url str
+    top float
 
 fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
-    mut g := Gui(b, cell_w, cell_h, cols: 1, rows: 1, pending: 0.0, area_w: w, area_h: h)
+    mut g := Gui(
+        b,
+        cell_w,
+        cell_h,
+        cols: 1,
+        rows: 1,
+        pending: 0.0,
+        area_w: w,
+        area_h: h,
+        pixel: false,
+        scene: gfx.Scene(ops: [], hits: [], height: 0.0, bg: 0xffffff),
+        scene_stamp: -1,
+        scene_w: 0.0,
+        scene_url: "",
+        top: 0.0,
+    )
     g.resize(w, h, cell_w, cell_h)
     g
 
@@ -839,9 +869,28 @@ fn Gui.resize(mut self, w float, h float, cw float, ch float)
     b.width = cols
     b.height = rows + 1
     b.relayout()
+    refresh()
+
+## Lays the page out in pixels again when the page or the window width has
+## changed since the last time.
+fn Gui.refresh(mut self)
+    if not pixel
+        return
+    if b.stamp != scene_stamp or area_w != scene_w
+        scene = gfx.layout(b.doc, b.url, area_w, b.sheet)
+        scene_stamp = b.stamp
+        scene_w = area_w
+        if b.url != scene_url
+            top = 0.0
+            scene_url = b.url
+    top = top.max(0.0).min((scene.height - area_h).max(0.0))
 
 ## A click at (`x`, `y`) points in the page area: uses the target there.
 fn Gui.click(mut self, x float, y float)
+    if pixel
+        if href := scene.link_at(x, y + top)
+            b.go(href)
+        return
     at := draw.cell_at(x, y, cell_w, cell_h)
     if id := b.target_at(at.0, at.1)
         b.activate(id)
@@ -849,6 +898,9 @@ fn Gui.click(mut self, x float, y float)
 ## A scroll of `dy` points, positive towards the end of the page. Whole
 ## rows move the page; the rest waits for the next scroll.
 fn Gui.scroll(mut self, dy float)
+    if pixel
+        top = (top + dy).max(0.0).min((scene.height - area_h).max(0.0))
+        return
     pending += dy
     lines := (pending / cell_h).to_int()
     if lines != 0
@@ -858,6 +910,17 @@ fn Gui.scroll(mut self, dy float)
 ## A key in the page area, by the `std.ui` names. False when it asks to quit.
 fn Gui.key(mut self, key str, alt bool, shift bool) bool
     pending = 0.0
+    if pixel
+        page_h := area_h * 0.9
+        match key
+            "down" | "j" => scroll(40.0)
+            "up" | "k" => scroll(-40.0)
+            "pagedown" | "space" => scroll(if shift then 0.0 - page_h else page_h)
+            "pageup" => scroll(0.0 - page_h)
+            "home" => top = 0.0
+            "end" => top = scene.height
+            _ => return b.key(key, alt, shift)
+        return true
     b.key(key, alt, shift)
 
 ## What a typed address means: a URL as it is, a path to a file that exists
@@ -874,8 +937,16 @@ fn Gui.open(mut self, text str)
     if t != ""
         b.go(t)
 
+## The status line: the address in pixel mode, else the cell view's status.
+fn Gui.status(self) str
+    if pixel and b.message == "" and b.reading()
+        return b.url
+    b.status()
+
 ## What the page area shows, as drawing operations.
 fn Gui.display(self) List[draw.Op]
+    if pixel
+        return draw.shift(scene.ops, scene.bg, area_w, area_h, top)
     draw.display_list(b.pg, b.scroll, rows, cols, b.focus, cell_w, cell_h)
 
 ## The native window as a `std.app` app (docs/design/garlic-browser.md,
@@ -915,6 +986,7 @@ impl app.App for Garlic
                 elif ev.id == "reload"
                     g.b.load(g.b.url, "GET", "")
             _ => url_text = url_text
+        g.refresh()
         if ev.kind != "edit"
             url_text = g.b.url
 
@@ -928,7 +1000,7 @@ impl app.App for Garlic
         app.column([
             bar,
             app.canvas("page", 0.0, 0.0, [to_app(op) for op in g.display()]),
-            app.label(g.b.status()),
+            app.label(g.status()),
         ])
 
     fn title(self) str
@@ -952,6 +1024,18 @@ fn to_app(op draw.Op) app.Op
             italic: italic,
             underline: underline,
         )
+        Str(x, y, t, font, size, fg, bold, italic, underline) => app.Op.Str(
+            x: x,
+            y: y,
+            text: t,
+            font: font,
+            size: size,
+            fg: fg,
+            bold: bold,
+            italic: italic,
+            underline: underline,
+        )
+        Pic(x, y, w, h, src) => app.Op.Pic(x: x, y: y, w: w, h: h, src: src)
 
 ## The native window: the page area starts at `GUI_W` by `GUI_H` points with
 ## cells of `GUI_CELL_W` by `GUI_CELL_H` until the host reports its own.
@@ -960,8 +1044,10 @@ GUI_H := 600.0
 GUI_CELL_W := 7.8
 GUI_CELL_H := 16.0
 
-fn app_main(b Browser) !
+fn app_main(b Browser, pixel bool) !
     mut a := Garlic.new(b, GUI_W, GUI_H, GUI_CELL_W, GUI_CELL_H)
+    a.g.pixel = pixel
+    a.g.refresh()
     app.run(mut a) else err
         print("garlic: no native window ({err.message}); the page as text:")
         print(a.g.b.pg.text())
@@ -1012,7 +1098,7 @@ fn main() !
             bx := b.pg.boxes[b.pg.links[n - 1]]
             print("[{n}] {bx.name} -> {bx.href}")
     elif args.contains("--app")
-        app_main(b) else err
+        app_main(b, args.contains("--pixels")) else err
             print("garlic: {err}")
     else
         window_main(mut b) else err
@@ -1338,6 +1424,8 @@ fn show_ops(ops List[draw.Op]) List[str]
         match op
             Rect(x, y, w, h, _) => out.push("rect@{x},{y} {w}x{h}")
             Text(x, y, text, _, _, _, _) => out.push("{text}@{x},{y}")
+            Str(x, y, text, _, _, _, _, _, _) => out.push("{text}@{x},{y}")
+            Pic(x, y, w, h, src) => out.push("pic@{x},{y} {w}x{h} {src}")
     out
 
 @test fn the_display_list_draws_each_run_at_its_cell()
@@ -1355,7 +1443,7 @@ fn show_ops(ops List[draw.Op]) List[str]
         Text(_, _, _, fg, _, _, underline) =>
             assert_eq(fg, draw.LINK_FG)
             assert(underline)
-        Rect(_, _, _, _, _) => assert(false)
+        Rect(_, _, _, _, _) | Str(_, _, _, _, _, _, _, _, _) | Pic(_, _, _, _, _) => assert(false)
     scrolled := show_ops(draw.display_list(p, 2, 2, 40, 0, 8.0, 16.0))
     assert_eq(scrolled[1], "one@0.0,0.0")
     assert(not scrolled.contains("# Hi@0.0,0.0"))
@@ -1641,3 +1729,72 @@ fn node_with(b Browser, tag str, attr str, value str) int
     r := b.pg.find("the end", 0)?
     assert(r >= b.scroll and r < b.scroll + b.view())
     assert(b.status().contains("found `end`"))
+
+## The text of the proportional `Str` operations in `ops`, as `text@x,y`.
+fn pixel_text(ops List[draw.Op]) List[str]
+    mut out := List[str]()
+    for op in ops
+        match op
+            Str(x, y, text, _, _, _, _, _, _) => out.push("{text}@{x.round()},{y.round()}")
+            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => out = out
+    out
+
+fn pixels(src str, width float) gfx.Scene
+    gfx.layout(html.parse(src), "https://x.test/", width, css.parse("", 0))
+
+@test fn pixel_text_widths_follow_the_font_table()
+    assert_eq(
+        gfx.text_width("ii", 10.0, false, false) < gfx.text_width("mm", 10.0, false, false),
+        true,
+    )
+    assert_eq(gfx.text_width("abcd", 10.0, false, true), 24.0)
+
+@test fn css_lengths_and_colors_parse()
+    assert_eq(gfx.length("2em", 10.0, 0.0), 20.0)
+    assert_eq(gfx.length("50%", 10.0, 200.0), 100.0)
+    assert_eq(gfx.length("auto", 10.0, 0.0), none)
+    assert_eq(gfx.color("#fff"), 0xffffff)
+    assert_eq(gfx.color("rgb(255, 0, 0)"), 0xff0000)
+    assert_eq(gfx.color("transparent"), none)
+
+@test fn the_pixel_layout_stacks_blocks_with_margins_and_wraps_words()
+    s := pixels("<h1>Hi</h1><p>one two</p>", 400.0)
+    t := pixel_text(s.ops)
+    assert_eq(t.len(), 3)
+    assert_eq(t[0].starts_with("Hi@8"), true)
+    narrow := pixels("<p>aaaa bbbb cccc dddd</p>", 60.0)
+    assert_eq(pixel_text(narrow.ops).len(), 4)
+    assert(narrow.height > s.height - 100.0)
+
+@test fn the_pixel_layout_paints_backgrounds_and_finds_links()
+    s := pixels(
+        "<body style='background:#112233'><div style='background:#ff0000;padding:10px'><a href=/go>link</a></div></body>",
+        300.0,
+    )
+    assert_eq(s.bg, 0x112233)
+    mut found := false
+    for op in s.ops
+        match op
+            Rect(_, _, w, _, c) => if c == 0xff0000 and w > 200.0
+                found = true
+            Text(_, _, _, _, _, _, _) | Str(
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+            ) | Pic(_, _, _, _, _) => found = found
+    assert(found)
+    h := s.hits[0]
+    assert_eq(s.link_at(h.x + 1.0, h.y + 1.0), "https://x.test/go")
+    assert_eq(s.link_at(0.0, 500.0), none)
+
+@test fn flex_rows_lay_items_side_by_side()
+    s := pixels("<div style='display:flex;gap:10px'><span>aa</span><span>bb</span></div>", 400.0)
+    t := pixel_text(s.ops)
+    assert_eq(t.len(), 2)
+    assert(t[0] != t[1])

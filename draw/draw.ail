@@ -24,6 +24,20 @@ pub STATUS_FG := 0xffffff
 pub enum Op
     Rect(x float, y float, w float, h float, color int)
     Text(x float, y float, text str, fg int, bold bool, italic bool, underline bool)
+    ## Proportional text from the pixel layout (`gfx`), `font` "sans" or "mono".
+    Str(
+        x float,
+        y float,
+        text str,
+        font str,
+        size float,
+        fg int,
+        bold bool,
+        italic bool,
+        underline bool,
+    )
+    ## An image, drawn from a URL or file path.
+    Pic(x float, y float, w float, h float, src str)
 
 ## The text color of a run in style `st`.
 pub fn color(st page.Style) int
@@ -102,3 +116,23 @@ pub fn cell_at(x float, y float, cell_w float, cell_h float)(int, int)
 ## The columns and rows that fit an area `w` by `h` points, at least 1 by 1.
 pub fn grid_size(w float, h float, cell_w float, cell_h float)(int, int)
     ((w / cell_w).floor().to_int().max(1), (h / cell_h).floor().to_int().max(1))
+
+## The part of page-pixel operations `ops` that shows in an area `w` by `h`
+## scrolled `top` down, moved up by `top`, over a `bg` background.
+pub fn shift(ops List[Op], bg int, w float, h float, top float) List[Op]
+    mut out := List[Op]()
+    out.push(Rect(x: 0.0, y: 0.0, w, h, color: bg))
+    for op in ops
+        match op
+            Rect(x, y, rw, rh, c) =>
+                if y + rh >= top and y <= top + h
+                    out.push(Rect(x, y: y - top, w: rw, h: rh, color: c))
+            Text(x, y, t, fg, bold, italic, underline) =>
+                out.push(Text(x, y: y - top, text: t, fg, bold, italic, underline))
+            Str(x, y, t, font, size, fg, bold, italic, underline) =>
+                if y + size * 2.0 >= top and y <= top + h
+                    out.push(Str(x, y: y - top, text: t, font, size, fg, bold, italic, underline))
+            Pic(x, y, pw, ph, src) =>
+                if y + ph >= top and y <= top + h
+                    out.push(Pic(x, y: y - top, w: pw, h: ph, src))
+    out
