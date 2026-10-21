@@ -1,0 +1,274 @@
+## The parts of the browser that pages probe to tell a real browser from a
+## script: interface objects, per-tag element prototypes, navigator's
+## getters, permissions, media and frames. Each built-in checks its
+## receiver and fails as Chrome does, because pages call them on the wrong
+## object on purpose (garlic-js.md, "The DOM").
+
+## Element interfaces by tag. A tag not listed is a plain HTMLElement.
+ELEMENT_INTERFACES := "a:Anchor area:Area audio:Audio base:Base body:Body br:BR button:Button canvas:Canvas data:Data datalist:DataList details:Details dialog:Dialog div:Div dl:DList embed:Embed fieldset:FieldSet form:Form h1:Heading h2:Heading h3:Heading h4:Heading h5:Heading h6:Heading head:Head hr:HR html:Html iframe:IFrame img:Image input:Input label:Label legend:Legend li:LI link:Link map:Map menu:Menu meta:Meta meter:Meter ol:OList object:Object optgroup:OptGroup option:Option output:Output p:Paragraph picture:Picture pre:Pre progress:Progress q:Quote script:Script select:Select slot:Slot source:Source span:Span style:Style table:Table tbody:TableSection td:TableCell template:Template textarea:TextArea tfoot:TableSection th:TableCell thead:TableSection time:Time title:Title tr:TableRow track:Track ul:UList video:Video"
+
+## The interface name for an element with tag `tag`.
+pub fn element_interface(tag str) str
+    for item in ELEMENT_INTERFACES.split(" ")
+        kv := item.split(":")
+        if kv[0] == tag
+            return "HTML{kv[1]}Element"
+    "HTMLElement"
+
+## Installs global `name`, which `new` can't call, for `proto`.
+fn Vm.interface(mut self, name str, proto ref JsObject)
+    c := obj_of(native_fn("dom.illegal", name, 0)) else return
+    c.props["prototype"] = Prop(
+        value: Obj(proto),
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+    )
+    proto.props["constructor"] = hidden(Obj(c))
+    proto.props[well_known("toStringTag")] = Prop(
+        value: Str(name),
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+    )
+    global_obj.props[name] = hidden(Obj(c))
+
+## A prototype under `parent`, installed as interface `name`.
+fn Vm.sub_interface(mut self, name str, parent str) ref JsObject
+    p := object("Object", proto_of(parent))
+    protos[name] = Obj(p)
+    interface(name, p)
+    p
+
+## The element interfaces of ELEMENT_INTERFACES, with what they add.
+fn Vm.element_interfaces(mut self)
+    sub_interface("HTMLDocument", "Document")
+    media := sub_interface("HTMLMediaElement", "HTMLElement")
+    methods(media, "dom.media", "canPlayType:1 play:0 pause:0 load:0")
+    mut done := Set[str]()
+    for item in ELEMENT_INTERFACES.split(" ")
+        name := "HTML{item.split(":")[1]}Element"
+        if done.contains(name)
+            continue
+        done.add(name)
+        parent := if name == "HTMLAudioElement"
+            or name == "HTMLVideoElement" then "HTMLMediaElement" else "HTMLElement"
+        p := sub_interface(name, parent)
+        if name == "HTMLIFrameElement"
+            getter(p, "contentWindow", "dom.frame.contentWindow")
+            getter(p, "contentDocument", "dom.frame.contentDocument")
+            accessor(p, "srcdoc")
+
+## Window and the host objects get Chrome's interface prototypes, so that
+## `Object.prototype.toString` names them as Chrome does.
+fn Vm.host_interfaces(mut self)
+    window_proto := object("Object", global_obj.proto)
+    interface("Window", window_proto)
+    global_obj.proto = Obj(window_proto)
+    if lp := obj_of(proto_of("Location"))
+        interface("Location", lp)
+    for pair in [
+        "screen:Screen",
+        "history:History",
+        "performance:Performance",
+        "localStorage:Storage",
+        "sessionStorage:Storage",
+    ]
+        kv := pair.split(":")
+        o := obj_of((global_obj.props.get(kv[0]) else hidden(Undef)).value) else continue
+        if p := obj_of(protos.get(kv[1]) else Undef)
+            o.proto = Obj(p)
+            continue
+        p := object("Object", o.proto)
+        protos[kv[1]] = Obj(p)
+        interface(kv[1], p)
+        o.proto = Obj(p)
+
+## Navigator's values become getters on its prototype, enumerable as in
+## Chrome; each throws "Illegal invocation" unless `this` is navigator.
+fn Vm.navigator_surface(mut self, nav_proto ref JsObject)
+    permissions := object("Permissions", proto_of("Object"))
+    permissions_proto := sub_interface("Permissions", "Object")
+    permissions.proto = Obj(permissions_proto)
+    methods(permissions_proto, "dom.permissions", "query:1")
+    sub_interface("PermissionStatus", "EventTarget")
+    nav_proto.props["permissions"] = data(Obj(permissions))
+    storage := object("Object", proto_of("Object"))
+    methods(storage, "dom.storage", "queryUsageAndQuota:2 requestQuota:2")
+    nav_proto.props["webkitTemporaryStorage"] = data(Obj(storage))
+    nav_proto.props["webkitPersistentStorage"] = data(Obj(storage))
+    mut keys := List[str]()
+    for k in nav_proto.props.keys()
+        if not k.starts_with(PRIVATE) and not k.starts_with(SYMBOL)
+            keys.push(k)
+    for k in keys
+        v := nav_proto.props[k].value
+        nav_proto.props["{PRIVATE}nav.{k}"] = hidden(v)
+        nav_proto.props[k] = Prop(
+            value: Undef,
+            get: native_fn("dom.nav.{k}", "get {k}", 0),
+            set: Undef,
+            accessor: true,
+            enumerable: true,
+            writable: true,
+            configurable: true,
+        )
+    interface("Navigator", nav_proto)
+    notification := sub_interface("Notification", "EventTarget")
+    if c := obj_of(get(Obj(notification), "constructor") else Undef)
+        c.props["permission"] = Prop(
+            value: Str("default"),
+            get: Undef,
+            set: Undef,
+            accessor: false,
+            enumerable: true,
+            writable: false,
+            configurable: true,
+        )
+    chrome := plain()
+    methods(chrome, "dom.chrome", "loadTimes:0 csi:0")
+    for k in ["loadTimes", "csi"]
+        chrome.props[k] = data(chrome.props[k].value)
+    app := plain()
+    app.props["isInstalled"] = data(Bool(false))
+    chrome.props["app"] = data(Obj(app))
+    global_obj.props["chrome"] = data(Obj(chrome))
+
+## The natives above: `m` is the name after "dom.".
+fn Vm.browser_native(mut self, m str, this_val Value, args List[Value]) Value? ! Thrown
+    if k := m.strip_prefix("nav.")
+        o := obj_of(this_val) else return type_error("Illegal invocation")
+        if o.class != "Navigator"
+            return type_error("Illegal invocation")
+        return get(o.proto, "{PRIVATE}nav.{k}")?
+    if m == "permissions.query"
+        p := new_promise()
+        mut ok := false
+        if o := obj_of(this_val)
+            ok = o.class == "Permissions"
+        if not ok
+            reject_promise(p, make_error(
+                "TypeError",
+                "Failed to execute 'query' on 'Permissions': Illegal invocation",
+            ))
+            return Value.Obj(p)
+        status := object("PermissionStatus", proto_of("PermissionStatus"))
+        status.props["name"] = data(get(arg_at(args, 0), "name")?)
+        status.props["state"] = data(Str("prompt"))
+        status.props["onchange"] = data(Null)
+        # The answer comes back from the browser process: a task later.
+        timer_seq += 1
+        timers.push(Timer(
+            id: timer_seq,
+            due: clock_ms,
+            seq: timer_seq,
+            callback: resolving_functions(p)[0],
+            args: [Value.Obj(status)],
+            every: 0.0,
+        ))
+        return Value.Obj(p)
+    if m == "media.canPlayType"
+        id := node_id(this_val) else return type_error("Illegal invocation")
+        if not ["audio", "video"].contains(dom[id].tag)
+            return type_error("Illegal invocation")
+        return Value.Str(can_play(to_string(arg_at(args, 0))?))
+    if m == "media.play"
+        return Value.Obj(promise_resolve(Undef))
+    if m == "media.pause" or m == "media.load"
+        return Undef
+    if m == "frame.contentWindow" or m == "frame.contentDocument"
+        id := node_id(this_val) else return type_error("Illegal invocation")
+        if dom[id].tag != "iframe" or not connected(id)
+            return Null
+        return if m == "frame.contentWindow" then frame_window(id) else node_value(0)
+    if m == "storage.queryUsageAndQuota" or m == "storage.requestQuota"
+        return Undef
+    if m == "chrome.loadTimes" or m == "chrome.csi"
+        return Value.Obj(plain())
+    none
+
+## A frame's window. Its built-ins are copies of the page's that run the
+## same natives, so `frame.String !== String` as with Chrome's separate
+## realm; the DOM and everything else are shared (garlic-js.md).
+fn Vm.frame_window(mut self, id int) Value
+    node := obj_of(node_value(id)) else return Null
+    if p := node.props.get("{PRIVATE}window")
+        return p.value
+    w := object("Window", global_obj.proto)
+    for k in global_obj.props.keys()
+        mut p := global_obj.props[k]
+        p.value = copy_builtin(p.value, true)
+        w.props[k] = p
+    for k in ["window", "self", "frames", "globalThis"]
+        w.props[k] = hidden(Obj(w))
+    w.props["top"] = hidden(Obj(global_obj))
+    w.props["parent"] = hidden(Obj(global_obj))
+    nav := obj_of(global_obj.props["navigator"].value) else return Obj(w)
+    w.props["navigator"] = hidden(Obj(object("Navigator", nav.proto)))
+    node.props["{PRIVATE}window"] = hidden(Obj(w))
+    Obj(w)
+
+## A copy of built-in `v` for a frame: a native function (with a copy of
+## its prototype's methods when `deep`), or a namespace such as Math.
+fn Vm.copy_builtin(mut self, v Value, deep bool) Value
+    o := obj_of(v) else return v
+    mut native := false
+    if c := o.call
+        native = match c
+            Native(_) => true
+            Closure | Bound => false
+    if not native
+        and not (deep and o.class == "Object" and (o.props.contains("max") or o.props.contains("stringify")))
+        return v
+    f := object(o.class, o.proto)
+    f.call = o.call
+    f.prim = o.prim
+    f.elems = o.elems
+    for k in o.props.keys()
+        mut p := o.props[k]
+        if deep
+            p.value = copy_builtin(p.value, false)
+        f.props[k] = p
+    if not deep or not native
+        return Obj(f)
+    pp := obj_of((o.props.get("prototype") else hidden(Undef)).value) else return Obj(f)
+    np := object(pp.class, pp.proto)
+    np.call = pp.call
+    np.prim = pp.prim
+    np.elems = pp.elems
+    for k in pp.props.keys()
+        mut p := pp.props[k]
+        p.value = if k == "constructor" then Value.Obj(f) else copy_builtin(p.value, false)
+        np.props[k] = p
+    f.props["prototype"] = Prop(
+        value: Obj(np),
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+    )
+    Obj(f)
+
+## What `canPlayType` answers, as Chromium without proprietary codecs does.
+fn can_play(t str) str
+    base := t.split(";")[0].trim().to_lower()
+    if [
+        "audio/ogg",
+        "audio/webm",
+        "video/webm",
+        "video/ogg",
+        "audio/wav",
+        "audio/flac",
+        "audio/mpeg",
+        "audio/mp3",
+    ].contains(base)
+        return if t.contains("codecs") then "probably" else "maybe"
+    ""

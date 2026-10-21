@@ -1,0 +1,12 @@
+Promise { undefined } Object [Generator] {}
+Promise { [ 1, 2 ] } Promise { <pending> } Promise { <rejected> 'r' } { p: Promise { 's' } }
+1 2
+p
+q
+m
+n
+z! undefined 3
+two
+[ 1, 2, 3 ] t
+do
+ret true

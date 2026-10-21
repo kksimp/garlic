@@ -50,8 +50,15 @@ fn main() !
                     failed = true
         "--test-run" => failed = not test_runs(args[0])?
         "--page" =>
+            # `--url URL` loads it at that address and lists every request
+            # and cookie too.
+            mut url := ""
+            if args.len() > 1 and args[0] == "--url"
+                url = args[1]
+                args.remove_at(0)
+                args.remove_at(0)
             for path in args
-                print(run_page(fs.read_text(path)?, max_steps).join("\n"))
+                print(run_page_at(fs.read_text(path)?, max_steps, url).join("\n"))
         "--test-page" => failed = not test_pages(args[0])?
         _ => usage()
     if failed
@@ -124,6 +131,8 @@ fn run_script(source str, max_steps int, echo bool) RunResult
             failed: true,
             message: machine.uncaught_text(err),
         )
+    # Then jobs and timers, as Node runs them after the script.
+    machine.run_event_loop(1.0e300, 1000000)
     RunResult(lines: machine.console_out, failed: false, message: "")
 
 ## Run every `NAME.js` in `dir` and compare what it printed with `NAME.out`
@@ -164,19 +173,27 @@ PAGE_URL := "https://example.test/dir/page.html"
 ## Load a page and run its scripts, then a second of virtual time: what the
 ## console printed, the body's HTML, and what the page asked the browser for.
 fn run_page(html str, max_steps int) List[str]
+    run_page_at(html, max_steps, "")
+
+fn run_page_at(html str, max_steps int, url str) List[str]
     mut machine := vm.new_vm()
     machine.step_limit = max_steps
     machine.dom_setup()
     machine.parse_into(0, html)
-    machine.load_page(PAGE_URL, 1000.0)
+    machine.load_page(if url == "" then PAGE_URL else url, 1000.0)
     mut lines := machine.console_out
     bodies := machine.descendants_by_tag(0, "body")
     lines.push("== body")
     lines.push(if bodies.len() > 0 then machine.inner_html(bodies[0]) else "")
     for r in machine.host_requests
+        body := if r.text == "" then "" else " {r.text}"
         if r.kind == "navigate"
-            body := if r.text == "" then "" else " {r.text}"
             lines.push("== navigate {r.method} {r.url}{body}")
+        elif url != ""
+            lines.push("== {r.kind} {r.method} {r.url}{body}")
+    if url != ""
+        for k in machine.cookies.keys()
+            lines.push("== cookie {k}={machine.cookies[k]}")
     lines
 
 ## Run every `NAME.html` in `dir` against `NAME.out` (written by Chromium).

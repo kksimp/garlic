@@ -296,7 +296,7 @@ fn Vm.number_method(mut self, m str, this_val Value, args List[Value]) Value ! T
         "toString" =>
             radix := if a0 == Undef then 10 else integer_arg(a0, 10)?
             if radix < 2 or radix > 36
-                return range_error("toString() radix must be between 2 and 36")
+                return range_error("toString() radix argument must be between 2 and 36")
             if radix == 10
                 return Value.Str(syntax.number_to_string(x))
             Value.Str(to_radix(x, radix))

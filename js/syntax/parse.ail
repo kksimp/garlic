@@ -96,10 +96,15 @@ struct Ctx
     super_prop bool
     new_target bool
     strict bool
+    in_gen bool
+    in_async bool
+    in_params bool
 
 pub struct Parser
     lx Lexer
     tok Token
+    ## Where the last token consumed ends.
+    last_end int
     ahead List[Token]
     strict bool
     in_function bool
@@ -109,6 +114,12 @@ pub struct Parser
     super_call bool
     super_prop bool
     new_target bool
+    ## Inside a generator (`yield` is an operator) or an async function
+    ## (`await` is one).
+    in_gen bool
+    in_async bool
+    ## Parsing a function's parameters, where `yield` and `await` can't stand.
+    in_params bool
     ## `{a = 1}` shorthands not yet known to be patterns (§13.2.5.1).
     covers List[Pos]
     ## The next `assign` parses an element that may become part of a pattern.
@@ -138,6 +149,7 @@ pub fn parse(source str) Program ! JsError
     mut p := Parser(
         lx: new_lexer(source),
         tok: first,
+        last_end: 0,
         ahead: [],
         strict: false,
         in_function: false,
@@ -147,6 +159,9 @@ pub fn parse(source str) Program ! JsError
         super_call: false,
         super_prop: false,
         new_target: false,
+        in_gen: false,
+        in_async: false,
+        in_params: false,
         covers: [],
         maybe_pattern: false,
         scopes: [],
@@ -159,6 +174,7 @@ pub fn parse(source str) Program ! JsError
 # ---- Tokens ----
 
 fn Parser.next(mut self) ! JsError
+    last_end = tok.end
     if ahead.len() > 0
         tok = ahead.remove_at(0)
     else
@@ -170,8 +186,12 @@ fn Parser.peek(mut self) Token ! JsError
         ahead.push(lx.next(false)?)
     ahead[0]
 
+## The source from `p` to the last token consumed.
+fn Parser.source_since(self, p Pos) str
+    lx.src[p.offset..last_end].join("")
+
 fn Parser.pos(self) Pos
-    Pos(line: tok.line, col: tok.col)
+    Pos(line: tok.line, col: tok.col, offset: tok.start)
 
 fn Parser.is_p(self, s str) bool
     tok.kind == Punct and tok.text == s
@@ -225,6 +245,10 @@ fn Parser.semicolon(mut self) ! JsError
 
 ## A name may be bound here (§13.1.1, §8.6.1).
 fn Parser.check_binding(self, name str, p Pos) ! JsError
+    if in_gen and name == "yield"
+        return fail_at("Unexpected identifier 'yield'", p)
+    if in_async and name == "await"
+        return fail_at("Unexpected reserved word", p)
     if RESERVED.contains(name)
         return fail_at("Unexpected token '{name}'", p)
     if strict and STRICT_RESERVED.contains(name)
@@ -240,6 +264,10 @@ fn Parser.ident_name(mut self, binding bool) str ! JsError
         and (RESERVED.contains(tok.text) or strict and STRICT_RESERVED.contains(tok.text))
         return fail("Keyword must not contain escaped characters")
     name := tok.text
+    if in_gen and name == "yield"
+        return fail("Unexpected identifier 'yield'")
+    if in_async and name == "await"
+        return fail("Unexpected reserved word")
     if binding
         check_binding(name, pos())?
     elif RESERVED.contains(name) or strict and STRICT_RESERVED.contains(name)
@@ -257,6 +285,9 @@ fn Parser.save(self) Ctx
         super_prop: super_prop,
         new_target: new_target,
         strict: strict,
+        in_gen: in_gen,
+        in_async: in_async,
+        in_params: in_params,
     )
 
 fn Parser.restore(mut self, c Ctx)
@@ -268,6 +299,9 @@ fn Parser.restore(mut self, c Ctx)
     super_prop = c.super_prop
     new_target = c.new_target
     strict = c.strict
+    in_gen = c.in_gen
+    in_async = c.in_async
+    in_params = c.in_params
 
 ## Enter a function body: no labels or loops reach into it.
 fn Parser.enter(mut self, super_call_ok bool, super_prop_ok bool)
@@ -278,6 +312,9 @@ fn Parser.enter(mut self, super_call_ok bool, super_prop_ok bool)
     super_call = super_call_ok
     super_prop = super_prop_ok
     new_target = true
+    in_gen = false
+    in_async = false
+    in_params = false
 
 # ---- Scopes ----
 
@@ -372,7 +409,7 @@ fn Parser.statements_until_end(mut self, close str) Body ! JsError
                             octal_directive[0],
                         )
                 elif first.octal
-                    octal_directive.push(Pos(line: first.line, col: first.col))
+                    octal_directive.push(Pos(line: first.line, col: first.col, offset: first.start))
         out.push(s)
     Body(stmts: out, strict: strict)
 
@@ -405,11 +442,14 @@ fn Parser.statement(mut self, decl bool) Stmt ! JsError
             "function" =>
                 if not decl
                     return fail(misplaced_function(strict))
-                return FuncDecl(function(true)?)
+                return FuncDecl(function(true, false)?)
             "async" =>
                 n := peek()?
                 if n.kind == Name and n.text == "function" and not n.nl_before
-                    return fail("Async functions are not supported yet")
+                    if not decl
+                        return fail(misplaced_function(strict))
+                    next()?
+                    return FuncDecl(function(true, true)?)
             "class" =>
                 if not decl
                     return unexpected()
@@ -562,8 +602,13 @@ fn Parser.if_statement(mut self) Stmt ! JsError
 fn Parser.if_body(mut self) Stmt ! JsError
     if is_kw("function") and not strict
         enter_scope(false)
-        f := function(true)?
+        f := function(true, false)?
         leave_scope()
+        if f.is_gen
+            return fail_at(
+                "Generators can only be declared at the top level or inside a block.",
+                f.pos,
+            )
         return FuncDecl(f)
     statement(false)
 
@@ -583,8 +628,10 @@ fn Parser.for_statement(mut self) Stmt ! JsError
 fn Parser.for_in_scope(mut self) Stmt ! JsError
     mut p := pos()
     next()?
-    if is_kw("await")
-        return fail("for await is not supported yet")
+    mut is_await := false
+    if is_kw("await") and in_async
+        is_await = true
+        next()?
     expect("(")?
     mut init := none
     if is_p(";")
@@ -606,7 +653,16 @@ fn Parser.for_in_scope(mut self) Stmt ! JsError
             next()?
             right := if of then assign(false)? else expression(false)?
             expect(")")?
-            return ForIn(LeftDecl(d), right, loop_body(false)?, of, p)
+            if is_await and not of
+                return fail("Unexpected token 'in'")
+            return ForIn(
+                left: LeftDecl(d),
+                right: right,
+                body: loop_body(false)?,
+                of: of,
+                is_await: is_await,
+                pos: p,
+            )
         for dc in d.decls
             if dc.init == none
                 if kind == "const"
@@ -626,9 +682,20 @@ fn Parser.for_in_scope(mut self) Stmt ! JsError
             next()?
             right := if of then assign(false)? else expression(false)?
             expect(")")?
-            return ForIn(LeftPat(target), right, loop_body(false)?, of, p)
+            if is_await and not of
+                return fail("Unexpected token 'in'")
+            return ForIn(
+                left: LeftPat(target),
+                right: right,
+                body: loop_body(false)?,
+                of: of,
+                is_await: is_await,
+                pos: p,
+            )
         check_covers(before)?
         init = ForInit.InitExpr(e)
+    if is_await
+        return fail("Unexpected token ';'")
     expect(";")?
     test := if is_p(";") then none else expression(false)?
     expect(";")?
@@ -664,7 +731,10 @@ fn Parser.jump(mut self) Stmt ! JsError
 fn Parser.labeled_function(mut self, decl bool) Stmt ! JsError
     if strict or not decl
         return fail(misplaced_function(strict))
-    FuncDecl(function(true)?)
+    f := function(true, false)?
+    if f.is_gen
+        return fail_at("Generators can only be declared at the top level or inside a block.", f.pos)
+    FuncDecl(f)
 
 ## `name: statement` (§14.13). Labels in a row all label the statement
 ## after them, so each may be `continue`d if that is a loop.
@@ -856,7 +926,10 @@ fn Parser.simple_target(self, e Expr, msg str) Pat ! JsError
             msg,
             expr_pos(e),
         )
-        Cond | Call | New | Seq | Spread | Chain | PrivName => fail_at(msg, expr_pos(e))
+        Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await => fail_at(
+            msg,
+            expr_pos(e),
+        )
 
 ## An expression read as a pattern: an assignment pattern, or with
 ## `binding` a parameter of an arrow function (§13.15.5, §15.3.1).
@@ -938,7 +1011,7 @@ fn Parser.to_pat(self, e Expr, binding bool) Pat ! JsError
             bad,
             expr_pos(e),
         )
-        Seq | Spread | Chain | PrivName => fail_at(bad, expr_pos(e))
+        Seq | Spread | Chain | PrivName | Yield | Await => fail_at(bad, expr_pos(e))
 
 ## A pattern converted from an assignment holds only bindable names.
 fn Parser.check_binding_pat(self, p Pat) ! JsError
@@ -990,16 +1063,21 @@ fn Parser.assign(mut self, no_in bool) Expr ! JsError
     if tok.kind == Name and not RESERVED.contains(tok.text)
         n := peek()?
         if n.kind == Punct and n.text == "=>" and not n.nl_before
-            if tok.text == "async"
-                return fail("Async functions are not supported yet")
+            if in_async and tok.text == "await" or in_gen and tok.text == "yield"
+                return unexpected()
             param := Pat.PatId(ident_name(true)?, p)
-            return arrow([param], none, p, no_in)
+            return arrow([param], none, p, no_in, false)
     if is_kw("async")
         n := peek()?
-        if n.kind == Name and not n.nl_before
-            return fail("Async functions are not supported yet")
-    if is_kw("yield") and strict
-        return fail("Generators are not supported yet")
+        if n.kind == Name and not n.nl_before and n.text != "function"
+            # `async x => ...`
+            next()?
+            param := Pat.PatId(ident_name(true)?, pos())
+            if not is_p("=>") or tok.nl_before
+                return unexpected()
+            return arrow([param], none, p, no_in, true)
+    if in_gen and is_kw("yield")
+        return yield_expr(no_in)
     lhs := conditional(no_in)?
     if tok.kind == Punct and ASSIGN_OPS.contains(tok.text)
         op := tok.text
@@ -1017,13 +1095,45 @@ fn Parser.assign(mut self, no_in bool) Expr ! JsError
             check_covers(before)?
     lhs
 
+## `yield`, `yield x`, `yield* x` (§15.5.1): the operand is optional, and
+## starts on the same line.
+fn Parser.yield_expr(mut self, no_in bool) Expr ! JsError
+    p := pos()
+    if in_params
+        return fail("Yield expression not allowed in formal parameter")
+    next()?
+    if is_p("*") and not tok.nl_before
+        next()?
+        return Yield(assign(no_in)?, true, p)
+    ends := tok.nl_before
+        or tok.kind == Eof
+        or tok.kind == Punct and (is_p(")") or is_p("]") or is_p("}") or is_p(",") or is_p(";") or is_p(":") or is_p("?"))
+        or is_kw("in") and no_in
+    if ends
+        return Yield(none, false, p)
+    Yield(assign(no_in)?, false, p)
+
 ## An arrow function, after its parameters (§15.3).
-fn Parser.arrow(mut self, params List[Pat], rest Pat?, p Pos, no_in bool) Expr ! JsError
+fn Parser.arrow(
+    mut self,
+    params List[Pat],
+    rest Pat?,
+    p Pos,
+    no_in bool,
+    is_async bool,
+) Expr ! JsError
+    for prm in params
+        if pat_suspends(prm)
+            return fail_at(
+                if in_gen then "Yield expression not allowed in formal parameter" else "Illegal await-expression in formal parameters of async function",
+                p,
+            )
     next()?
     saved := save()
     old_labels := labels
     enter(super_call, super_prop)
     new_target = saved.new_target
+    in_async = is_async
     enter_scope(true)
     for prm in params
         declare_pat(prm, "var")?
@@ -1045,10 +1155,11 @@ fn Parser.arrow(mut self, params List[Pat], rest Pat?, p Pos, no_in bool) Expr !
         body: body,
         expr: value,
         is_arrow: true,
-        is_async: false,
+        is_async: is_async,
         is_gen: false,
         strict: strict,
         pos: p,
+        text: source_since(p),
     )
     check_params(f, true)?
     leave_scope()
@@ -1098,7 +1209,7 @@ fn string_value(s Stmt) str
                 Str(v, _) => v
                 Num | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget => ""
                 Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign => ""
-                Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Paren => ""
+                Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await => ""
         Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile => ""
         Break | Continue | Throw | Try | Switch | Labeled | With | Debugger => ""
 
@@ -1197,7 +1308,7 @@ fn mixes_nullish(op str, e Expr) bool
         Logical(inner, _, _, _) => (op == "??") != (inner == "??")
         Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super => false
         NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Assign => false
-        Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Paren => false
+        Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await => false
 
 ## UnaryExpression and prefix updates (§13.4, §13.5).
 fn Parser.unary(mut self) Expr ! JsError
@@ -1221,8 +1332,11 @@ fn Parser.unary(mut self) Expr ! JsError
         arg := unary()?
         target := simple_target(arg, "Invalid left-hand side expression in prefix operation")?
         return Update(op, true, expr_of(target), p)
-    if is_kw("await") and strict
-        return fail("Async functions are not supported yet")
+    if in_async and is_kw("await")
+        if in_params
+            return fail("Illegal await-expression in formal parameters of async function")
+        next()?
+        return Await(unary()?, p)
     e := call_expr()?
     if (is_p("++") or is_p("--")) and not tok.nl_before
         no_bare_arrow(e)?
@@ -1237,7 +1351,7 @@ fn spread_arg(e Expr) Expr
         Spread(arg, _) => arg
         Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super => e
         NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => e
-        Assign | Cond | Call | New | Member | Seq | Chain | PrivName | Paren => e
+        Assign | Cond | Call | New | Member | Seq | Chain | PrivName | Paren | Yield | Await => e
 
 ## `e` without its parentheses.
 fn unparen(e Expr) Expr
@@ -1245,7 +1359,7 @@ fn unparen(e Expr) Expr
         Paren(inner, _) => unparen(inner)
         Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget => e
         Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => e
-        Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName => e
+        Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Yield | Await => e
 
 ## `a.#b`.
 fn private_member(e Expr) bool
@@ -1254,7 +1368,7 @@ fn private_member(e Expr) bool
         Paren(inner, _) => private_member(inner)
         Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget => false
         Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => false
-        Assign | Cond | Call | New | Seq | Spread | Chain | PrivName => false
+        Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await => false
 
 ## The expression a simple target came from.
 fn expr_of(t Pat) Expr
@@ -1266,13 +1380,38 @@ fn expr_of(t Pat) Expr
 ## Member access, calls, `new` and tagged templates (§13.3).
 fn Parser.call_expr(mut self) Expr ! JsError
     p := pos()
+    before := covers.len()
+    async_start := is_kw("async")
     e := if is_kw("new") then new_expr()? else primary()?
     if expr_kind(e) == "Arrow"
         return e
     r := subscripts(e, p, false)?
-    if is_p("=>") and called_async(r)
-        return fail("Async functions are not supported yet")
+    if async_start and is_p("=>") and not tok.nl_before and called_async(r)
+        # `async (a, b) => ...`: the arguments were the parameters.
+        mut params := List[Pat]()
+        mut rest := none
+        for a in call_args(r)
+            if inner := spread_of(a)
+                rest = to_pat(inner, true)?
+            else
+                params.push(to_pat(a, true)?)
+        drop_covers(before)
+        return arrow(params, rest, p, false, true)
     r
+
+fn call_args(e Expr) List[Expr]
+    match e
+        Call(_, args, _, _) => args
+        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget => []
+        Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => []
+        Assign | Cond | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await => []
+
+fn spread_of(e Expr) Expr?
+    match e
+        Spread(arg, _) => arg
+        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget => none
+        Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => none
+        Assign | Cond | Call | New | Member | Seq | Chain | PrivName | Paren | Yield | Await => none
 
 ## `async(...)`, which before `=>` would be an async arrow function.
 fn called_async(e Expr) bool
@@ -1282,10 +1421,10 @@ fn called_async(e Expr) bool
                 Ident(name, _) => name == "async"
                 Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget => false
                 Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => false
-                Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Paren => false
+                Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await => false
         Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget => false
         Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => false
-        Assign | Cond | New | Member | Seq | Spread | Chain | PrivName | Paren => false
+        Assign | Cond | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await => false
 
 ## `new C(args)`, `new C`, `new.target` (§13.3.5, §13.3.12).
 fn Parser.new_expr(mut self) Expr ! JsError
@@ -1380,8 +1519,9 @@ fn Parser.arguments(mut self) List[Expr] ! JsError
             expect(",")?
     maybe_pattern = false
     next()?
-    if is_p("=>") and covers.len() > before
-        return fail("Async functions are not supported yet")
+    if is_p("=>")
+        # Perhaps an async arrow's parameters: the caller checks.
+        return out
     check_covers(before)?
     out
 
@@ -1432,7 +1572,13 @@ fn Parser.primary(mut self) Expr ! JsError
             v := tok.text == "true"
             next()?
             Bool(v, p)
-        "function" => Function(function(false)?)
+        "function" => Function(function(false, false)?)
+        "async" =>
+            n := peek()?
+            if n.kind == Name and n.text == "function" and not n.nl_before
+                next()?
+                return Function(function(false, true)?)
+            Ident(ident_name(false)?, p)
         "class" => ClassExpr(class(false)?)
         "super" => super_expr()
         "import" => fail("Cannot use import statement outside a module")
@@ -1482,7 +1628,7 @@ fn Parser.paren_or_arrow(mut self) Expr ! JsError
         for it in items
             params.push(to_pat(it, true)?)
         drop_covers(before)
-        return arrow(params, rest, p, false)
+        return arrow(params, rest, p, false, false)
     if items.len() == 0 or rest != none or trailing
         tok = close
         return unexpected()
@@ -1540,15 +1686,18 @@ fn Parser.object_literal(mut self) Expr ! JsError
                 kind = tok.text
                 next()?
             elif is_kw("async") and not name_ends_here()? and not peek()?.nl_before
-                return fail("Async functions are not supported yet")
-            elif is_p("*")
-                return fail("Generators are not supported yet")
+                kind = "async"
+                next()?
+            if eat("*")?
+                kind = if kind == "async" then "async*" else "*"
             key_tok := tok
             key := prop_key(false)?
-            if kind != "init"
+            if kind == "get" or kind == "set"
                 props.push(Method(key, kind, method(kind, false, pp)?, pp))
-            elif is_p("(")
-                props.push(Method(key, "init", method("init", false, pp)?, pp))
+            elif kind != "init" or is_p("(")
+                if not is_p("(")
+                    return unexpected()
+                props.push(Method(key, "init", method(kind, false, pp)?, pp))
             elif eat(":")?
                 if is_proto(key)
                     if has_proto
@@ -1651,23 +1800,41 @@ fn Parser.template(mut self, tagged bool) TemplateParts ! JsError
 # ---- Functions and classes ----
 
 ## `function name(params) { body }` (§15.2). A declaration needs the name.
-fn Parser.function(mut self, is_stmt bool) Func ! JsError
+fn Parser.function(mut self, is_stmt bool, is_async bool) Func ! JsError
     p := pos()
     next()?
-    if is_p("*")
-        return fail("Generators are not supported yet")
+    is_gen := eat("*")?
     mut name := none
     if tok.kind == Name
         np := pos()
+        # A function expression's name is in its own scope (§15.2.5): a plain
+        # function in a generator may be called `yield`, a generator never.
+        outer_gen := in_gen
+        outer_async := in_async
+        if not is_stmt
+            in_gen = is_gen
+            in_async = is_async
         n := ident_name(true)?
+        in_gen = outer_gen
+        in_async = outer_async
         if is_stmt
-            declare(n, function_kind(), np)?
+            mut kind := function_kind()
+            # Annex B.3.3's duplicates are for plain functions only.
+            if (is_gen or is_async)
+                and kind == "function"
+                and not scopes[scopes.len() - 1].is_function
+                kind = "lexical"
+            declare(n, kind, np)?
         name = n
     elif is_stmt
         return fail("Function statements require a function name")
     saved := save()
     enter(false, false)
-    f := function_rest(name, p)?
+    in_gen = is_gen
+    in_async = is_async
+    mut f := function_rest(name, p)?
+    f.is_gen = is_gen
+    f.is_async = is_async
     restore(saved)
     f
 
@@ -1677,6 +1844,8 @@ fn Parser.function_rest(mut self, name str?, p Pos) Func ! JsError
     expect("(")?
     mut params := List[Pat]()
     mut rest := none
+    outer_params := in_params
+    in_params = true
     while not is_p(")")
         if eat("...")?
             rest = binding_target()?
@@ -1686,6 +1855,7 @@ fn Parser.function_rest(mut self, name str?, p Pos) Func ! JsError
         params.push(binding_element()?)
         if not is_p(")")
             expect(",")?
+    in_params = outer_params
     next()?
     for prm in params
         declare_pat(prm, "var")?
@@ -1705,6 +1875,7 @@ fn Parser.function_rest(mut self, name str?, p Pos) Func ! JsError
         is_gen: false,
         strict: b.strict,
         pos: p,
+        text: source_since(p),
     )
     if b.strict
         if n := name
@@ -1720,7 +1891,11 @@ fn Parser.function_rest(mut self, name str?, p Pos) Func ! JsError
 fn Parser.method(mut self, kind str, ctor bool, p Pos) Func ! JsError
     saved := save()
     enter(ctor, true)
-    f := function_rest(none, p)?
+    in_gen = kind == "*" or kind == "async*"
+    in_async = kind == "async" or kind == "async*"
+    mut f := function_rest(none, p)?
+    f.is_gen = in_gen
+    f.is_async = in_async
     restore(saved)
     if kind == "get" and (f.params.len() > 0 or f.rest != none)
         return fail_at("Getter must not have any formal parameters.", p)
@@ -1779,6 +1954,7 @@ fn Parser.class(mut self, is_stmt bool) Class ! JsError
                     is_gen: false,
                     strict: true,
                     pos: mp,
+                    text: "",
                 )
                 members.push(ClassMember(
                     kind: "static-block",
@@ -1794,9 +1970,10 @@ fn Parser.class(mut self, is_stmt bool) Class ! JsError
             kind = tok.text
             next()?
         elif is_kw("async") and not name_ends_here()? and not peek()?.nl_before
-            return fail("Async functions are not supported yet")
-        elif is_p("*")
-            return fail("Generators are not supported yet")
+            kind = "async"
+            next()?
+        if eat("*")?
+            kind = if kind == "async" then "async*" else "*"
         key := prop_key(true)?
         key_name := match key
             KeyName(n, _) => n
@@ -1807,6 +1984,10 @@ fn Parser.class(mut self, is_stmt bool) Class ! JsError
         if is_p("(")
             is_ctor := not is_static and key_name == "constructor"
             if is_ctor
+                if kind == "*" or kind == "async*"
+                    return fail_at("Class constructor may not be a generator", mp)
+                if kind == "async"
+                    return fail_at("Class constructor may not be an async method", mp)
                 if kind != "method"
                     return fail_at("Class constructor may not be an accessor", mp)
                 if has_ctor
@@ -1815,7 +1996,9 @@ fn Parser.class(mut self, is_stmt bool) Class ! JsError
                 kind = "constructor"
             f := method(kind, is_ctor and superclass != none, mp)?
             members.push(ClassMember(
-                kind: kind,
+                kind: if kind == "get"
+                    or kind == "set"
+                    or kind == "constructor" then kind else "method",
                 key: key,
                 is_static: is_static,
                 f: f,
@@ -1845,4 +2028,4 @@ fn Parser.class(mut self, is_stmt bool) Class ! JsError
             ))
     next()?
     strict = old_strict
-    Class(name: name, superclass: superclass, members: members, pos: p)
+    Class(name: name, superclass: superclass, members: members, pos: p, text: source_since(p))

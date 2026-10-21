@@ -5,7 +5,8 @@
 ## Level 4 (type, universal, `#id`, `.class`, `[attr]`, `[attr=v]`,
 ## descendant and child combinators, `,` lists) and CSS Cascade Level 4
 ## (specificity, order, `!important`, inline `style`). At-rules are skipped
-## with their blocks, so `@media` rules don't apply.
+## with their blocks, except `@media`, whose rules apply when its query
+## matches the window (Media Queries Level 4, simplified: `media_matches`).
 
 use html
 
@@ -35,11 +36,14 @@ pub struct Selector
     pub child List[bool]
     pub specificity int
 
-## A style rule; `order` is its position, for the cascade.
+## A style rule; `order` is its position, for the cascade. `media` holds
+## the media queries it sits in, one per line, all of which must match;
+## "" for none.
 pub struct Rule
     pub selector Selector
     pub decls List[Decl]
     pub order int
+    pub media str
 
 ## A parsed style sheet: rules indexed by their rightmost compound's id,
 ## first class or type, so matching an element tries only likely rules.
@@ -90,14 +94,31 @@ fn strip_comments(src str) str
 ## Parses a style sheet. Rules after an index of `start` keep their order
 ## after earlier sheets' rules.
 pub fn parse(src str, start int) Sheet
-    cs := strip_comments(src).chars()
+    parse_in(src, start, "")
+
+## Parses a style sheet whose rules all sit in the media queries `media`
+## (as `Rule.media`), such as a `<link media=...>` sheet.
+pub fn parse_in(src str, start int, media str) Sheet
     mut rules := List[Rule]()
+    rules_of(strip_comments(src).chars(), media, start, mut rules)
+    index(rules)
+
+## Adds the rules in `cs` to `rules`, inside media queries `media`.
+fn rules_of(cs List[char], media str, start int, mut rules List[Rule])
     mut i := 0
     mut prelude := List[char]()
     while i < cs.len()
         c := cs[i]
         if c == '@' and prelude.join("").trim() == ""
-            i = skip_at_rule(cs, i)
+            end := skip_at_rule(cs, i)
+            head := cs[i..end].join("")
+            if head.to_lower().starts_with("@media")
+                if open := head.find("\{")
+                    query := head.slice(6, open).trim()
+                    inner := if media == "" then query else "{media}\n{query}"
+                    close := block_end(cs, i + open)
+                    rules_of(cs[i + open + 1..close], inner, start, mut rules)
+            i = end
             prelude.clear()
             continue
         if c == '{'
@@ -107,13 +128,12 @@ pub fn parse(src str, start int) Sheet
             if decls.len() > 0
                 for text in prelude.join("").split(",")
                     if sel := selector(text)
-                        rules.push(Rule(selector: sel, decls, order: start + rules.len()))
+                        rules.push(Rule(selector: sel, decls, order: start + rules.len(), media))
             prelude.clear()
             i = close + 1
             continue
         prelude.push(c)
         i += 1
-    index(rules)
 
 ## Builds the lookup maps of a sheet's rules.
 pub fn index(rules List[Rule]) Sheet
@@ -134,8 +154,93 @@ pub fn index(rules List[Rule]) Sheet
 pub fn concat(a Sheet, b Sheet) Sheet
     mut all := a.rules
     for r in b.rules
-        all.push(Rule(selector: r.selector, decls: r.decls, order: a.rules.len() + r.order))
+        all.push(Rule(
+            selector: r.selector,
+            decls: r.decls,
+            order: a.rules.len() + r.order,
+            media: r.media,
+        ))
     index(all)
+
+## The rules of `s` that apply in a window `px` CSS pixels wide.
+pub fn for_width(s Sheet, px int) Sheet
+    index([r for r in s.rules if r.media == "" or all_match(r.media, px)])
+
+fn all_match(media str, px int) bool
+    for q in media.split("\n")
+        if not media_matches(q, px)
+            return false
+    true
+
+## Whether media query list `query` matches a screen `px` CSS pixels wide
+## (Media Queries 4, simplified). Types `all` and `screen` match; widths
+## compare in `px`, `em` and `rem` (16 px); the screen is light, without
+## hover or motion. Anything else doesn't match, so its rules stay off.
+pub fn media_matches(query str, px int) bool
+    q := query.trim().to_lower()
+    if q == ""
+        return true
+    for part in q.split(",")
+        if one_matches(part.trim(), px)
+            return true
+    false
+
+fn one_matches(query str, px int) bool
+    mut q := query.strip_prefix("only ") else query
+    mut negate := false
+    if rest := q.strip_prefix("not ")
+        negate = true
+        q = rest
+    mut ok := true
+    for piece in q.split(" and ")
+        p := piece.trim()
+        if p.starts_with("(")
+            inner := (p.strip_prefix("(") else p).trim()
+            ok = ok and feature_matches((inner.strip_suffix(")") else inner).trim(), px)
+        else
+            ok = ok and (p == "all" or p == "screen")
+    ok != negate
+
+fn feature_matches(f str, px int) bool
+    for op in [">=", "<=", ">", "<"]
+        if at := f.find(op)
+            name := f.slice(0, at).trim()
+            n := length_px(f.slice(at + op.chars().len(), f.chars().len())) else return false
+            if name != "width"
+                return false
+            return match op
+                ">=" => px >= n
+                "<=" => px <= n
+                ">" => px > n
+                _ => px < n
+    colon := f.find(":") else return f == "color"
+    name := f.slice(0, colon).trim()
+    value := f.slice(colon + 1, f.chars().len()).trim()
+    match name
+        "min-width" | "min-device-width" => px >= (length_px(value) else return false)
+        "max-width" | "max-device-width" => px <= (length_px(value) else return false)
+        "width" => px == (length_px(value) else return false)
+        "prefers-color-scheme" => value == "light"
+        "prefers-reduced-motion" => value == "reduce"
+        "hover" | "any-hover" => value == "none"
+        "orientation" => value == "landscape"
+        _ => false
+
+## A length in CSS pixels: `N`, `Npx`, `Nem` or `Nrem`, with a fraction.
+fn length_px(s str) int?
+    t := s.trim()
+    mut scale := 1.0
+    mut num := t
+    if rest := t.strip_suffix("rem")
+        scale = 16.0
+        num = rest
+    elif rest := t.strip_suffix("em")
+        scale = 16.0
+        num = rest
+    elif rest := t.strip_suffix("px")
+        num = rest
+    v := num.trim().to_float()?
+    (v * scale).to_int()
 
 ## The index just past the matching `}` of the block opening at `open`
 ## (or the end of input), skipping strings.
@@ -352,7 +457,5 @@ pub fn cascade(d html.Doc, id int, sheet Sheet) Map[str, str]
 pub fn document_sheet(d html.Doc) Sheet
     mut all := parse("", 0)
     for s in d.all("style")
-        media := (d.attr(s, "media") else "all").to_lower()
-        if media.contains("all") or media.contains("screen")
-            all = concat(all, parse(d.text(s), 0))
+        all = concat(all, parse_in(d.text(s), 0, (d.attr(s, "media") else "").trim()))
     all

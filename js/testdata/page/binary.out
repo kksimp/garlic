@@ -1,0 +1,16 @@
+AMj/QQ== 4 200 ABC AB
+InvalidCharacterError
+InvalidCharacterError
+IMG 10 20 null
+function true
+== body
+<p id="p">x<img width="10" height="20"></p><script>
+var s = String.fromCharCode(0, 200, 255, 65);
+console.log(btoa(s), atob(btoa(s)).length, atob(btoa(s)).charCodeAt(1), atob("QUJD"), atob(" QU I "));
+try { btoa("Ā"); } catch (e) { console.log(e.name); }
+try { atob("Q"); } catch (e) { console.log(e.name); }
+var img = new Image(10, 20);
+console.log(img.tagName, img.getAttribute("width"), img.getAttribute("height"), img.parentNode);
+document.getElementById("p").appendChild(img);
+console.log(typeof navigator.sendBeacon, navigator.sendBeacon("/gen_204?x=1", "body"));
+</script>

@@ -1,0 +1,11 @@
+function add(a, b) { return a + b }
+x => x * x
+class P { constructor(x) { this.x = x } get y() { return 1 } }
+m() { return 2 }
+get g() { return 3 }
+function max() { [native code] }
+function () { [native code] }
+function* gen() { yield 1 }
+async () => 1
+Function.prototype.toString requires that 'this' be a Function
+5

@@ -1,0 +1,32 @@
+<!DOCTYPE html><html><head><title>interfaces</title></head><body><script>
+function show(label, f) {
+  var r;
+  try { r = f(); r = typeof r === "function" ? "fn " + r.name : typeof r === "object" && r ? Object.prototype.toString.call(r) : typeof r + " " + r; }
+  catch (e) { r = "throws " + e.name + ": " + e.message; }
+  console.log(label + " => " + r);
+}
+var d = Object.getOwnPropertyDescriptor;
+show("window", function () { return window; });
+show("document", function () { return document; });
+show("body", function () { return document.body; });
+show("tags", function () { return ["div", "a", "span", "iframe", "audio", "section"].map(function (t) { return Object.prototype.toString.call(document.createElement(t)); }).join(" "); });
+show("permissions", function () { return navigator.permissions; });
+show("query", function () { return d(Permissions.prototype, "query").value; });
+show("new Navigator", function () { return new Navigator(); });
+show("plugins getter", function () { var x = d(Navigator.prototype, "plugins"); return [typeof x.get, x.enumerable, String(x.get)].join("|"); });
+show("plugins on {}", function () { return d(Navigator.prototype, "plugins").get.call({}); });
+show("plugins on proto", function () { return Navigator.prototype.plugins; });
+show("own keys", function () { return Object.keys(navigator).length; });
+show("canPlayType on {}", function () { return HTMLMediaElement.prototype.canPlayType.call({}, "audio/ogg"); });
+show("canPlayType ogg", function () { return document.createElement("audio").canPlayType('audio/ogg; codecs="vorbis"'); });
+show("frame detached", function () { return document.createElement("iframe").contentWindow; });
+show("frame realm", function () { var f = document.createElement("iframe"); document.body.appendChild(f); var w = f.contentWindow; return [w === window, w.String === String, w.String("x"), w.Function.prototype.toString.call(w.String), w.parent === window].join("|"); });
+show("frame getter", function () { return String(d(HTMLIFrameElement.prototype, "contentWindow").get); });
+show("Notification", function () { return Notification.permission; });
+show("chrome", function () { return Object.keys(window.chrome).join(","); });
+show("toString null", function () { return Function.prototype.toString.call(null); });
+show("radix", function () { return (1).toString(0); });
+show("stack", function () { try { null.x; } catch (e) { return String(e.stack).split("\n")[0]; } });
+navigator.permissions.query({ name: "notifications" }).then(function (s) { console.log("query state => " + s.state + " " + Object.prototype.toString.call(s)); });
+Permissions.prototype.query.call({}, { name: "notifications" }).catch(function (e) { console.log("query on {} => " + e.message); });
+</script></body></html>

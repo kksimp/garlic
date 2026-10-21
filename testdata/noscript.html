@@ -1,0 +1,8 @@
+<!DOCTYPE html>
+<title>Needs scripts</title>
+<noscript><meta http-equiv="refresh" content="0;url=second.html"></noscript>
+<h1 id="h">Waiting for scripts</h1>
+<script>
+document.cookie = "seen=1; path=/";
+document.getElementById("h").textContent = "Scripts ran, cookie " + document.cookie;
+</script>

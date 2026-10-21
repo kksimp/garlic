@@ -1,0 +1,57 @@
+window => [object Window]
+document => [object HTMLDocument]
+body => [object HTMLBodyElement]
+tags => string [object HTMLDivElement] [object HTMLAnchorElement] [object HTMLSpanElement] [object HTMLIFrameElement] [object HTMLAudioElement] [object HTMLElement]
+permissions => [object Permissions]
+query => fn query
+new Navigator => throws TypeError: Failed to construct 'Navigator': Illegal constructor
+plugins getter => string function|true|function get plugins() { [native code] }
+plugins on {} => throws TypeError: Illegal invocation
+plugins on proto => throws TypeError: Illegal invocation
+own keys => number 0
+canPlayType on {} => throws TypeError: Illegal invocation
+canPlayType ogg => string probably
+frame detached => object null
+frame realm => string false|false|x|function String() { [native code] }|true
+frame getter => string function get contentWindow() { [native code] }
+Notification => string default
+chrome => string loadTimes,csi,app
+toString null => throws TypeError: Function.prototype.toString requires that 'this' be a Function
+radix => throws RangeError: toString() radix argument must be between 2 and 36
+stack => string TypeError: Cannot read properties of null (reading 'x')
+query on {} => Failed to execute 'query' on 'Permissions': Illegal invocation
+query state => prompt [object PermissionStatus]
+== body
+<script>
+function show(label, f) {
+  var r;
+  try { r = f(); r = typeof r === "function" ? "fn " + r.name : typeof r === "object" && r ? Object.prototype.toString.call(r) : typeof r + " " + r; }
+  catch (e) { r = "throws " + e.name + ": " + e.message; }
+  console.log(label + " => " + r);
+}
+var d = Object.getOwnPropertyDescriptor;
+show("window", function () { return window; });
+show("document", function () { return document; });
+show("body", function () { return document.body; });
+show("tags", function () { return ["div", "a", "span", "iframe", "audio", "section"].map(function (t) { return Object.prototype.toString.call(document.createElement(t)); }).join(" "); });
+show("permissions", function () { return navigator.permissions; });
+show("query", function () { return d(Permissions.prototype, "query").value; });
+show("new Navigator", function () { return new Navigator(); });
+show("plugins getter", function () { var x = d(Navigator.prototype, "plugins"); return [typeof x.get, x.enumerable, String(x.get)].join("|"); });
+show("plugins on {}", function () { return d(Navigator.prototype, "plugins").get.call({}); });
+show("plugins on proto", function () { return Navigator.prototype.plugins; });
+show("own keys", function () { return Object.keys(navigator).length; });
+show("canPlayType on {}", function () { return HTMLMediaElement.prototype.canPlayType.call({}, "audio/ogg"); });
+show("canPlayType ogg", function () { return document.createElement("audio").canPlayType('audio/ogg; codecs="vorbis"'); });
+show("frame detached", function () { return document.createElement("iframe").contentWindow; });
+show("frame realm", function () { var f = document.createElement("iframe"); document.body.appendChild(f); var w = f.contentWindow; return [w === window, w.String === String, w.String("x"), w.Function.prototype.toString.call(w.String), w.parent === window].join("|"); });
+show("frame getter", function () { return String(d(HTMLIFrameElement.prototype, "contentWindow").get); });
+show("Notification", function () { return Notification.permission; });
+show("chrome", function () { return Object.keys(window.chrome).join(","); });
+show("toString null", function () { return Function.prototype.toString.call(null); });
+show("radix", function () { return (1).toString(0); });
+show("stack", function () { try { null.x; } catch (e) { return String(e.stack).split("\n")[0]; } });
+navigator.permissions.query({ name: "notifications" }).then(function (s) { console.log("query state => " + s.state + " " + Object.prototype.toString.call(s)); });
+Permissions.prototype.query.call({}, { name: "notifications" }).catch(function (e) { console.log("query on {} => " + e.message); });
+</script><iframe></iframe>
+

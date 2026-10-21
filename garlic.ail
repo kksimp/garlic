@@ -9,11 +9,14 @@ use std.env
 use std.io
 use std.fs
 use std.net
+use std.net.jar
 use std.compress
+use std.time
 use std.ui
 use html
 use page
 use css
+use jsdom
 
 ## The keys, as `--keys` prints them.
 KEYS := [
@@ -70,6 +73,8 @@ struct Browser
     diff bool
     last_url str
     last_nodes Map[int, str]
+    ## Cookies from responses and scripts, sent back to their sites.
+    cj jar.Jar
 
 ## The headers Garlic sends: who it is, and that it wants HTML.
 fn options() net.Options
@@ -85,14 +90,25 @@ fn options() net.Options
 ## anything without a scheme from the file system. A failure is shown as a
 ## page, so the browser keeps going.
 fn fetch(url str, method str, body str) str
+    mut cj := jar.new()
+    fetch_with(url, method, body, mut cj)
+
+## `fetch`, sending `cj`'s cookies for the site and keeping the ones the
+## response sets.
+fn fetch_with(url str, method str, body str, mut cj jar.Jar) str
     s := page.scheme(url)
     if s == "http" or s == "https"
         mut o := options()
         if method == "POST"
             o.body = body
             o.headers["content-type"] = "application/x-www-form-urlencoded"
+        cookie := cj.header(url)
+        if cookie != ""
+            o.headers["cookie"] = cookie
         r := net.request_bytes(method, url, o) else err
             return error_page(url, "{err}")
+        for line in r.all_headers.get("set-cookie") else List[str]()
+            cj.set_cookie(url, line)
         if r.status >= 400
             return "{body_text(r)}<p>(HTTP status {r.status})"
         return body_text(r)
@@ -173,7 +189,8 @@ fn charset_label(s str) str
 fn error_page(url str, why str) str
     "<title>Can't open {url}</title><h1>Can't open this page</h1><p>{url}</p><p>{why}</p>"
 
-## At most this many `<meta http-equiv=refresh>` hops are followed per load.
+## At most this many hops (a `<meta http-equiv=refresh>` or a script
+## sending the browser on) are followed per load.
 MAX_REFRESHES := 5
 
 ## A refresh with a longer delay is left alone, as the page asks to be read.
@@ -182,11 +199,14 @@ MAX_REFRESH_DELAY := 5
 ## Where the page's `<meta http-equiv=refresh content="N; url=...">` sends
 ## the browser, when it has a URL other than the page's own and a delay
 ## of at most `MAX_REFRESH_DELAY` seconds. Garlic goes there at once (HTML
-## "shared declarative refresh steps", simplified). Google's search sends
-## script-less clients to its enable-JavaScript page this way.
-fn refresh_target(d html.Doc, url str) str?
+## "shared declarative refresh steps", simplified).
+## Some sites send script-less clients to a "turn on JavaScript" page
+## this way.
+fn refresh_target(d html.Doc, url str, scripting bool) str?
     for m in d.all("meta")
         if (d.attr(m, "http-equiv") else "").trim().to_lower() != "refresh"
+            continue
+        if scripting and d.enclosing(m, "noscript") != none
             continue
         content := (d.attr(m, "content") else "").trim()
         cs := content.chars()
@@ -227,16 +247,17 @@ fn linked_sheets(d html.Doc, url str) css.Sheet
     mut n := 0
     for l in d.all("link")
         rel := (d.attr(l, "rel") else "").to_lower().split(" ")
-        media := (d.attr(l, "media") else "all").to_lower()
-        if not rel.contains("stylesheet")
-            or rel.contains("alternate")
-            or not (media.contains("all") or media.contains("screen"))
+        media := (d.attr(l, "media") else "").trim()
+        ## A sheet for print, or for no window width at all, isn't fetched;
+        ## the rest apply by the window's width at layout.
+        fits := css.media_matches(media, 320) or css.media_matches(media, 2000)
+        if not rel.contains("stylesheet") or rel.contains("alternate") or not fits
             continue
         href := d.attr(l, "href") else continue
         if n == MAX_SHEETS
             break
         n += 1
-        all = css.concat(all, css.parse(fetch_text(page.resolve(url, href)), 0))
+        all = css.concat(all, css.parse_in(fetch_text(page.resolve(url, href)), 0, media))
     all
 
 ## The text of a sub-resource, or "" when it can't be fetched.
@@ -246,6 +267,59 @@ fn fetch_text(url str) str
         r := net.request_bytes("GET", url, options()) else return ""
         return if r.status < 400 then body_text(r) else ""
     fs.read_text(url.strip_prefix("file://") else url) else ""
+
+## A loaded page: where it ended up and its tree.
+struct Loaded
+    url str
+    doc html.Doc
+
+## Fetches and parses `target`, then runs its scripts (unless `--no-js`),
+## which change the tree or send the browser on to another page.
+fn load_doc(target str, method str, body str, mut cj jar.Jar) Loaded
+    mut at := target
+    mut m := method
+    mut b := body
+    for _ in 0..MAX_REFRESHES
+        mut d := html.parse(fetch_with(at, m, b, mut cj))
+        if env.args().contains("--no-js")
+            next := refresh_target(d, at, false) else return Loaded(url: at, doc: d)
+            at = next
+            m = "GET"
+            b = ""
+            continue
+        mut scripts := Map[str, str]()
+        for s in d.all("script")
+            if src := d.attr(s, "src")
+                u := page.resolve(at, src)
+                scripts[script_url(u)] = fetch_text(u)
+        now := time.now_ms().to_float()
+        out := jsdom.run(mut d, script_url(at), scripts, cj.for_script(at), now, 1000.0, 5000000)
+        for line in out.cookies
+            cj.set_from_script(at, line)
+        if env.args().contains("--console")
+            for line in out.console
+                io.eprint("console: {line}")
+        mut next := local_url(out.url)
+        if next == "" or next == at
+            # A `<meta http-equiv=refresh>` in `<noscript>` is for browsers
+            # without scripts (HTML §4.12.2).
+            next = refresh_target(d, at, true) else ""
+            if next == ""
+                return Loaded(url: at, doc: d)
+            m = "GET"
+            b = ""
+        else
+            m = out.method
+            b = out.body
+        at = next
+    Loaded(url: at, doc: html.parse(fetch_with(at, m, b, mut cj)))
+
+## The address scripts see: a local file gets a file:// URL.
+fn script_url(u str) str
+    if u.contains("://") then u else "file://local/{u}"
+
+fn local_url(u str) str
+    u.strip_prefix("file://local/") else u
 
 fn Browser.new(url str, width int, height int) Browser
     d := html.parse("")
@@ -268,6 +342,7 @@ fn Browser.new(url str, width int, height int) Browser
         diff: false,
         last_url: "",
         last_nodes: {},
+        cj: jar.new(),
     )
     b.load(url, "GET", "")
     b
@@ -293,12 +368,9 @@ fn Browser.go(mut self, target str)
     load(target, "GET", "")
 
 fn Browser.load(mut self, target str, method str, body str)
-    url = target
-    doc = html.parse(fetch(target, method, body))
-    for _ in 0..MAX_REFRESHES
-        next := refresh_target(doc, url) else break
-        url = next
-        doc = html.parse(fetch(next, "GET", ""))
+    loaded := load_doc(target, method, body, mut cj)
+    url = loaded.url
+    doc = loaded.doc
     sheet = linked_sheets(doc, url)
     pg = page.layout_with(doc, url, width, sheet)
     scroll = 0
@@ -740,7 +812,7 @@ fn flag(args List[str], name str) str?
     if at + 1 < args.len() then args[at + 1] else none
 
 fn usage()
-    print("usage: ail run tools/garlic/garlic.ail [--width N] [--height N] [--follow N | --find TEXT | --do ACTION:ARG]... [--viewport] [--budget TOKENS] [--diff] [--print | --json | --links | --session | --keys] URL|FILE")
+    print("usage: ail run tools/garlic/garlic.ail [--width N] [--height N] [--follow N | --find TEXT | --do ACTION:ARG]... [--viewport] [--budget TOKENS] [--diff] [--no-js] [--console] [--print | --json | --links | --session | --keys] URL|FILE")
 
 fn main() !
     args := env.args()
@@ -1021,10 +1093,16 @@ fn testdata() str
 
 @test fn refresh_targets_parse_like_browsers()
     d := html.parse("<meta http-equiv=refresh content=\"1, URL = 'a b.html' \">")
-    assert_eq(refresh_target(d, "http://x/y/z.html") else "", "http://x/y/a b.html")
-    assert(refresh_target(html.parse("<meta http-equiv=refresh content=0>"), "http://x/") == none)
+    assert_eq(refresh_target(d, "http://x/y/z.html", false) else "", "http://x/y/a b.html")
+    assert(
+        refresh_target(
+            html.parse("<meta http-equiv=refresh content=0>"),
+            "http://x/",
+            false,
+        ) == none,
+    )
     same := html.parse("<meta http-equiv=refresh content=\"0;url=z.html\">")
-    assert(refresh_target(same, "http://x/z.html") == none)
+    assert(refresh_target(same, "http://x/z.html", false) == none)
 
 @test fn bodies_decode_by_charset_and_content_encoding()
     latin := bytes.from_list([0x63, 0x61, 0x66, 0xE9, 0x20, 0x93, 0x6F, 0x6B, 0x94])
@@ -1056,6 +1134,39 @@ fn testdata() str
         all_headers: {},
     )
     assert_eq(body_text(raw), doc)
+
+@test fn data_tables_line_up_in_columns()
+    src := """
+        <table><thead><tr><th>Lang</th><th>Site</th></tr></thead>
+        <tr><td>AIL</td><td><a href=/ail>home</a></td></tr>
+        <tr><td>Go</td><td><a href=/go>go.dev</a> and more</td></tr></table>
+        """
+    assert_eq(lay(src, 60).text(), "Lang | Site\nAIL  | home[1]\nGo   | go.dev[2] and more")
+    narrow := lay(src, 12)
+    assert(narrow.text().starts_with("Lang | Site\nAIL | home[1]"))
+    layout := "<table><tr><td><p>Menu</p></td><td>x</td></tr><tr><td>a</td><td>bb</td></tr></table>"
+    assert(lay(layout, 60).text().ends_with("a | bb"))
+    span := "<table><tr><td colspan=2>Wide</td></tr><tr><td>a</td><td>b</td></tr><tr><td>ccc</td><td>d</td></tr></table>"
+    assert(lay(span, 60).text().ends_with("ccc | d"))
+    p := lay(src, 60)
+    cells := [b for b in p.boxes if b.role == "cell"]
+    assert_eq(cells[2].col, cells[4].col)
+
+@test fn media_queries_follow_the_window_width()
+    assert(css.media_matches("", 800))
+    assert(css.media_matches("screen and (max-width: 600px)", 480))
+    assert(not css.media_matches("screen and (max-width: 600px)", 800))
+    assert(css.media_matches("print, (min-width: 40em)", 800))
+    assert(not css.media_matches("print", 800))
+    assert(css.media_matches("not print", 800))
+    assert(css.media_matches("(width >= 700px)", 800))
+    assert(not css.media_matches("(prefers-color-scheme: dark)", 800))
+    src := """
+        <style>.wide \{ display: none } @media (min-width: 640px) \{ .wide \{ display: block } .narrow \{ display: none } }</style>
+        <p class=wide>Wide layout</p><p class=narrow>Narrow layout</p>
+        """
+    assert_eq(lay(src, 100).text(), "Wide layout")
+    assert_eq(lay(src, 60).text(), "Narrow layout")
 
 @test fn agent_actions_follow_click_back_and_report()
     mut b := Browser.new("{testdata()}/index.html", 60, 12)

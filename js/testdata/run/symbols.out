@@ -1,0 +1,15 @@
+symbol Symbol(tag) Symbol() tag undefined true false
+[ 'plain' ] 1 1 {"plain":2} true
+true app undefined
+symbol Symbol(Symbol.iterator)
+Cannot convert a Symbol value to a string
+Cannot convert a Symbol value to a number
+Symbol is not a constructor
+[ 0, 1, 2, 3 ] [ 0, 1, 2 ]
+of 0
+of 1
+0 1 5
+{ value: 10, done: false } { value: 20, done: false } { value: undefined, done: true }
+[ 'k', 'j' ] [ 1, 2 ] [ [ 'k', 1 ], [ 'j', 2 ] ] 5
+[ 2 ]
+one 3

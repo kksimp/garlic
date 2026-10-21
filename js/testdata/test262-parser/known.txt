@@ -3,91 +3,6 @@
 # twin: the suite's pass-explicit twin is not the same script (its names or literals differ).
 # stale: valid under ECMAScript 2022; the suite predates the change.
 # gap: an early error not checked yet (it must still be accepted).
-pass/01fd8e8a0a42307b unsupported: Generators are not supported yet
-pass/034ded949b5c2fa3 unsupported: Generators are not supported yet
-pass/0466764f0fb9af62 unsupported: Generators are not supported yet
-pass/06981f39d0844079 unsupported: Generators are not supported yet
-pass/08c3105bb3f7ccb7 unsupported: Generators are not supported yet
-pass/0d137e8a97ffe083 unsupported: Generators are not supported yet
-pass/0e22e969622bf137 unsupported: Generators are not supported yet
-pass/0eb53d0e06cd5417 unsupported: Generators are not supported yet
-pass/0f88c334715d2489 unsupported: Generators are not supported yet
-pass/12556d5e39db1cea unsupported: Generators are not supported yet
-pass/163e6a68a09abaed unsupported: Generators are not supported yet
-pass/177fef3d002eb873 unsupported: Generators are not supported yet
-pass/18f05b95a72dffa1 unsupported: Generators are not supported yet
-pass/1938db3bb862ded1 unsupported: Generators are not supported yet
-pass/1ea254c74f1071de unsupported: Generators are not supported yet
-pass/1ef3bdd7e919cca8 unsupported: Generators are not supported yet
-pass/2c16af589c5c8535 unsupported: Generators are not supported yet
-pass/2d3273e0386e9cb8 unsupported: Generators are not supported yet
-pass/32efa0efd255748a unsupported: Generators are not supported yet
-pass/34d5455824302935 unsupported: Generators are not supported yet
-pass/3c1e2ada0ac2b8e3 unsupported: Generators are not supported yet
-pass/4180f57196d0388d unsupported: Generators are not supported yet
-pass/478ede4cfe7906d5 unsupported: Generators are not supported yet
-pass/5ed18bdbe48cc4c3 unsupported: Generators are not supported yet
-pass/62d0da6771d5317d unsupported: Generators are not supported yet
-pass/6776e2c88e03f1a2 unsupported: Generators are not supported yet
-pass/6a323491fe75918a unsupported: Generators are not supported yet
-pass/6b76b8761a049c19 unsupported: Generators are not supported yet
-pass/6c688efe01b3631e unsupported: Generators are not supported yet
-pass/6d981ff8b6a3faec unsupported: Generators are not supported yet
-pass/72e4f3f9f66a40b8 unsupported: Generators are not supported yet
-pass/753341b6f22ec11f unsupported: Generators are not supported yet
-pass/7dab6e55461806c9 unsupported: Generators are not supported yet
-pass/7fbe94acda67721e unsupported: Generators are not supported yet
-pass/807dfc91f4ed4394 unsupported: Generators are not supported yet
-pass/842fe071562c1a9e unsupported: Generators are not supported yet
-pass/884e5c2703ce95f3 unsupported: Generators are not supported yet
-pass/88e99d6cd8e8d87f unsupported: Generators are not supported yet
-pass/8d14286a8cc6ee9d unsupported: Generators are not supported yet
-pass/901fca17189cd709 unsupported: Generators are not supported yet
-pass/90919cd6fd06c4d8 unsupported: Generators are not supported yet
-pass/91f2fa0b11550b30 unsupported: Generators are not supported yet
-pass/939479d60d564ccd unsupported: Generators are not supported yet
-pass/93c75264893587a5 unsupported: Generators are not supported yet
-pass/94b8a654a87039b9 unsupported: Generators are not supported yet
-pass/973cbc9ece13acbc unsupported: Generators are not supported yet
-pass/9974571a855d4447 unsupported: Generators are not supported yet
-pass/9a666205cafd530f unsupported: Generators are not supported yet
-pass/a157424306915066 unsupported: Generators are not supported yet
-pass/a194909bf50b1467 unsupported: Generators are not supported yet
-pass/a454d2e2ab3484e6 unsupported: Generators are not supported yet
-pass/a93f6b22796d4868 unsupported: Generators are not supported yet
-pass/b06e2c3814e46579 unsupported: Generators are not supported yet
-pass/b205355de22689d1 unsupported: Generators are not supported yet
-pass/b86b0122e80c330e unsupported: Generators are not supported yet
-pass/ba4cc699857f41f2 unsupported: Generators are not supported yet
-pass/beb4cc5812ec1eed unsupported: Generators are not supported yet
-pass/bedf5be599c82fe8 unsupported: Generators are not supported yet
-pass/c2116aecaac68db9 unsupported: Generators are not supported yet
-pass/c4336e0b6801c42c unsupported: Generators are not supported yet
-pass/c5bd72f618d7cade unsupported: Generators are not supported yet
-pass/c771490bbb3dd6e9 unsupported: Generators are not supported yet
-pass/cb211fadccb029c7 unsupported: Generators are not supported yet
-pass/cb3316f2b008bec3 unsupported: Generators are not supported yet
-pass/cbccdb75b22a522c unsupported: Generators are not supported yet
-pass/ce5f3bc27d5ccaac unsupported: Generators are not supported yet
-pass/ce968fcdf3a1987c unsupported: Generators are not supported yet
-pass/cfebdd6b58e65e90 unsupported: Generators are not supported yet
-pass/d043d114b966415b unsupported: Generators are not supported yet
-pass/d198e0d3a33b7b61 unsupported: Generators are not supported yet
-pass/d4e81043d808dc31 unsupported: Generators are not supported yet
-pass/dadae97bf343020d unsupported: Generators are not supported yet
-pass/e1939e7cb50f65b4 unsupported: Generators are not supported yet
-pass/e463265266cee73e unsupported: Generators are not supported yet
-pass/e4c6c19e4b214180 unsupported: Generators are not supported yet
-pass/e5951efaf0b0c5b3 unsupported: Generators are not supported yet
-pass/e78c7b54fc87d08c unsupported: Generators are not supported yet
-pass/ea54fe11ef8702f7 unsupported: Generators are not supported yet
-pass/ec99a663d6f3983d unsupported: Generators are not supported yet
-pass/f108a85d36ec9afc unsupported: Generators are not supported yet
-pass/f13a130829aa77c5 unsupported: Generators are not supported yet
-pass/f78abc3cba581cdd unsupported: Generators are not supported yet
-pass/fb50400b4c9cf740 unsupported: Generators are not supported yet
-pass/fd167642d02f2c66 unsupported: Generators are not supported yet
-pass/ffcf0064736d41e7 unsupported: Generators are not supported yet
 fail/0d5e450f1da8a92a stale: '\9' in sloppy code (Annex B NonOctalDecimalEscapeSequence, ES2021)
 fail/66e383bfd18e66ab gap: regular expression pattern syntax (§22.2.1) is checked when the regex engine compiles it
 fail/748656edbfb2d0bb stale: '\8' in sloppy code (Annex B, ES2021)
@@ -107,6 +22,7 @@ early/ec31fa5e521c5df4 stale: duplicate sloppy block functions (Annex B.3.2.4)
 pass/0339fa95c78c11bd twin
 pass/0426f15dac46e92d twin
 pass/0b4d61559ccce0f9 twin
+pass/0f88c334715d2489 twin
 pass/1093d98f5fc0758d twin
 pass/15d9592709b947a0 twin
 pass/2179895ec5cc6276 twin
@@ -120,6 +36,7 @@ pass/598a5cedba92154d twin
 pass/72d79750e81ef03d twin
 pass/7788d3c1e1247da9 twin
 pass/7b72d7b43bedc895 twin
+pass/7dab6e55461806c9 twin
 pass/82c827ccaecbe22b twin
 pass/87a9b0d1d80812cc twin
 pass/8c80f7ee04352eba twin
@@ -130,6 +47,8 @@ pass/a8a03a88237c4e8f twin
 pass/ad06370e34811a6a twin
 pass/b0fdc038ee292aba twin
 pass/b62c6dd890bef675 twin
+pass/cb211fadccb029c7 twin
+pass/ce968fcdf3a1987c twin
 pass/db3c01738aaf0b92 twin
 pass/e1387fe892984e2b twin
 pass/e71c1d5f0b6b833c twin

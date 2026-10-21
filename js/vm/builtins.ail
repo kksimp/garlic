@@ -54,6 +54,12 @@ pub fn new_vm() Vm
         page_start_ms: 0.0,
         ready_state: "complete",
         stopped: false,
+        unhandled: [],
+        frames: {},
+        codes: [],
+        frame_seq: 0,
+        running: Set[int](),
+        agen_queues: {},
     )
     vm.setup()
     vm
@@ -255,6 +261,7 @@ fn Vm.setup(mut self)
         "ReferenceError",
         "EvalError",
         "URIError",
+        "AggregateError",
     ]
         p := object("Object", Obj(error_proto))
         p.props["name"] = hidden(Str(kind))
@@ -291,7 +298,7 @@ fn Vm.setup(mut self)
     methods(
         obj_of(proto_of("Date")) else object_proto,
         "Date.prototype",
-        "getTime:0 valueOf:0 toISOString:0 toJSON:1 getFullYear:0 getMonth:0 getDate:0 getDay:0 getHours:0 getMinutes:0 getSeconds:0 getMilliseconds:0 getUTCFullYear:0 getUTCMonth:0 getUTCDate:0 getUTCDay:0 getUTCHours:0 getUTCMinutes:0 getUTCSeconds:0 getUTCMilliseconds:0 getTimezoneOffset:0 setTime:1 toString:0 toUTCString:0",
+        "getTime:0 valueOf:0 toISOString:0 toJSON:1 getFullYear:0 getMonth:0 getDate:0 getDay:0 getHours:0 getMinutes:0 getSeconds:0 getMilliseconds:0 getUTCFullYear:0 getUTCMonth:0 getUTCDate:0 getUTCDay:0 getUTCHours:0 getUTCMinutes:0 getUTCSeconds:0 getUTCMilliseconds:0 getTimezoneOffset:0 setTime:1 toString:0 toUTCString:0 setFullYear:3 setMonth:2 setDate:1 setHours:4 setMinutes:3 setSeconds:2 setMilliseconds:1 setUTCFullYear:3 setUTCMonth:2 setUTCDate:1 setUTCHours:4 setUTCMinutes:3 setUTCSeconds:2 setUTCMilliseconds:1",
     )
 
     math := plain()
@@ -325,7 +332,7 @@ fn Vm.setup(mut self)
     methods(
         global_obj,
         "global",
-        "parseInt:2 parseFloat:1 isNaN:1 isFinite:1 encodeURIComponent:1 encodeURI:1 decodeURIComponent:1 decodeURI:1",
+        "parseInt:2 parseFloat:1 isNaN:1 isFinite:1 encodeURIComponent:1 encodeURI:1 decodeURIComponent:1 decodeURI:1 eval:1",
     )
     # Number.parseInt and parseInt are the same function (§21.1.2.13).
     number_ctor.props["parseInt"] = global_obj.props["parseInt"]
@@ -334,11 +341,19 @@ fn Vm.setup(mut self)
     constant(global_obj, "NaN", Num(nan()))
     constant(global_obj, "Infinity", Num(infinity()))
     constant(global_obj, "undefined", Undef)
+    symbol_setup()
+    promise_setup()
+    generator_setup()
+    methods(
+        global_obj,
+        "dom.window",
+        "setTimeout:1 setInterval:1 clearTimeout:1 clearInterval:1 queueMicrotask:1",
+    )
 
 ## Natives that `new` may call.
 pub fn native_is_ctor(name str) bool
     match name
-        "Object" | "Function" | "Array" | "String" | "Number" | "Boolean" | "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" | "Map" | "Set" | "RegExp" | "Date" | "dom.Event" | "dom.illegal" | "dom.URL" | "dom.URLSearchParams" =>
+        "Object" | "Function" | "Array" | "String" | "Number" | "Boolean" | "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" | "AggregateError" | "Map" | "Set" | "RegExp" | "Date" | "Promise" | "dom.Event" | "dom.illegal" | "dom.URL" | "dom.URLSearchParams" | "dom.Image" =>
             true
         _ => false
 
@@ -352,6 +367,22 @@ pub fn Vm.native(
     new_target Value,
 ) Value ! Thrown
     tick()?
+    if name.starts_with("Promise")
+        return promise_native(name, this_val, args, new_target)
+    if name.starts_with("Symbol")
+        return symbol_native(name, this_val, args, new_target)
+    if name.starts_with("Iterator.")
+        return iterator_native(name, this_val)
+    if m := name.strip_prefix("Generator.prototype.")
+        return generator_native(m, this_val, args)
+    if name == "Async.resume"
+        return async_native(name, this_val, args)
+    if m := name.strip_prefix("AsyncGenerator.prototype.")
+        return async_generator_native(m, this_val, args)
+    if name == "AsyncGen.resume"
+        return async_gen_resume(this_val, args)
+    if m := name.strip_prefix("AsyncFromSync.")
+        return async_from_sync_native(m, this_val, args)
     if m := name.strip_prefix("dom.")
         return dom_native(m, this_val, args, new_target)
     if m := name.strip_prefix("Array.prototype.")
@@ -413,9 +444,17 @@ pub fn Vm.native(
                 configurable: true,
             )
             Obj(b)
+        # Source text for code, else a NativeFunction form (§20.2.3.5).
         "Function.prototype.toString" =>
-            n := if o := obj_of(this_val) then(plain_string(o, "name") else "") else ""
-            Value.Str("function {n}() \{ [native code] }")
+            o := obj_of(this_val) else return type_error(TO_STRING_THIS)
+            c := o.call else return type_error(TO_STRING_THIS)
+            match c
+                Closure(code, _, _, _, _) =>
+                    if code.text != ""
+                        return Value.Str(code.text)
+                    Value.Str("function () \{ [native code] }")
+                Native(_) => Value.Str("function {plain_string(o, "name") else ""}() \{ [native code] }")
+                Bound => Value.Str("function () \{ [native code] }")
         "Function" => function_constructor(args)
         "Object" =>
             if is_nullish(a0)
@@ -426,6 +465,10 @@ pub fn Vm.native(
         "Array.of" => array(args)
         "Array.from" => array_from(args)
         "String" =>
+            if new_target == Undef
+                if sym := str_of(a0)
+                    if is_symbol(sym)
+                        return Value.Str(symbol_text(sym))
             s := if args.len() == 0 then "" else to_string(a0)?
             if new_target == Undef
                 return Value.Str(s)
@@ -477,6 +520,17 @@ pub fn Vm.native(
             Obj(wrap_with(new_target, "Boolean", Bool(truthy(a0)))?)
         "Boolean.prototype.toString" => Value.Str(if this_bool(this_val)? then "true" else "false")
         "Boolean.prototype.valueOf" => Value.Bool(this_bool(this_val)?)
+        "AggregateError" =>
+            e := native(
+                "Error",
+                f,
+                this_val,
+                args[1.min(args.len())..],
+                if new_target == Undef then ctors[name] else new_target,
+            )?
+            if eo := obj_of(e)
+                eo.props["errors"] = hidden(array(iterate(a0)?))
+            e
         "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" =>
             nt := if new_target == Undef then ctors[name] else new_target
             proto := get(nt, "prototype")?
@@ -540,6 +594,7 @@ pub fn Vm.native(
             else
                 console_out.push(line)
             Undef
+        "global.eval" => global_eval(a0)?
         "global.parseInt" => Value.Num(parse_int(to_string(a0)?, to_int32(
             to_number(arg_at(args, 1))?,
         )))
@@ -606,6 +661,71 @@ fn Vm.function_constructor(mut self, args List[Value]) Value ! Thrown
         )
     v
 
+## `eval` (§19.2.1), always as an indirect eval: the code runs in the
+## global scope, even when called by the name `eval`.
+TO_STRING_THIS := "Function.prototype.toString requires that 'this' be a Function"
+
+fn Vm.global_eval(mut self, code Value) Value ! Thrown
+    source := str_of(code) else return code
+    prog := syntax.parse(source) else err
+        return throw_error("SyntaxError", err.msg)
+    saved := global_env.strict
+    r := eval_program(prog) else err
+        global_env.strict = saved
+        return err
+    global_env.strict = saved
+    r
+
+## Run a script for `eval`: its value is the last expression statement's
+## (§14.1.1, simplified to the top level).
+fn Vm.eval_program(mut self, prog syntax.Program) Value ! Thrown
+    global_env.strict = prog.strict
+    hoist_vars(prog.body, global_env, true)
+    declare_block(prog.body, global_env)?
+    mut last := Value.Undef
+    for s in prog.body
+        match s
+            Exp(e, _) => last = eval(e, global_env)?
+            Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger =>
+                exec(s, global_env)?
+    last
+
+## `eval(...)` by that name, calling the real `eval`, is a direct eval: the
+## code runs in the caller's scope (§19.2.1.1 PerformEval).
+pub fn Vm.is_direct_eval(self, callee syntax.Expr, f Value) bool
+    match callee
+        Ident(name, _) =>
+            if name != "eval"
+                return false
+            o := obj_of(f) else return false
+            c := o.call else return false
+            match c
+                Native(n) => n == "global.eval"
+                Closure | Bound => false
+        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await =>
+            false
+
+pub fn Vm.direct_eval(mut self, code Value, env ref Env) Value ! Thrown
+    source := str_of(code) else return code
+    prog := syntax.parse(source) else err
+        return throw_error("SyntaxError", err.msg)
+    # `var`s go to the caller's function, or to a scope of their own in
+    # strict code (§19.2.1.3).
+    # `declare_var` puts them in the nearest function scope, which a strict
+    # eval's own scope counts as.
+    strict := env.strict or prog.strict
+    lex := new_env(env, strict)
+    lex.strict = strict
+    hoist_vars(prog.body, lex, true)
+    declare_block(prog.body, lex)?
+    mut last := Value.Undef
+    for s in prog.body
+        match s
+            Exp(e, _) => last = eval(e, lex)?
+            Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger =>
+                exec(s, lex)?
+    last
+
 ## The value of a script made of one expression statement.
 fn Vm.run_program_value(mut self, prog syntax.Program) Value ! Thrown
     if prog.body.len() == 1
@@ -669,6 +789,7 @@ fn Vm.object_function(mut self, m str, args List[Value]) Value ! Thrown
             p := to_object(arg_at(args, 1))?
             define_properties(o, p)?
             a0
+        "getOwnPropertySymbols" => array([Value.Str(k) for k in own_symbols(to_object(a0)?)])
         "getOwnPropertyNames" =>
             o := to_object(a0)?
             mut keys := own_keys(o)
@@ -859,6 +980,9 @@ fn Vm.object_proto_method(mut self, m str, this_val Value, args List[Value]) Val
                         o.class
                     else
                         "Object"
+            if is_obj(this_val)
+                if t := str_of(get(this_val, well_known("toStringTag"))?)
+                    return Value.Str("[object {t}]")
             Value.Str("[object {tag}]")
         "valueOf" => Obj(to_object(this_val)?)
         "__proto__get" => to_object(this_val)?.proto
@@ -872,11 +996,11 @@ fn Vm.object_proto_method(mut self, m str, this_val Value, args List[Value]) Val
 # ------------------------------------------------------------ Map and Set
 
 ## A Map keeps its entries as key, value, key, value in `elems`.
-pub fn map_entries(o ref JsObject) List[Value]
+pub fn Vm.map_entries(mut self, o ref JsObject) List[Value]
     mut out := List[Value]()
     mut i := 0
     while i + 1 < o.elems.len()
-        out.push(Undef)
+        out.push(array([o.elems[i], o.elems[i + 1]]))
         i += 2
     out
 
@@ -944,7 +1068,7 @@ fn Vm.map_method(mut self, m str, this_val Value, args List[Value]) Value ! Thro
                     _ => array([o.elems[i], o.elems[i + 1]])
                 out.push(item)
                 i += 2
-            array(out)
+            list_iterator(out, "Map Iterator")
         _ => return type_error("Map.prototype.{m} is not supported yet")
 
 fn Vm.set_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
@@ -973,8 +1097,8 @@ fn Vm.set_method(mut self, m str, this_val Value, args List[Value]) Value ! Thro
             for x in o.elems
                 call(a0, arg_at(args, 1), [x, x, this_val])?
             Undef
-        "keys" | "values" => array(o.elems)
-        "entries" => array([array([x, x]) for x in o.elems])
+        "keys" | "values" => list_iterator(o.elems, "Set Iterator")
+        "entries" => list_iterator([array([x, x]) for x in o.elems], "Set Iterator")
         _ => return type_error("Set.prototype.{m} is not supported yet")
 
 # ---------------------------------------------------------------- Math

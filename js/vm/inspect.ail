@@ -95,7 +95,10 @@ fn Vm.show(self, mut st Inspector, v Value, depth int, nested bool) str
         Null => "null"
         Bool(b) => if b then "true" else "false"
         Num(n) => if n == 0.0 and 1.0 / n < 0.0 then "-0" else syntax.number_to_string(n)
-        Str(s) => if nested then quote_js(s) else s
+        Str(s) =>
+            if is_symbol(s)
+                return symbol_text(s)
+            if nested then quote_js(s) else s
         Obj(o) => show_object(mut st, o, depth)
 
 fn Vm.fn_base(self, o ref JsObject) str
@@ -177,6 +180,18 @@ fn Vm.show_object(self, mut st Inspector, o ref JsObject, depth int) str
             output.push(show(mut st, x, depth + 1, true))
     elif is_fn
         base = fn_base(o)
+    elif o.class == "Promise"
+        open = "Promise \{"
+        state := state_of(o)
+        result := hidden_of(o, "{PRIVATE}result")
+        shown := show(mut st, result, depth + 1, true)
+        entry := match state
+            "pending" => "<pending>"
+            "rejected" => "<rejected> {shown}"
+            _ => shown
+        output.push(entry)
+    elif o.class == "Generator"
+        open = "Object [Generator] \{"
     elif o.class == "Number" or o.class == "String" or o.class == "Boolean"
         base = "[{o.class}: {show(mut st, o.prim, depth + 1, true)}]"
     elif o.class == "RegExp"

@@ -17,7 +17,7 @@ pub fn canonical_json(prog Program) str
 
 fn Dump.program(self, prog Program) str
     d := self
-    d.node("Program", Pos(line: 1, col: 1), ["\"body\":{d.stmts(prog.body)}"])
+    d.node("Program", Pos(line: 1, col: 1, offset: 0), ["\"body\":{d.stmts(prog.body)}"])
 
 fn field(name str, value str) str
     "\"{name}\":{value}"
@@ -75,7 +75,7 @@ fn Dump.stmt(self, s Stmt) str
                 field("body", stmt(body)),
             ]
             node("ForStatement", p, fields)
-        ForIn(left, right, body, of, p) =>
+        ForIn(left, right, body, of, is_await, p) =>
             left_text := match left
                 LeftDecl(d) => var_decl(d)
                 LeftPat(t) => pat(t)
@@ -85,7 +85,7 @@ fn Dump.stmt(self, s Stmt) str
                 field("body", stmt(body)),
             ]
             if of
-                fields.push(field("await", "false"))
+                fields.push(field("await", if is_await then "true" else "false"))
                 return node("ForOfStatement", p, fields)
             node("ForInStatement", p, fields)
         While(test, body, p) => node("WhileStatement", p, [
@@ -223,7 +223,7 @@ fn seq_items(e Expr) List[Expr]
         Seq(items, _) => items
         Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget => []
         Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => []
-        Assign | Cond | Call | New | Member | Spread | Chain | PrivName | Paren => []
+        Assign | Cond | Call | New | Member | Spread | Chain | PrivName | Paren | Yield | Await => []
 
 fn Dump.key(self, k Key) str
     match k
@@ -348,6 +348,11 @@ fn Dump.expr(self, e Expr) str
         Chain(inner, p) => node("ChainExpression", p, [field("expression", expr(inner))])
         PrivName(n, p) => node("PrivateIdentifier", p, [field("name", quote(n))])
         Paren(inner, _) => expr(inner)
+        Yield(arg, delegate, p) => node("YieldExpression", p, [
+            field("argument", if a := arg then expr(a) else "null"),
+            field("delegate", bool_text(delegate)),
+        ])
+        Await(arg, p) => node("AwaitExpression", p, [field("argument", expr(arg))])
 
 fn Dump.prop(self, x Prop) str
     match x
