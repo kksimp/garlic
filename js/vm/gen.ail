@@ -836,7 +836,8 @@ pub struct Stop
     kind str
     value Value
 
-GO := Stop(kind: "", value: Undef)
+fn go() Stop
+    Stop(kind: "", value: Undef)
 
 fn Vm.take_frame(mut self, id int) Frame?
     frames.remove(id)
@@ -1084,7 +1085,7 @@ fn Vm.step(mut self, mut f Frame, code Code) Stop ! Thrown
         Exec(s, ctx) =>
             flow := exec(s, f.env)?
             match flow
-                Normal => return GO
+                Normal => return go()
                 Ret(v) => return leave(mut f, Completion(kind: "return", value: v, target: -1))
                 Brk(label) =>
                     t := find_target(
@@ -1117,7 +1118,7 @@ fn Vm.step(mut self, mut f Frame, code Code) Stop ! Thrown
                 pop_value(mut f)
                 f.stack.push(get(r, "value")?)
                 f.pc = end
-                return GO
+                return go()
             return Stop(kind: "yield", value: get(r, "value")?)
         GetIter =>
             v := pop_value(mut f)
@@ -1255,7 +1256,7 @@ fn Vm.step(mut self, mut f Frame, code Code) Stop ! Thrown
                 bind_pattern(p, v, f.env, "let")?
         NormalCompletion => f.completions.push(Completion(kind: "normal", value: Undef, target: -1))
         EndFinally =>
-            c := f.completions.pop() else return GO
+            c := f.completions.pop() else return go()
             if c.kind != "normal"
                 return leave(mut f, c)
         IterInit(of, is_await) =>
@@ -1306,12 +1307,12 @@ fn Vm.step(mut self, mut f Frame, code Code) Stop ! Thrown
             if f.stack[f.stack.len() - 1] == test
                 pop_value(mut f)
                 f.pc = to
-    GO
+    go()
 
 ## A return or a jump out of compiled code: through the `finally` blocks in
 ## the way. A `Stop` when it leaves the frame.
 fn Vm.leave(mut self, mut f Frame, c Completion) Stop ! Thrown
-    left := unwind(mut f, c) else return GO
+    left := unwind(mut f, c) else return go()
     if left.kind == "throw"
         return thrown(left.value)
     Stop(kind: "return", value: left.value)
