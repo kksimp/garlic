@@ -18,7 +18,7 @@ pub struct Attr
 
 ## One node of the tree: `tag` is the lowercase element name, `text` the
 ## content of a text or comment node, `parent` -1 for the document.
-pub struct Node
+pub struct TreeNode
     pub kind Kind
     pub tag str
     pub attrs List[Attr]
@@ -36,7 +36,7 @@ pub enum Token
 
 ## A parsed document.
 pub struct Doc
-    pub nodes List[Node]
+    pub nodes List[TreeNode]
     pub doctype str
     ## Nodes changed since parsing (by scripts or form input), in order,
     ## each once; the page model reports them.
@@ -486,7 +486,7 @@ pub fn tokenize(src str) List[Token]
     lx.out
 
 struct Builder
-    nodes List[Node]
+    nodes List[TreeNode]
     stack List[int]
     html int
     head int
@@ -497,14 +497,14 @@ struct Builder
 fn Builder.top(self) int
     stack[stack.len() - 1]
 
-fn Builder.add(mut self, parent int, node Node) int
+fn Builder.add(mut self, parent int, node TreeNode) int
     id := nodes.len()
     nodes.push(node)
     nodes[parent].children.push(id)
     id
 
 fn Builder.element(mut self, parent int, tag str, attrs List[Attr]) int
-    add(parent, Node(kind: Element, tag, attrs, text: "", parent, children: []))
+    add(parent, TreeNode(kind: Element, tag, attrs, text: "", parent, children: []))
 
 ## Opens `html` if it isn't yet.
 fn Builder.ensure_html(mut self)
@@ -649,7 +649,7 @@ fn Builder.chars(mut self, s str)
         if nodes[last].kind == Text
             nodes[last].text = "{nodes[last].text}{text}"
             return
-    add(parent, Node(kind: Text, tag: "", attrs: [], text, parent, children: []))
+    add(parent, TreeNode(kind: Text, tag: "", attrs: [], text, parent, children: []))
 
 fn all_space(s str) bool
     for c in s.chars()
@@ -660,7 +660,14 @@ fn all_space(s str) bool
 ## Builds the tree from tokens: a simplified 13.2.6 with implied `html`,
 ## `head` and `body`, void elements, implied end tags and lenient end tags.
 pub fn build(tokens List[Token]) Doc
-    root := Node(kind: Document, tag: "#document", attrs: [], text: "", parent: -1, children: [])
+    root := TreeNode(
+        kind: Document,
+        tag: "#document",
+        attrs: [],
+        text: "",
+        parent: -1,
+        children: [],
+    )
     mut b := Builder(
         nodes: [root],
         stack: [0],
@@ -678,7 +685,7 @@ pub fn build(tokens List[Token]) Doc
             Note(s) =>
                 b.skip_newline = false
                 at := b.top()
-                b.add(at, Node(
+                b.add(at, TreeNode(
                     kind: Comment,
                     tag: "",
                     attrs: [],
@@ -733,7 +740,7 @@ pub fn Doc.mark(mut self, id int)
 
 ## A new element named `tag`, not yet in the tree (parent -1).
 pub fn Doc.create(mut self, tag str) int
-    nodes.push(Node(
+    nodes.push(TreeNode(
         kind: Element,
         tag: tag.to_lower(),
         attrs: [],
@@ -745,12 +752,12 @@ pub fn Doc.create(mut self, tag str) int
 
 ## A new text node, not yet in the tree.
 pub fn Doc.create_text(mut self, s str) int
-    nodes.push(Node(kind: Text, tag: "", attrs: [], text: s, parent: -1, children: []))
+    nodes.push(TreeNode(kind: Text, tag: "", attrs: [], text: s, parent: -1, children: []))
     nodes.len() - 1
 
 ## A new comment node, not yet in the tree.
 pub fn Doc.create_comment(mut self, s str) int
-    nodes.push(Node(kind: Comment, tag: "", attrs: [], text: s, parent: -1, children: []))
+    nodes.push(TreeNode(kind: Comment, tag: "", attrs: [], text: s, parent: -1, children: []))
     nodes.len() - 1
 
 ## Moves node `id` to the end of `parent`'s children; gives `id`.

@@ -13,6 +13,7 @@ use std.net.jar
 use std.compress
 use std.time
 use std.ui
+use std.app
 use html
 use page
 use css
@@ -799,6 +800,12 @@ fn window_main(mut b Browser) !
         b.draw(mut w)
     w.close()
 
+## Whether no prompt is open, so keys are commands rather than text.
+fn Browser.reading(self) bool
+    match prompt
+        Status => true
+        Url(_) | Find(_) | Field(_, _) => false
+
 ## The native window's side of the browser: the host's cell size in points
 ## (the monospace font it draws the page area in), the page area's size, and
 ## the scroll points that haven't added up to a row yet. The page area shows
@@ -810,9 +817,12 @@ struct Gui
     cols int
     rows int
     pending float
+    ## The page area's size in points, as the host last reported it.
+    area_w float
+    area_h float
 
 fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
-    mut g := Gui(b, cell_w, cell_h, cols: 1, rows: 1, pending: 0.0)
+    mut g := Gui(b, cell_w, cell_h, cols: 1, rows: 1, pending: 0.0, area_w: w, area_h: h)
     g.resize(w, h, cell_w, cell_h)
     g
 
@@ -821,6 +831,8 @@ fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
 fn Gui.resize(mut self, w float, h float, cw float, ch float)
     cell_w = cw
     cell_h = ch
+    area_w = w
+    area_h = h
     size := draw.grid_size(w, h, cw, ch)
     cols = size.0
     rows = size.1
@@ -848,15 +860,111 @@ fn Gui.key(mut self, key str, alt bool, shift bool) bool
     pending = 0.0
     b.key(key, alt, shift)
 
+## What a typed address means: a URL as it is, a path to a file that exists
+## as it is, and anything else (`projects.voltare.us/x`) as an `https` URL.
+fn address(text str) str
+    t := text.trim()
+    if t == "" or page.scheme(t) != "" or t.starts_with("/") or fs.exists(t)
+        return t
+    "https://{t}"
+
 ## The URL field was submitted: opens it.
 fn Gui.open(mut self, text str)
-    t := text.trim()
+    t := address(text)
     if t != ""
         b.go(t)
 
 ## What the page area shows, as drawing operations.
 fn Gui.display(self) List[draw.Op]
     draw.display_list(b.pg, b.scroll, rows, cols, b.focus, cell_w, cell_h)
+
+## The native window as a `std.app` app (docs/design/garlic-browser.md,
+## "Native window"): an address bar with back and reload above the page, and
+## the status line below it.
+struct Garlic
+    g Gui
+    ## The address field's text.
+    url_text str
+    ## The control to give the keyboard focus; cleared by the next event.
+    want str
+
+fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
+    Garlic(g: Gui.new(b, w, h, cell_w, cell_h), url_text: b.url, want: "")
+
+impl app.App for Garlic
+    fn update(mut self, ev app.Event)
+        want = ""
+        match ev.kind
+            "resize" => g.resize(ev.dx, ev.dy, ev.cell_w, ev.cell_h)
+            "click" => g.click(ev.x, ev.y)
+            "scroll" => g.scroll(ev.dy)
+            "key" =>
+                if (ev.meta and ev.text == "l") or (ev.text == "g" and g.b.reading())
+                    want = "url"
+                elif ev.meta and ev.text == "r"
+                    g.b.load(g.b.url, "GET", "")
+                elif ev.meta and ev.text == "["
+                    g.b.go_back()
+                else
+                    g.key(ev.text, ev.alt, ev.shift)
+            "edit" => url_text = ev.text
+            "submit" => g.open(url_text)
+            "press" =>
+                if ev.id == "back"
+                    g.b.go_back()
+                elif ev.id == "reload"
+                    g.b.load(g.b.url, "GET", "")
+            _ => url_text = url_text
+        if ev.kind != "edit"
+            url_text = g.b.url
+
+    fn view(self) app.Node
+        bar := app.row([
+            app.button("back", "Back"),
+            app.button("reload", "Reload"),
+            app.field("url", url_text, "Enter a web address"),
+        ])
+        ## A canvas of 0 by 0 fills the window; the host reports its size.
+        app.column([
+            bar,
+            app.canvas("page", 0.0, 0.0, [to_app(op) for op in g.display()]),
+            app.label(g.b.status()),
+        ])
+
+    fn title(self) str
+        "{g.b.pg.title} - Garlic"
+
+    fn focus(self) str
+        want
+
+## A drawing operation of the page, as a `std.app` canvas operation.
+fn to_app(op draw.Op) app.Op
+    match op
+        Rect(x, y, w, h, c) => app.draw_rect(x, y, w, h, c)
+        Text(x, y, t, fg, bold, italic, underline) => app.Op.Str(
+            x: x,
+            y: y,
+            text: t,
+            font: "mono",
+            size: 13.0,
+            fg: fg,
+            bold: bold,
+            italic: italic,
+            underline: underline,
+        )
+
+## The native window: the page area starts at `GUI_W` by `GUI_H` points with
+## cells of `GUI_CELL_W` by `GUI_CELL_H` until the host reports its own.
+GUI_W := 960.0
+GUI_H := 600.0
+GUI_CELL_W := 7.8
+GUI_CELL_H := 16.0
+
+fn app_main(b Browser) !
+    mut a := Garlic.new(b, GUI_W, GUI_H, GUI_CELL_W, GUI_CELL_H)
+    app.run(mut a) else err
+        print("garlic: no native window ({err.message}); the page as text:")
+        print(a.g.b.pg.text())
 
 ## The value after flag `name` (`--width 60`), or none.
 fn flag(args List[str], name str) str?
@@ -903,6 +1011,9 @@ fn main() !
         for n in 1..=b.pg.links.len()
             bx := b.pg.boxes[b.pg.links[n - 1]]
             print("[{n}] {bx.name} -> {bx.href}")
+    elif args.contains("--app")
+        app_main(b) else err
+            print("garlic: {err}")
     else
         window_main(mut b) else err
             print("garlic: no window ({err}); the page as text:")
@@ -1290,6 +1401,66 @@ fn show_ops(ops List[draw.Op]) List[str]
     assert_eq(g.b.pg.title, "Second page")
     g.open("{testdata()}/index.html")
     assert_eq(g.b.pg.title, "Garlic test page")
+
+fn resized(w float, h float) app.Event
+    mut e := app.event("resize")
+    e.id = "page"
+    e.dx = w
+    e.dy = h
+    e.cell_w = 8.0
+    e.cell_h = 16.0
+    e
+
+fn clicked(x float, y float) app.Event
+    mut e := app.event("click")
+    e.id = "page"
+    e.text = "left"
+    e.x = x
+    e.y = y
+    e
+
+@test fn the_app_shows_the_page_and_follows_links_by_click()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut a := Garlic.new(b, 960.0, 600.0, 8.0, 16.0)
+    outlines := app.script(mut a, [resized(480.0, 96.0)])
+    top := outlines[0].split("\n")
+    assert_eq(top[0], "column")
+    assert_eq(top[1], "  row")
+    assert(top[2].starts_with("    [Back] #back"))
+    assert(top[4].contains("#url"))
+    assert(top[5].starts_with("  canvas #page"))
+    assert(outlines[0].contains("str 0.0,32.0 \"# Garlic\" mono 13.0 dcdcaa"))
+    assert(top[top.len() - 1].starts_with("  \""))
+    link := a.g.b.pg.boxes[a.g.b.pg.links[0]]
+    shown := app.script(mut a, [clicked(
+        link.col.to_float() * 8.0 + 1.0,
+        link.row.to_float() * 16.0 + 1.0,
+    )])
+    assert_eq(a.g.b.pg.title, "Second page")
+    assert(a.url_text.ends_with("second.html"))
+    assert(shown[0].contains("<{a.url_text}> #url"))
+    assert_eq(a.title(), "Second page - Garlic")
+    app.script(mut a, [app.press("back")])
+    assert_eq(a.g.b.pg.title, "Garlic test page")
+
+@test fn the_address_field_opens_urls_and_cmd_l_focuses_it()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut a := Garlic.new(b, 960.0, 600.0, 8.0, 16.0)
+    app.script(mut a, [app.edit("url", "{testdata()}/second.html")])
+    assert_eq(a.g.b.pg.title, "Garlic test page")
+    mut submit := app.event("submit")
+    submit.id = "url"
+    app.script(mut a, [submit])
+    assert_eq(a.g.b.pg.title, "Second page")
+    mut cmd_l := app.key("l")
+    cmd_l.meta = true
+    app.script(mut a, [cmd_l])
+    assert_eq(a.focus(), "url")
+    app.script(mut a, [app.key("down")])
+    assert_eq(a.focus(), "")
+    assert_eq(address("projects.voltare.us"), "https://projects.voltare.us")
+    assert_eq(address(" https://a.b/c "), "https://a.b/c")
+    assert_eq(address("/tmp/x.html"), "/tmp/x.html")
 
 @test fn agent_actions_follow_click_back_and_report()
     mut b := Browser.new("{testdata()}/index.html", 60, 12)
