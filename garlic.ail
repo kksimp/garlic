@@ -9,6 +9,7 @@ use std.env
 use std.io
 use std.fs
 use std.net
+use std.net.jar
 use std.compress
 use std.time
 use std.ui
@@ -73,7 +74,7 @@ struct Browser
     last_url str
     last_nodes Map[int, str]
     ## Cookies from responses and scripts, sent back to their sites.
-    jar jsdom.Jar
+    cj jar.Jar
 
 ## The headers Garlic sends: who it is, and that it wants HTML.
 fn options() net.Options
@@ -89,26 +90,25 @@ fn options() net.Options
 ## anything without a scheme from the file system. A failure is shown as a
 ## page, so the browser keeps going.
 fn fetch(url str, method str, body str) str
-    mut jar := jsdom.new_jar()
-    fetch_with(url, method, body, mut jar)
+    mut cj := jar.new()
+    fetch_with(url, method, body, mut cj)
 
-## `fetch`, sending `jar`'s cookies for the site and keeping the ones the
+## `fetch`, sending `cj`'s cookies for the site and keeping the ones the
 ## response sets.
-fn fetch_with(url str, method str, body str, mut jar jsdom.Jar) str
+fn fetch_with(url str, method str, body str, mut cj jar.Jar) str
     s := page.scheme(url)
     if s == "http" or s == "https"
         mut o := options()
         if method == "POST"
             o.body = body
             o.headers["content-type"] = "application/x-www-form-urlencoded"
-        cookie := jar.header(url)
+        cookie := cj.header(url)
         if cookie != ""
             o.headers["cookie"] = cookie
         r := net.request_bytes(method, url, o) else err
             return error_page(url, "{err}")
-        now := time.now_ms().to_float()
         for line in r.all_headers.get("set-cookie") else List[str]()
-            jar.set(url, line, now)
+            cj.set_cookie(url, line)
         if r.status >= 400
             return "{body_text(r)}<p>(HTTP status {r.status})"
         return body_text(r)
@@ -275,12 +275,12 @@ struct Loaded
 
 ## Fetches and parses `target`, then runs its scripts (unless `--no-js`),
 ## which change the tree or send the browser on to another page.
-fn load_doc(target str, method str, body str, mut jar jsdom.Jar) Loaded
+fn load_doc(target str, method str, body str, mut cj jar.Jar) Loaded
     mut at := target
     mut m := method
     mut b := body
     for _ in 0..MAX_REFRESHES
-        mut d := html.parse(fetch_with(at, m, b, mut jar))
+        mut d := html.parse(fetch_with(at, m, b, mut cj))
         if env.args().contains("--no-js")
             next := refresh_target(d, at, false) else return Loaded(url: at, doc: d)
             at = next
@@ -293,9 +293,9 @@ fn load_doc(target str, method str, body str, mut jar jsdom.Jar) Loaded
                 u := page.resolve(at, src)
                 scripts[script_url(u)] = fetch_text(u)
         now := time.now_ms().to_float()
-        out := jsdom.run(mut d, script_url(at), scripts, jar.for_url(at), now, 1000.0, 5000000)
+        out := jsdom.run(mut d, script_url(at), scripts, cj.for_script(at), now, 1000.0, 5000000)
         for line in out.cookies
-            jar.set(at, line, now)
+            cj.set_from_script(at, line)
         if env.args().contains("--console")
             for line in out.console
                 io.eprint("console: {line}")
@@ -312,7 +312,7 @@ fn load_doc(target str, method str, body str, mut jar jsdom.Jar) Loaded
             m = out.method
             b = out.body
         at = next
-    Loaded(url: at, doc: html.parse(fetch_with(at, m, b, mut jar)))
+    Loaded(url: at, doc: html.parse(fetch_with(at, m, b, mut cj)))
 
 ## The address scripts see: a local file gets a file:// URL.
 fn script_url(u str) str
@@ -342,7 +342,7 @@ fn Browser.new(url str, width int, height int) Browser
         diff: false,
         last_url: "",
         last_nodes: {},
-        jar: jsdom.new_jar(),
+        cj: jar.new(),
     )
     b.load(url, "GET", "")
     b
@@ -368,7 +368,7 @@ fn Browser.go(mut self, target str)
     load(target, "GET", "")
 
 fn Browser.load(mut self, target str, method str, body str)
-    loaded := load_doc(target, method, body, mut jar)
+    loaded := load_doc(target, method, body, mut cj)
     url = loaded.url
     doc = loaded.doc
     sheet = linked_sheets(doc, url)
