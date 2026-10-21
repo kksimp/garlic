@@ -1103,8 +1103,9 @@ fn Vm.set_cookie(mut self, text str)
     value := first.slice(eq + 1, first.chars().len()).trim()
     if text.to_lower().contains("max-age=0") or text.to_lower().contains("expires=thu, 01 jan 1970")
         cookies.remove(name)
-        return
-    cookies[name] = value
+    else
+        cookies[name] = value
+    # The browser keeps the cookie with its attributes.
     host_requests.push(HostRequest(
         kind: "cookie",
         url: location_href,

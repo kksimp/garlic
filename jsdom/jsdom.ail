@@ -1,0 +1,117 @@
+## jsdom: runs a page's scripts with Garlic's JavaScript engine
+## (tools/garlic/js, docs/design/garlic-js.md) and replays every change
+## they make to the tree into Garlic's `html.Doc`, so the page model shows
+## what the scripts did.
+use html
+use garlicjs.vm
+
+## What running a page's scripts left for the browser to do.
+pub struct Outcome
+    ## A navigation the page asked for (the first one), or "".
+    pub url str
+    pub method str
+    pub body str
+    ## Console lines and uncaught errors, in order.
+    pub console List[str]
+    ## External scripts the page wanted that weren't in `scripts`.
+    pub missing List[str]
+    ## How many changes were replayed.
+    pub changes int
+    ## What scripts assigned to `document.cookie`, in order.
+    pub cookies List[str]
+
+## Run the scripts of `d` (the page at `url`): inline ones, and external ones
+## whose source is in `scripts` by resolved URL. `cookies` are the page's
+## cookies by name and `now_ms` the time (ms since 1970). Timers run for
+## `budget_ms` of virtual time; `max_steps` caps the work (0 for no cap).
+pub fn run(
+    mut d html.Doc,
+    url str,
+    scripts Map[str, str],
+    cookies Map[str, str],
+    now_ms float,
+    budget_ms float,
+    max_steps int,
+) Outcome
+    mut machine := vm.new_vm()
+    machine.step_limit = max_steps
+    machine.clock_ms = now_ms
+    machine.cookies = cookies
+    machine.dom_setup()
+    machine.dom = mirror(d)
+    for id in 0..machine.dom.len()
+        for a in machine.dom[id].attrs
+            if a.name.starts_with("on")
+                machine.handler_set(id, a.name)
+    machine.external_scripts = scripts
+    machine.load_page(url, budget_ms)
+    mut out := Outcome(
+        url: "",
+        method: "",
+        body: "",
+        console: machine.console_out,
+        missing: [],
+        changes: 0,
+        cookies: [],
+    )
+    out.changes = replay(mut d, machine.mutations)
+    for r in machine.host_requests
+        if r.kind == "navigate" and out.url == ""
+            out.url = r.url
+            out.method = r.method
+            out.body = r.text
+        if r.kind == "fetch-script"
+            out.missing.push(r.url)
+        if r.kind == "cookie"
+            out.cookies.push(r.text)
+    out
+
+## The engine's copy of the tree: the same nodes with the same ids.
+fn mirror(d html.Doc) List[vm.DomNode]
+    mut nodes := List[vm.DomNode]()
+    for n in d.nodes
+        kind := match n.kind
+            html.Kind.Document => 9
+            html.Kind.Element => 1
+            html.Kind.Text => 3
+            html.Kind.Comment => 8
+        tag := match kind
+            9 => "#document"
+            3 => "#text"
+            8 => "#comment"
+            _ => n.tag
+        attrs := [vm.DomAttr(name: a.name, value: a.value) for a in n.attrs]
+        nodes.push(vm.DomNode(
+            kind: kind,
+            tag: tag,
+            attrs: attrs,
+            text: n.text,
+            parent: n.parent,
+            children: n.children,
+        ))
+    # Garlic's document node has parent -1, as the engine's does.
+    nodes
+
+## Apply the engine's log to `d`; new nodes get the same ids in both trees.
+fn replay(mut d html.Doc, log List[vm.Mutation]) int
+    for m in log
+        match m.op
+            "create" => d.create(m.name)
+            "create_text" => d.create_text(m.value)
+            "create_comment" => d.create_comment(m.value)
+            "append" => d.append(m.parent, m.node)
+            "insert_before" => d.insert_before(m.parent, m.node, m.before)
+            "detach" => d.detach(m.node)
+            "set_text" => d.set_text(m.node, m.value)
+            "set_attr" => d.set_attr(m.node, m.name, m.value)
+            "remove_attr" => d.remove_attr(m.node, m.name)
+            "set_value" =>
+                if m.name == "checked"
+                    if m.value == "on"
+                        d.set_attr(m.node, "checked", "")
+                    else
+                        d.remove_attr(m.node, "checked")
+                else
+                    d.set_attr(m.node, "value", m.value)
+            _ => d.mark(m.node)
+    log.len()
