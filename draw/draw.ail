@@ -1,0 +1,104 @@
+## draw: Garlic's page as a display list for a native window
+## (docs/design/garlic-browser.md, "Native window"), and the colors both
+## front ends use.
+##
+## The page model lays text out in cells. A host with a monospace font of
+## `cell_w` by `cell_h` points draws cell (col, row) at (col * cell_w,
+## row * cell_h), so the list is the same page the `std.ui` window shows.
+## Coordinates are in points from the top left of the page area.
+
+use page
+
+pub BG := 0x1e1e1e
+pub FG := 0xd4d4d4
+pub QUIET_FG := 0x858585
+pub LINK_FG := 0x569cd6
+pub FOCUS_BG := 0x264f78
+pub HEADING_FG := 0xdcdcaa
+pub CODE_FG := 0xce9178
+pub CONTROL_FG := 0x4ec9b0
+pub STATUS_BG := 0x007acc
+pub STATUS_FG := 0xffffff
+
+## One drawing operation. Later operations paint over earlier ones.
+pub enum Op
+    Rect(x float, y float, w float, h float, color int)
+    Text(x float, y float, text str, fg int, bold bool, italic bool, underline bool)
+
+## The text color of a run in style `st`.
+pub fn color(st page.Style) int
+    if st.link > 0
+        return LINK_FG
+    if st.target > 0
+        return CONTROL_FG
+    if st.heading > 0
+        return HEADING_FG
+    if st.code
+        return CODE_FG
+    if st.quiet
+        return QUIET_FG
+    FG
+
+## The operations that draw `rows` rows of page `pg` from row `scroll`, in
+## an area `cols` cells wide: the background, a highlight behind the
+## focused target (`focus`, 0 for none), then one `Text` per run.
+pub fn display_list(
+    pg page.Page,
+    scroll int,
+    rows int,
+    cols int,
+    focus int,
+    cell_w float,
+    cell_h float,
+) List[Op]
+    mut ops := List[Op]()
+    ops.push(Rect(
+        x: 0.0,
+        y: 0.0,
+        w: cols.to_float() * cell_w,
+        h: rows.to_float() * cell_h,
+        color: BG,
+    ))
+    for r in 0..rows
+        at := scroll + r
+        if at >= pg.rows.len()
+            break
+        y := r.to_float() * cell_h
+        for run in pg.rows[at]
+            ## Spaces at the ends of a link or control aren't underlined or
+            ## highlighted; they only separate it from its neighbours.
+            edge := run.style.link > 0 or run.style.target > 0
+            cs := run.text.chars()
+            mut a := 0
+            mut z := cs.len()
+            if edge
+                while a < z and cs[a] == ' '
+                    a += 1
+                while z > a and cs[z - 1] == ' '
+                    z -= 1
+            if a == z
+                continue
+            x := (run.col + a).to_float() * cell_w
+            text := cs[a..z].join("")
+            if run.style.target > 0 and run.style.target == focus
+                w := (z - a).to_float() * cell_w
+                ops.push(Rect(x, y, w, h: cell_h, color: FOCUS_BG))
+            if text.trim() != ""
+                ops.push(Text(
+                    x,
+                    y,
+                    text,
+                    fg: color(run.style),
+                    bold: run.style.bold,
+                    italic: run.style.italic,
+                    underline: run.style.link > 0,
+                ))
+    ops
+
+## The cell under point (`x`, `y`) of the page area, as (col, row).
+pub fn cell_at(x float, y float, cell_w float, cell_h float)(int, int)
+    ((x / cell_w).floor().to_int(), (y / cell_h).floor().to_int())
+
+## The columns and rows that fit an area `w` by `h` points, at least 1 by 1.
+pub fn grid_size(w float, h float, cell_w float, cell_h float)(int, int)
+    ((w / cell_w).floor().to_int().max(1), (h / cell_h).floor().to_int().max(1))

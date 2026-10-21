@@ -232,7 +232,7 @@ fn Vm.string_method(mut self, m str, this_val Value, args List[Value]) Value ! T
             Value.Str(out.join(""))
         "localeCompare" =>
             t := to_string(a0)?
-            Value.Num(if s == t then 0.0 else (if utf16_less(s, t) then - 1.0 else 1.0))
+            Value.Num(if s == t then 0.0 else (if utf16_less(s, t) then -1.0 else 1.0))
         "normalize" => Value.Str(s)
         "match" | "matchAll" | "search" => regexp_string_method(m, s, a0)
         _ => return type_error("String.prototype.{m} is not supported yet")

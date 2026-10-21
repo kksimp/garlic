@@ -158,7 +158,7 @@ pub fn Vm.set_own(mut self, o ref JsObject, key str, v Value) ! Thrown
         and (o.class == "Node" or o.class == "global")
         and dom.len() > 0
         and is_event_handler_name(key)
-        handler_set(if o.class == "Node" then(node_id(Obj(o)) else -1) else -1, key)
+        handler_set(if o.class == "Node" then (node_id(Obj(o)) else -1) else -1, key)
     if is_array_like(o)
         if i := index_of_key(key)
             while o.elems.len() <= i

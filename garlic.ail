@@ -16,6 +16,7 @@ use std.ui
 use html
 use page
 use css
+use draw
 use jsdom
 
 ## The keys, as `--keys` prints them.
@@ -29,17 +30,6 @@ KEYS := [
     "r                 reload",
     "q, Escape         quit",
 ]
-
-BG := 0x1e1e1e
-FG := 0xd4d4d4
-QUIET_FG := 0x858585
-LINK_FG := 0x569cd6
-FOCUS_BG := 0x264f78
-HEADING_FG := 0xdcdcaa
-CODE_FG := 0xce9178
-CONTROL_FG := 0x4ec9b0
-STATUS_BG := 0x007acc
-STATUS_FG := 0xffffff
 
 ## What the bottom row is doing: showing the status, or reading a URL, a
 ## search, or the text for form field `id`.
@@ -293,7 +283,17 @@ fn load_doc(target str, method str, body str, mut cj jar.Jar) Loaded
                 u := page.resolve(at, src)
                 scripts[script_url(u)] = fetch_text(u)
         now := time.now_ms().to_float()
-        out := jsdom.run(mut d, script_url(at), scripts, cj.for_script(at), now, 1000.0, 5000000)
+        ## A page with no scripts has nothing to run, and starting the engine
+        ## costs about 0.2 s.
+        out := if d.all("script").len() == 0 then jsdom.Outcome(
+            url: "",
+            method: "",
+            body: "",
+            console: [],
+            missing: [],
+            changes: 0,
+            cookies: [],
+        ) else jsdom.run(mut d, script_url(at), scripts, cj.for_script(at), now, 1000.0, 5000000)
         for line in out.cookies
             cj.set_from_script(at, line)
         if env.args().contains("--console")
@@ -749,36 +749,29 @@ fn Browser.status(self) str
             last := (scroll + view()).min(pg.rows.len())
             "{url}  rows {scroll + 1}-{last} of {pg.rows.len()}"
 
-## The text color of a run in style `st`.
-fn color(st page.Style) int
-    if st.link > 0
-        return LINK_FG
-    if st.target > 0
-        return CONTROL_FG
-    if st.heading > 0
-        return HEADING_FG
-    if st.code
-        return CODE_FG
-    if st.quiet
-        return QUIET_FG
-    FG
-
 fn Browser.draw(self, mut w ui.Window)
-    w.clear(BG)
+    w.clear(draw.BG)
     for r in 0..view()
         at := scroll + r
         if at >= pg.rows.len()
             break
         for run in pg.rows[at]
-            bg := if run.style.target > 0 and run.style.target == focus then FOCUS_BG else BG
+            bg := if run.style.target > 0
+                and run.style.target == focus then draw.FOCUS_BG else draw.BG
             st := ui.Style(
                 bold: run.style.bold,
                 italic: run.style.italic,
                 underline: run.style.link > 0,
             )
-            w.put_styled(run.col, r, run.text, color(run.style), bg, st)
+            w.put_styled(run.col, r, run.text, draw.color(run.style), bg, st)
     line := status()
-    w.put(0, height - 1, line.pad_right(width.max(line.chars().len()), ' '), STATUS_FG, STATUS_BG)
+    w.put(
+        0,
+        height - 1,
+        line.pad_right(width.max(line.chars().len()), ' '),
+        draw.STATUS_FG,
+        draw.STATUS_BG,
+    )
     w.present()
 
 fn window_main(mut b Browser) !
@@ -805,6 +798,65 @@ fn window_main(mut b Browser) !
             w.set_title("{b.pg.title} - Garlic")
         b.draw(mut w)
     w.close()
+
+## The native window's side of the browser: the host's cell size in points
+## (the monospace font it draws the page area in), the page area's size, and
+## the scroll points that haven't added up to a row yet. The page area shows
+## `rows` rows; the status line is the host's own node, not a page row.
+struct Gui
+    b Browser
+    cell_w float
+    cell_h float
+    cols int
+    rows int
+    pending float
+
+fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
+    mut g := Gui(b, cell_w, cell_h, cols: 1, rows: 1, pending: 0.0)
+    g.resize(w, h, cell_w, cell_h)
+    g
+
+## The page area is now `w` by `h` points with cells of `cell_w` by
+## `cell_h`: lays the page out again for that many columns.
+fn Gui.resize(mut self, w float, h float, cw float, ch float)
+    cell_w = cw
+    cell_h = ch
+    size := draw.grid_size(w, h, cw, ch)
+    cols = size.0
+    rows = size.1
+    b.width = cols
+    b.height = rows + 1
+    b.relayout()
+
+## A click at (`x`, `y`) points in the page area: uses the target there.
+fn Gui.click(mut self, x float, y float)
+    at := draw.cell_at(x, y, cell_w, cell_h)
+    if id := b.target_at(at.0, at.1)
+        b.activate(id)
+
+## A scroll of `dy` points, positive towards the end of the page. Whole
+## rows move the page; the rest waits for the next scroll.
+fn Gui.scroll(mut self, dy float)
+    pending += dy
+    lines := (pending / cell_h).to_int()
+    if lines != 0
+        pending -= lines.to_float() * cell_h
+        b.scroll_to(b.scroll + lines)
+
+## A key in the page area, by the `std.ui` names. False when it asks to quit.
+fn Gui.key(mut self, key str, alt bool, shift bool) bool
+    pending = 0.0
+    b.key(key, alt, shift)
+
+## The URL field was submitted: opens it.
+fn Gui.open(mut self, text str)
+    t := text.trim()
+    if t != ""
+        b.go(t)
+
+## What the page area shows, as drawing operations.
+fn Gui.display(self) List[draw.Op]
+    draw.display_list(b.pg, b.scroll, rows, cols, b.focus, cell_w, cell_h)
 
 ## The value after flag `name` (`--width 60`), or none.
 fn flag(args List[str], name str) str?
@@ -1167,6 +1219,77 @@ fn testdata() str
         """
     assert_eq(lay(src, 100).text(), "Wide layout")
     assert_eq(lay(src, 60).text(), "Narrow layout")
+
+## The ops of a display list as `text@x,y` and `rect@x,y wxh` lines.
+fn show_ops(ops List[draw.Op]) List[str]
+    mut out := List[str]()
+    for op in ops
+        match op
+            Rect(x, y, w, h, _) => out.push("rect@{x},{y} {w}x{h}")
+            Text(x, y, text, _, _, _, _) => out.push("{text}@{x},{y}")
+    out
+
+@test fn the_display_list_draws_each_run_at_its_cell()
+    p := lay("<h1>Hi</h1><p>one <a href=/x>two</a></p>", 40)
+    ops := draw.display_list(p, 0, 6, 40, 0, 8.0, 16.0)
+    assert_eq(show_ops(ops), [
+        "rect@0.0,0.0 320.0x96.0",
+        "# Hi@0.0,0.0",
+        "one@0.0,32.0",
+        "two@32.0,32.0",
+        "[1]@56.0,32.0",
+    ])
+    link := ops[3]
+    match link
+        Text(_, _, _, fg, _, _, underline) =>
+            assert_eq(fg, draw.LINK_FG)
+            assert(underline)
+        Rect(_, _, _, _, _) => assert(false)
+    scrolled := show_ops(draw.display_list(p, 2, 2, 40, 0, 8.0, 16.0))
+    assert_eq(scrolled[1], "one@0.0,0.0")
+    assert(not scrolled.contains("# Hi@0.0,0.0"))
+
+@test fn the_focused_target_gets_a_highlight_and_clicks_map_to_cells()
+    p := lay("<p><a href=/x>go</a> <a href=/y>there</a></p>", 40)
+    plain := draw.display_list(p, 0, 2, 40, 0, 7.5, 15.0)
+    lit := draw.display_list(p, 0, 2, 40, 2, 7.5, 15.0)
+    assert_eq(lit.len(), plain.len() + 1)
+    assert_eq(show_ops(lit), [
+        "rect@0.0,0.0 300.0x30.0",
+        "go@0.0,0.0",
+        "[1]@15.0,0.0",
+        "rect@45.0,0.0 37.5x15.0",
+        "there@45.0,0.0",
+        "[2]@82.5,0.0",
+    ])
+    assert_eq(draw.cell_at(23.0, 14.9, 7.5, 15.0), (3, 0))
+    assert_eq(draw.cell_at(-1.0, 15.0, 7.5, 15.0), (-1, 1))
+    assert_eq(draw.grid_size(600.0, 400.0, 7.5, 15.0), (80, 26))
+    assert_eq(draw.grid_size(1.0, 1.0, 7.5, 15.0), (1, 1))
+
+@test fn the_native_window_scrolls_clicks_and_resizes_by_points()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut g := Gui.new(b, 600.0, 300.0, 7.5, 15.0)
+    assert_eq((g.cols, g.rows), (80, 20))
+    assert_eq((g.b.width, g.b.height), (80, 21))
+    g.resize(300.0, 45.0, 7.5, 15.0)
+    assert_eq((g.cols, g.rows), (40, 3))
+    g.scroll(10.0)
+    assert_eq(g.b.scroll, 0)
+    g.scroll(10.0)
+    assert_eq(g.b.scroll, 1)
+    g.scroll(-30.0)
+    assert_eq(g.b.scroll, 0)
+    g.scroll(15.0 * 100.0)
+    assert_eq(g.b.scroll, g.b.max_scroll())
+    g.b.scroll_to(0)
+    ops := g.display()
+    assert_eq(show_ops(ops)[0], "rect@0.0,0.0 300.0x45.0")
+    link := g.b.pg.boxes[g.b.pg.links[0]]
+    g.click(link.col.to_float() * 7.5 + 1.0, link.row.to_float() * 15.0 + 1.0)
+    assert_eq(g.b.pg.title, "Second page")
+    g.open("{testdata()}/index.html")
+    assert_eq(g.b.pg.title, "Garlic test page")
 
 @test fn agent_actions_follow_click_back_and_report()
     mut b := Browser.new("{testdata()}/index.html", 60, 12)

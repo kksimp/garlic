@@ -109,7 +109,7 @@ pub fn exp(x float) float
         return infinity()
     if x < -745.1332191019412
         return 0.0
-    k := (x / LN2 + (if x < 0.0 then - 0.5 else 0.5))
+    k := (x / LN2 + (if x < 0.0 then -0.5 else 0.5))
     ki := trunc(k)
     r := (x - ki * LN2_HI) - ki * LN2_LO
     # exp(r) for |r| <= ln2 / 2 by its series, summed small terms first.

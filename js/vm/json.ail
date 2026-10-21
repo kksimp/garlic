@@ -35,10 +35,10 @@ fn Vm.json_parse(mut self, text str, reviver Value) Value ! Thrown
 fn Vm.revive(mut self, holder Value, key str, reviver Value) Value ! Thrown
     v := get(holder, key)?
     if o := obj_of(v)
-        keys := if o.class == "Array" then[Value.Str("{i}") for i in 0..o.elems.len()] else [
-            Value.Str(k)
-            for k in enum_keys(o)
-        ]
+        keys := if o.class == "Array" then [
+            Value.Str("{i}")
+            for i in 0..o.elems.len()
+        ] else [Value.Str(k) for k in enum_keys(o)]
         for kv in keys
             k := str_of(kv) else ""
             nv := revive(v, k, reviver)?
