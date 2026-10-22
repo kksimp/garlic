@@ -1,8 +1,8 @@
 ## garlic: a web browser written in AIL (docs/design/garlic-browser.md).
 ##
 ## Text mode: it fetches a page over `std.net` (or reads a file), parses it
-## with `html`, lays it out in text cells with `page`, and draws it in a
-## `std.ui` window. Every page is also a page model an agent reads with
+## with `html`, lays it out in text cells with `page`, and shows it in the
+## `std.app` window host. Every page is also a page model an agent reads with
 ## `--json`: roles, names, links and the cells each was drawn in.
 
 use std.env
@@ -12,7 +12,6 @@ use std.net
 use std.net.jar
 use std.compress
 use std.time
-use std.ui
 use std.app
 use html
 use page
@@ -756,56 +755,6 @@ fn Browser.status(self) str
             last := (scroll + view()).min(pg.rows.len())
             "{url}  rows {scroll + 1}-{last} of {pg.rows.len()}"
 
-fn Browser.draw(self, mut w ui.Window)
-    w.clear(draw.BG)
-    for r in 0..view()
-        at := scroll + r
-        if at >= pg.rows.len()
-            break
-        for run in pg.rows[at]
-            bg := if run.style.target > 0
-                and run.style.target == focus then draw.FOCUS_BG else draw.BG
-            st := ui.Style(
-                bold: run.style.bold,
-                italic: run.style.italic,
-                underline: run.style.link > 0,
-            )
-            w.put_styled(run.col, r, run.text, draw.color(run.style), bg, st)
-    line := status()
-    w.put(
-        0,
-        height - 1,
-        line.pad_right(width.max(line.chars().len()), ' '),
-        draw.STATUS_FG,
-        draw.STATUS_BG,
-    )
-    w.present()
-
-fn window_main(mut b Browser) !
-    mut w := ui.open("Garlic", b.width, b.height)?
-    w.set_title("{b.pg.title} - Garlic")
-    b.draw(mut w)
-    while true
-        was := b.url
-        match w.next_event()
-            Key(key, _, alt, shift) =>
-                if not b.key(key, alt, shift)
-                    break
-            Resize(cols, rows) =>
-                b.width = cols
-                b.height = rows
-                b.relayout()
-            Mouse(col, row, _, kind) =>
-                if kind == "down"
-                    if id := b.target_at(col, row)
-                        b.activate(id)
-            Scroll(lines) => b.scroll_to(b.scroll + lines)
-            Close => break
-        if b.url != was
-            w.set_title("{b.pg.title} - Garlic")
-        b.draw(mut w)
-    w.close()
-
 ## Whether no prompt is open, so keys are commands rather than text.
 fn Browser.reading(self) bool
     match prompt
@@ -907,7 +856,7 @@ fn Gui.scroll(mut self, dy float)
         pending -= lines.to_float() * cell_h
         b.scroll_to(b.scroll + lines)
 
-## A key in the page area, by the `std.ui` names. False when it asks to quit.
+## A key in the page area, by the host's key names. False when it asks to quit.
 fn Gui.key(mut self, key str, alt bool, shift bool) bool
     pending = 0.0
     if pixel
@@ -1097,13 +1046,11 @@ fn main() !
         for n in 1..=b.pg.links.len()
             bx := b.pg.boxes[b.pg.links[n - 1]]
             print("[{n}] {bx.name} -> {bx.href}")
-    elif args.contains("--app")
+    else
+        # The window is the std.app host's (ADR 0838); `--app` is the old
+        # spelling of the default.
         app_main(b, args.contains("--pixels")) else err
             print("garlic: {err}")
-    else
-        window_main(mut b) else err
-            print("garlic: no window ({err}); the page as text:")
-            print(b.pg.text())
 
 # ---- Tests -------------------------------------------------------------
 

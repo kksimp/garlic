@@ -5,7 +5,7 @@ design, scope and roadmap are in
 [docs/design/garlic-browser.md](../../docs/design/garlic-browser.md).
 
 ```sh
-./ail run tools/garlic/garlic.ail URL|FILE                 # in a window
+tools/app-host/macos/run.sh --native tools/garlic/garlic.ail URL   # in a window, compiled
 ./ail run tools/garlic/garlic.ail --print URL|FILE         # the page as text
 ./ail run tools/garlic/garlic.ail --json URL|FILE          # the page model for agents
 ./ail run tools/garlic/garlic.ail --links URL|FILE         # the numbered links
@@ -22,7 +22,7 @@ design, scope and roadmap are in
 
 `--width N` and `--height N` set the size (100 by 32 by default).
 
-Native macOS window (needs the SwiftUI host, ADR 0838): `tools/app-host/macos/run.sh tools/garlic/garlic.ail --app URL`; add `--pixels` for the pixel layout.
+Native macOS window (needs the SwiftUI host, ADR 0838): `tools/app-host/macos/run.sh --native tools/garlic/garlic.ail URL` (or without `--native` to interpret); add `--pixels` for the pixel layout.
 
 | Module | Does |
 |---|---|
@@ -31,4 +31,4 @@ Native macOS window (needs the SwiftUI host, ADR 0838): `tools/app-host/macos/ru
 | `page/` | text-cell layout, link numbering, boxes with roles, names and positions, the page model JSON, URL resolution (RFC 3986) |
 | `draw/` | the display list and colors both windows share |
 | `gfx/` | pixel layout: box model, proportional text, flex, grid, tables, images; `--app --pixels` |
-| `garlic.ail` | fetching, history, find, the `std.ui` window and the command line |
+| `garlic.ail` | fetching, history, find, the `std.app` window and the command line |

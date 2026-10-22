@@ -4,7 +4,7 @@
 ##
 ## The page model lays text out in cells. A host with a monospace font of
 ## `cell_w` by `cell_h` points draws cell (col, row) at (col * cell_w,
-## row * cell_h), so the list is the same page the `std.ui` window shows.
+## row * cell_h), so the list is the same page the app host shows.
 ## Coordinates are in points from the top left of the page area.
 
 use page
