@@ -5,7 +5,6 @@ design, scope and roadmap are in
 [docs/design/garlic-browser.md](../../docs/design/garlic-browser.md).
 
 ```sh
-./ail run tools/garlic/garlic.ail --print URL|FILE          # the page as text
 tools/app-host/macos/run.sh --native tools/garlic/garlic.ail URL   # in a window, compiled
 ./ail run tools/garlic/garlic.ail --print URL|FILE         # the page as text
 ./ail run tools/garlic/garlic.ail --json URL|FILE          # the page model for agents
