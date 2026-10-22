@@ -71,6 +71,8 @@ struct Browser
     stamp int
     ## Pixel sizes of the page's pictures by address (`images.prefetch`).
     sizes Map[str, List[int]]
+    ## The pictures decoded for the window host, by address.
+    bits Map[str, images.Bitmap]
 
 ## The headers Garlic sends: who it is, and that it wants HTML.
 fn options() net.Options
@@ -358,6 +360,7 @@ fn Browser.new(url str, width int, height int) Browser
         cj: jar.new(),
         stamp: 0,
         sizes: {},
+        bits: {},
     )
     b.load(url, "GET", "")
     b
@@ -795,6 +798,11 @@ struct Gui
     scene_w float
     scene_url str
     top float
+    ## Pictures whose pixels went to the host in an earlier view, and those
+    ## that go with this one: the host keeps a picture by address, so later
+    ## views carry its id alone.
+    sent Set[str]
+    fresh Set[str]
 
 fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
     mut g := Gui(
@@ -812,6 +820,8 @@ fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
         scene_w: 0.0,
         scene_url: "",
         top: 0.0,
+        sent: {},
+        fresh: {},
     )
     g.resize(w, h, cell_w, cell_h)
     g
@@ -837,10 +847,13 @@ fn Gui.refresh(mut self)
     if not pixel
         return
     if b.stamp != scene_stamp or area_w != scene_w
-        images.prefetch(b.doc, b.url, image_options(), mut b.sizes)
+        images.prefetch(b.doc, b.url, image_options(), mut b.sizes, mut b.bits)
         scene = gfx.layout_with(b.doc, b.url, area_w, b.sheet, b.sizes)
         scene_stamp = b.stamp
         scene_w = area_w
+        for k in b.bits.keys()
+            if not sent.contains(k)
+                fresh.add(k)
         if b.url != scene_url
             top = 0.0
             scene_url = b.url
@@ -929,6 +942,8 @@ fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
 impl app.App for Garlic
     fn update(mut self, ev app.Event)
         want = ""
+        g.sent = g.sent.union(g.fresh)
+        g.fresh = {}
         match ev.kind
             "resize" => g.resize(ev.dx, ev.dy, ev.cell_w, ev.cell_h)
             "click" => g.click(ev.x, ev.y)
@@ -963,7 +978,7 @@ impl app.App for Garlic
         ## A canvas of 0 by 0 fills the window; the host reports its size.
         app.column([
             bar,
-            app.canvas("page", 0.0, 0.0, [to_app(op) for op in g.display()]),
+            app.canvas("page", 0.0, 0.0, [to_app(op, g) for op in g.display()]),
             app.label(g.status()),
         ])
 
@@ -974,7 +989,7 @@ impl app.App for Garlic
         want
 
 ## A drawing operation of the page, as a `std.app` canvas operation.
-fn to_app(op draw.Op) app.Op
+fn to_app(op draw.Op, g Gui) app.Op
     match op
         Rect(x, y, w, h, c) => app.draw_rect(x, y, w, h, c)
         Text(x, y, t, fg, bold, italic, underline) => app.Op.Str(
@@ -999,7 +1014,18 @@ fn to_app(op draw.Op) app.Op
             italic: italic,
             underline: underline,
         )
-        Pic(x, y, w, h, src) => app.Op.Pic(x: x, y: y, w: w, h: h, src: src)
+        Pic(x, y, w, h, src) =>
+            bm := g.b.bits.get(src) else return app.Op.Pic(x: x, y: y, w: w, h: h, src: src)
+            app.Op.Bitmap(
+                x: x,
+                y: y,
+                w: w,
+                h: h,
+                id: src,
+                pw: bm.w,
+                ph: bm.h,
+                data: if g.fresh.contains(src) then bm.data else "",
+            )
 
 ## The native window: the page area starts at `GUI_W` by `GUI_H` points with
 ## cells of `GUI_CELL_W` by `GUI_CELL_H` until the host reports its own.
@@ -1820,7 +1846,9 @@ fn bench(args List[str])
     dir := "tools/pdf/image/testdata"
     d := html.parse("<img src=gray8.png><img src=jpeg420.jpg height=58><img src=missing.png>")
     mut sizes := Map[str, List[int]]()
-    images.prefetch(d, "file://{dir}/page.html", options(), mut sizes)
+    mut bits := Map[str, images.Bitmap]()
+    images.prefetch(d, "file://{dir}/page.html", options(), mut sizes, mut bits)
+    assert_eq(bits["file://{dir}/gray8.png"].w, 37)
     assert_eq(sizes["file://{dir}/gray8.png"], [37, 29])
     assert_eq(sizes["file://{dir}/missing.png"], [0, 0])
     scene := gfx.layout_with(d, "file://{dir}/page.html", 400.0, css.parse("", 0), sizes)
@@ -1832,3 +1860,25 @@ fn bench(args List[str])
             draw.Op.Text(_, _, _, _, _, _, _) => 0
             draw.Op.Str(_, _, _, _, _, _, _, _, _) => 0
     assert_eq(got, [[37.0, 29.0], [74.0, 58.0]])
+
+@test fn decoded_pictures_go_to_the_host_once()
+    dir := "tools/pdf/image/testdata"
+    mut a := Garlic.new(Browser.new("file://{dir}/missing.html", 100, 32), 400.0, 300.0, 8.0, 16.0)
+    a.g.pixel = true
+    a.g.b.doc = html.parse("<img src=gray8.png>")
+    a.g.b.url = "file://{dir}/page.html"
+    a.g.b.stamp += 1
+    a.g.refresh()
+    first := [to_app(op, a.g) for op in a.g.display()]
+    a.update(app.event("noop"))
+    second := [to_app(op, a.g) for op in a.g.display()]
+    assert_eq(bitmap_data_lens(first), [[37, 29, 1]])
+    assert_eq(bitmap_data_lens(second)[0][2], 0)
+
+fn bitmap_data_lens(ops List[app.Op]) List[List[int]]
+    mut out := List[List[int]]()
+    for op in ops
+        match op
+            app.Op.Bitmap(_, _, _, _, _, pw, ph, data) => out.push([pw, ph, data.chars().len().min(1)])
+            _ => out = out
+    out

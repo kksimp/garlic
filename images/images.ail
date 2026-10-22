@@ -8,6 +8,7 @@
 
 use std.net
 use std.fs
+use std.app
 use html
 use page
 use image
@@ -16,10 +17,26 @@ use image
 MAX_IMAGES := 24
 MAX_BYTES := 16000000
 
+## A decoded picture for the window host: its pixel size and its `R, G, B, A`
+## bytes in base64 (`app.bitmap_data`).
+pub struct Bitmap
+    pub w int
+    pub h int
+    pub data str
+
+## Largest picture (in pixels) that is decoded for the host.
+MAX_PIXELS := 4000000
+
 ## The `[width, height]` of every `<img>` on `d` (by resolved address) that
 ## isn't in `sizes` yet. An address that can't be fetched or read as an
 ## image is stored as `[0, 0]` so it isn't asked for again.
-pub fn prefetch(d html.Doc, url str, o net.Options, mut sizes Map[str, List[int]])
+pub fn prefetch(
+    d html.Doc,
+    url str,
+    o net.Options,
+    mut sizes Map[str, List[int]],
+    mut bits Map[str, Bitmap],
+)
     mut n := 0
     for id in d.all("img")
         src := d.attr(id, "src") else continue
@@ -31,16 +48,23 @@ pub fn prefetch(d html.Doc, url str, o net.Options, mut sizes Map[str, List[int]
         if n == MAX_IMAGES
             break
         n += 1
-        sizes[at] = probe(at, o)
+        raw := load(at, o) else
+            sizes[at] = [0, 0]
+            continue
+        sizes[at] = image.dims(raw)
+        if sizes[at][0] * sizes[at][1] <= MAX_PIXELS
+            px := image.decode(raw) else continue
+            bits[at] = Bitmap(w: px.width, h: px.height, data: app.bitmap_data(px.bytes()))
 
-fn probe(at str, o net.Options) List[int]
+## The bytes of the picture at `at`, or none.
+fn load(at str, o net.Options) List[int]?
     s := page.scheme(at)
     if s == "http" or s == "https"
-        r := net.request_bytes("GET", at, o) else return [0, 0]
+        r := net.request_bytes("GET", at, o) else return none
         if r.status >= 400 or r.data.len() > MAX_BYTES
-            return [0, 0]
-        return image.dims([v.to_int() for v in r.data.to_list()])
-    raw := fs.read_bytes(at.strip_prefix("file://") else at) else return [0, 0]
+            return none
+        return [v.to_int() for v in r.data.to_list()]
+    raw := fs.read_bytes(at.strip_prefix("file://") else at) else return none
     if raw.len() > MAX_BYTES
-        return [0, 0]
-    image.dims([v.to_int() for v in raw.to_list()])
+        return none
+    [v.to_int() for v in raw.to_list()]
