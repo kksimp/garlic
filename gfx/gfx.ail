@@ -35,6 +35,20 @@ pub struct Scene
     pub height float
     ## The canvas color (the `body` or `html` background, else white).
     pub bg int
+    ## The text runs whose widths were estimated, not measured.
+    pub probes List[Probe]
+
+## A text run whose width the host can measure (docs/spec/std-app.md,
+## std.app.13).
+pub struct Probe
+    pub text str
+    pub size float
+    pub bold bool
+    pub mono bool
+
+## The key of a run in the measured table.
+pub fn probe_key(text str, size float, bold bool, mono bool) str
+    "{size}|{bold}|{mono}|{text}"
 
 ## Advance widths of ASCII 32 to 126 in a 1000-unit em.
 WIDTHS := [
@@ -733,6 +747,10 @@ struct Ctx
     contents Map[int, float]
     ## Each picture's `[width, height]` by address, once fetched.
     pics Map[str, List[int]]
+    ## Widths the host measured, by `probe_key`, and the runs still estimated.
+    meas Map[str, float]
+    probes List[Probe]
+    probed Set[str]
 
 CONTROLS := {"button", "input", "select", "textarea"}
 FLOW_FLEX := {"flex", "inline-flex"}
@@ -829,11 +847,22 @@ fn Ctx.add_text(mut self, raw str, st St)
     if cur.len() > 0
         atoms.push(self.word_atom(cur.join(""), st))
 
+## The width of a run: the host's measure when there is one, else the
+## estimate, which is then noted so the host can be asked.
+fn Ctx.tw(mut self, text str, size float, bold bool, mono bool) float
+    key := probe_key(text, size, bold, mono)
+    if w := meas.get(key)
+        return w
+    if text != "" and not probed.contains(key)
+        probed.add(key)
+        probes.push(Probe(text, size, bold, mono))
+    text_width(text, size, bold, mono)
+
 fn Ctx.word_atom(mut self, text str, st St) Atom
     Atom(
         kind: WORD,
         text,
-        w: text_width(text, st.size, st.bold, st.mono),
+        w: tw(text, st.size, st.bold, st.mono),
         h: st.size * st.lh,
         size: st.size,
         st,
@@ -847,7 +876,7 @@ fn Ctx.space_atom(mut self, st St) Atom
     Atom(
         kind: SPACE,
         text: " ",
-        w: text_width(" ", st.size, st.bold, st.mono),
+        w: tw(" ", st.size, st.bold, st.mono),
         h: st.size * st.lh,
         size: st.size,
         st,
@@ -940,7 +969,7 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
         cx = x + fmax(w - total, 0.0)
     if marker != ""
         first := line[0]
-        mw := text_width(marker, first.size, false, false)
+        mw := tw(marker, first.size, false, false)
         ops.push(draw.Op.Str(
             x: marker_x - mw,
             y: y + asc - ((first.h - first.size) / 2.0 + first.size * 0.9) + 0.0,
@@ -1066,7 +1095,7 @@ fn Ctx.control_atom(mut self, id int, st St) Atom?
     if tag == "button" or kind == "submit" or kind == "button" or kind == "reset"
         label = if tag
             == "button" then d.visible_text(id).trim() else (d.attr(id, "value") else "Submit")
-        w = text_width(label, st.size, false, false) + 20.0
+        w = tw(label, st.size, false, false) + 20.0
         fill = 0xefefef
     elif tag == "input" and (kind == "checkbox" or kind == "radio")
         label = if d.attr(id, "checked") != none then "x" else ""
@@ -1076,7 +1105,7 @@ fn Ctx.control_atom(mut self, id int, st St) Atom?
         for o in d.all("option")
             if d.within(o, id) and label == ""
                 label = d.text(o).trim()
-        w = fmax(text_width(label, st.size, false, false) + 30.0, 80.0)
+        w = fmax(tw(label, st.size, false, false) + 30.0, 80.0)
     else
         label = d.attr(id, "value") else ""
         if label == ""
@@ -1193,7 +1222,7 @@ fn Ctx.max_content(mut self, id int, st St) float
 ## The width of the text in `id` on one line, for shrink-to-fit items.
 fn Ctx.intrinsic(mut self, id int, st St) float
     text := d.visible_text(id).trim()
-    text_width(html.collapse(text), st.size, st.bold, st.mono)
+    tw(html.collapse(text), st.size, st.bold, st.mono)
 
 ## Lays out block `id` inside a column from `x`, `w` wide, with the
 ## parent's text style `parent`.
@@ -1608,6 +1637,18 @@ pub fn layout_with(
     sheet css.Sheet,
     sizes Map[str, List[int]],
 ) Scene
+    layout_measured(d, url, width, sheet, sizes, Map[str, float]())
+
+## `layout_with` using the run widths in `meas` (`probe_key`); the scene's
+## `probes` are the runs that were estimated, for the host to measure.
+pub fn layout_measured(
+    d html.Doc,
+    url str,
+    width float,
+    sheet css.Sheet,
+    sizes Map[str, List[int]],
+    meas Map[str, float],
+) Scene
     base := St(
         color: INK,
         size: 16.0,
@@ -1642,10 +1683,13 @@ pub fn layout_with(
         cascades: {},
         contents: {},
         pics: sizes,
+        meas,
+        probes: [],
+        probed: {},
     )
     c.block(0, base, 0.0, width)
     c.settle()
-    Scene(ops: c.ops, hits: c.hits, height: c.y, bg: c.canvas)
+    Scene(ops: c.ops, hits: c.hits, height: c.y, bg: c.canvas, probes: c.probes)
 
 ## The link or control under point (`x`, `y`) of the page, if any.
 pub fn Scene.hit_at(self, x float, y float) Hit?

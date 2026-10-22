@@ -867,6 +867,8 @@ struct Gui
     ## views carry its id alone.
     sent Set[str]
     fresh Set[str]
+    ## Text widths the host measured, by `gfx.probe_key` (std.app.13).
+    meas Map[str, float]
 
 fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
     mut g := Gui(
@@ -879,13 +881,14 @@ fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
         area_w: w,
         area_h: h,
         pixel: false,
-        scene: gfx.Scene(ops: [], hits: [], height: 0.0, bg: 0xffffff),
+        scene: gfx.Scene(ops: [], hits: [], height: 0.0, bg: 0xffffff, probes: []),
         scene_stamp: -1,
         scene_w: 0.0,
         scene_url: "",
         top: 0.0,
         sent: {},
         fresh: {},
+        meas: {},
     )
     g.resize(w, h, cell_w, cell_h)
     g
@@ -912,7 +915,7 @@ fn Gui.refresh(mut self)
         return
     if b.stamp != scene_stamp or area_w != scene_w
         images.prefetch(b.doc, b.url, image_options(), mut b.sizes, mut b.bits)
-        scene = gfx.layout_with(b.doc, b.url, area_w, b.sheet, b.sizes)
+        scene = gfx.layout_measured(b.doc, b.url, area_w, b.sheet, b.sizes, meas)
         scene_stamp = b.stamp
         scene_w = area_w
         for k in b.bits.keys()
@@ -984,6 +987,33 @@ fn Gui.status(self) str
         return b.url
     b.status()
 
+## The text runs the layout estimated, for the host to measure, at most
+## `MEASURE_RUNS` at a time.
+MEASURE_RUNS := 5000
+
+fn Gui.wanted(self) List[app.Measure]
+    mut out := List[app.Measure]()
+    for p in scene.probes
+        if out.len() == MEASURE_RUNS
+            break
+        if not meas.contains(gfx.probe_key(p.text, p.size, p.bold, p.mono))
+            out.push(app.Measure(
+                text: p.text,
+                font: if p.mono then "mono" else "sans",
+                size: p.size,
+                bold: p.bold,
+                italic: false,
+            ))
+    out
+
+## Keeps the host's widths and lays the page out again with them.
+fn Gui.learn(mut self, runs List[app.Measure], widths List[float])
+    for k in 0..runs.len()
+        r := runs[k]
+        meas[gfx.probe_key(r.text, r.size, r.bold, r.font == "mono")] = widths[k]
+    scene_stamp = -1
+    refresh()
+
 ## What the page area shows, as drawing operations.
 fn Gui.display(self) List[draw.Op]
     if pixel
@@ -1050,6 +1080,12 @@ impl app.App for Garlic
 
     fn title(self) str
         "{g.b.pg.title} - Garlic"
+
+    fn measures(self) List[app.Measure]
+        g.wanted()
+
+    fn measured(mut self, runs List[app.Measure], widths List[float])
+        g.learn(runs, widths)
 
     fn focus(self) str
         want
