@@ -31,4 +31,5 @@ Native macOS window (needs the SwiftUI host, ADR 0838): `tools/app-host/macos/ru
 | `page/` | text-cell layout, link numbering, boxes with roles, names and positions, the page model JSON, URL resolution (RFC 3986) |
 | `draw/` | the display list and colors both windows share |
 | `gfx/` | pixel layout: box model, proportional text, flex, grid, tables, images; `--app --pixels` |
+| `--bench FILE [ROUNDS]` | page-load phases in milliseconds on a saved page: `ail build tools/garlic/garlic.ail -o garlic && ./garlic --bench FILE [ROUNDS]` |
 | `garlic.ail` | fetching, history, find, the `std.app` window and the command line |

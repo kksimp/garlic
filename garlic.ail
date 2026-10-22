@@ -1014,6 +1014,9 @@ fn usage()
 
 fn main() !
     args := env.args()
+    if args.len() > 0 and args[0] == "--bench"
+        bench([args[k] for k in 1..args.len()])
+        return
     if args.contains("--keys")
         for k in KEYS
             print(k)
@@ -1710,8 +1713,9 @@ fn pixels(src str, width float) gfx.Scene
 @test fn the_pixel_layout_stacks_blocks_with_margins_and_wraps_words()
     s := pixels("<h1>Hi</h1><p>one two</p>", 400.0)
     t := pixel_text(s.ops)
-    assert_eq(t.len(), 3)
+    assert_eq(t.len(), 2)
     assert_eq(t[0].starts_with("Hi@8"), true)
+    assert(t[1].starts_with("one two@"))
     narrow := pixels("<p>aaaa bbbb cccc dddd</p>", 60.0)
     assert_eq(pixel_text(narrow.ops).len(), 4)
     assert(narrow.height > s.height - 100.0)
@@ -1763,3 +1767,39 @@ fn pixels(src str, width float) gfx.Scene
     assert(first.node >= 0 or first.href != "")
     g.click(first.x + 1.0, first.y + 1.0)
     assert(not g.b.reading())
+
+# Page-load phases of Garlic on a saved page, in milliseconds:
+#   ail build tools/garlic/garlic.ail -o garlic && ./garlic --bench FILE [ROUNDS]
+# Each phase runs ROUNDS times (default 5); the lowest time is printed.
+
+fn bench_run(phase int, src str, d html.Doc, sheet css.Sheet) int
+    if phase == 0
+        return html.parse(src).all("a").len()
+    if phase == 1
+        return css.document_sheet(d).rules.len()
+    if phase == 2
+        return page.layout_with(d, "https://x.test/", 100, sheet).rows.len()
+    gfx.layout(d, "https://x.test/", 1000.0, sheet).ops.len()
+
+## `garlic --bench FILE [ROUNDS]`: `args` are the words after `--bench`.
+fn bench(args List[str])
+    if args.len() < 1
+        io.eprint("usage: bench FILE [ROUNDS]")
+        return
+    src := fs.read_text(args[0]) else
+        io.eprint("can't read {args[0]}")
+        return
+    rounds := if args.len() > 1 then (args[1].to_int() else 5) else 5
+    d := html.parse(src)
+    sheet := css.document_sheet(d)
+    names := ["html.parse ", "css sheet  ", "page.layout", "gfx.layout "]
+    for phase in 0..4
+        mut lo := 1000000000
+        mut keep := 0
+        for _ in 0..rounds
+            t0 := time.now_ms()
+            keep = bench_run(phase, src, d, sheet)
+            dt := time.now_ms() - t0
+            if dt < lo
+                lo = dt
+        print("{names[phase]}: {lo} ms ({keep})")

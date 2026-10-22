@@ -144,9 +144,9 @@ pub fn text_width(text str, size float, bold bool, mono bool) float
     for c in text.chars()
         k := c.code()
         units += if k >= 32 and k <= 126 then WIDTHS[k - 32] else 600
-    ## The host's sans font is wider than Helvetica (a Mac run showed words
-    ## touching at 1.03), so estimates err wide: gaps grow, words never meet.
-    scale := if bold then 1.18 else 1.12
+    ## The host's sans font is wider than Helvetica, so estimates err a
+    ## little wide; lines draw as whole strings, so only wrapping depends on it.
+    scale := if bold then 1.1 else 1.06
     units.to_float() * size * scale / 1000.0
 
 fn fmax(a float, b float) float
@@ -757,6 +757,14 @@ fn Ctx.flush(mut self, x float, w float, align str)
     if self.has_content(line)
         self.emit(line, x, w, align, 0.0)
 
+fn same_look(a St, b St) bool
+    a.color == b.color
+        and a.bold == b.bold
+        and a.italic == b.italic
+        and a.underline == b.underline
+        and a.mono == b.mono
+        and a.href == b.href
+
 fn Ctx.has_content(self, line List[Atom]) bool
     for a in line
         if a.kind != SPACE
@@ -802,14 +810,28 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
             underline: false,
         ))
         marker = ""
-    for a in line
+    mut k := 0
+    while k < line.len()
+        a := line[k]
         a_asc := (a.h - a.size) / 2.0 + a.size * 0.9
         top := y + asc - a_asc
-        if a.kind == WORD
+        ## Neighbouring words in one style are drawn as one string, so the
+        ## host spaces them itself; only the estimate places the string.
+        if a.kind == WORD or a.kind == SPACE
+            mut text := a.text
+            mut run_w := a.w
+            mut j := k + 1
+            while j < line.len() and (line[j].kind == WORD or line[j].kind == SPACE) and same_look(
+                line[j].st,
+                a.st,
+            ) and line[j].size == a.size
+                text = "{text}{line[j].text}"
+                run_w += line[j].w
+                j += 1
             ops.push(draw.Op.Str(
                 x: cx,
                 y: top,
-                text: a.text,
+                text: text.trim_end(),
                 font: if a.st.mono then "mono" else "sans",
                 size: a.size,
                 fg: a.st.color,
@@ -818,7 +840,10 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
                 underline: a.st.underline,
             ))
             if a.st.href != ""
-                hits.push(Hit(x: cx, y: top, w: a.w, h: a.h, href: a.st.href, node: -1))
+                hits.push(Hit(x: cx, y: top, w: run_w, h: a.h, href: a.st.href, node: -1))
+            cx += run_w
+            k = j
+            continue
         elif a.kind == IMAGE
             ops.push(draw.Op.Pic(x: cx, y: y + asc - a.h, w: a.w, h: a.h, src: a.src))
             if a.st.href != ""
@@ -846,6 +871,7 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
                 underline: false,
             ))
         cx += a.w
+        k += 1
     y += asc + desc
     pend = 0.0
 
