@@ -25,6 +25,8 @@ pub struct Hit
     pub w float
     pub h float
     pub href str
+    ## The form control's node for a click that uses it, else -1.
+    pub node int
 
 ## A laid-out page: its drawing operations, links and size.
 pub struct Scene
@@ -605,6 +607,8 @@ struct Atom
     ## The look of a control: fill, edge and text colors.
     fill int
     edge int
+    ## The form control's node, -1 if none.
+    node int
 
 WORD := 0
 SPACE := 1
@@ -691,6 +695,7 @@ fn Ctx.word_atom(self, text str, st St) Atom
         src: "",
         fill: 0,
         edge: 0,
+        node: -1,
     )
 
 fn Ctx.space_atom(self, st St) Atom
@@ -704,6 +709,7 @@ fn Ctx.space_atom(self, st St) Atom
         src: "",
         fill: 0,
         edge: 0,
+        node: -1,
     )
 
 fn Ctx.break_atom(self, st St) Atom
@@ -717,6 +723,7 @@ fn Ctx.break_atom(self, st St) Atom
         src: "",
         fill: 0,
         edge: 0,
+        node: -1,
     )
 
 ## Lays out the pending inline atoms as lines in the column from `x`, `w`
@@ -809,13 +816,14 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
                 underline: a.st.underline,
             ))
             if a.st.href != ""
-                hits.push(Hit(x: cx, y: top, w: a.w, h: a.h, href: a.st.href))
+                hits.push(Hit(x: cx, y: top, w: a.w, h: a.h, href: a.st.href, node: -1))
         elif a.kind == IMAGE
             ops.push(draw.Op.Pic(x: cx, y: y + asc - a.h, w: a.w, h: a.h, src: a.src))
             if a.st.href != ""
-                hits.push(Hit(x: cx, y: y + asc - a.h, w: a.w, h: a.h, href: a.st.href))
+                hits.push(Hit(x: cx, y: y + asc - a.h, w: a.w, h: a.h, href: a.st.href, node: -1))
         elif a.kind == CONTROL
             cy := y + asc - a.h * 0.8
+            hits.push(Hit(x: cx, y: cy, w: a.w, h: a.h, href: "", node: a.node))
             ops.push(draw.Op.Rect(x: cx, y: cy, w: a.w, h: a.h, color: a.edge))
             ops.push(draw.Op.Rect(
                 x: cx + 1.0,
@@ -860,6 +868,7 @@ fn Ctx.image_atom(self, id int, st St, avail float) Atom?
         src: page.resolve(url, src),
         fill: 0,
         edge: 0,
+        node: -1,
     )
 
 fn Ctx.control_atom(self, id int, st St) Atom?
@@ -898,6 +907,7 @@ fn Ctx.control_atom(self, id int, st St) Atom?
         src: "",
         fill,
         edge: 0x767676,
+        node: id,
     )
 
 ## Adds element `id`'s inline content to the pending atoms.
@@ -1299,12 +1309,19 @@ pub fn layout(d html.Doc, url str, width float, sheet css.Sheet) Scene
     c.settle()
     Scene(ops: c.ops, hits: c.hits, height: c.y, bg: c.canvas)
 
-## The link under point (`x`, `y`) of the page, if any.
-pub fn Scene.link_at(self, x float, y float) str?
+## The link or control under point (`x`, `y`) of the page, if any.
+pub fn Scene.hit_at(self, x float, y float) Hit?
     mut k := hits.len()
     while k > 0
         k -= 1
         h := hits[k]
         if x >= h.x and x < h.x + h.w and y >= h.y and y < h.y + h.h
-            return h.href
+            return h
     none
+
+## The link under point (`x`, `y`) of the page, if any.
+pub fn Scene.link_at(self, x float, y float) str?
+    h := hit_at(x, y)?
+    if h.href == ""
+        return none
+    h.href
