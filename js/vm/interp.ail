@@ -150,7 +150,7 @@ pub fn Vm.to_primitive(mut self, v Value, hint str) Value ! Thrown
         Obj(x) => x
         Undef | Null | Bool | Num | Str => return v
     as_string := hint == "string" or (hint == "default" and o.class == "Date")
-    order := if as_string then["toString", "valueOf"] else ["valueOf", "toString"]
+    order := if as_string then ["toString", "valueOf"] else ["valueOf", "toString"]
     for name in order
         method := get(v, name)?
         if is_callable(method)

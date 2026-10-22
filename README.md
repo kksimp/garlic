@@ -22,9 +22,13 @@ design, scope and roadmap are in
 
 `--width N` and `--height N` set the size (100 by 32 by default).
 
+Native macOS window (needs the SwiftUI host, ADR 0838): `tools/app-host/macos/run.sh tools/garlic/garlic.ail --app URL`; add `--pixels` for the pixel layout.
+
 | Module | Does |
 |---|---|
 | `html/` | WHATWG tokenizer and a simplified tree builder; `html.parse(src).dump()` prints the html5lib-tests tree format; mutation functions (`set_attr`, `append`, `insert_before`, `detach`, `set_text`, `create`) record what changed |
 | `css/` | CSS parser, selector matching and cascade (the properties text cells use) |
 | `page/` | text-cell layout, link numbering, boxes with roles, names and positions, the page model JSON, URL resolution (RFC 3986) |
+| `draw/` | the display list and colors both windows share |
+| `gfx/` | pixel layout: box model, proportional text, flex, grid, tables, images; `--app --pixels` |
 | `garlic.ail` | fetching, history, find, the `std.ui` window and the command line |

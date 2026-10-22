@@ -1144,15 +1144,15 @@ fn Vm.math_function(mut self, m str, args List[Value]) Value ! Thrown
                 x
             else
                 c := x.ceil()
-                if c == 0.0 and x < 0.0 then - 0.0 else c
+                if c == 0.0 and x < 0.0 then -0.0 else c
         "round" =>
             if not is_finite(x) or x == 0.0
                 x
             else
                 r := (x + 0.5).floor()
-                if r == 0.0 and x < 0.0 then - 0.0 else r
+                if r == 0.0 and x < 0.0 then -0.0 else r
         "trunc" => trunc(x)
-        "sign" => if x > 0.0 then 1.0 else (if x < 0.0 then - 1.0 else x)
+        "sign" => if x > 0.0 then 1.0 else (if x < 0.0 then -1.0 else x)
         "sqrt" => if x < 0.0 then nan() else x.sqrt()
         "cbrt" => cbrt(x)
         "pow" => pow(x, y)

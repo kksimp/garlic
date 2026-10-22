@@ -27,7 +27,7 @@ pub fn number_to_string(x float) str
     while end > z and all[end - 1] == '0'
         end -= 1
     ds := all[z..end]
-    exp := if parts.len() > 1 then(parts[1].replace("+", "").to_int() else 0) else 0
+    exp := if parts.len() > 1 then (parts[1].replace("+", "").to_int() else 0) else 0
     k := ds.len()
     # The value is 0.DIGITS times 10^n.
     n := whole.len() - z + exp

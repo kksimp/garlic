@@ -119,7 +119,7 @@ pub fn parse_date(text str) float
     mut i := 0
     mut sign := 1
     if i < cs.len() and (cs[i] == '+' or cs[i] == '-')
-        sign = if cs[i] == '-' then - 1 else 1
+        sign = if cs[i] == '-' then -1 else 1
         i += 1
     year_len := if i > 0 then 6 else 4
     if not digits_at(cs, i, year_len)
@@ -170,7 +170,7 @@ pub fn parse_date(text str) float
         if i < cs.len() and (cs[i] == 'Z' or cs[i] == 'z')
             i += 1
         elif i < cs.len() and (cs[i] == '+' or cs[i] == '-')
-            osign := if cs[i] == '-' then - 1 else 1
+            osign := if cs[i] == '-' then -1 else 1
             if not digits_at(cs, i + 1, 2)
                 return nan()
             oh := cs[i + 1..i + 3].join("").to_int() else 0
@@ -218,8 +218,8 @@ fn parse_text_date(s str) float
         return nan()
     hm := clock.split(":")
     h := hm[0].to_int() else 0
-    mi := if hm.len() > 1 then(hm[1].to_int() else 0) else 0
-    sec := if hm.len() > 2 then(hm[2].to_int() else 0) else 0
+    mi := if hm.len() > 1 then (hm[1].to_int() else 0) else 0
+    sec := if hm.len() > 2 then (hm[2].to_int() else 0) else 0
     make_time(
         year.to_float(),
         month.to_float(),

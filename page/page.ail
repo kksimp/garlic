@@ -64,7 +64,7 @@ pub struct Page
     pub changed List[int]
 
 ## Elements never drawn: metadata, scripts and templates.
-HIDDEN := {
+pub HIDDEN := {
     "head",
     "script",
     "style",
@@ -78,7 +78,7 @@ HIDDEN := {
 }
 
 ## Elements laid out as blocks; the rest flow inline.
-BLOCKS := {
+pub BLOCKS := {
     "address",
     "article",
     "aside",

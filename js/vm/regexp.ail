@@ -241,7 +241,7 @@ fn Vm.regexp_replace(mut self, rv Value, s str, replacement Value, all bool) Val
     found := if p.global then all_matches(
         p.re,
         s,
-    ) else (if f := find_from(p.re, s, 0) then[f] else List[Found]())
+    ) else (if f := find_from(p.re, s, 0) then [f] else List[Found]())
     if p.global
         set_own(p.o, "lastIndex", Num(0.0))?
     mut out := List[str]()

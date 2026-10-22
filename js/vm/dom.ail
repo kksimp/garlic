@@ -815,7 +815,7 @@ pub fn Vm.dom_native(
     match m
         "addEventListener" | "removeEventListener" | "dispatchEvent" =>
             target := if this_val
-                == Obj(global_obj) then - 1 else (node_id(this_val) else return Undef)
+                == Obj(global_obj) then -1 else (node_id(this_val) else return Undef)
             listener_method(m, target, args)
         _ =>
             id := node_id(this_val) else return type_error("Illegal invocation")
@@ -1213,7 +1213,7 @@ fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
             a0
         "insertBefore" =>
             child := need_node(a0, "insertBefore")?
-            before := if is_nullish(a1) then - 1 else need_node(a1, "insertBefore")?
+            before := if is_nullish(a1) then -1 else need_node(a1, "insertBefore")?
             insert_checked(id, child, before)?
             a0
         "removeChild" =>
@@ -1456,7 +1456,7 @@ fn Vm.style_method(mut self, m str, this_val Value, args List[Value]) Value ! Th
             id := int_of(num_of(o.prim) else -1.0)
             if id >= 0
                 sync_style(o, id)
-        _ => return Value.Str(if p := o.props.get(key) then(str_of(p.value) else "") else "")
+        _ => return Value.Str(if p := o.props.get(key) then (str_of(p.value) else "") else "")
     Undef
 
 # ---------------------------------------------------------------- events
@@ -2037,7 +2037,7 @@ fn Vm.window_method(mut self, m str, args List[Value]) Value ! Thrown
                 and m != "requestAnimationFrame" then args[2..] else List[Value]()
             cb := if is_callable(a0) then a0 else function_constructor([Value.Str(to_string(a0)?)])?
             call_args := if m
-                == "requestAnimationFrame" then[Value.Num(clock_ms + delay - page_start_ms)] else extra
+                == "requestAnimationFrame" then [Value.Num(clock_ms + delay - page_start_ms)] else extra
             timers.push(Timer(
                 id: timer_seq,
                 due: clock_ms + delay,
