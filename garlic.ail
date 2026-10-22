@@ -1362,10 +1362,13 @@ fn lay(src str, width int) page.Page
 
 ## `tools/garlic/testdata`, from the repository root or `bootstrap/`.
 fn testdata() str
-    for d in ["tools/garlic/testdata", "../tools/garlic/testdata"]
-        if fs.exists(d)
-            return "{env.cwd()}/{d}"
-    "tools/garlic/testdata"
+    if fs.exists("tools/garlic/testdata")
+        return "{env.cwd()}/tools/garlic/testdata"
+    # From `bootstrap/` (the selftest's directory): the parent, without `..`,
+    # so page addresses compare equal after URL resolution.
+    cwd := env.cwd()
+    up := cwd.rfind("/") else 0
+    "{cwd.slice(0, up)}/tools/garlic/testdata"
 
 @test fn browser_follows_links_and_goes_back()
     dir := testdata()
@@ -1909,7 +1912,7 @@ fn bench(args List[str])
         print("{names[phase]}: {lo} ms ({keep})")
 
 @test fn pictures_without_sizes_take_their_own_from_the_fetched_header()
-    dir := "tools/pdf/image/testdata"
+    dir := testdata().replace("garlic/testdata", "pdf/image/testdata")
     d := html.parse("<img src=gray8.png><img src=jpeg420.jpg height=58><img src=missing.png>")
     mut sizes := Map[str, List[int]]()
     mut bits := Map[str, images.Bitmap]()
@@ -1951,7 +1954,7 @@ fn bench(args List[str])
     assert_eq(b.message, "no page to go forward to")
 
 @test fn decoded_pictures_go_to_the_host_once()
-    dir := "tools/pdf/image/testdata"
+    dir := testdata().replace("garlic/testdata", "pdf/image/testdata")
     mut a := Garlic.new(Browser.new("file://{dir}/missing.html", 100, 32), 400.0, 300.0, 8.0, 16.0)
     a.g.pixel = true
     a.g.b.doc = html.parse("<img src=gray8.png>")
@@ -1964,7 +1967,7 @@ fn bench(args List[str])
     assert_eq(bitmap_data_lens(first), [[37, 29, 1]])
     assert_eq(bitmap_data_lens(second)[0][2], 0)
 
-fn bitmap_data_lens(ops List[app.Op]) List[List[int]]
+@allow("expr.match.3") fn bitmap_data_lens(ops List[app.Op]) List[List[int]]
     mut out := List[List[int]]()
     for op in ops
         match op
