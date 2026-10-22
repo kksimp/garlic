@@ -363,6 +363,14 @@ struct Bx
     width float?
     max_width float?
     height float?
+    ## `border-radius` in pixels (negative: a percentage of the smaller side).
+    radius float
+    ## `position` ("" for static), its offsets, and `float`.
+    pos str
+    top float?
+    right float?
+    left float?
+    float_side str
     ml_auto bool
     mr_auto bool
 
@@ -522,6 +530,12 @@ fn box_of(tag str, cs Map[str, str], st St, avail float) Bx
         width: none,
         max_width: none,
         height: none,
+        radius: 0.0,
+        pos: "",
+        top: none,
+        right: none,
+        left: none,
+        float_side: "",
         ml_auto: false,
         mr_auto: false,
     )
@@ -651,6 +665,23 @@ fn box_of(tag str, cs Map[str, str], st St, avail float) Bx
         b.width = length(v, size, avail)
     if v := cs.get("max-width")
         b.max_width = length(v, size, avail)
+    if v := cs.get("border-radius")
+        ts := tokens(v)
+        if ts.len() > 0
+            if p := ts[0].strip_suffix("%")
+                b.radius = 0.0 - (p.to_float() else 0.0)
+            else
+                b.radius = length(ts[0], size, avail) else 0.0
+    if v := cs.get("position")
+        b.pos = v.trim()
+    if v := cs.get("top")
+        b.top = length(v, size, avail)
+    if v := cs.get("right")
+        b.right = length(v, size, avail)
+    if v := cs.get("left")
+        b.left = length(v, size, avail)
+    if v := cs.get("float")
+        b.float_side = v.trim()
     if v := cs.get("height")
         b.height = length(v, size, 0.0)
     if v := cs.get("min-height")
@@ -689,6 +720,30 @@ fn subst(v str, vars Map[str, str]) str
         out = "{out.slice(0, at)}{val}{out.slice(close + 1, cs.len())}"
     out
 
+## `color` over the rounded rectangle (`x`, `y`, `w`, `h`) with corners of
+## radius `r`: a few strips, since the host fills only rectangles.
+fn rounded(x float, y float, w float, h float, r float, fill int) List[draw.Op]
+    rr := fmin(r, fmin(w, h) / 2.0)
+    if rr < 1.0
+        return [draw.Op.Rect(x, y, w, h, fill)]
+    step := if rr > 8.0 then 2.0 else 1.0
+    mut out := List[draw.Op]()
+    out.push(draw.Op.Rect(x: x, y: y + rr, w: w, h: h - 2.0 * rr, color: fill))
+    mut i := 0.0
+    while i < rr
+        mid := rr - i - step / 2.0
+        inset := rr - (rr * rr - mid * mid).pow(0.5)
+        out.push(draw.Op.Rect(x: x + inset, y: y + i, w: w - 2.0 * inset, h: step, color: fill))
+        out.push(draw.Op.Rect(
+            x: x + inset,
+            y: y + h - i - step,
+            w: w - 2.0 * inset,
+            h: step,
+            color: fill,
+        ))
+        i += step
+    out
+
 ## One piece of an inline run: a word, a space, a line break, an image or
 ## a form control.
 struct Atom
@@ -710,6 +765,14 @@ SPACE := 1
 BREAK := 2
 IMAGE := 3
 CONTROL := 4
+
+## A float's box, which text beside it wraps around.
+struct Float
+    x float
+    y float
+    w float
+    h float
+    right bool
 
 struct Ctx
     d html.Doc
@@ -733,6 +796,15 @@ struct Ctx
     contents Map[int, float]
     ## Each picture's `[width, height]` by address, once fetched.
     pics Map[str, List[int]]
+    ## Floats in force, the positioned ancestor's padding box, and the
+    ## column being filled.
+    floats List[Float]
+    ax float
+    ay float
+    aw float
+    page_w float
+    col_x float
+    col_w float
 
 CONTROLS := {"button", "input", "select", "textarea"}
 FLOW_FLEX := {"flex", "inline-flex"}
@@ -878,11 +950,13 @@ fn Ctx.flush(mut self, x float, w float, align str)
         return
     mut line := List[Atom]()
     mut lw := 0.0
+    mut lx := x
+    mut room := w
     mut pending := atoms
     atoms = []
     for a in pending
         if a.kind == BREAK
-            self.emit(line, x, w, align, a.h)
+            self.emit(line, lx, room, align, a.h)
             line = []
             lw = 0.0
         elif a.kind == SPACE
@@ -890,15 +964,35 @@ fn Ctx.flush(mut self, x float, w float, align str)
                 line.push(a)
                 lw += a.w
         else
-            if lw + a.w > w + 0.5 and not a.st.nowrap and not a.st.pre
+            if line.len() == 0
+                beside := self.avail(x, w, y + pend, y + pend + a.h)
+                lx = beside.0
+                room = beside.1
+            if lw + a.w > room + 0.5 and not a.st.nowrap and not a.st.pre
                 if self.has_content(line)
-                    self.emit(line, x, w, align, 0.0)
+                    self.emit(line, lx, room, align, 0.0)
                     line = []
                     lw = 0.0
+                    beside := self.avail(x, w, y + pend, y + pend + a.h)
+                    lx = beside.0
+                    room = beside.1
             line.push(a)
             lw += a.w
     if self.has_content(line)
-        self.emit(line, x, w, align, 0.0)
+        self.emit(line, lx, room, align, 0.0)
+
+## The part of the column from `x`, `w` wide that floats leave free between
+## `top` and `bottom`, as (left edge, width).
+fn Ctx.avail(self, x float, w float, top float, bottom float)(float, float)
+    mut left := x
+    mut right := x + w
+    for f in floats
+        if f.y < bottom and f.y + f.h > top
+            if f.right
+                right = fmin(right, f.x)
+            else
+                left = fmax(left, f.x + f.w)
+    (left, fmax(right - left, 40.0))
 
 fn same_look(a St, b St) bool
     a.color == b.color
@@ -1019,10 +1113,14 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
     y += asc + desc
     pend = 0.0
 
-fn Ctx.image_atom(mut self, id int, st St, avail float) Atom?
+fn Ctx.image_atom(mut self, id int, cs Map[str, str], st St, avail float) Atom?
     src := d.attr(id, "src")?
     mut w := (d.attr(id, "width") else "0").to_float() else 0.0
     mut h := (d.attr(id, "height") else "0").to_float() else 0.0
+    if v := cs.get("width")
+        w = length(v, st.size, avail) else w
+    if v := cs.get("height")
+        h = length(v, st.size, avail) else h
     ## A missing side comes from the picture's own size, keeping its shape.
     if w <= 0.0 or h <= 0.0
         nat := pics.get(page.resolve(url, src)) else [0, 0]
@@ -1116,8 +1214,24 @@ fn Ctx.inline(mut self, id int, parent St, avail float)
         atoms.push(self.break_atom(st))
         return
     if tag == "img"
-        if a := self.image_atom(id, st, avail)
-            atoms.push(a)
+        side := (cs.get("float") else (d.attr(id, "align") else "")).trim()
+        if a := self.image_atom(id, cs, st, avail)
+            if side == "left" or side == "right"
+                flush(col_x, col_w, parent.align)
+                settle()
+                fx := if side == "right" then col_x + col_w - a.w else col_x
+                ops.push(draw.Op.Pic(x: fx, y: y, w: a.w, h: a.h, src: a.src))
+                if st.href != ""
+                    hits.push(Hit(x: fx, y: y, w: a.w, h: a.h, href: st.href, node: -1))
+                floats.push(Float(
+                    x: if side == "right" then fx - 8.0 else fx,
+                    y: y,
+                    w: a.w + 8.0,
+                    h: a.h + 4.0,
+                    right: side == "right",
+                ))
+            else
+                atoms.push(a)
         elif alt := d.attr(id, "alt")
             if alt != ""
                 add_text(alt, text_style(tag, ecs, parent))
@@ -1135,18 +1249,81 @@ fn Ctx.inline(mut self, id int, parent St, avail float)
 ## Lays out the children of element `id` (style `st`) in the column from
 ## `x`, `w` wide, flowing inline runs into lines.
 fn Ctx.children(mut self, id int, st St, x float, w float)
+    saved_x := col_x
+    saved_w := col_w
+    col_x = x
+    col_w = w
     for c in d.nodes[id].children
         n := d.nodes[c]
         if n.kind == Text
             add_text(n.text, st)
         elif n.kind == Element and visible(c)
             cs := element_style(c)
-            if self.is_block(c, cs)
+            pos := (cs.get("position") else "").trim()
+            side := (cs.get("float") else "").trim()
+            if pos == "absolute" or pos == "fixed"
+                continue
+            if (side == "left" or side == "right") and n.tag != "img"
+                flush(x, w, st.align)
+                self.place_float(c, st, x, w, side == "right")
+            elif self.is_block(c, cs)
                 flush(x, w, st.align)
                 block(c, st, x, w)
             else
                 inline(c, st, w)
     flush(x, w, st.align)
+    col_x = saved_x
+    col_w = saved_w
+
+## Lays out box `id` as a float against the left or right edge of the
+## column from `x`, `w` wide, at the current line; text then wraps around it.
+fn Ctx.place_float(mut self, id int, st St, x float, w float, right bool)
+    cs := element_style(id)
+    fst := text_style(d.nodes[id].tag, self.with_attrs(id, d.nodes[id].tag, cs), st)
+    bx := box_of(d.nodes[id].tag, cs, fst, w)
+    settle()
+    wide := fmin((bx.width else self.max_content(id, st)) + bx.ml + bx.mr, w)
+    fx := if right then x + w - wide else x
+    y0 := y
+    p0 := pend
+    pend = 0.0
+    self.block(id, st, fx, wide)
+    h := y + pend - y0
+    y = y0
+    pend = p0
+    floats.push(Float(x: if right then fx - 8.0 else fx, y: y0, w: wide + 8.0, h: h + 4.0, right))
+
+## Lays out the absolutely positioned children of `id` against the
+## positioned ancestor's box, out of the flow.
+fn Ctx.absolutes(mut self, id int, st St)
+    for c in d.nodes[id].children
+        if d.nodes[c].kind == Element and visible(c)
+            cs := element_style(c)
+            pos := (cs.get("position") else "").trim()
+            if pos != "absolute" and pos != "fixed"
+                continue
+            tag := d.nodes[c].tag
+            cst := text_style(tag, self.with_attrs(c, tag, cs), st)
+            bx := box_of(tag, cs, cst, aw)
+            fixed := pos == "fixed"
+            ox := if fixed then 0.0 else ax
+            oy := if fixed then 0.0 else ay
+            ow := if fixed then page_w else aw
+            wide := fmin((bx.width else self.max_content(c, st)) + bx.ml + bx.mr, ow)
+            mut at := ox
+            if l := bx.left
+                at = ox + l
+            elif r := bx.right
+                at = ox + ow - r - wide
+            y0 := y
+            p0 := pend
+            settle()
+            if t := bx.top
+                y = oy + t
+            pend = 0.0
+            self.block(c, st, at, wide)
+            y = y0
+            pend = p0
 
 ## The width node `id` takes when nothing makes it wrap: laid out once in a
 ## very wide column and measured, then taken back.
@@ -1245,16 +1422,25 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
     pend = fmax(pend, bx.mt)
     mut slot := -1
     mut top := 0.0
-    boxed := bx.boxed() or bx.padded() or bx.height != none
+    positioned := bx.pos == "relative" or bx.pos == "absolute" or bx.pos == "fixed"
+    boxed := bx.boxed() or bx.padded() or bx.height != none or positioned
     if boxed
         settle()
         top = y
-        if bx.bg != none
+        if bx.bg != none or (bx.radius != 0.0 and bx.bt > 0.0)
             slot = ops.len()
             ops.push(draw.Op.Rect(x: left, y: top, w: border_w, h: 0.0, color: 0))
         y += bx.bt + bx.pt
     if tag == "li"
         li_marker(id, st, content_x)
+    saved_ax := ax
+    saved_ay := ay
+    saved_aw := aw
+    if positioned
+        ax = left
+        ay = top
+        aw = border_w
+    self.absolutes(id, st)
     if tag == "table"
         self.table(id, st, content_x, content_w)
     elif FLOW_FLEX.contains(display) and (cs.get("flex-direction") else "row").starts_with("row")
@@ -1271,12 +1457,51 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
     else
         self.children(id, st, content_x, content_w)
     marker = ""
+    ax = saved_ax
+    ay = saved_ay
+    aw = saved_aw
     if boxed
         settle()
         y += bx.pb + bx.bb
         if hh := bx.height
             y = fmax(y, top + hh)
         bottom := y
+        radius := if bx.radius < 0.0 then fmin(
+            border_w,
+            bottom - top,
+        ) * (0.0 - bx.radius) / 100.0 else bx.radius
+        uniform := bx.bt == bx.br and bx.br == bx.bb and bx.bb == bx.bl
+        if radius >= 1.0 and uniform and (bx.bg != none or bx.bt > 0.0)
+            ## Rounded corners: an outer shape in the border colour and an
+            ## inner one in the fill, before the children.
+            mut shape := List[draw.Op]()
+            if bx.bt > 0.0
+                shape.extend(rounded(left, top, border_w, bottom - top, radius, bx.bcolor))
+                shape.extend(rounded(
+                    left + bx.bl,
+                    top + bx.bt,
+                    border_w - bx.bl - bx.br,
+                    bottom - top - bx.bt - bx.bb,
+                    fmax(radius - bx.bt, 0.0),
+                    bx.bg else st.under,
+                ))
+            else
+                shape.extend(rounded(
+                    left,
+                    top,
+                    border_w,
+                    bottom - top,
+                    radius,
+                    bx.bg else st.under,
+                ))
+            ops[slot] = shape[0]
+            for k in 1..shape.len()
+                ops.insert(slot + k, shape[k])
+            pend = bx.mb
+            if tag == "body" or tag == "html"
+                if bg := bx.bg
+                    canvas = bg
+            return
         if bg := bx.bg
             ops[slot] = draw.Op.Rect(x: left, y: top, w: border_w, h: bottom - top, color: bg)
         if bx.bt > 0.0
@@ -1336,7 +1561,8 @@ fn Ctx.items(mut self, id int) List[int]
                 out.push(c)
         elif visible(c)
             cs := element_style(c)
-            if (cs.get("display") else "") != "none"
+            pos := (cs.get("position") else "").trim()
+            if (cs.get("display") else "") != "none" and pos != "absolute" and pos != "fixed"
                 out.push(c)
     out
 
@@ -1442,7 +1668,7 @@ fn Ctx.flex(mut self, id int, st St, cs Map[str, str], x float, w float, min_h f
         elif bw := ib.width
             sizes.push(bw + extra)
         else
-            sizes.push(self.max_content(it, st) + 2.0)
+            sizes.push(self.max_content(it, st) + ib.pr + ib.br + ib.mr + 4.0)
     mut k := 0
     while k < items.len()
         mut end := k
@@ -1642,6 +1868,13 @@ pub fn layout_with(
         cascades: {},
         contents: {},
         pics: sizes,
+        floats: [],
+        ax: 0.0,
+        ay: 0.0,
+        aw: width,
+        page_w: width,
+        col_x: 0.0,
+        col_w: width,
     )
     c.block(0, base, 0.0, width)
     c.settle()

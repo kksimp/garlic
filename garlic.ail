@@ -1166,11 +1166,17 @@ fn op_line(op draw.Op) str
 
 ## `--pixels-dump`: the pixel layout of the page, one operation per line,
 ## after the canvas colour and height.
-fn pixels_dump(b Browser, width float)
-    s := gfx.layout(b.doc, b.url, width, b.sheet)
+fn pixels_dump(mut b Browser, width float)
+    images.prefetch(b.doc, b.url, image_options(), mut b.sizes, mut b.bits)
+    s := gfx.layout_with(b.doc, b.url, width, b.sheet, b.sizes)
     print("canvas #{s.bg.to_hex().pad_left(6, '0')} height {s.height.round()} ops {s.ops.len()} links {s.hits.len()}")
     for op in s.ops
         print(op_line(op))
+    for at in b.sizes.keys()
+        dims := b.sizes[at]
+        state := if dims[0] * dims[1]
+            == 0 then "failed" else (if b.bits.contains(at) then "decoded" else "too big to decode")
+        print("image {at} {dims[0]}x{dims[1]} {state}")
 
 fn main() !
     args := env.args()
@@ -1205,7 +1211,7 @@ fn main() !
                 spec.chars().len(),
             ))
     if args.contains("--pixels-dump")
-        pixels_dump(b, (flag(args, "--pixel-width") else "960").to_float() else 960.0)
+        pixels_dump(mut b, (flag(args, "--pixel-width") else "960").to_float() else 960.0)
     elif args.contains("--session")
         b.session()
     elif args.contains("--print")
@@ -2092,3 +2098,86 @@ fn bench(args List[str])
     assert_eq(native.out.trim(), want.join("\n"))
     assert(native.out.contains("canvas #0a0a0f"))
     assert(native.out.contains("sans 14.0 #6b6b80 GitHub"))
+
+## The `Str` and `Rect` operations of `s` as `text@x,y` and `rect@x,y wxh`.
+fn flat(s gfx.Scene) List[str]
+    mut out := List[str]()
+    for op in s.ops
+        match op
+            Str(x, y, t, _, _, _, _, _, _) => out.push("{t}@{x.round().to_int()},{y.round().to_int()}")
+            Rect(x, y, w, h, _) => out.push("rect@{x.round().to_int()},{y.round().to_int()} {w.round().to_int()}x{h.round().to_int()}")
+            Pic(x, y, w, h, _) => out.push("pic@{x.round().to_int()},{y.round().to_int()} {w.round().to_int()}x{h.round().to_int()}")
+            Text(_, _, _, _, _, _, _) => out = out
+    out
+
+@test fn absolute_children_sit_at_the_positioned_ancestors_offsets()
+    s := pixels(
+        "<body style='margin:0'><div style='position:relative;height:100px;width:200px;background:#eee'><span style='position:absolute;top:10px;right:5px;width:40px;height:12px;background:#f00'></span>hi</div><p>after</p></body>",
+        400.0,
+    )
+    f := flat(s)
+    assert(f.contains("rect@155,10 40x12"))
+    assert(f.contains("hi@0,0"))
+
+@test fn floats_take_a_corner_and_text_wraps_beside_them()
+    s := pixels(
+        "<body style='margin:0'><img src=a.png width=100 height=80 style='float:right'><p style='margin:0'>aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll</p></body>",
+        300.0,
+    )
+    f := flat(s)
+    assert(f.contains("pic@200,0 100x80"))
+    mut max_right := 0.0
+    for op in s.ops
+        match op
+            Str(x, _, t, _, size, _, _, _, _) => max_right = max_right.max(x + gfx.text_width(
+                t,
+                size,
+                false,
+                false,
+            ))
+            Rect(_, _, _, _, _) | Text(
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+            ) | Pic(_, _, _, _, _) => max_right = max_right
+    assert(max_right <= 200.0)
+
+@test fn rounded_corners_cut_the_rectangle_into_strips()
+    s := pixels(
+        "<body style='margin:0'><div style='width:40px;height:40px;background:#f00;border-radius:8px'></div></body>",
+        200.0,
+    )
+    f := flat(s)
+    assert(f.len() > 5)
+    assert(f.contains("rect@0,8 40x24"))
+    assert(f.contains("rect@5,0 30x1"))
+
+@test fn wrapping_chips_keep_their_padding_apart()
+    s := pixels(
+        "<body style='margin:0'><div style='display:flex;flex-wrap:wrap;gap:6px'><span style='padding:2px 8px;background:#333'>one</span><span style='padding:2px 8px;background:#333'>two</span></div></body>",
+        300.0,
+    )
+    mut starts := List[float]()
+    mut ends := List[float]()
+    for op in s.ops
+        match op
+            Rect(x, _, w, _, c) => if c == 0x333333
+                starts.push(x)
+                ends.push(x + w)
+            Str(
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+            ) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => starts = starts
+    assert_eq(starts.len(), 2)
+    assert(starts[1] >= ends[0] + 5.0)
