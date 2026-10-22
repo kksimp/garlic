@@ -794,6 +794,8 @@ struct Ctx
     cascades Map[int, Map[str, str]]
     ## Widest-line widths of nodes, by node.
     contents Map[int, float]
+    ## The text field being typed into, drawn with a caret; -1 for none.
+    editing int
     ## Each picture's `[width, height]` by address, once fetched.
     pics Map[str, List[int]]
     ## Floats in force, the positioned ancestor's padding box, and the
@@ -1161,6 +1163,7 @@ fn Ctx.control_atom(mut self, id int, st St) Atom?
     mut label := ""
     mut w := 160.0
     mut fill := 0xffffff
+    mut ink := st
     if tag == "button" or kind == "submit" or kind == "button" or kind == "reset"
         label = if tag
             == "button" then d.visible_text(id).trim() else (d.attr(id, "value") else "Submit")
@@ -1171,24 +1174,32 @@ fn Ctx.control_atom(mut self, id int, st St) Atom?
         w = st.size + 2.0
     elif tag == "select"
         label = ""
+        mut chosen := false
         for o in d.all("option")
-            if d.within(o, id) and label == ""
+            if d.within(o, id) and (label == "" or (not chosen and d.attr(o, "selected") != none))
                 label = d.text(o).trim()
+                chosen = d.attr(o, "selected") != none
         w = fmax(text_width(label, st.size, false, false) + 30.0, 80.0)
     else
         label = d.attr(id, "value") else ""
         if label == ""
             label = d.attr(id, "placeholder") else ""
+            ink.color = 0x8a8a8a
+    mut edge := 0x767676
+    if id == editing
+        label = "{d.attr(id, "value") else ""}|"
+        ink.color = st.color
+        edge = 0x0a84ff
     Atom(
         kind: CONTROL,
         text: label,
         w,
         h: st.size * 1.6,
         size: st.size,
-        st,
+        st: ink,
         src: "",
         fill,
-        edge: 0x767676,
+        edge,
         node: id,
     )
 
@@ -1834,6 +1845,17 @@ pub fn layout_with(
     sheet css.Sheet,
     sizes Map[str, List[int]],
 ) Scene
+    layout_editing(d, url, width, sheet, sizes, -1)
+
+## `layout_with`, drawing text field `editing` (a node, or -1) with a caret.
+pub fn layout_editing(
+    d html.Doc,
+    url str,
+    width float,
+    sheet css.Sheet,
+    sizes Map[str, List[int]],
+    editing int,
+) Scene
     base := St(
         color: INK,
         size: 16.0,
@@ -1867,6 +1889,7 @@ pub fn layout_with(
         scopes: {},
         cascades: {},
         contents: {},
+        editing: editing,
         pics: sizes,
         floats: [],
         ax: 0.0,

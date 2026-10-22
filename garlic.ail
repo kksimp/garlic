@@ -629,6 +629,32 @@ fn Browser.check(mut self, id int)
         return
     relayout()
 
+## The role of control `id`, or "" when it has none.
+fn Browser.role_of(self, id int) str
+    t := target(id) else return ""
+    t.role
+
+## The text field being typed into (a node), or -1.
+fn Browser.editing(self) int
+    match prompt
+        Field(id, _) => id
+        Url(_) | Find(_) | Status => -1
+
+## Moves select `id` to its next option, wrapping round.
+fn Browser.cycle(mut self, id int)
+    mut opts := List[int]()
+    for o in doc.all("option")
+        if doc.within(o, id)
+            opts.push(o)
+    if opts.len() == 0
+        return
+    mut at := 0
+    for k in 0..opts.len()
+        if doc.attr(opts[k], "selected") != none
+            at = k
+    next := opts[(at + 1) % opts.len()]
+    choose(id, html.collapse(doc.text(next)))
+
 ## Chooses the option of select `id` whose text or value is `choice`.
 fn Browser.choose(mut self, id int, choice str)
     for o in doc.all("option")
@@ -861,6 +887,7 @@ struct Gui
     scene_stamp int
     scene_w float
     scene_url str
+    scene_edit int
     top float
     ## Pictures whose pixels went to the host in an earlier view, and those
     ## that go with this one: the host keeps a picture by address, so later
@@ -883,6 +910,7 @@ fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
         scene_stamp: -1,
         scene_w: 0.0,
         scene_url: "",
+        scene_edit: -1,
         top: 0.0,
         sent: {},
         fresh: {},
@@ -910,9 +938,10 @@ fn Gui.resize(mut self, w float, h float, cw float, ch float)
 fn Gui.refresh(mut self)
     if not pixel
         return
-    if b.stamp != scene_stamp or area_w != scene_w
+    if b.stamp != scene_stamp or area_w != scene_w or b.editing() != scene_edit
         images.prefetch(b.doc, b.url, image_options(), mut b.sizes, mut b.bits)
-        scene = gfx.layout_with(b.doc, b.url, area_w, b.sheet, b.sizes)
+        scene = gfx.layout_editing(b.doc, b.url, area_w, b.sheet, b.sizes, b.editing())
+        scene_edit = b.editing()
         scene_stamp = b.stamp
         scene_w = area_w
         for k in b.bits.keys()
@@ -928,9 +957,15 @@ fn Gui.click(mut self, x float, y float)
     if pixel
         if h := scene.hit_at(x, y + top)
             if h.node >= 0
-                b.activate(h.node)
+                role := b.role_of(h.node)
+                if role == "combobox"
+                    b.cycle(h.node)
+                else
+                    b.activate(h.node)
             else
                 b.go(h.href)
+        else
+            b.prompt = Status
         return
     at := draw.cell_at(x, y, cell_w, cell_h)
     if id := b.target_at(at.0, at.1)
@@ -960,9 +995,18 @@ fn Gui.key(mut self, key str, alt bool, shift bool) bool
             "pageup" => scroll(0.0 - page_h)
             "home" => top = 0.0
             "end" => top = scene.height
-            _ => return b.key(key, alt, shift)
+            _ => return self.typed(key, alt, shift)
         return true
-    b.key(key, alt, shift)
+    self.typed(key, alt, shift)
+
+## A key for the browser; text typed into a field shows in it at once.
+fn Gui.typed(mut self, key str, alt bool, shift bool) bool
+    stay := b.key(key, alt, shift)
+    if pixel
+        match b.prompt
+            Field(id, text) => b.type_into(id, text)
+            Url(_) | Find(_) | Status => pending = 0.0
+    stay
 
 ## What a typed address means: a URL as it is, a path to a file that exists
 ## as it is, and anything else (`projects.voltare.us/x`) as an `https` URL.
@@ -2104,9 +2148,31 @@ fn flat(s gfx.Scene) List[str]
     mut out := List[str]()
     for op in s.ops
         match op
-            Str(x, y, t, _, _, _, _, _, _) => out.push("{t}@{x.round().to_int()},{y.round().to_int()}")
-            Rect(x, y, w, h, _) => out.push("rect@{x.round().to_int()},{y.round().to_int()} {w.round().to_int()}x{h.round().to_int()}")
-            Pic(x, y, w, h, _) => out.push("pic@{x.round().to_int()},{y.round().to_int()} {w.round().to_int()}x{h.round().to_int()}")
+            Str(
+                x,
+                y,
+                t,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+            ) => out.push("{t}@{x.round().to_int()},{y.round().to_int()}")
+            Rect(
+                x,
+                y,
+                w,
+                h,
+                _,
+            ) => out.push("rect@{x.round().to_int()},{y.round().to_int()} {w.round().to_int()}x{h.round().to_int()}")
+            Pic(
+                x,
+                y,
+                w,
+                h,
+                _,
+            ) => out.push("pic@{x.round().to_int()},{y.round().to_int()} {w.round().to_int()}x{h.round().to_int()}")
             Text(_, _, _, _, _, _, _) => out = out
     out
 
@@ -2181,3 +2247,25 @@ fn flat(s gfx.Scene) List[str]
             ) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => starts = starts
     assert_eq(starts.len(), 2)
     assert(starts[1] >= ends[0] + 5.0)
+
+@test fn pixel_forms_take_typing_and_submit_with_enter()
+    b := Browser.new("{testdata()}/form.html", 60, 12)
+    mut g := Gui.new(b, 600.0, 400.0, 7.5, 15.0)
+    g.pixel = true
+    g.refresh()
+    mut at := -1
+    for k in 0..g.scene.hits.len()
+        h := g.scene.hits[k]
+        if at < 0 and h.node >= 0 and g.b.role_of(h.node) == "textbox"
+            at = k
+    assert(at >= 0)
+    f := g.scene.hits[at]
+    g.click(f.x + 2.0, f.y + 2.0)
+    assert_eq(g.b.editing(), f.node)
+    g.refresh()
+    assert(g.scene_edit == f.node)
+    g.key("h", false, false)
+    g.key("i", false, false)
+    assert_eq(g.b.doc.attr(f.node, "value"), "hi")
+    g.key("enter", false, false)
+    assert(g.b.url.contains("q=hi"))
