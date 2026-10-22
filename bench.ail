@@ -1,0 +1,43 @@
+# Page-load phases of Garlic on a saved page, in milliseconds:
+#   ail build tools/garlic/bench.ail -o bench && ./bench FILE [ROUNDS]
+# Each phase runs ROUNDS times (default 5); the lowest time is printed.
+use std.env
+use std.fs
+use std.io
+use std.time
+use html
+use css
+use page
+use gfx
+
+fn run(phase int, src str, d html.Doc, sheet css.Sheet) int
+    if phase == 0
+        return html.parse(src).all("a").len()
+    if phase == 1
+        return css.document_sheet(d).rules.len()
+    if phase == 2
+        return page.layout_with(d, "https://x.test/", 100, sheet).rows.len()
+    gfx.layout(d, "https://x.test/", 1000.0, sheet).ops.len()
+
+fn main()
+    args := env.args()
+    if args.len() < 1
+        io.eprint("usage: bench FILE [ROUNDS]")
+        return
+    src := fs.read_text(args[0]) else
+        io.eprint("can't read {args[0]}")
+        return
+    rounds := if args.len() > 1 then (args[1].to_int() else 5) else 5
+    d := html.parse(src)
+    sheet := css.document_sheet(d)
+    names := ["html.parse ", "css sheet  ", "page.layout", "gfx.layout "]
+    for phase in 0..4
+        mut lo := 1000000000
+        mut keep := 0
+        for _ in 0..rounds
+            t0 := time.now_ms()
+            keep = run(phase, src, d, sheet)
+            dt := time.now_ms() - t0
+            if dt < lo
+                lo = dt
+        print("{names[phase]}: {lo} ms ({keep})")
