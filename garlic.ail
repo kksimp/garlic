@@ -893,6 +893,8 @@ struct Gui
     scene_w float
     scene_url str
     scene_edit int
+    ## The text found by the last find-in-page, drawn highlighted.
+    found str
     top float
     ## Pictures whose pixels went to the host in an earlier view, and those
     ## that go with this one: the host keeps a picture by address, so later
@@ -916,6 +918,7 @@ fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
         scene_w: 0.0,
         scene_url: "",
         scene_edit: -1,
+        found: "",
         top: 0.0,
         sent: {},
         fresh: {},
@@ -1006,6 +1009,16 @@ fn Gui.key(mut self, key str, alt bool, shift bool) bool
 
 ## A key for the browser; text typed into a field shows in it at once.
 fn Gui.typed(mut self, key str, alt bool, shift bool) bool
+    if pixel and key == "enter"
+        match b.prompt
+            Find(text) =>
+                b.prompt = Status
+                self.find_text(text)
+                return true
+            Url(_) | Field(_, _) | Status => pending = 0.0
+    if pixel and key == "n" and b.prompt == Status and found != ""
+        self.find_text(found)
+        return true
     stay := b.key(key, alt, shift)
     if pixel
         match b.prompt
@@ -1033,10 +1046,58 @@ fn Gui.status(self) str
         return b.url
     b.status()
 
+## The scene's operations with a highlight behind each `found` match.
+fn Gui.marked(self) List[draw.Op]
+    if found == ""
+        return scene.ops
+    want := found.to_lower()
+    mut out := List[draw.Op]()
+    for op in scene.ops
+        match op
+            Str(x, y, t, font, size, fg, bold, _, _) =>
+                at := t.to_lower().find(want) else
+                    out.push(op)
+                    continue
+                before := t.slice(0, at)
+                out.push(draw.Op.Rect(
+                    x: x + gfx.text_width(before, size, bold, font == "mono"),
+                    y: y,
+                    w: gfx.text_width(found, size, bold, font == "mono"),
+                    h: size * 1.3,
+                    color: 0xffe066,
+                ))
+                out.push(op)
+            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => out.push(op)
+    out
+
+## Scrolls to the next line of the page with `needle` in it (case does not
+## matter), wrapping round, and highlights the matches.
+fn Gui.find_text(mut self, needle str)
+    found = needle
+    b.last_find = needle
+    if needle == ""
+        return
+    want := needle.to_lower()
+    mut ys := List[float]()
+    for op in scene.ops
+        match op
+            Str(_, y, t, _, _, _, _, _, _) => if t.to_lower().contains(want)
+                ys.push(y)
+            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => ys = ys
+    if ys.len() == 0
+        b.message = "`{needle}` not found"
+        return
+    mut pick := ys[0]
+    for y in ys
+        if y > top + 24.0 and pick <= top + 24.0
+            pick = y
+    top = (pick - 40.0).max(0.0).min((scene.height - area_h).max(0.0))
+    b.message = "found `{needle}` ({ys.len()} matches)"
+
 ## What the page area shows, as drawing operations.
 fn Gui.display(self) List[draw.Op]
     if pixel
-        return draw.shift(scene.ops, scene.bg, area_w, area_h, top)
+        return draw.shift(self.marked(), scene.bg, area_w, area_h, top)
     draw.display_list(b.pg, b.scroll, rows, cols, b.focus, cell_w, cell_h)
 
 ## The native window as a `std.app` app (docs/design/garlic-browser.md,
@@ -1120,6 +1181,8 @@ impl app.App for Garlic
                     g.b.go_back()
                 elif ev.meta and ev.text == "]"
                     g.b.go_forward()
+                elif ev.meta and ev.text == "f"
+                    g.b.prompt = Find("")
                 elif ev.meta and ev.text == "t"
                     new_tab()
                 elif ev.meta and ev.text == "w"
@@ -2353,3 +2416,16 @@ fn flat(s gfx.Scene) List[str]
     assert_eq(a.strip().len(), 2)
     a.close_tab()
     assert_eq((a.tabs.len(), a.g.b.pg.title), (1, "Garlic test page"))
+
+@test fn find_in_page_scrolls_to_the_match_and_marks_it()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut g := Gui.new(b, 400.0, 60.0, 7.5, 15.0)
+    g.pixel = true
+    g.refresh()
+    g.b.prompt = Find("")
+    for c in "SECOND".chars()
+        g.key("{c}", false, false)
+    g.key("enter", false, false)
+    assert_eq(g.found, "SECOND")
+    assert(g.b.message.contains("found"))
+    assert(g.marked().len() > g.scene.ops.len())
