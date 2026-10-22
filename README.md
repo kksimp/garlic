@@ -22,7 +22,7 @@ tools/app-host/macos/run.sh --native tools/garlic/garlic.ail URL   # in a window
 
 `--width N` and `--height N` set the size (100 by 32 by default).
 
-Native macOS window (needs the SwiftUI host, ADR 0838): `tools/app-host/macos/run.sh --native tools/garlic/garlic.ail URL` (or without `--native` to interpret); add `--pixels` for the pixel layout.
+Native macOS window (needs the SwiftUI host, ADR 0838): `tools/app-host/macos/run.sh --native tools/garlic/garlic.ail URL` (or without `--native` to interpret); the pixel layout is the default, `--cells` selects the text grid.
 
 | Module | Does |
 |---|---|

@@ -1055,7 +1055,7 @@ fn main() !
     else
         # The window is the std.app host's (ADR 0838); `--app` is the old
         # spelling of the default.
-        app_main(b, args.contains("--pixels")) else err
+        app_main(b, not args.contains("--cells")) else err
             print("garlic: {err}")
 
 # ---- Tests -------------------------------------------------------------
