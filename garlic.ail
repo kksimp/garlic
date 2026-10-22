@@ -19,6 +19,7 @@ use css
 use draw
 use gfx
 use jsdom
+use images
 
 ## The keys, as `--keys` prints them.
 KEYS := [
@@ -68,6 +69,8 @@ struct Browser
     cj jar.Jar
     ## Counts page layouts, so the pixel window knows when to lay out again.
     stamp int
+    ## Pixel sizes of the page's pictures by address (`images.prefetch`).
+    sizes Map[str, List[int]]
 
 ## The headers Garlic sends: who it is, and that it wants HTML.
 fn options() net.Options
@@ -76,6 +79,13 @@ fn options() net.Options
     o.headers["accept"] = "text/html,application/xhtml+xml;q=0.9,text/plain;q=0.8,*/*;q=0.5"
     o.headers["accept-language"] = "en"
     o.headers["accept-encoding"] = "gzip, deflate"
+    o
+
+## The headers for a picture: any image type.
+fn image_options() net.Options
+    mut o := options()
+    o.headers["accept"] = "image/png,image/jpeg,image/gif,*/*;q=0.5"
+    o.headers["accept-encoding"] = "identity"
     o
 
 ## The text of `url`: `http` and `https` through `net.request` (which
@@ -347,6 +357,7 @@ fn Browser.new(url str, width int, height int) Browser
         last_nodes: {},
         cj: jar.new(),
         stamp: 0,
+        sizes: {},
     )
     b.load(url, "GET", "")
     b
@@ -826,7 +837,8 @@ fn Gui.refresh(mut self)
     if not pixel
         return
     if b.stamp != scene_stamp or area_w != scene_w
-        scene = gfx.layout(b.doc, b.url, area_w, b.sheet)
+        images.prefetch(b.doc, b.url, image_options(), mut b.sizes)
+        scene = gfx.layout_with(b.doc, b.url, area_w, b.sheet, b.sizes)
         scene_stamp = b.stamp
         scene_w = area_w
         if b.url != scene_url
@@ -1803,3 +1815,20 @@ fn bench(args List[str])
             if dt < lo
                 lo = dt
         print("{names[phase]}: {lo} ms ({keep})")
+
+@test fn pictures_without_sizes_take_their_own_from_the_fetched_header()
+    dir := "tools/pdf/image/testdata"
+    d := html.parse("<img src=gray8.png><img src=jpeg420.jpg height=58><img src=missing.png>")
+    mut sizes := Map[str, List[int]]()
+    images.prefetch(d, "file://{dir}/page.html", options(), mut sizes)
+    assert_eq(sizes["file://{dir}/gray8.png"], [37, 29])
+    assert_eq(sizes["file://{dir}/missing.png"], [0, 0])
+    scene := gfx.layout_with(d, "file://{dir}/page.html", 400.0, css.parse("", 0), sizes)
+    mut got := List[List[float]]()
+    for op in scene.ops
+        match op
+            draw.Op.Pic(x, y, w, h, src) => got.push([w, h])
+            draw.Op.Rect(_, _, _, _, _) => 0
+            draw.Op.Text(_, _, _, _, _, _, _) => 0
+            draw.Op.Str(_, _, _, _, _, _, _, _, _) => 0
+    assert_eq(got, [[37.0, 29.0], [74.0, 58.0]])

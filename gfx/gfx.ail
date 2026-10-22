@@ -632,6 +632,8 @@ struct Ctx
     marker str
     marker_x float
     canvas int
+    ## Each picture's `[width, height]` by address, once fetched.
+    pics Map[str, List[int]]
 
 CONTROLS := {"button", "input", "select", "textarea"}
 FLOW_FLEX := {"flex", "inline-flex"}
@@ -877,10 +879,22 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
 
 fn Ctx.image_atom(self, id int, st St, avail float) Atom?
     src := d.attr(id, "src")?
-    w := (d.attr(id, "width") else "0").to_float() else 0.0
-    h := (d.attr(id, "height") else "0").to_float() else 0.0
+    mut w := (d.attr(id, "width") else "0").to_float() else 0.0
+    mut h := (d.attr(id, "height") else "0").to_float() else 0.0
+    ## A missing side comes from the picture's own size, keeping its shape.
     if w <= 0.0 or h <= 0.0
-        return none
+        nat := pics.get(page.resolve(url, src)) else [0, 0]
+        if nat[0] <= 0 or nat[1] <= 0
+            return none
+        nw := nat[0].to_float()
+        nh := nat[1].to_float()
+        if w > 0.0
+            h = w * nh / nw
+        elif h > 0.0
+            w = h * nw / nh
+        else
+            w = nw
+            h = nh
     mut iw := w
     mut ih := h
     if iw > avail
@@ -1305,6 +1319,17 @@ fn Ctx.collect_rows(self, id int, mut out List[int])
 ## Lays `d` out in a column `width` pixels wide with `sheet` (the linked
 ## style sheets) before the document's own.
 pub fn layout(d html.Doc, url str, width float, sheet css.Sheet) Scene
+    layout_with(d, url, width, sheet, Map[str, List[int]]())
+
+## `layout` with the pictures' sizes (`images.prefetch`), so an `<img>`
+## without `width` and `height` takes its own.
+pub fn layout_with(
+    d html.Doc,
+    url str,
+    width float,
+    sheet css.Sheet,
+    sizes Map[str, List[int]],
+) Scene
     base := St(
         color: INK,
         size: 16.0,
@@ -1332,6 +1357,7 @@ pub fn layout(d html.Doc, url str, width float, sheet css.Sheet) Scene
         marker: "",
         marker_x: 0.0,
         canvas: 0xffffff,
+        pics: sizes,
     )
     c.block(0, base, 0.0, width)
     c.settle()
