@@ -33,3 +33,10 @@ Native macOS window (needs the SwiftUI host, ADR 0838): `tools/app-host/macos/ru
 | `gfx/` | pixel layout: box model, proportional text, flex, grid, tables, images; `--app --pixels` |
 | `--bench FILE [ROUNDS]` | page-load phases in milliseconds on a saved page: `ail build tools/garlic/garlic.ail -o garlic && ./garlic --bench FILE [ROUNDS]` |
 | `garlic.ail` | fetching, history, find, the `std.app` window and the command line |
+
+## Pixel mode: forms, tabs, find
+
+- Forms: click a field to type; Enter submits (GET/POST); clicking a select cycles its options.
+- Tabs: Cmd-T new, Cmd-W close, Ctrl-Tab next; each tab keeps its own page.
+- Find: Cmd-F or `/`, type, Enter scrolls to the match and highlights it; `n` finds the next.
+- `garlic --pixels-dump URL` prints the canvas, ops and image decode status.
