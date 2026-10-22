@@ -25,7 +25,7 @@ use images
 KEYS := [
     "Tab, Shift-Tab    next, previous link or form control",
     "Enter, click      follow a link, edit a field, press a button, toggle a box",
-    "Backspace, Alt-Left  back",
+    "Backspace, Alt-Left  back; Alt-Right forward",
     "Up, Down, PageUp, PageDown, Home, End, Space  scroll",
     "g                 open a URL or file",
     "/                 find text; n finds the next match",
@@ -71,6 +71,20 @@ struct Browser
     stamp int
     ## Pixel sizes of the page's pictures by address (`images.prefetch`).
     sizes Map[str, List[int]]
+    ## Pages left behind, kept so Back and Forward show them again without
+    ## a fetch, oldest first in `kept_order`; and the pages Back came from.
+    kept Map[str, Kept]
+    kept_order List[str]
+    ahead List[str]
+
+## A page as it was left: its tree, style sheets and place.
+struct Kept
+    doc html.Doc
+    sheet css.Sheet
+    scroll int
+
+## Pages kept for Back and Forward.
+MAX_KEPT := 16
 
 ## The headers Garlic sends: who it is, and that it wants HTML.
 fn options() net.Options
@@ -358,6 +372,9 @@ fn Browser.new(url str, width int, height int) Browser
         cj: jar.new(),
         stamp: 0,
         sizes: {},
+        kept: {},
+        kept_order: [],
+        ahead: [],
     )
     b.load(url, "GET", "")
     b
@@ -380,8 +397,37 @@ fn Browser.relayout(mut self)
 
 ## Opens `target`, remembering the current page for Back.
 fn Browser.go(mut self, target str)
-    back.push(url)
+    leave()
+    ahead.clear()
     load(target, "GET", "")
+
+## Pushes the current page on Back's stack and keeps its tree and place, so
+## coming back needs no request.
+fn Browser.leave(mut self)
+    back.push(url)
+    keep()
+
+fn Browser.keep(mut self)
+    if not kept.contains(url)
+        kept_order.push(url)
+        if kept_order.len() > MAX_KEPT
+            kept.remove(kept_order.remove_at(0))
+    kept[url] = Kept(doc, sheet, scroll)
+
+## Shows `target` from the kept pages if it's there (with its scroll place),
+## else fetches it.
+fn Browser.revisit(mut self, target str)
+    if k := kept.get(target)
+        url = target
+        doc = k.doc
+        sheet = k.sheet
+        pg = page.layout_with(doc, url, width, sheet)
+        stamp += 1
+        scroll_to(k.scroll)
+        focus = 0
+        message = ""
+    else
+        load(target, "GET", "")
 
 fn Browser.load(mut self, target str, method str, body str)
     loaded := load_doc(target, method, body, mut cj)
@@ -393,12 +439,25 @@ fn Browser.load(mut self, target str, method str, body str)
     scroll = 0
     focus = 0
     message = ""
+    ## A fresh load replaces any copy kept for that address.
+    kept.remove(url)
+    kept_order = [u for u in kept_order if u != url]
 
 fn Browser.go_back(mut self)
     prev := back.pop() else
         message = "no page to go back to"
         return
-    load(prev, "GET", "")
+    ahead.push(url)
+    keep()
+    revisit(prev)
+
+fn Browser.go_forward(mut self)
+    next := ahead.pop() else
+        message = "no page to go forward to"
+        return
+    back.push(url)
+    keep()
+    revisit(next)
 
 ## Follows link `n` (1-based).
 fn Browser.follow(mut self, n int)
@@ -490,6 +549,9 @@ fn Browser.key(mut self, key str, alt bool, shift bool) bool
         "left" =>
             if alt
                 go_back()
+        "right" =>
+            if alt
+                go_forward()
         "up" => scroll_to(scroll - 1)
         "down" => scroll_to(scroll + 1)
         "pageup" => scroll_to(scroll - view())
@@ -589,7 +651,8 @@ fn Browser.submit(mut self, id int)
     fields := form_fields(doc, form, id)
     action := page.resolve(url, doc.attr(form, "action") else "")
     method := (doc.attr(form, "method") else "get").to_upper()
-    back.push(url)
+    leave()
+    ahead.clear()
     if method == "POST"
         load(action, "POST", fields)
     else
@@ -667,11 +730,12 @@ fn Browser.act(mut self, name str, arg str) bool
         "select" => choose(id, rest)
         "open" => go(arg)
         "back" => go_back()
+        "forward" => go_forward()
         "find" => find(arg)
         "scroll" => scroll_to(arg.to_int() else 0)
         "reload" => load(url, "GET", "")
         _ =>
-            message = "unknown action `{name}`: try follow, click, type, submit, check, select, open, back, find, scroll or reload"
+            message = "unknown action `{name}`: try follow, click, type, submit, check, select, open, back, forward, find, scroll or reload"
             return false
     if prompt != Status
         prompt = Status
@@ -940,6 +1004,8 @@ impl app.App for Garlic
                     g.b.load(g.b.url, "GET", "")
                 elif ev.meta and ev.text == "["
                     g.b.go_back()
+                elif ev.meta and ev.text == "]"
+                    g.b.go_forward()
                 else
                     g.key(ev.text, ev.alt, ev.shift)
             "edit" => url_text = ev.text
@@ -1832,3 +1898,26 @@ fn bench(args List[str])
             draw.Op.Text(_, _, _, _, _, _, _) => 0
             draw.Op.Str(_, _, _, _, _, _, _, _, _) => 0
     assert_eq(got, [[37.0, 29.0], [74.0, 58.0]])
+
+@test fn back_and_forward_show_kept_pages_without_a_fetch()
+    mut b := Browser.new("{testdata()}/index.html", 60, 12)
+    first := b.url
+    title := b.pg.title
+    b.scroll_to(1)
+    b.go("{testdata()}/second.html")
+    second := b.url
+    assert(b.kept.contains(first))
+    ## Back needs no file: the kept tree is shown, at the place it was left.
+    b.kept[first].doc.nodes[0].tag = "#document"
+    b.go_back()
+    assert_eq(b.url, first)
+    assert_eq(b.pg.title, title)
+    assert_eq(b.ahead, [second])
+    b.go_forward()
+    assert_eq(b.url, second)
+    assert_eq(b.back, [first])
+    b.go_back()
+    b.go("{testdata()}/second.html")
+    assert_eq(b.ahead.len(), 0)
+    b.go_forward()
+    assert_eq(b.message, "no page to go forward to")
