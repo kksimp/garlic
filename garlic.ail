@@ -19,12 +19,13 @@ use css
 use draw
 use gfx
 use jsdom
+use images
 
 ## The keys, as `--keys` prints them.
 KEYS := [
     "Tab, Shift-Tab    next, previous link or form control",
     "Enter, click      follow a link, edit a field, press a button, toggle a box",
-    "Backspace, Alt-Left  back",
+    "Backspace, Alt-Left  back; Alt-Right forward",
     "Up, Down, PageUp, PageDown, Home, End, Space  scroll",
     "g                 open a URL or file",
     "/                 find text; n finds the next match",
@@ -68,6 +69,24 @@ struct Browser
     cj jar.Jar
     ## Counts page layouts, so the pixel window knows when to lay out again.
     stamp int
+    ## Pixel sizes of the page's pictures by address (`images.prefetch`).
+    sizes Map[str, List[int]]
+    ## Pages left behind, kept so Back and Forward show them again without
+    ## a fetch, oldest first in `kept_order`; and the pages Back came from.
+    kept Map[str, Kept]
+    kept_order List[str]
+    ahead List[str]
+    ## The pictures decoded for the window host, by address.
+    bits Map[str, images.Bitmap]
+
+## A page as it was left: its tree, style sheets and place.
+struct Kept
+    doc html.Doc
+    sheet css.Sheet
+    scroll int
+
+## Pages kept for Back and Forward.
+MAX_KEPT := 16
 
 ## The headers Garlic sends: who it is, and that it wants HTML.
 fn options() net.Options
@@ -76,6 +95,13 @@ fn options() net.Options
     o.headers["accept"] = "text/html,application/xhtml+xml;q=0.9,text/plain;q=0.8,*/*;q=0.5"
     o.headers["accept-language"] = "en"
     o.headers["accept-encoding"] = "gzip, deflate"
+    o
+
+## The headers for a picture: any image type.
+fn image_options() net.Options
+    mut o := options()
+    o.headers["accept"] = "image/png,image/jpeg,image/gif,*/*;q=0.5"
+    o.headers["accept-encoding"] = "identity"
     o
 
 ## The text of `url`: `http` and `https` through `net.request` (which
@@ -347,6 +373,11 @@ fn Browser.new(url str, width int, height int) Browser
         last_nodes: {},
         cj: jar.new(),
         stamp: 0,
+        sizes: {},
+        kept: {},
+        kept_order: [],
+        ahead: [],
+        bits: {},
     )
     b.load(url, "GET", "")
     b
@@ -369,8 +400,37 @@ fn Browser.relayout(mut self)
 
 ## Opens `target`, remembering the current page for Back.
 fn Browser.go(mut self, target str)
-    back.push(url)
+    leave()
+    ahead.clear()
     load(target, "GET", "")
+
+## Pushes the current page on Back's stack and keeps its tree and place, so
+## coming back needs no request.
+fn Browser.leave(mut self)
+    back.push(url)
+    keep()
+
+fn Browser.keep(mut self)
+    if not kept.contains(url)
+        kept_order.push(url)
+        if kept_order.len() > MAX_KEPT
+            kept.remove(kept_order.remove_at(0))
+    kept[url] = Kept(doc, sheet, scroll)
+
+## Shows `target` from the kept pages if it's there (with its scroll place),
+## else fetches it.
+fn Browser.revisit(mut self, target str)
+    if k := kept.get(target)
+        url = target
+        doc = k.doc
+        sheet = k.sheet
+        pg = page.layout_with(doc, url, width, sheet)
+        stamp += 1
+        scroll_to(k.scroll)
+        focus = 0
+        message = ""
+    else
+        load(target, "GET", "")
 
 fn Browser.load(mut self, target str, method str, body str)
     loaded := load_doc(target, method, body, mut cj)
@@ -382,12 +442,25 @@ fn Browser.load(mut self, target str, method str, body str)
     scroll = 0
     focus = 0
     message = ""
+    ## A fresh load replaces any copy kept for that address.
+    kept.remove(url)
+    kept_order = [u for u in kept_order if u != url]
 
 fn Browser.go_back(mut self)
     prev := back.pop() else
         message = "no page to go back to"
         return
-    load(prev, "GET", "")
+    ahead.push(url)
+    keep()
+    revisit(prev)
+
+fn Browser.go_forward(mut self)
+    next := ahead.pop() else
+        message = "no page to go forward to"
+        return
+    back.push(url)
+    keep()
+    revisit(next)
 
 ## Follows link `n` (1-based).
 fn Browser.follow(mut self, n int)
@@ -479,6 +552,9 @@ fn Browser.key(mut self, key str, alt bool, shift bool) bool
         "left" =>
             if alt
                 go_back()
+        "right" =>
+            if alt
+                go_forward()
         "up" => scroll_to(scroll - 1)
         "down" => scroll_to(scroll + 1)
         "pageup" => scroll_to(scroll - view())
@@ -578,7 +654,8 @@ fn Browser.submit(mut self, id int)
     fields := form_fields(doc, form, id)
     action := page.resolve(url, doc.attr(form, "action") else "")
     method := (doc.attr(form, "method") else "get").to_upper()
-    back.push(url)
+    leave()
+    ahead.clear()
     if method == "POST"
         load(action, "POST", fields)
     else
@@ -656,11 +733,12 @@ fn Browser.act(mut self, name str, arg str) bool
         "select" => choose(id, rest)
         "open" => go(arg)
         "back" => go_back()
+        "forward" => go_forward()
         "find" => find(arg)
         "scroll" => scroll_to(arg.to_int() else 0)
         "reload" => load(url, "GET", "")
         _ =>
-            message = "unknown action `{name}`: try follow, click, type, submit, check, select, open, back, find, scroll or reload"
+            message = "unknown action `{name}`: try follow, click, type, submit, check, select, open, back, forward, find, scroll or reload"
             return false
     if prompt != Status
         prompt = Status
@@ -784,6 +862,11 @@ struct Gui
     scene_w float
     scene_url str
     top float
+    ## Pictures whose pixels went to the host in an earlier view, and those
+    ## that go with this one: the host keeps a picture by address, so later
+    ## views carry its id alone.
+    sent Set[str]
+    fresh Set[str]
 
 fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
     mut g := Gui(
@@ -801,6 +884,8 @@ fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
         scene_w: 0.0,
         scene_url: "",
         top: 0.0,
+        sent: {},
+        fresh: {},
     )
     g.resize(w, h, cell_w, cell_h)
     g
@@ -826,9 +911,13 @@ fn Gui.refresh(mut self)
     if not pixel
         return
     if b.stamp != scene_stamp or area_w != scene_w
-        scene = gfx.layout(b.doc, b.url, area_w, b.sheet)
+        images.prefetch(b.doc, b.url, image_options(), mut b.sizes, mut b.bits)
+        scene = gfx.layout_with(b.doc, b.url, area_w, b.sheet, b.sizes)
         scene_stamp = b.stamp
         scene_w = area_w
+        for k in b.bits.keys()
+            if not sent.contains(k)
+                fresh.add(k)
         if b.url != scene_url
             top = 0.0
             scene_url = b.url
@@ -917,6 +1006,8 @@ fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
 impl app.App for Garlic
     fn update(mut self, ev app.Event)
         want = ""
+        g.sent = g.sent.union(g.fresh)
+        g.fresh = {}
         match ev.kind
             "resize" => g.resize(ev.dx, ev.dy, ev.cell_w, ev.cell_h)
             "click" => g.click(ev.x, ev.y)
@@ -928,6 +1019,8 @@ impl app.App for Garlic
                     g.b.load(g.b.url, "GET", "")
                 elif ev.meta and ev.text == "["
                     g.b.go_back()
+                elif ev.meta and ev.text == "]"
+                    g.b.go_forward()
                 else
                     g.key(ev.text, ev.alt, ev.shift)
             "edit" => url_text = ev.text
@@ -951,7 +1044,7 @@ impl app.App for Garlic
         ## A canvas of 0 by 0 fills the window; the host reports its size.
         app.column([
             bar,
-            app.canvas("page", 0.0, 0.0, [to_app(op) for op in g.display()]),
+            app.canvas("page", 0.0, 0.0, [to_app(op, g) for op in g.display()]),
             app.label(g.status()),
         ])
 
@@ -962,7 +1055,7 @@ impl app.App for Garlic
         want
 
 ## A drawing operation of the page, as a `std.app` canvas operation.
-fn to_app(op draw.Op) app.Op
+fn to_app(op draw.Op, g Gui) app.Op
     match op
         Rect(x, y, w, h, c) => app.draw_rect(x, y, w, h, c)
         Text(x, y, t, fg, bold, italic, underline) => app.Op.Str(
@@ -987,7 +1080,18 @@ fn to_app(op draw.Op) app.Op
             italic: italic,
             underline: underline,
         )
-        Pic(x, y, w, h, src) => app.Op.Pic(x: x, y: y, w: w, h: h, src: src)
+        Pic(x, y, w, h, src) =>
+            bm := g.b.bits.get(src) else return app.Op.Pic(x: x, y: y, w: w, h: h, src: src)
+            app.Op.Bitmap(
+                x: x,
+                y: y,
+                w: w,
+                h: h,
+                id: src,
+                pw: bm.w,
+                ph: bm.h,
+                data: if g.fresh.contains(src) then bm.data else "",
+            )
 
 ## The native window: the page area starts at `GUI_W` by `GUI_H` points with
 ## cells of `GUI_CELL_W` by `GUI_CELL_H` until the host reports its own.
@@ -1258,10 +1362,13 @@ fn lay(src str, width int) page.Page
 
 ## `tools/garlic/testdata`, from the repository root or `bootstrap/`.
 fn testdata() str
-    for d in ["tools/garlic/testdata", "../tools/garlic/testdata"]
-        if fs.exists(d)
-            return "{env.cwd()}/{d}"
-    "tools/garlic/testdata"
+    if fs.exists("tools/garlic/testdata")
+        return "{env.cwd()}/tools/garlic/testdata"
+    # From `bootstrap/` (the selftest's directory): the parent, without `..`,
+    # so page addresses compare equal after URL resolution.
+    cwd := env.cwd()
+    up := cwd.rfind("/") else 0
+    "{cwd.slice(0, up)}/tools/garlic/testdata"
 
 @test fn browser_follows_links_and_goes_back()
     dir := testdata()
@@ -1834,3 +1941,71 @@ fn bench(args List[str])
                 _,
             ) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => dot = dot
     assert(dot)
+
+@test fn pictures_without_sizes_take_their_own_from_the_fetched_header()
+    dir := testdata().replace("garlic/testdata", "pdf/image/testdata")
+    d := html.parse("<img src=gray8.png><img src=jpeg420.jpg height=58><img src=missing.png>")
+    mut sizes := Map[str, List[int]]()
+    mut bits := Map[str, images.Bitmap]()
+    images.prefetch(d, "file://{dir}/page.html", options(), mut sizes, mut bits)
+    assert_eq(bits["file://{dir}/gray8.png"].w, 37)
+    assert_eq(sizes["file://{dir}/gray8.png"], [37, 29])
+    assert_eq(sizes["file://{dir}/missing.png"], [0, 0])
+    scene := gfx.layout_with(d, "file://{dir}/page.html", 400.0, css.parse("", 0), sizes)
+    mut got := List[List[float]]()
+    for op in scene.ops
+        match op
+            draw.Op.Pic(x, y, w, h, src) => got.push([w, h])
+            draw.Op.Rect(_, _, _, _, _) => 0
+            draw.Op.Text(_, _, _, _, _, _, _) => 0
+            draw.Op.Str(_, _, _, _, _, _, _, _, _) => 0
+    assert_eq(got, [[37.0, 29.0], [74.0, 58.0]])
+
+@test fn back_and_forward_show_kept_pages_without_a_fetch()
+    mut b := Browser.new("{testdata()}/index.html", 60, 12)
+    first := b.url
+    title := b.pg.title
+    b.scroll_to(1)
+    b.go("{testdata()}/second.html")
+    second := b.url
+    assert(b.kept.contains(first))
+    ## Back needs no file: the kept tree is shown, at the place it was left.
+    b.kept[first].doc.nodes[0].tag = "#document"
+    b.go_back()
+    assert_eq(b.url, first)
+    assert_eq(b.pg.title, title)
+    assert_eq(b.ahead, [second])
+    b.go_forward()
+    assert_eq(b.url, second)
+    assert_eq(b.back, [first])
+    b.go_back()
+    b.go("{testdata()}/second.html")
+    assert_eq(b.ahead.len(), 0)
+    b.go_forward()
+    assert_eq(b.message, "no page to go forward to")
+
+@test fn decoded_pictures_go_to_the_host_once()
+    dir := testdata().replace("garlic/testdata", "pdf/image/testdata")
+    mut a := Garlic.new(Browser.new("file://{dir}/missing.html", 100, 32), 400.0, 300.0, 8.0, 16.0)
+    a.g.pixel = true
+    a.g.b.doc = html.parse("<img src=gray8.png>")
+    a.g.b.url = "file://{dir}/page.html"
+    a.g.b.stamp += 1
+    a.g.refresh()
+    first := [to_app(op, a.g) for op in a.g.display()]
+    a.update(app.event("noop"))
+    second := [to_app(op, a.g) for op in a.g.display()]
+    assert_eq(bitmap_data_lens(first), [[37, 29, 1]])
+    assert_eq(bitmap_data_lens(second)[0][2], 0)
+
+@allow("expr.match.3") fn bitmap_data_lens(ops List[app.Op]) List[List[int]]
+    mut out := List[List[int]]()
+    for op in ops
+        match op
+            app.Op.Bitmap(_, _, _, _, _, pw, ph, data) => out.push([
+                pw,
+                ph,
+                data.chars().len().min(1),
+            ])
+            _ => out = out
+    out
