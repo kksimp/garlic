@@ -75,6 +75,14 @@ USED := {
     "text-transform",
     "white-space",
     "content",
+    "height",
+    "min-height",
+    "box-sizing",
+    "align-items",
+    "background-image",
+    "background-clip",
+    "-webkit-background-clip",
+    "-webkit-text-fill-color",
     "color",
     "background",
     "background-color",
@@ -320,7 +328,8 @@ pub fn declarations(body str) List[Decl]
     for part in body.split(";")
         colon := part.find(":") else continue
         name := part.slice(0, colon).trim().to_lower()
-        if not USED.contains(name)
+        ## Custom properties (`--x`) are kept for `var()` in the layout.
+        if not USED.contains(name) and not name.starts_with("--")
             continue
         mut value := part.slice(colon + 1, part.chars().len()).trim()
         mut important := false
@@ -333,7 +342,7 @@ pub fn declarations(body str) List[Decl]
 ## Parses one complex selector, or none when Garlic doesn't support it
 ## (pseudo-classes and pseudo-elements, `+`, `~`), so the rule is dropped.
 pub fn selector(text str) Selector?
-    t := text.trim()
+    t := text.trim().replace(":root", "html")
     if t == "" or t.contains(":") or t.contains("+") or t.contains("~")
         return none
     mut parts := List[Compound]()

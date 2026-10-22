@@ -1803,3 +1803,34 @@ fn bench(args List[str])
             if dt < lo
                 lo = dt
         print("{names[phase]}: {lo} ms ({keep})")
+
+@test fn voltare_page_gets_variables_logo_icon_link_and_gradient_text()
+    s := pixels(fs.read_text("{testdata()}/voltare.html") else "", 900.0)
+    assert_eq(s.bg, 0x0a0a0f)
+    mut texts := List[(str, int)]()
+    for op in s.ops
+        match op
+            Str(_, _, t, _, _, fg, _, _, _) => texts.push((t, fg))
+            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => texts = texts
+    assert_eq(texts[0], ("Voltare", 0xf0f0f5))
+    assert_eq(texts[1], ("Support", 0x6b6b80))
+    assert_eq(texts[2], ("GitHub", 0x6b6b80))
+    assert_eq(texts[3], ("Donations", 0x6b6b80))
+    assert_eq(texts[4], ("Projects", 0xffffff))
+    mut dot := false
+    for op in s.ops
+        match op
+            Rect(_, _, w, h, c) => if c == 0x6c5ce7 and w == 8.0 and h == 8.0
+                dot = true
+            Str(
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+            ) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => dot = dot
+    assert(dot)

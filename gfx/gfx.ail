@@ -316,6 +316,8 @@ struct St
     href str
     upper bool
     nowrap bool
+    ## A link's `aria-label` or `title`: what its icon-only content says.
+    alt str
 
 ## A block's own box: margins, borders, padding, background and width.
 struct Bx
@@ -335,6 +337,7 @@ struct Bx
     bcolor int
     width float?
     max_width float?
+    height float?
     ml_auto bool
     mr_auto bool
 
@@ -383,6 +386,19 @@ fn size_keyword(v str) float?
 
 HEADING_SIZE := {"h1": 2.0, "h2": 1.5, "h3": 1.17, "h4": 1.0, "h5": 0.83, "h6": 0.67}
 
+## The first color stop of a `linear-gradient(...)` in `v`.
+fn gradient_first(v str) int?
+    at := v.find("gradient(")?
+    inner := v.slice(at, v.chars().len())
+    if i := inner.find("#")
+        for n in [7, 4]
+            if k := color(inner.slice(i, i + n))
+                return k
+    if i := inner.find("rgb")
+        close := inner.slice(i, inner.chars().len()).find(")")?
+        return color(inner.slice(i, i + close + 1))
+    none
+
 ## The style of text inside element `tag` with the cascaded values `cs`,
 ## given its parent's.
 fn text_style(tag str, cs Map[str, str], parent St) St
@@ -405,6 +421,7 @@ fn text_style(tag str, cs Map[str, str], parent St) St
         "a" =>
             if h := cs.get("href")
                 st.href = h
+            st.alt = cs.get("alt-label") else ""
         "u" | "ins" => st.underline = true
         "s" | "del" | "strike" => st.underline = st.underline
         _ => st.bold = st.bold
@@ -427,6 +444,13 @@ fn text_style(tag str, cs Map[str, str], parent St) St
         st.italic = s == "italic" or s == "oblique"
     if c := cs.get("color")
         if k := color(c)
+            st.color = k
+    if fill := cs.get("-webkit-text-fill-color")
+        if fill.trim() == "transparent"
+            ## `background-clip: text` over a gradient: the first stop.
+            if g := gradient_first(cs.get("background") else (cs.get("background-image") else ""))
+                st.color = g
+        elif k := color(fill)
             st.color = k
     if td := cs.get("text-decoration")
         st.underline = td.contains("underline")
@@ -468,6 +492,7 @@ fn box_of(tag str, cs Map[str, str], st St, avail float) Bx
         bcolor: st.color,
         width: none,
         max_width: none,
+        height: none,
         ml_auto: false,
         mr_auto: false,
     )
@@ -588,13 +613,51 @@ fn box_of(tag str, cs Map[str, str], st St, avail float) Bx
         for t in tokens(v)
             if k := color(t)
                 b.bg = k
+        if b.bg == none
+            b.bg = gradient_first(v)
+    clip := cs.get("background-clip") else (cs.get("-webkit-background-clip") else "")
+    if clip.trim() == "text"
+        b.bg = none
     if v := cs.get("width")
         b.width = length(v, size, avail)
     if v := cs.get("max-width")
         b.max_width = length(v, size, avail)
+    if v := cs.get("height")
+        b.height = length(v, size, 0.0)
+    if v := cs.get("min-height")
+        if m := length(v, size, 0.0)
+            b.height = m
     b
 
 # ---- Layout ---------------------------------------------------------------
+
+## `v` with each `var(--x)` and `var(--x, fallback)` replaced from `vars`.
+fn subst(v str, vars Map[str, str]) str
+    mut out := v
+    mut guard := 0
+    while guard < 16
+        guard += 1
+        at := out.find("var(") else break
+        cs := out.chars()
+        mut depth := 1
+        mut k := at + 4
+        mut comma := -1
+        while k < cs.len() and depth > 0
+            if cs[k] == '('
+                depth += 1
+            elif cs[k] == ')'
+                depth -= 1
+            elif cs[k] == ',' and depth == 1 and comma < 0
+                comma = k
+            k += 1
+        if depth != 0
+            break
+        close := k - 1
+        name := out.slice(at + 4, if comma >= 0 then comma else close).trim()
+        fallback := if comma >= 0 then out.slice(comma + 1, close).trim() else ""
+        val := vars.get(name) else fallback
+        out = "{out.slice(0, at)}{val}{out.slice(close + 1, cs.len())}"
+    out
 
 ## One piece of an inline run: a word, a space, a line break, an image or
 ## a form control.
@@ -632,20 +695,58 @@ struct Ctx
     marker str
     marker_x float
     canvas int
+    ## Cascaded styles, custom properties in scope and raw cascades by node.
+    styles Map[int, Map[str, str]]
+    scopes Map[int, Map[str, str]]
+    cascades Map[int, Map[str, str]]
+    ## Widest-line widths of nodes, by node.
+    contents Map[int, float]
 
 CONTROLS := {"button", "input", "select", "textarea"}
 FLOW_FLEX := {"flex", "inline-flex"}
 
-fn Ctx.visible(self, id int) bool
+fn Ctx.visible(mut self, id int) bool
     n := d.nodes[id]
     n.kind == Element and not page.HIDDEN.contains(n.tag) and d.attr(id, "hidden") == none
 
-fn Ctx.element_style(self, id int) Map[str, str]
+fn Ctx.element_style(mut self, id int) Map[str, str]
     if d.nodes[id].tag == "#document"
         return Map[str, str]()
-    css.cascade(d, id, sheet)
+    if cached := styles.get(id)
+        return cached
+    r := self.cascaded(id)
+    sc := self.scope(id)
+    mut out := Map[str, str]()
+    for k in r.keys()
+        if not k.starts_with("--")
+            out[k] = subst(r[k], sc)
+    styles[id] = out
+    out
 
-fn Ctx.is_block(self, id int, cs Map[str, str]) bool
+fn Ctx.cascaded(mut self, id int) Map[str, str]
+    if cached := cascades.get(id)
+        return cached
+    r := css.cascade(d, id, sheet)
+    cascades[id] = r
+    r
+
+## The custom properties in scope at node `id`: its parent's, then its own.
+fn Ctx.scope(mut self, id int) Map[str, str]
+    if cached := scopes.get(id)
+        return cached
+    parent := d.nodes[id].parent
+    mut m := Map[str, str]()
+    if id != 0
+        m = self.scope(parent)
+    if d.nodes[id].kind == Element
+        r := self.cascaded(id)
+        for k in r.keys()
+            if k.starts_with("--")
+                m[k] = subst(r[k], m)
+    scopes[id] = m
+    m
+
+fn Ctx.is_block(mut self, id int, cs Map[str, str]) bool
     tag := d.nodes[id].tag
     display := cs.get("display") else ""
     if display == "none"
@@ -658,6 +759,16 @@ fn Ctx.is_block(self, id int, cs Map[str, str]) bool
 fn Ctx.settle(mut self)
     y += pend
     pend = 0.0
+
+## `cs` plus what the attributes of `a` elements add: the resolved target
+## and the label.
+fn Ctx.with_attrs(mut self, id int, tag str, cs Map[str, str]) Map[str, str]
+    mut out := cs
+    if tag == "a"
+        if h := d.attr(id, "href")
+            out["href"] = page.resolve(url, h)
+        out["alt-label"] = d.attr(id, "aria-label") else (d.attr(id, "title") else "")
+    out
 
 fn Ctx.add_text(mut self, raw str, st St)
     mut text := raw
@@ -686,7 +797,7 @@ fn Ctx.add_text(mut self, raw str, st St)
     if cur.len() > 0
         atoms.push(self.word_atom(cur.join(""), st))
 
-fn Ctx.word_atom(self, text str, st St) Atom
+fn Ctx.word_atom(mut self, text str, st St) Atom
     Atom(
         kind: WORD,
         text,
@@ -700,7 +811,7 @@ fn Ctx.word_atom(self, text str, st St) Atom
         node: -1,
     )
 
-fn Ctx.space_atom(self, st St) Atom
+fn Ctx.space_atom(mut self, st St) Atom
     Atom(
         kind: SPACE,
         text: " ",
@@ -714,7 +825,7 @@ fn Ctx.space_atom(self, st St) Atom
         node: -1,
     )
 
-fn Ctx.break_atom(self, st St) Atom
+fn Ctx.break_atom(mut self, st St) Atom
     Atom(
         kind: BREAK,
         text: "",
@@ -765,7 +876,7 @@ fn same_look(a St, b St) bool
         and a.mono == b.mono
         and a.href == b.href
 
-fn Ctx.has_content(self, line List[Atom]) bool
+fn Ctx.has_content(mut self, line List[Atom]) bool
     for a in line
         if a.kind != SPACE
             return true
@@ -828,19 +939,20 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
                 text = "{text}{line[j].text}"
                 run_w += line[j].w
                 j += 1
-            ops.push(draw.Op.Str(
-                x: cx,
-                y: top,
-                text: text.trim_end(),
-                font: if a.st.mono then "mono" else "sans",
-                size: a.size,
-                fg: a.st.color,
-                bold: a.st.bold,
-                italic: a.st.italic,
-                underline: a.st.underline,
-            ))
-            if a.st.href != ""
-                hits.push(Hit(x: cx, y: top, w: run_w, h: a.h, href: a.st.href, node: -1))
+            if text.trim() != ""
+                ops.push(draw.Op.Str(
+                    x: cx,
+                    y: top,
+                    text: text.trim_end(),
+                    font: if a.st.mono then "mono" else "sans",
+                    size: a.size,
+                    fg: a.st.color,
+                    bold: a.st.bold,
+                    italic: a.st.italic,
+                    underline: a.st.underline,
+                ))
+                if a.st.href != ""
+                    hits.push(Hit(x: cx, y: top, w: run_w, h: a.h, href: a.st.href, node: -1))
             cx += run_w
             k = j
             continue
@@ -875,7 +987,7 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
     y += asc + desc
     pend = 0.0
 
-fn Ctx.image_atom(self, id int, st St, avail float) Atom?
+fn Ctx.image_atom(mut self, id int, st St, avail float) Atom?
     src := d.attr(id, "src")?
     w := (d.attr(id, "width") else "0").to_float() else 0.0
     h := (d.attr(id, "height") else "0").to_float() else 0.0
@@ -899,7 +1011,7 @@ fn Ctx.image_atom(self, id int, st St, avail float) Atom?
         node: -1,
     )
 
-fn Ctx.control_atom(self, id int, st St) Atom?
+fn Ctx.control_atom(mut self, id int, st St) Atom?
     tag := d.nodes[id].tag
     kind := d.attr(id, "type") else "text"
     if tag == "input" and (kind == "hidden")
@@ -950,11 +1062,12 @@ fn Ctx.inline(mut self, id int, parent St, avail float)
     if (cs.get("display") else "") == "none" or (cs.get("visibility") else "") == "hidden"
         return
     tag := n.tag
-    mut ecs := cs
-    if tag == "a"
-        if h := d.attr(id, "href")
-            ecs["href"] = page.resolve(url, h)
+    ecs := self.with_attrs(id, tag, cs)
     st := text_style(tag, ecs, parent)
+    if tag == "svg"
+        if parent.alt != ""
+            add_text(parent.alt, parent)
+        return
     if tag == "br"
         atoms.push(self.break_atom(st))
         return
@@ -991,8 +1104,50 @@ fn Ctx.children(mut self, id int, st St, x float, w float)
                 inline(c, st, w)
     flush(x, w, st.align)
 
+## The width node `id` takes when nothing makes it wrap: laid out once in a
+## very wide column and measured, then taken back.
+fn Ctx.max_content(mut self, id int, st St) float
+    if cached := contents.get(id)
+        return cached
+    if d.nodes[id].kind == Text
+        w := text_width(html.collapse(d.nodes[id].text).trim(), st.size, st.bold, st.mono)
+        contents[id] = w
+        return w
+    o0 := ops.len()
+    h0 := hits.len()
+    y0 := y
+    p0 := pend
+    m0 := marker
+    saved := atoms
+    atoms = []
+    self.block(id, st, 0.0, 100000.0)
+    mut extent := 0.0
+    for k in o0..ops.len()
+        match ops[k]
+            Rect(x, _, w, _, _) => extent = fmax(extent, x + w)
+            Str(x, _, t, _, size, _, bold, _, _) => extent = fmax(extent, x + text_width(
+                t,
+                size,
+                bold,
+                st.mono,
+            ))
+            Pic(x, _, w, _, _) => extent = fmax(extent, x + w)
+            Text(_, _, _, _, _, _, _) => extent = extent
+    while ops.len() > o0
+        ops.pop()
+    while hits.len() > h0
+        hits.pop()
+    y = y0
+    pend = p0
+    marker = m0
+    atoms = saved
+    if extent > 50000.0
+        extent = 0.0
+    contents[id] = extent
+    extent
+
 ## The width of the text in `id` on one line, for shrink-to-fit items.
-fn Ctx.intrinsic(self, id int, st St) float
+fn Ctx.intrinsic(mut self, id int, st St) float
     text := d.visible_text(id).trim()
     text_width(html.collapse(text), st.size, st.bold, st.mono)
 
@@ -1005,7 +1160,7 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
     display := cs.get("display") else ""
     if display == "none" or (cs.get("visibility") else "") == "hidden"
         return
-    mut ecs := cs
+    ecs := self.with_attrs(id, tag, cs)
     st := text_style(tag, ecs, parent)
     bx := box_of(tag, cs, st, w)
     if tag == "hr"
@@ -1038,7 +1193,7 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
     pend = fmax(pend, bx.mt)
     mut slot := -1
     mut top := 0.0
-    boxed := bx.boxed() or bx.padded()
+    boxed := bx.boxed() or bx.padded() or bx.height != none
     if boxed
         settle()
         top = y
@@ -1051,7 +1206,14 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
     if tag == "table"
         self.table(id, st, content_x, content_w)
     elif FLOW_FLEX.contains(display) and (cs.get("flex-direction") else "row").starts_with("row")
-        self.flex(id, st, cs, content_x, content_w)
+        self.flex(
+            id,
+            st,
+            cs,
+            content_x,
+            content_w,
+            (bx.height else 0.0) - bx.pt - bx.pb - bx.bt - bx.bb,
+        )
     elif display == "grid" or display == "inline-grid"
         self.grid(id, st, cs, content_x, content_w)
     else
@@ -1060,6 +1222,8 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
     if boxed
         settle()
         y += bx.pb + bx.bb
+        if hh := bx.height
+            y = fmax(y, top + hh)
         bottom := y
         if bg := bx.bg
             ops[slot] = draw.Op.Rect(x: left, y: top, w: border_w, h: bottom - top, color: bg)
@@ -1112,10 +1276,13 @@ fn Ctx.li_marker(mut self, id int, st St, x float)
         marker_x = x - 8.0
 
 ## The child elements that take part in a row, column or grid layout.
-fn Ctx.items(self, id int) List[int]
+fn Ctx.items(mut self, id int) List[int]
     mut out := List[int]()
     for c in d.nodes[id].children
-        if visible(c)
+        if d.nodes[c].kind == Text
+            if html.collapse(d.nodes[c].text).trim() != ""
+                out.push(c)
+        elif visible(c)
             cs := element_style(c)
             if (cs.get("display") else "") != "none"
                 out.push(c)
@@ -1123,19 +1290,80 @@ fn Ctx.items(self, id int) List[int]
 
 ## Lays out `items` side by side in columns of `widths` starting at `x`
 ## and `gap` apart, from the current line; the row ends at the tallest.
-fn Ctx.row(mut self, items List[int], parent St, x float, widths List[float], offsets List[float])
+fn Ctx.row(
+    mut self,
+    items List[int],
+    parent St,
+    x float,
+    widths List[float],
+    offsets List[float],
+    center bool,
+    min_h float,
+)
     settle()
     y0 := y
-    mut bottom := y0
+    mut heights := List[float]()
+    mut spans := List[(int, int, int, int)]()
     for k in 0..items.len()
         y = y0
         pend = 0.0
-        self.block(items[k], parent, x + offsets[k], widths[k])
-        bottom = fmax(bottom, y + pend)
-    y = bottom
+        o0 := ops.len()
+        h0 := hits.len()
+        if d.nodes[items[k]].kind == Text
+            add_text(d.nodes[items[k]].text, parent)
+            flush(x + offsets[k], widths[k], parent.align)
+        else
+            self.block(items[k], parent, x + offsets[k], widths[k])
+        heights.push(y + pend - y0)
+        spans.push((o0, ops.len(), h0, hits.len()))
+    mut tall := min_h
+    for h in heights
+        tall = fmax(tall, h)
+    if center
+        for k in 0..items.len()
+            dy := (tall - heights[k]) / 2.0
+            if dy > 0.5
+                for o in spans[k].0..spans[k].1
+                    ops[o] = shifted(ops[o], dy)
+                for h in spans[k].2..spans[k].3
+                    hits[h] = Hit(
+                        x: hits[h].x,
+                        y: hits[h].y + dy,
+                        w: hits[h].w,
+                        h: hits[h].h,
+                        href: hits[h].href,
+                        node: hits[h].node,
+                    )
+    y = y0 + tall
     pend = 0.0
 
-fn Ctx.flex(mut self, id int, st St, cs Map[str, str], x float, w float)
+## `op` moved down by `dy`.
+fn shifted(op draw.Op, dy float) draw.Op
+    match op
+        Rect(x, y, w, h, c) => draw.Op.Rect(x: x, y: y + dy, w: w, h: h, color: c)
+        Text(x, y, t, fg, bold, italic, underline) => draw.Op.Text(
+            x,
+            y: y + dy,
+            text: t,
+            fg,
+            bold,
+            italic,
+            underline,
+        )
+        Str(x, y, t, font, size, fg, bold, italic, underline) => draw.Op.Str(
+            x,
+            y: y + dy,
+            text: t,
+            font,
+            size,
+            fg,
+            bold,
+            italic,
+            underline,
+        )
+        Pic(x, y, w, h, src) => draw.Op.Pic(x, y: y + dy, w, h, src)
+
+fn Ctx.flex(mut self, id int, st St, cs Map[str, str], x float, w float, min_h float)
     items := self.items(id)
     gap := length(cs.get("gap") else (cs.get("column-gap") else "0"), st.size, w) else 0.0
     justify := (cs.get("justify-content") else "flex-start").trim()
@@ -1143,6 +1371,10 @@ fn Ctx.flex(mut self, id int, st St, cs Map[str, str], x float, w float)
     mut sizes := List[float]()
     mut grows := List[float]()
     for it in items
+        if d.nodes[it].kind == Text
+            sizes.push(self.max_content(it, st) + 2.0)
+            grows.push(0.0)
+            continue
         ics := element_style(it)
         ist := text_style(d.nodes[it].tag, ics, st)
         ib := box_of(d.nodes[it].tag, ics, ist, w)
@@ -1154,11 +1386,11 @@ fn Ctx.flex(mut self, id int, st St, cs Map[str, str], x float, w float)
                 grow = ts[0].to_float() else grow
         grows.push(grow)
         if basis := ics.get("flex-basis")
-            sizes.push((length(basis, ist.size, w) else self.intrinsic(it, ist)) + extra)
+            sizes.push((length(basis, ist.size, w) else self.max_content(it, st)) + extra)
         elif bw := ib.width
             sizes.push(bw + extra)
         else
-            sizes.push(self.intrinsic(it, ist) + extra + 2.0)
+            sizes.push(self.max_content(it, st) + 2.0)
     mut k := 0
     while k < items.len()
         mut end := k
@@ -1203,7 +1435,15 @@ fn Ctx.flex(mut self, id int, st St, cs Map[str, str], x float, w float)
         for j in 0..widths.len()
             offsets.push(at)
             at += widths[j] + between
-        self.row(row_items, st, x, widths, offsets)
+        self.row(
+            row_items,
+            st,
+            x,
+            widths,
+            offsets,
+            (cs.get("align-items") else "").trim() == "center",
+            min_h,
+        )
         y += 0.0
         if end < items.len()
             y += gap
@@ -1255,7 +1495,7 @@ fn Ctx.grid(mut self, id int, st St, cs Map[str, str], x float, w float)
     mut k := 0
     while k < items.len()
         end := (k + cols.len()).min(items.len())
-        self.row(items[k..end], st, x, widths[0..end - k], offsets[0..end - k])
+        self.row(items[k..end], st, x, widths[0..end - k], offsets[0..end - k], false, 0.0)
         k = end
         if k < items.len()
             y += gap
@@ -1292,9 +1532,9 @@ fn Ctx.table(mut self, id int, st St, x float, w float)
         at += cw
     for r in rows
         cells := self.items(r)
-        self.row(cells, st, x, widths[0..cells.len()], offsets[0..cells.len()])
+        self.row(cells, st, x, widths[0..cells.len()], offsets[0..cells.len()], false, 0.0)
 
-fn Ctx.collect_rows(self, id int, mut out List[int])
+fn Ctx.collect_rows(mut self, id int, mut out List[int])
     for c in d.nodes[id].children
         tag := d.nodes[c].tag
         if tag == "tr"
@@ -1318,6 +1558,7 @@ pub fn layout(d html.Doc, url str, width float, sheet css.Sheet) Scene
         href: "",
         upper: false,
         nowrap: false,
+        alt: "",
     )
     all := css.for_width(css.concat(sheet, css.document_sheet(d)), width.to_int())
     mut c := Ctx(
@@ -1332,6 +1573,10 @@ pub fn layout(d html.Doc, url str, width float, sheet css.Sheet) Scene
         marker: "",
         marker_x: 0.0,
         canvas: 0xffffff,
+        styles: {},
+        scopes: {},
+        cascades: {},
+        contents: {},
     )
     c.block(0, base, 0.0, width)
     c.settle()
