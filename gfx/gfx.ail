@@ -653,7 +653,8 @@ fn subst(v str, vars Map[str, str]) str
         if depth != 0
             break
         close := k - 1
-        name := out.slice(at + 4, if comma >= 0 then comma else close).trim()
+        stop := if comma >= 0 then comma else close
+        name := out.slice(at + 4, stop).trim()
         fallback := if comma >= 0 then out.slice(comma + 1, close).trim() else ""
         val := vars.get(name) else fallback
         out = "{out.slice(0, at)}{val}{out.slice(close + 1, cs.len())}"
