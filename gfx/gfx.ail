@@ -144,7 +144,9 @@ pub fn text_width(text str, size float, bold bool, mono bool) float
     for c in text.chars()
         k := c.code()
         units += if k >= 32 and k <= 126 then WIDTHS[k - 32] else 600
-    scale := if bold then 1.06 else 1.03
+    ## The host's sans font is wider than Helvetica (a Mac run showed words
+    ## touching at 1.03), so estimates err wide: gaps grow, words never meet.
+    scale := if bold then 1.18 else 1.12
     units.to_float() * size * scale / 1000.0
 
 fn fmax(a float, b float) float
