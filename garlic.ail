@@ -837,8 +837,11 @@ fn Gui.refresh(mut self)
 ## A click at (`x`, `y`) points in the page area: uses the target there.
 fn Gui.click(mut self, x float, y float)
     if pixel
-        if href := scene.link_at(x, y + top)
-            b.go(href)
+        if h := scene.hit_at(x, y + top)
+            if h.node >= 0
+                b.activate(h.node)
+            else
+                b.go(h.href)
         return
     at := draw.cell_at(x, y, cell_w, cell_h)
     if id := b.target_at(at.0, at.1)
@@ -859,7 +862,7 @@ fn Gui.scroll(mut self, dy float)
 ## A key in the page area, by the host's key names. False when it asks to quit.
 fn Gui.key(mut self, key str, alt bool, shift bool) bool
     pending = 0.0
-    if pixel
+    if pixel and b.reading()
         page_h := area_h * 0.9
         match key
             "down" | "j" => scroll(40.0)
@@ -1745,3 +1748,18 @@ fn pixels(src str, width float) gfx.Scene
     t := pixel_text(s.ops)
     assert_eq(t.len(), 2)
     assert(t[0] != t[1])
+
+@test fn pixel_clicks_use_form_controls()
+    b := Browser.new("{testdata()}/form.html", 60, 12)
+    mut g := Gui.new(b, 600.0, 400.0, 7.5, 15.0)
+    g.pixel = true
+    g.refresh()
+    mut boxes := 0
+    for h in g.scene.hits
+        if h.node >= 0
+            boxes += 1
+    assert(boxes > 0)
+    first := g.scene.hits[0]
+    assert(first.node >= 0 or first.href != "")
+    g.click(first.x + 1.0, first.y + 1.0)
+    assert(not g.b.reading())
