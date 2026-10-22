@@ -1114,7 +1114,63 @@ fn flag(args List[str], name str) str?
     if at + 1 < args.len() then args[at + 1] else none
 
 fn usage()
-    print("usage: ail run tools/garlic/garlic.ail [--width N] [--height N] [--follow N | --find TEXT | --do ACTION:ARG]... [--viewport] [--budget TOKENS] [--diff] [--no-js] [--console] [--print | --json | --links | --session | --keys] URL|FILE")
+    print("usage: ail run tools/garlic/garlic.ail [--width N] [--height N] [--follow N | --find TEXT | --do ACTION:ARG]... [--viewport] [--budget TOKENS] [--diff] [--no-js] [--console] [--print | --json | --links | --session | --pixels-dump [--pixel-width N] | --keys] URL|FILE (options may come before or after it)")
+
+## Flags that take a value, so the address is the first argument that is
+## neither a flag nor a value.
+VALUE_FLAGS := {"--width", "--height", "--follow", "--find", "--do", "--budget", "--pixel-width"}
+
+fn target_of(args List[str]) str
+    mut k := 0
+    while k < args.len()
+        if VALUE_FLAGS.contains(args[k])
+            k += 2
+        elif args[k].starts_with("--")
+            k += 1
+        else
+            return args[k]
+    ""
+
+## One drawing operation as a line a person or the Mac gate can check:
+## kind, position, size, colour and text.
+fn op_line(op draw.Op) str
+    match op
+        Rect(
+            x,
+            y,
+            w,
+            h,
+            c,
+        ) => "rect {x.round()},{y.round()} {w.round()}x{h.round()} #{c.to_hex().pad_left(6, '0')}"
+        Text(
+            x,
+            y,
+            t,
+            fg,
+            _,
+            _,
+            _,
+        ) => "text {x.round()},{y.round()} #{fg.to_hex().pad_left(6, '0')} {t}"
+        Str(
+            x,
+            y,
+            t,
+            font,
+            size,
+            fg,
+            bold,
+            _,
+            _,
+        ) => "str {x.round()},{y.round()} {font} {size.round()} #{fg.to_hex().pad_left(6, '0')}{if bold then " bold" else ""} {t}"
+        Pic(x, y, w, h, src) => "pic {x.round()},{y.round()} {w.round()}x{h.round()} {src}"
+
+## `--pixels-dump`: the pixel layout of the page, one operation per line,
+## after the canvas colour and height.
+fn pixels_dump(b Browser, width float)
+    s := gfx.layout(b.doc, b.url, width, b.sheet)
+    print("canvas #{s.bg.to_hex().pad_left(6, '0')} height {s.height.round()} ops {s.ops.len()} links {s.hits.len()}")
+    for op in s.ops
+        print(op_line(op))
 
 fn main() !
     args := env.args()
@@ -1130,11 +1186,13 @@ fn main() !
         return
     width := (flag(args, "--width") else "100").to_int() else 100
     height := (flag(args, "--height") else "32").to_int() else 32
-    mut b := Browser.new(args[args.len() - 1], width, height)
+    mut b := Browser.new(target_of(args), width, height)
     b.viewport_only = args.contains("--viewport")
     b.diff = args.contains("--diff")
     b.budget = (flag(args, "--budget") else "0").to_int() else 0
     for k in 0..args.len() - 1
+        if VALUE_FLAGS.contains(args[k]) and k + 1 >= args.len()
+            continue
         if args[k] == "--follow"
             b.follow(args[k + 1].to_int() else 0)
         elif args[k] == "--find"
@@ -1146,7 +1204,9 @@ fn main() !
                 (at + 1).min(spec.chars().len()),
                 spec.chars().len(),
             ))
-    if args.contains("--session")
+    if args.contains("--pixels-dump")
+        pixels_dump(b, (flag(args, "--pixel-width") else "960").to_float() else 960.0)
+    elif args.contains("--session")
         b.session()
     elif args.contains("--print")
         print(b.pg.text())
@@ -1911,6 +1971,37 @@ fn bench(args List[str])
                 lo = dt
         print("{names[phase]}: {lo} ms ({keep})")
 
+@test fn voltare_page_gets_variables_logo_icon_link_and_gradient_text()
+    s := pixels(fs.read_text("{testdata()}/voltare.html") else "", 900.0)
+    assert_eq(s.bg, 0x0a0a0f)
+    mut texts := List[(str, int)]()
+    for op in s.ops
+        match op
+            Str(_, _, t, _, _, fg, _, _, _) => texts.push((t, fg))
+            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => texts = texts
+    assert_eq(texts[0], ("Voltare", 0xf0f0f5))
+    assert_eq(texts[1], ("Support", 0x6b6b80))
+    assert_eq(texts[2], ("GitHub", 0x6b6b80))
+    assert_eq(texts[3], ("Donations", 0x6b6b80))
+    assert_eq(texts[4], ("Projects", 0xffffff))
+    mut dot := false
+    for op in s.ops
+        match op
+            Rect(_, _, w, h, c) => if c == 0x6c5ce7 and w == 8.0 and h == 8.0
+                dot = true
+            Str(
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+            ) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => dot = dot
+    assert(dot)
+
 @test fn pictures_without_sizes_take_their_own_from_the_fetched_header()
     dir := testdata().replace("garlic/testdata", "pdf/image/testdata")
     d := html.parse("<img src=gray8.png><img src=jpeg420.jpg height=58><img src=missing.png>")
@@ -1978,3 +2069,26 @@ fn bench(args List[str])
             ])
             _ => out = out
     out
+
+@test fn the_native_build_draws_the_same_pixels_as_the_interpreter()
+    root := testdata().replace("/tools/garlic/testdata", "")
+    exe := "{env.cwd()}/garlic-native-test"
+    built := proc.run(
+        "{root}/ail",
+        ["build", "{root}/tools/garlic/garlic.ail", "-o", exe],
+        none,
+        600000,
+    )?
+    assert(built.ok())
+    html_file := "{testdata()}/voltare-full.html"
+    native := proc.run(exe, [html_file, "--pixels-dump"], none, 60000)?
+    fs.remove(exe) else return
+    b := Browser.new(html_file, 100, 32)
+    mut want := List[str]()
+    s := gfx.layout(b.doc, b.url, 960.0, b.sheet)
+    want.push("canvas #{s.bg.to_hex().pad_left(6, '0')} height {s.height.round()} ops {s.ops.len()} links {s.hits.len()}")
+    for op in s.ops
+        want.push(op_line(op))
+    assert_eq(native.out.trim(), want.join("\n"))
+    assert(native.out.contains("canvas #0a0a0f"))
+    assert(native.out.contains("sans 14.0 #6b6b80 GitHub"))
