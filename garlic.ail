@@ -351,6 +351,12 @@ fn local_url(u str) str
     u.strip_prefix("file://local/") else u
 
 fn Browser.new(url str, width int, height int) Browser
+    mut b := Browser.empty(url, width, height)
+    b.load(url, "GET", "")
+    b
+
+## A browser showing nothing yet, as a new tab does (`url` is only its label).
+fn Browser.empty(url str, width int, height int) Browser
     d := html.parse("")
     sheet := css.parse("", 0)
     mut b := Browser(
@@ -379,7 +385,6 @@ fn Browser.new(url str, width int, height int) Browser
         ahead: [],
         bits: {},
     )
-    b.load(url, "GET", "")
     b
 
 ## Rows of page the window shows: all but the status row.
@@ -1039,13 +1044,63 @@ fn Gui.display(self) List[draw.Op]
 ## the status line below it.
 struct Garlic
     g Gui
+    ## Every tab's window state; `tabs[cur]` is out of date while it is
+    ## `g`, which is swapped in and out by `switch`.
+    tabs List[Gui]
+    cur int
     ## The address field's text.
     url_text str
     ## The control to give the keyboard focus; cleared by the next event.
     want str
 
 fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
-    Garlic(g: Gui.new(b, w, h, cell_w, cell_h), url_text: b.url, want: "")
+    g := Gui.new(b, w, h, cell_w, cell_h)
+    Garlic(g, tabs: [g], cur: 0, url_text: b.url, want: "")
+
+## Makes tab `k` the one shown.
+fn Garlic.switch(mut self, k int)
+    if k < 0 or k >= tabs.len() or k == cur
+        return
+    tabs[cur] = g
+    g = tabs[k]
+    cur = k
+    g.refresh()
+
+## Opens an empty tab and shows it.
+fn Garlic.new_tab(mut self)
+    tabs[cur] = g
+    mut fresh_gui := Gui.new(
+        Browser.empty("", g.b.width, g.b.height),
+        g.area_w,
+        g.area_h,
+        g.cell_w,
+        g.cell_h,
+    )
+    fresh_gui.pixel = g.pixel
+    fresh_gui.refresh()
+    tabs.push(fresh_gui)
+    cur = tabs.len() - 1
+    g = fresh_gui
+    want = "url"
+
+## Closes the shown tab (the last one stays).
+fn Garlic.close_tab(mut self)
+    if tabs.len() < 2
+        return
+    tabs.remove_at(cur)
+    cur = cur.min(tabs.len() - 1)
+    g = tabs[cur]
+    g.refresh()
+
+## The tab strip: one button per tab, titled by its page.
+fn Garlic.strip(self) List[app.Node]
+    mut out := List[app.Node]()
+    for k in 0..tabs.len()
+        t := if k == cur then g else tabs[k]
+        title := if t.b.pg.title == "" then "New tab" else t.b.pg.title
+        mark := if k == cur then "> " else ""
+        out.push(app.button("tab:{k}", "{mark}{title.slice(0, title.chars().len().min(18))}"))
+    out
 
 impl app.App for Garlic
     fn update(mut self, ev app.Event)
@@ -1065,6 +1120,12 @@ impl app.App for Garlic
                     g.b.go_back()
                 elif ev.meta and ev.text == "]"
                     g.b.go_forward()
+                elif ev.meta and ev.text == "t"
+                    new_tab()
+                elif ev.meta and ev.text == "w"
+                    close_tab()
+                elif ev.ctrl and ev.text == "tab"
+                    switch((cur + 1) % tabs.len())
                 else
                     g.key(ev.text, ev.alt, ev.shift)
             "edit" => url_text = ev.text
@@ -1074,6 +1135,10 @@ impl app.App for Garlic
                     g.b.go_back()
                 elif ev.id == "reload"
                     g.b.load(g.b.url, "GET", "")
+                elif ev.id == "newtab"
+                    new_tab()
+                elif ev.id.starts_with("tab:")
+                    switch(ev.id.slice(4, ev.id.chars().len()).to_int() else cur)
             _ => url_text = url_text
         g.refresh()
         if ev.kind != "edit"
@@ -1083,10 +1148,12 @@ impl app.App for Garlic
         bar := app.row([
             app.button("back", "Back"),
             app.button("reload", "Reload"),
+            app.button("newtab", "+"),
             app.field("url", url_text, "Enter a web address"),
         ])
         ## A canvas of 0 by 0 fills the window; the host reports its size.
         app.column([
+            app.row(strip()),
             bar,
             app.canvas("page", 0.0, 0.0, [to_app(op, g) for op in g.display()]),
             app.label(g.status()),
@@ -1684,9 +1751,10 @@ fn clicked(x float, y float) app.Event
     top := outlines[0].split("\n")
     assert_eq(top[0], "column")
     assert_eq(top[1], "  row")
-    assert(top[2].starts_with("    [Back] #back"))
-    assert(top[4].contains("#url"))
-    assert(top[5].starts_with("  canvas #page"))
+    assert(top[2].starts_with("    [> "))
+    assert(top[4].starts_with("    [Back] #back"))
+    assert(top[7].contains("#url"))
+    assert(top[8].starts_with("  canvas #page"))
     assert(outlines[0].contains("str 0.0,32.0 \"# Garlic\" mono 13.0 dcdcaa"))
     assert(top[top.len() - 1].starts_with("  \""))
     link := a.g.b.pg.boxes[a.g.b.pg.links[0]]
@@ -2269,3 +2337,19 @@ fn flat(s gfx.Scene) List[str]
     assert_eq(g.b.doc.attr(f.node, "value"), "hi")
     g.key("enter", false, false)
     assert(g.b.url.contains("q=hi"))
+
+@test fn tabs_keep_their_own_pages_and_switch_back()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut a := Garlic.new(b, 600.0, 300.0, 7.5, 15.0)
+    a.new_tab()
+    assert_eq((a.tabs.len(), a.cur), (2, 1))
+    assert_eq(a.g.b.pg.title, "")
+    a.g.open("{testdata()}/second.html")
+    assert_eq(a.g.b.pg.title, "Second page")
+    a.switch(0)
+    assert_eq(a.g.b.pg.title, "Garlic test page")
+    a.switch(1)
+    assert_eq(a.g.b.pg.title, "Second page")
+    assert_eq(a.strip().len(), 2)
+    a.close_tab()
+    assert_eq((a.tabs.len(), a.g.b.pg.title), (1, "Garlic test page"))
