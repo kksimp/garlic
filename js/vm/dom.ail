@@ -59,6 +59,8 @@ pub struct Timer
     pub args List[Value]
     ## Milliseconds between runs for setInterval, else 0.
     pub every float
+    ## How deeply timers started by timers nest (HTML §8.6 step 12).
+    pub level int
 
 ## A new empty document: node 0.
 pub fn Vm.dom_reset(mut self)
@@ -239,7 +241,7 @@ pub fn Vm.run_script_text(mut self, source str)
     if v := run_program(prog)
         v
     else err
-        report(uncaught_text(err))
+        report_error(err)
         if err.limit
             stopped = true
 
@@ -380,20 +382,11 @@ pub fn Vm.dom_setup(mut self)
     )
     html_element := object("Object", Obj(element_proto))
     protos["HTMLElement"] = Obj(html_element)
-    for name in [
-        "onclick",
-        "onload",
-        "onerror",
-        "onsubmit",
-        "onchange",
-        "oninput",
-        "onkeydown",
-        "onkeyup",
-        "onfocus",
-        "onblur",
-        "onmouseover",
-        "onmouseout",
-    ]
+    for t in EVENT_TYPES
+        # Touch handlers exist only where the screen takes touch.
+        if t.starts_with("touch")
+            continue
+        name := "on{t}"
         html_element.props[name] = Prop(
             value: Null,
             get: Undef,
@@ -459,7 +452,7 @@ pub fn Vm.dom_setup(mut self)
         "dom.event",
         "preventDefault:0 stopPropagation:0 stopImmediatePropagation:0 composedPath:0",
     )
-    for name in ["Event", "CustomEvent", "MouseEvent", "KeyboardEvent", "FocusEvent", "InputEvent"]
+    for name in ["Event"]
         c := obj_of(native_fn("dom.Event", name, 1)) else continue
         c.props["prototype"] = Prop(
             value: Obj(event_proto),
@@ -472,6 +465,10 @@ pub fn Vm.dom_setup(mut self)
         )
         global_obj.props[name] = hidden(Obj(c))
     event_proto.props["constructor"] = hidden(global_obj.props["Event"].value)
+    event_interfaces()
+    for t in EVENT_TYPES
+        if not t.starts_with("touch")
+            global_obj.props["on{t}"] = hidden(Null)
 
     mo_proto := object("Object", object_proto)
     protos["MutationObserver"] = Obj(mo_proto)
@@ -818,19 +815,12 @@ pub fn Vm.dom_native(
     if p := m.strip_prefix("mo.")
         return mo_method(p, this_val, args)
     if m == "Event"
-        ev := make_event(to_string(arg_at(args, 0))?, arg_at(args, 1))?
-        # The members an interface adds start empty (UI Events §5).
-        iface := to_string(get(new_target, "name") else Value.Str("")) else ""
-        if o := obj_of(ev)
-            if iface == "KeyboardEvent"
-                for k in ["key", "code"]
-                    if o.props.get(k) == none
-                        o.props[k] = data(Str(""))
-            if iface == "MouseEvent"
-                for k in ["button", "clientX", "clientY"]
-                    if o.props.get(k) == none
-                        o.props[k] = data(Num(0.0))
-        return ev
+        iface := to_string(get(new_target, "name") else Value.Str("Event")) else "Event"
+        if args.len() == 0
+            return type_error("Failed to construct '{iface}': 1 argument required, but only 0 present.")
+        if new_target == Undef
+            return type_error("Failed to construct '{iface}': Please use the 'new' operator, this DOM object constructor cannot be called as a function.")
+        return make_event_as(iface, to_string(arg_at(args, 0))?, arg_at(args, 1))
     if m == "illegal"
         name := to_string(get(new_target, "name") else Value.Str("")) else ""
         return type_error(if name == "" then "Illegal constructor" else "Failed to construct '{name}': Illegal constructor")
@@ -1361,10 +1351,7 @@ fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
             Value.Bool(false)
         "hasChildNodes" => Value.Bool(dom[id].children.len() > 0)
         "click" =>
-            ev := make_event("click", Undef)?
-            set_event_flag(ev, "bubbles", true)
-            set_event_flag(ev, "cancelable", true)
-            ok := dispatch(id, ev)?
+            ok := dispatch(id, mouse_event("click"))?
             if ok
                 click_default(id)?
             Undef
@@ -1598,26 +1585,7 @@ fn Vm.style_method(mut self, m str, this_val Value, args List[Value]) Value ! Th
 # ---------------------------------------------------------------- events
 
 fn Vm.make_event(mut self, type_name str, init Value) Value ! Thrown
-    o := object("Event", proto_of("Event"))
-    o.props["type"] = data(Str(type_name))
-    mut bubbles := false
-    mut cancelable := false
-    if io := obj_of(init)
-        bubbles = truthy(get(init, "bubbles")?)
-        cancelable = truthy(get(init, "cancelable")?)
-        o.props["detail"] = data(get(init, "detail")?)
-        for k in ["key", "code", "button", "clientX", "clientY"]
-            if has_property(io, k)
-                o.props[k] = data(get(init, k)?)
-    o.props["bubbles"] = data(Bool(bubbles))
-    o.props["cancelable"] = data(Bool(cancelable))
-    o.props["defaultPrevented"] = data(Bool(false))
-    o.props["target"] = data(Null)
-    o.props["currentTarget"] = data(Null)
-    o.props["eventPhase"] = data(Num(0.0))
-    o.props["isTrusted"] = data(Bool(false))
-    o.props["timeStamp"] = data(Num(clock_ms - page_start_ms))
-    Value.Obj(o)
+    make_event_as("Event", type_name, init)
 
 fn set_event_flag(ev Value, key str, v bool)
     if o := obj_of(ev)
@@ -1638,12 +1606,23 @@ fn Vm.event_method(mut self, m str, this_val Value) Value ! Thrown
         "stopImmediatePropagation" =>
             set_event_flag(this_val, "{PRIVATE}stop", true)
             set_event_flag(this_val, "{PRIVATE}stop-now", true)
-        _ => return array([])
+        _ =>
+            if o := obj_of(this_val)
+                if p := o.props.get("{PRIVATE}path")
+                    if items := obj_of(p.value)
+                        return array(items.elems)
+            return array([])
     Undef
 
 ## Dispatch an event (DOM §2.9): capture from the window down, the target,
 ## then bubbling up. True unless a listener called preventDefault.
 pub fn Vm.dispatch(mut self, target int, ev Value) bool ! Thrown
+    ok := dispatch_run(target, ev)?
+    if o := obj_of(ev)
+        o.props.remove("{PRIVATE}path")
+    ok
+
+fn Vm.dispatch_run(mut self, target int, ev Value) bool ! Thrown
     o := obj_of(ev) else return true
     type_name := to_string(get(ev, "type")?)?
     mut path := List[int]()
@@ -1658,6 +1637,7 @@ pub fn Vm.dispatch(mut self, target int, ev Value) bool ! Thrown
         path.push(-1)
     o.props["target"] = data(target_value(target))
     o.props["{PRIVATE}stop"] = hidden(Bool(false))
+    o.props["{PRIVATE}path"] = hidden(array([target_value(e) for e in path]))
     # Capture: outermost first, the target excluded.
     mut i := path.len() - 1
     while i > 0
@@ -1710,13 +1690,25 @@ fn Vm.invoke_listeners(
             # The `on...` property or attribute, at the place it was first set.
             handler := event_handler(target, type_name)?
             if is_callable(handler)
-                r := call_listener(handler, target, ev)?
+                if type_name == "error" and target < 0 and ev_class(ev) == "ErrorEvent"
+                    # window.onerror(message, source, line, column, error): true cancels.
+                    r := call_listener(handler, target, ev, [
+                        get(ev, "message")?,
+                        get(ev, "filename")?,
+                        get(ev, "lineno")?,
+                        get(ev, "colno")?,
+                        get(ev, "error")?,
+                    ])?
+                    if r == Bool(true)
+                        set_event_flag(ev, "defaultPrevented", true)
+                    continue
+                r := call_listener(handler, target, ev, [ev])?
                 if r == Bool(false)
                     set_event_flag(ev, "defaultPrevented", true)
             continue
         cb := if is_callable(l.callback) then l.callback else get(l.callback, "handleEvent")?
         if is_callable(cb)
-            call_listener(cb, target, ev)?
+            call_listener(cb, target, ev, [ev])?
 
 ## Whether `key` names an event handler property (HTML §8.1.8.2).
 pub fn is_event_handler_name(key str) bool
@@ -1768,6 +1760,60 @@ EVENT_TYPES := [
     "transitionend",
     "visibilitychange",
     "readystatechange",
+    "pointermove",
+    "pointerover",
+    "pointerout",
+    "pointerenter",
+    "pointerleave",
+    "pointercancel",
+    "touchmove",
+    "touchcancel",
+    "drag",
+    "dragstart",
+    "dragend",
+    "dragenter",
+    "dragleave",
+    "dragover",
+    "drop",
+    "copy",
+    "cut",
+    "paste",
+    "invalid",
+    "toggle",
+    "unhandledrejection",
+    "rejectionhandled",
+    "online",
+    "offline",
+    "storage",
+    "animationstart",
+    "animationiteration",
+    "transitionstart",
+    "transitionrun",
+    "transitioncancel",
+    "beforeinput",
+    "compositionstart",
+    "compositionupdate",
+    "compositionend",
+    "selectionchange",
+    "auxclick",
+    "play",
+    "pause",
+    "ended",
+    "loadeddata",
+    "loadedmetadata",
+    "canplay",
+    "timeupdate",
+    "volumechange",
+    "durationchange",
+    "seeking",
+    "seeked",
+    "ratechange",
+    "waiting",
+    "playing",
+    "progress",
+    "stalled",
+    "suspend",
+    "emptied",
 ]
 
 ## The callback of the listener that stands for an `on...` handler.
@@ -1789,14 +1835,18 @@ pub fn Vm.handler_set(mut self, target int, key str)
     ))
 
 ## A listener runs; an exception is reported and doesn't stop the dispatch.
-fn Vm.call_listener(mut self, cb Value, target int, ev Value) Value ! Thrown
-    if v := call(cb, target_value(target), [ev])
+fn Vm.call_listener(mut self, cb Value, target int, ev Value, args List[Value]) Value ! Thrown
+    if v := call(cb, target_value(target), args)
         return v
     else err
         if err.limit
             return err
-        report(uncaught_text(err))
+        report_error(err)
     Undef
+
+## The interface name an event was made as (its `Symbol.toStringTag`).
+fn Vm.ev_class(mut self, ev Value) str
+    to_string(get(ev, well_known("toStringTag")) else Value.Str("")) else ""
 
 ## `el.onclick`, or the handler compiled from the `onclick` attribute.
 fn Vm.event_handler(mut self, target int, type_name str) Value ! Thrown
@@ -1845,7 +1895,7 @@ fn Vm.click_default(mut self, id int) ! Thrown
 ## fields as a query (GET) or record a POST for the browser.
 fn Vm.submit_form(mut self, form int, submitter int) ! Thrown
     if submitter >= 0
-        ev := make_event("submit", Undef)?
+        ev := make_event_as("SubmitEvent", "submit", Undef)?
         set_event_flag(ev, "bubbles", true)
         set_event_flag(ev, "cancelable", true)
         if not dispatch(form, ev)?
@@ -2174,6 +2224,9 @@ fn Vm.window_method(mut self, m str, args List[Value]) Value ! Thrown
             cb := if is_callable(a0) then a0 else function_constructor([Value.Str(to_string(a0)?)])?
             call_args := if m
                 == "requestAnimationFrame" then [Value.Num(clock_ms + delay - page_start_ms)] else extra
+            level := timer_level + 1
+            if level > 6 and delay < 4.0 and m != "requestAnimationFrame"
+                delay = 4.0
             timers.push(Timer(
                 id: timer_seq,
                 due: clock_ms + delay,
@@ -2181,6 +2234,7 @@ fn Vm.window_method(mut self, m str, args List[Value]) Value ! Thrown
                 callback: cb,
                 args: call_args,
                 every: if m == "setInterval" then delay.max(1.0) else 0.0,
+                level: level,
             ))
             Value.Num(timer_seq.to_float())
         "clearTimeout" | "clearInterval" | "cancelAnimationFrame" =>
@@ -2286,15 +2340,18 @@ pub fn Vm.run_event_loop(mut self, until_ms float, max_tasks int)
                 callback: t.callback,
                 args: t.args,
                 every: t.every,
+                level: t.level,
             )
         else
             timers.remove_at(best)
+        timer_level = t.level
         if v := call(t.callback, Obj(global_obj), t.args)
             v
         else err
-            report(uncaught_text(err))
+            report_error(err)
             if err.limit
                 stopped = true
+        timer_level = 0
         run_microtasks()
         ran += 1
 
@@ -2311,7 +2368,7 @@ pub fn Vm.run_microtasks(mut self)
         if v := call(cb, Undef, [])
             v
         else err
-            report(uncaught_text(err))
+            report_error(err)
             if err.limit
                 stopped = true
                 return
@@ -2492,22 +2549,30 @@ pub fn Vm.load_page(mut self, url str, budget_ms float)
                 ))
         else
             run_script_text(text_content(s))
+    run_microtasks()
     ready_state = "interactive"
+    fire(0, "readystatechange", false)
     fire(0, "DOMContentLoaded", true)
     run_microtasks()
     ready_state = "complete"
+    fire(0, "readystatechange", false)
     fire(-1, "load", false)
     run_event_loop(clock_ms + budget_ms, 10000)
 
 fn Vm.fire(mut self, target int, type_name str, bubbles bool)
     if stopped
         return
-    ev := make_event(type_name, Undef) else return
+    iface := match type_name
+        "focus" | "blur" | "focusin" | "focusout" => "FocusEvent"
+        "input" => "InputEvent"
+        "click" | "dblclick" | "mousedown" | "mouseup" | "mousemove" | "mouseover" | "mouseout" | "contextmenu" => "MouseEvent"
+        _ => "Event"
+    ev := make_event_as(iface, type_name, Undef) else return
     set_event_flag(ev, "bubbles", bubbles)
     if ok := dispatch(target, ev)
         ok
     else err
-        report(uncaught_text(err))
+        report_error(err)
 
 ## The user clicked node `id` (HTML §6.6.3 activation behaviour): `click`
 ## goes through its listeners, then the default action runs unless one
@@ -2537,10 +2602,10 @@ pub fn Vm.host_click(mut self, id int) bool
             if done := click_default(id)
                 done
             else err
-                report(uncaught_text(err))
+                report_error(err)
         return ok
     else err
-        report(uncaught_text(err))
+        report_error(err)
     true
 
 ## The user typed `text` into field `id` (focus.ail).
@@ -2565,7 +2630,7 @@ pub fn Vm.host_submit(mut self, id int)
     if done := submit_form(f, sub)
         done
     else err
-        report(uncaught_text(err))
+        report_error(err)
 
 ## A DOMException (WebIDL §2.8.1) named `name`, e.g. "NotFoundError".
 fn Vm.dom_exception(mut self, name str, msg str) Thrown

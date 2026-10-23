@@ -11,7 +11,7 @@ fn Vm.key_event(mut self, type_name str, key str) Value
     code := if key.chars().len() == 1
         and key.chars()[0].is_alpha() then "Key{key.to_upper()}" else key
     init.props["code"] = data(Str(code))
-    make_event(type_name, Value.Obj(init)) else Value.Undef
+    make_event_as("KeyboardEvent", type_name, Value.Obj(init)) else Value.Undef
 
 ## A MouseEvent of the primary button.
 fn Vm.mouse_event(mut self, type_name str) Value
@@ -21,7 +21,7 @@ fn Vm.mouse_event(mut self, type_name str) Value
     init.props["button"] = data(Num(0.0))
     init.props["clientX"] = data(Num(0.0))
     init.props["clientY"] = data(Num(0.0))
-    make_event(type_name, Value.Obj(init)) else Value.Undef
+    make_event_as("MouseEvent", type_name, Value.Obj(init)) else Value.Undef
 
 fn Vm.fire_event(mut self, target int, ev Value) bool
     if ev == Value.Undef
@@ -29,7 +29,7 @@ fn Vm.fire_event(mut self, target int, ev Value) bool
     if ok := dispatch(target, ev)
         return ok
     else err
-        report(uncaught_text(err))
+        report_error(err)
     true
 
 ## Move focus to `id` (-1 for none): `blur` and `focusout` at the element
