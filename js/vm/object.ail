@@ -36,6 +36,8 @@ fn is_array_like(o ref JsObject) bool
 
 ## The property `key` of `o` itself, as a Prop, if it has one.
 pub fn Vm.own(self, o ref JsObject, key str) Prop?
+    if o.class == "Proxy"
+        return own(obj_of(o.prim) else o, key)
     if is_array_like(o)
         if i := index_of_key(key)
             if i < o.elems.len()
@@ -84,6 +86,8 @@ pub fn Vm.own(self, o ref JsObject, key str) Prop?
 pub fn Vm.get_from(mut self, start ref JsObject, key str, receiver Value) Value ! Thrown
     mut o := start
     while true
+        if o.class == "Proxy"
+            return proxy_get(o, key, receiver)
         if p := own(o, key)
             if p.accessor
                 if is_callable(p.get)
@@ -135,6 +139,8 @@ pub fn Vm.put_obj(mut self, target ref JsObject, key str, v Value, receiver Valu
     # A setter or a read-only property on the prototype chain wins.
     mut o := target
     while true
+        if o.class == "Proxy"
+            return proxy_set(o, key, v, receiver)
         if p := own(o, key)
             if p.accessor
                 if is_callable(p.set)
@@ -222,6 +228,8 @@ pub fn Vm.delete(mut self, o ref JsObject, key str) bool
 ## Own property keys in the order §10.1.11.1 gives: array indexes ascending,
 ## then the other keys in creation order.
 pub fn Vm.own_keys(self, o ref JsObject) List[str]
+    if o.class == "Proxy"
+        return own_keys(obj_of(o.prim) else o)
     mut out := List[str]()
     if is_array_like(o)
         for i in 0..o.elems.len()
