@@ -1,0 +1,128 @@
+## WeakMap, WeakSet, WeakRef and FinalizationRegistry (ECMA-262 §24.3,
+## §24.4, §26.1, §26.2). Objects here are never collected while a script
+## can run, so a weak collection is a Map or Set that only takes objects,
+## a `WeakRef` always derefs, and a registry never calls back.
+
+fn Vm.weak_setup(mut self)
+    weak_map := constructor("WeakMap", 0)
+    methods(
+        obj_of(proto_of("WeakMap")) else weak_map,
+        "WeakMap.prototype",
+        "get:1 set:2 has:1 delete:1",
+    )
+    weak_set := constructor("WeakSet", 0)
+    methods(obj_of(proto_of("WeakSet")) else weak_set, "WeakSet.prototype", "add:1 has:1 delete:1")
+    constructor("WeakRef", 1)
+    methods(obj_of(proto_of("WeakRef")) else weak_map, "WeakRef.prototype", "deref:0")
+    constructor("FinalizationRegistry", 1)
+    methods(
+        obj_of(proto_of("FinalizationRegistry")) else weak_map,
+        "FinalizationRegistry.prototype",
+        "register:2 unregister:1",
+    )
+    for name in ["WeakMap", "WeakSet", "WeakRef", "FinalizationRegistry"]
+        weak_tag(name)
+    # Garlic draws no scroll or resize, so these observers never see a
+    # change: they take their callback and do nothing (Intersection
+    # Observer §3, Resize Observer §3).
+    for name in ["IntersectionObserver", "ResizeObserver"]
+        constructor(name, 1)
+        methods(
+            obj_of(proto_of(name)) else weak_map,
+            "{name}.prototype",
+            if name
+                == "ResizeObserver" then "observe:1 unobserve:1 disconnect:0" else "observe:1 unobserve:1 disconnect:0 takeRecords:0",
+        )
+        weak_tag(name)
+
+fn Vm.weak_tag(mut self, name str)
+    p := obj_of(proto_of(name)) else return
+    p.props[well_known("toStringTag")] = Prop(
+        value: Str(name),
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+    )
+
+## `new WeakMap(iterable)` and friends.
+fn Vm.weak_new(mut self, name str, args List[Value], new_target Value) Value ! Thrown
+    if new_target == Value.Undef
+        return type_error("Constructor {name} requires 'new'")
+    proto := get(new_target, "prototype")?
+    o := object(name, if is_obj(proto) then proto else proto_of(name))
+    a0 := arg_at(args, 0)
+    match name
+        "WeakMap" | "WeakSet" =>
+            if not is_nullish(a0)
+                for item in iterate(a0)?
+                    if name == "WeakMap"
+                        if not is_obj(item)
+                            return type_error("Iterator value {describe(item)} is not an entry object")
+                        k := get(item, "0")?
+                        if not is_obj(k)
+                            return type_error("Invalid value used as weak map key")
+                        map_set(o, k, get(item, "1")?)
+                    else
+                        if not is_obj(item)
+                            return type_error("Invalid value used in weak set")
+                        set_add(o, item)
+        "WeakRef" =>
+            if not is_obj(a0)
+                return type_error("WeakRef: invalid target")
+            o.prim = a0
+        _ =>
+            if not is_callable(a0)
+                return type_error("FinalizationRegistry: cleanup must be callable")
+    Value.Obj(o)
+
+fn Vm.observer_stub_new(mut self, name str, args List[Value], new_target Value) Value ! Thrown
+    if new_target == Value.Undef
+        return type_error("Constructor {name} requires 'new'")
+    if not is_callable(arg_at(args, 0))
+        return type_error("Failed to construct '{name}': The callback provided as parameter 1 is not a function.")
+    proto := get(new_target, "prototype")?
+    Value.Obj(object(name, if is_obj(proto) then proto else proto_of(name)))
+
+fn Vm.weak_method(mut self, name str, m str, this_val Value, args List[Value]) Value ! Thrown
+    o := this_class(this_val, name, m)?
+    a0 := arg_at(args, 0)
+    match name
+        "WeakMap" =>
+            if m == "set" and not is_obj(a0)
+                return type_error("Invalid value used as weak map key")
+            match m
+                "get" =>
+                    i := map_index(o, a0) else return Value.Undef
+                    o.elems[i + 1]
+                "set" =>
+                    map_set(o, a0, arg_at(args, 1))
+                    this_val
+                "has" => Value.Bool(map_index(o, a0) != none)
+                _ =>
+                    i := map_index(o, a0) else return Value.Bool(false)
+                    o.elems.remove_at(i)
+                    o.elems.remove_at(i)
+                    Value.Bool(true)
+        "WeakSet" =>
+            match m
+                "add" =>
+                    if not is_obj(a0)
+                        return type_error("Invalid value used in weak set")
+                    set_add(o, a0)
+                    this_val
+                "has" =>
+                    for x in o.elems
+                        if same_value_zero(x, a0)
+                            return Value.Bool(true)
+                    Value.Bool(false)
+                _ =>
+                    for i in 0..o.elems.len()
+                        if same_value_zero(o.elems[i], a0)
+                            o.elems.remove_at(i)
+                            return Value.Bool(true)
+                    Value.Bool(false)
+        "WeakRef" => o.prim
+        _ => if m == "unregister" then Value.Bool(false) else Value.Undef

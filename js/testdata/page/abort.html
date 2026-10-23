@@ -1,0 +1,17 @@
+<!DOCTYPE html><html><body><script>
+const c = new AbortController();
+const s = c.signal;
+const log = [];
+s.addEventListener("abort", e => log.push("listener " + e.type + " " + (e.target === s)));
+s.onabort = () => log.push("onabort");
+console.log(s.aborted, s.reason, Object.prototype.toString.call(c), Object.prototype.toString.call(s));
+s.throwIfAborted();
+c.abort();
+c.abort();
+console.log(log.join(","), s.aborted, s.reason.name);
+try { s.throwIfAborted(); } catch (e) { console.log("thrown", e.name); }
+const c2 = new AbortController();
+c2.abort("why");
+console.log(c2.signal.reason);
+try { new AbortSignal(); } catch (e) { console.log(e.name); }
+</script></body></html>

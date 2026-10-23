@@ -1,0 +1,50 @@
+classList w z|true
+style color: red; background-color: blue; margin: 1px;
+style.display none|color: red; background-color: blue; margin: 1px;
+dataset 11
+insertAdjacent <b>y</b><p>one</p><p>two</p><i>x</i>
+outerHTML <b>y</b><p>one</p><p>two</p><u>q</u>
+replaceChildren <li></li>txt
+template <li></li>txt<li>t</li>
+fragment BR
+textContent plain &lt;b&gt;
+innerText it
+setAttribute <div id="a" style="color: red; background-color: blue; margin: 1px;" data-foo-bar="1" title="T">it</div>
+attributes id=a,style=color: red; background-color: blue; margin: 1px;,data-foo-bar=1,title=T
+hidden <div id="a" style="color: red; background-color: blue; margin: 1px;" data-foo-bar="1" title="T" hidden="">it</div>
+value v|w
+select b12
+textarea hi
+cloneNode <div id="a" style="color: red; background-color: blue; margin: 1px;" data-foo-bar="1" title="T" hidden="">it</div>
+normalize 1
+remove null
+CSSStyleDeclaration 11
+getComputedStyle block
+== body
+<ul id="l"><li></li>txt<li>t</li></ul><script>
+const t=(n,f)=>{try{console.log(n,f())}catch(e){console.log(n,"ERR",e.message)}};
+const a=document.getElementById("a");
+t("classList",()=>{a.classList.add("z");a.classList.toggle("x");a.classList.replace("y","w");return a.className+"|"+a.classList.contains("w")});
+t("style",()=>{a.style.color="red";a.style.backgroundColor="blue";a.style.cssText+="margin:1px";return a.getAttribute("style")});
+t("style.display",()=>{a.style.display="none";const r=a.style.display;a.style.removeProperty("display");return r+"|"+a.getAttribute("style")});
+t("dataset",()=>{a.dataset.fooBar="1";return a.getAttribute("data-foo-bar")+a.dataset.fooBar});
+t("insertAdjacent",()=>{a.insertAdjacentHTML("beforeend","<i>x</i>");a.insertAdjacentHTML("afterbegin","<b>y</b>");return a.innerHTML});
+t("outerHTML",()=>{const p=a.querySelector("i");p.outerHTML="<u>q</u>";return a.innerHTML});
+t("replaceChildren",()=>{const l=document.getElementById("l");l.replaceChildren(document.createElement("li"),"txt");return l.innerHTML});
+t("template",()=>{const tp=document.createElement("template");tp.innerHTML="<li>t</li>";document.getElementById("l").append(tp.content.cloneNode(true));return document.getElementById("l").innerHTML});
+t("fragment",()=>{const f=document.createDocumentFragment();f.append("a",document.createElement("br"));a.append(f);return a.lastChild.tagName});
+t("textContent",()=>{a.textContent="plain <b>";return a.innerHTML});
+t("innerText",()=>{a.innerText="it";return a.textContent});
+t("setAttribute",()=>{a.setAttribute("title","T");a.removeAttribute("class");return a.outerHTML});
+t("attributes",()=>[...a.attributes].map(x=>x.name+"="+x.value).join())
+t("hidden",()=>{a.hidden=true;return a.outerHTML});
+t("value",()=>{const i=document.createElement("input");i.value="v";i.setAttribute("value","w");return i.value+"|"+i.defaultValue});
+t("select",()=>{const s=document.createElement("select");s.innerHTML="<option value=a>A<option value=b selected>B";return s.value+s.selectedIndex+s.options.length});
+t("textarea",()=>{const s=document.createElement("textarea");s.value="hi";return s.value});
+t("cloneNode",()=>a.cloneNode(true).outerHTML);
+t("normalize",()=>{a.normalize();return 1});
+t("remove",()=>{a.remove();return document.getElementById("a")});
+t("CSSStyleDeclaration",()=>{const e=document.body;e.style.setProperty("--k","1");return e.style.getPropertyValue("--k")+e.style.length});
+t("getComputedStyle",()=>getComputedStyle(document.body).display);
+</script>
+

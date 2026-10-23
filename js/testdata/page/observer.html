@@ -1,0 +1,32 @@
+<!DOCTYPE html><html><head></head><body><div id="a"><p id="p">x</p></div><script>
+const log = [];
+const show = (tag) => (recs, obs) => {
+  log.push(tag + ":" + recs.map(r => r.type + "@" + (r.target.id || r.target.nodeName) + (r.attributeName ? "[" + r.attributeName + "]" : "") + "+" + r.addedNodes.length + "-" + r.removedNodes.length).join(","));
+  console.log(log[log.length - 1], obs instanceof MutationObserver);
+};
+const a = document.getElementById("a");
+const mo = new MutationObserver(show("deep"));
+mo.observe(a, { childList: true, subtree: true, attributes: true, characterData: true });
+const shallow = new MutationObserver(show("shallow"));
+shallow.observe(a, { childList: true });
+const filtered = new MutationObserver(show("filtered"));
+filtered.observe(a, { attributes: true, attributeFilter: ["title"], subtree: true });
+a.appendChild(document.createElement("span"));
+a.setAttribute("title", "t");
+a.setAttribute("lang", "en");
+document.getElementById("p").firstChild.data = "changed";
+document.getElementById("p").appendChild(document.createElement("i"));
+a.firstElementChild.remove();
+console.log("sync done", log.length);
+Promise.resolve().then(() => console.log("promise job"));
+setTimeout(() => {
+  mo.disconnect();
+  a.appendChild(document.createElement("b"));
+  console.log("takeRecords", shallow.takeRecords().length, mo.takeRecords().length);
+  const again = new MutationObserver(show("later"));
+  again.observe(document.body, { childList: true });
+  document.body.append("t1", document.createElement("hr"));
+  try { new MutationObserver(); } catch (e) { console.log(e.name); }
+  try { again.observe(a, {}); } catch (e) { console.log(e.name); }
+}, 10);
+</script></body></html>

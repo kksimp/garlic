@@ -1,0 +1,109 @@
+## AbortController and AbortSignal (DOM §3.1-3.3): `abort()` sets
+## `signal.aborted` and `reason`, then runs the signal's `abort` listeners
+## and `onabort`. `onabort` runs after the listeners, the usual order of a
+## page that adds its listeners first. Not done: `AbortSignal.abort()`,
+## `AbortSignal.timeout()`, `any()`; nothing yet aborts a pending request.
+
+fn Vm.abort_error(mut self) Value
+    o := object("Error", proto_of("DOMException"))
+    o.props["message"] = hidden(Str("signal is aborted without reason"))
+    o.props["name"] = hidden(Str("AbortError"))
+    Value.Obj(o)
+
+fn Vm.abort_setup(mut self)
+    object_proto := proto_of("Object")
+    controller_proto := object("Object", object_proto)
+    protos["AbortController"] = Obj(controller_proto)
+    methods(controller_proto, "dom.abort", "abort:0")
+    signal_proto := object("Object", object_proto)
+    protos["AbortSignal"] = Obj(signal_proto)
+    methods(
+        signal_proto,
+        "dom.abort.signal",
+        "addEventListener:2 removeEventListener:2 throwIfAborted:0",
+    )
+    for name in ["AbortController", "AbortSignal"]
+        c := obj_of(native_fn("dom.abort.new.{name}", name, 0)) else continue
+        p := obj_of(proto_of(name)) else continue
+        c.props["prototype"] = Prop(
+            value: Obj(p),
+            get: Undef,
+            set: Undef,
+            accessor: false,
+            enumerable: false,
+            writable: false,
+            configurable: false,
+        )
+        p.props["constructor"] = hidden(Obj(c))
+        p.props[well_known("toStringTag")] = Prop(
+            value: Str(name),
+            get: Undef,
+            set: Undef,
+            accessor: false,
+            enumerable: false,
+            writable: false,
+            configurable: true,
+        )
+        global_obj.props[name] = hidden(Obj(c))
+
+fn Vm.abort_new(mut self, n str) Value ! Thrown
+    if n == "AbortSignal"
+        return type_error("Illegal constructor")
+    c := object("AbortController", proto_of("AbortController"))
+    s := object("AbortSignal", proto_of("AbortSignal"))
+    s.props["aborted"] = data(Bool(false))
+    s.props["reason"] = data(Undef)
+    s.props["onabort"] = data(Null)
+    s.props["{PRIVATE}listeners"] = hidden(array([]))
+    c.props["signal"] = data(Obj(s))
+    Value.Obj(c)
+
+fn Vm.abort_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    if m == "abort"
+        c := this_class(this_val, "AbortController", m)?
+        s := obj_of(get(Value.Obj(c), "signal")?) else return Value.Undef
+        if truthy(get(Value.Obj(s), "aborted")?)
+            return Value.Undef
+        s.props["aborted"] = data(Bool(true))
+        reason := arg_at(args, 0)
+        s.props["reason"] = data(if reason == Value.Undef then abort_error() else reason)
+        ev := make_event("abort", Value.Undef)?
+        if o := obj_of(ev)
+            o.props["target"] = data(Value.Obj(s))
+        for l in (obj_of(s.props["{PRIVATE}listeners"].value) else plain()).elems
+            call_listener_plain(l, Value.Obj(s), ev)
+        # `onabort` runs after the listeners, the usual order of a page that
+        # adds its listeners first.
+        handler := get(Value.Obj(s), "onabort")?
+        if is_callable(handler)
+            call_listener_plain(handler, Value.Obj(s), ev)
+        return Value.Undef
+    s := this_class(this_val, "AbortSignal", m)?
+    listeners_obj := obj_of(s.props["{PRIVATE}listeners"].value) else return Value.Undef
+    a1 := arg_at(args, 1)
+    match m
+        "addEventListener" =>
+            if to_string(arg_at(args, 0))? == "abort" and is_callable(a1)
+                listeners_obj.elems.push(a1)
+            Value.Undef
+        "removeEventListener" =>
+            listeners_obj.elems = [l for l in listeners_obj.elems if l != a1]
+            Value.Undef
+        _ =>
+            if truthy(get(Value.Obj(s), "aborted")?)
+                return thrown(get(Value.Obj(s), "reason")?)
+            Value.Undef
+
+fn Vm.call_listener_plain(mut self, f Value, this_val Value, ev Value)
+    if v := call(f, this_val, [ev])
+        v
+    else err
+        report(uncaught_text(err))
+
+## The natives of this file: `m` is the name after "dom.abort.".
+fn Vm.abort_native(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    if n := m.strip_prefix("new.")
+        return abort_new(n)
+    if k := m.strip_prefix("signal.")
+        return abort_method(k, this_val, args)
+    abort_method("abort", this_val, args)
