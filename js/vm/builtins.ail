@@ -61,6 +61,7 @@ pub fn new_vm() Vm
         running: Set[int](),
         agen_queues: {},
         observers: [],
+        active: -1,
         mo_hold: false,
         mo_held: [],
         template_frags: {},

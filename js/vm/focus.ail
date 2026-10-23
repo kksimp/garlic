@@ -1,0 +1,78 @@
+## Focus and key events for what the user does in Garlic (UI Events §5.2,
+## HTML §6.6.4): the element that has focus, `focus`/`blur`/`focusin`/
+## `focusout`, and `keydown`/`input`/`keyup` for each typed character.
+
+## A trusted-style KeyboardEvent for `key`.
+fn Vm.key_event(mut self, type_name str, key str) Value
+    init := plain()
+    init.props["bubbles"] = data(Bool(true))
+    init.props["cancelable"] = data(Bool(true))
+    init.props["key"] = data(Str(key))
+    code := if key.chars().len() == 1
+        and key.chars()[0].is_alpha() then "Key{key.to_upper()}" else key
+    init.props["code"] = data(Str(code))
+    make_event(type_name, Value.Obj(init)) else Value.Undef
+
+## A MouseEvent of the primary button.
+fn Vm.mouse_event(mut self, type_name str) Value
+    init := plain()
+    init.props["bubbles"] = data(Bool(true))
+    init.props["cancelable"] = data(Bool(true))
+    init.props["button"] = data(Num(0.0))
+    init.props["clientX"] = data(Num(0.0))
+    init.props["clientY"] = data(Num(0.0))
+    make_event(type_name, Value.Obj(init)) else Value.Undef
+
+fn Vm.fire_event(mut self, target int, ev Value) bool
+    if ev == Value.Undef
+        return true
+    if ok := dispatch(target, ev)
+        return ok
+    else err
+        report(uncaught_text(err))
+    true
+
+## Move focus to `id` (-1 for none): `blur` and `focusout` at the element
+## that had it, then `focus` and `focusin` at the new one.
+pub fn Vm.host_focus(mut self, id int)
+    if stopped or id == active
+        return
+    old := active
+    active = id
+    if old >= 0
+        fire(old, "blur", false)
+        fire(old, "focusout", true)
+    if id >= 0
+        fire(id, "focus", false)
+        fire(id, "focusin", true)
+
+## The user typed `text` into field `id`, replacing its value: for each
+## character `keydown` (which a listener may cancel), the value grows and
+## `input` fires, then `keyup`; `change` fires at the end.
+pub fn Vm.host_type(mut self, id int, text str)
+    if stopped
+        return
+    host_focus(id)
+    mut value := ""
+    field_values[id] = ""
+    dom_log("set_value", id, -1, -1, "value", "")
+    for c in text.chars()
+        key := "{c}"
+        if not fire_event(id, key_event("keydown", key))
+            continue
+        value = "{value}{key}"
+        field_values[id] = value
+        dom_log("set_value", id, -1, -1, "value", value)
+        fire(id, "input", true)
+        fire_event(id, key_event("keyup", key))
+    fire(id, "change", true)
+
+## The user pressed `key` (Enter, Escape, ...) with focus in `id`. False
+## when a `keydown` listener cancelled it.
+pub fn Vm.host_key(mut self, id int, key str) bool
+    if stopped
+        return true
+    host_focus(id)
+    ok := fire_event(id, key_event("keydown", key))
+    fire_event(id, key_event("keyup", key))
+    ok

@@ -35,6 +35,8 @@ pub struct Vm
     pub field_values Map[int, str]
     pub listeners List[Listener]
     pub observers List[Observer]
+    ## The element with focus, -1 for none.
+    pub active int
     ## While set, inserted nodes gather in `mo_held` for one record.
     pub mo_hold bool
     pub mo_held List[int]

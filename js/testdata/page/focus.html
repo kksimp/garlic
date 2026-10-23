@@ -1,0 +1,21 @@
+<!DOCTYPE html><html><body><input id="a"><input id="b"><button id="c">c</button><script>
+const log = [];
+for (const id of ["a", "b"]) {
+  const el = document.getElementById(id);
+  for (const t of ["focus", "blur", "focusin", "focusout"]) el.addEventListener(t, e => log.push(id + ":" + t + ":" + e.bubbles));
+}
+const a = document.getElementById("a"), b = document.getElementById("b");
+console.log(document.activeElement.tagName);
+a.focus();
+console.log(document.activeElement.id);
+a.focus();
+b.focus();
+console.log(document.activeElement.id);
+b.blur();
+console.log(document.activeElement.tagName);
+b.blur();
+console.log(log.join(" "));
+const k = new KeyboardEvent("keydown", { key: "x", bubbles: true, cancelable: true });
+a.addEventListener("keydown", e => { console.log(e.key, e.code === "", e.defaultPrevented); e.preventDefault(); });
+console.log(a.dispatchEvent(k), k.defaultPrevented);
+</script></body></html>

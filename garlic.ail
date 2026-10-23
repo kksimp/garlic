@@ -785,6 +785,31 @@ fn Browser.step_focus(mut self, forward bool)
     b := pg.boxes[pg.targets[focus - 1]]
     if b.row < scroll or b.end_row > scroll + view()
         scroll_to(b.row - view() / 3)
+    js_focus(b.id)
+
+## Tells the page's scripts focus moved to node `id` (`blur`, `focus`).
+fn Browser.js_focus(mut self, id int)
+    if js == none
+        return
+    mut s := js else return
+    out := s.focus(mut doc, id, 1000.0)
+    js = s
+    if out.changes > 0
+        relayout()
+
+## Tells the page's scripts the user pressed `key` in node `id`. True when
+## a listener cancelled it, so the browser's own action should not follow.
+fn Browser.js_key(mut self, id int, key str) bool
+    if js == none
+        return false
+    mut s := js else return false
+    out := s.key(mut doc, id, key, 1000.0)
+    js = s
+    if js_went(out)
+        return true
+    if out.changes > 0
+        relayout()
+    s.prevented
 
 ## Scrolls to the next row after the top one that contains `needle`.
 fn Browser.find(mut self, needle str)
@@ -833,7 +858,8 @@ fn Browser.key(mut self, key str, alt bool, shift bool) bool
             prompt = Status
             if key == "enter"
                 type_into(id, text)
-                submit(id)
+                if not js_key(id, "Enter")
+                    submit(id)
             elif key == "tab"
                 type_into(id, text)
                 step_focus(not shift)
@@ -2878,3 +2904,27 @@ fn flat(s gfx.Scene) List[str]
     b.act("click", "{node_with(b, "button", "id", "go")}")
     assert_eq(b.pg.title, "Results")
     assert(b.url.ends_with("/result.html?q=hello"))
+
+@test fn typing_fires_focus_key_input_and_change_events_and_enter_can_be_cancelled()
+    mut b := Browser.new("{testdata()}/keys.html", 80, 30)
+    b.act("type", "{node_with(b, "input", "id", "q")}=axb")
+    assert(b.pg.text().contains("q focus | down a | input a | down x | down b | input ab | change ab"))
+    # Tab moves focus on to the next field: q blurs and r focuses.
+    mut c := Browser.new("{testdata()}/keys.html", 80, 30)
+    c.act("type", "{node_with(c, "input", "id", "q")}=a")
+    c.key("tab", false, false)
+    assert_eq(c.focus, 1)
+    c.key("tab", false, false)
+    assert_eq(c.focus, 2)
+    # Enter in a field the page cancels: no submission.
+    mut d := Browser.new("{testdata()}/keys.html", 80, 30)
+    w := node_with(d, "input", "id", "w")
+    d.prompt = Field(w, "z")
+    d.key("enter", false, false)
+    assert_eq(d.pg.title, "Keys test")
+    assert(d.pg.text().contains("enter stopped"))
+
+@test fn a_click_is_a_press_and_a_release_and_focuses_the_control()
+    mut b := Browser.new("{testdata()}/keys.html", 80, 30)
+    b.act("click", "{node_with(b, "button", "id", "btn")}")
+    assert(b.pg.text().contains("mousedown0 focus mouseup0 click0"))

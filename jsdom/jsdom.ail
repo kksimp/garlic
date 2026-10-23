@@ -41,7 +41,7 @@ pub struct Session
     requests int
     console int
     cookies int
-    ## Whether the last `click` was cancelled by a listener.
+    ## Whether the last `click` or `key` was cancelled by a listener.
     pub prevented bool
 
 ## Run the scripts of `d` (the page at `url`): inline ones, and external ones
@@ -140,11 +140,24 @@ pub fn Session.click(mut self, mut d html.Doc, id int, budget_ms float) Outcome
     machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
     collect(mut d)
 
-## The user set text field `id` to `text`: the value changes, then `input`
-## and `change` fire on it.
+## The user typed `text` into field `id`, replacing its value: `keydown`,
+## `input` and `keyup` fire for each character, then `change`.
 pub fn Session.input(mut self, mut d html.Doc, id int, text str, budget_ms float) Outcome
     if id >= 0 and id < machine.dom.len()
         machine.host_input(id, text)
+    machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
+    collect(mut d)
+
+## Focus moved to node `id`, or to nothing for -1 (`blur`/`focus` events).
+pub fn Session.focus(mut self, mut d html.Doc, id int, budget_ms float) Outcome
+    machine.host_focus(id)
+    machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
+    collect(mut d)
+
+## The user pressed `key` with focus in node `id`; `prevented` says whether
+## a `keydown` listener cancelled it.
+pub fn Session.key(mut self, mut d html.Doc, id int, key str, budget_ms float) Outcome
+    prevented = not machine.host_key(id, key)
     machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
     collect(mut d)
 
