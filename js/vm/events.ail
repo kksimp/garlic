@@ -1,0 +1,217 @@
+## The event interfaces (DOM §2.2, UI Events, HTML §8.1.7): each has its
+## own prototype under its parent's, so `instanceof` tells them apart, and
+## its members start with the defaults of its dictionary. `new
+## KeyboardEvent("keydown", { key: "a" })` copies the init's members.
+
+## Interface, parent.
+EVENT_PARENTS := {
+    "UIEvent": "Event",
+    "MouseEvent": "UIEvent",
+    "PointerEvent": "MouseEvent",
+    "WheelEvent": "MouseEvent",
+    "DragEvent": "MouseEvent",
+    "KeyboardEvent": "UIEvent",
+    "FocusEvent": "UIEvent",
+    "InputEvent": "UIEvent",
+    "TouchEvent": "UIEvent",
+    "CompositionEvent": "UIEvent",
+    "CustomEvent": "Event",
+    "ErrorEvent": "Event",
+    "MessageEvent": "Event",
+    "PromiseRejectionEvent": "Event",
+    "ProgressEvent": "Event",
+    "HashChangeEvent": "Event",
+    "PopStateEvent": "Event",
+    "StorageEvent": "Event",
+    "AnimationEvent": "Event",
+    "TransitionEvent": "Event",
+    "ClipboardEvent": "Event",
+    "SubmitEvent": "Event",
+}
+
+## What each interface adds: `member:kind` where kind is s (""), n (0),
+## N (null), b (false) or u (undefined).
+EVENT_MEMBERS := {
+    "UIEvent": "detail:n view:N",
+    "MouseEvent": "screenX:n screenY:n clientX:n clientY:n button:n buttons:n ctrlKey:b shiftKey:b altKey:b metaKey:b relatedTarget:N",
+    "PointerEvent": "pointerId:n pointerType:s",
+    "WheelEvent": "deltaX:n deltaY:n deltaZ:n deltaMode:n",
+    "DragEvent": "dataTransfer:N",
+    "KeyboardEvent": "key:s code:s repeat:b location:n ctrlKey:b shiftKey:b altKey:b metaKey:b isComposing:b",
+    "FocusEvent": "relatedTarget:N",
+    "InputEvent": "data:N inputType:s isComposing:b",
+    "CompositionEvent": "data:s",
+    "CustomEvent": "detail:N",
+    "ErrorEvent": "message:s filename:s lineno:n colno:n error:N",
+    "MessageEvent": "data:N origin:s lastEventId:s source:N",
+    "PromiseRejectionEvent": "promise:u reason:u",
+    "ProgressEvent": "lengthComputable:b loaded:n total:n",
+    "HashChangeEvent": "oldURL:s newURL:s",
+    "PopStateEvent": "state:N",
+    "StorageEvent": "key:N oldValue:N newValue:N url:s",
+    "AnimationEvent": "animationName:s elapsedTime:n pseudoElement:s",
+    "TransitionEvent": "propertyName:s elapsedTime:n pseudoElement:s",
+    "ClipboardEvent": "clipboardData:N",
+    "SubmitEvent": "submitter:N",
+}
+
+fn Vm.event_interfaces(mut self)
+    base := obj_of(proto_of("Event")) else return
+    for name in ["Event"]
+        event_constants(base)
+    # Parents before children: the table is in that order.
+    mut names := List[str]()
+    for k in EVENT_PARENTS.keys()
+        names.push(k)
+    mut done := Set[str]()
+    done.add("Event")
+    mut pending := names
+    while pending.len() > 0
+        mut rest := List[str]()
+        for name in pending
+            parent := EVENT_PARENTS[name]
+            if not done.contains(parent)
+                rest.push(name)
+                continue
+            p := object("Object", proto_of(parent))
+            protos[name] = Obj(p)
+            c := obj_of(native_fn("dom.Event", name, 1)) else continue
+            c.props["prototype"] = Prop(
+                value: Obj(p),
+                get: Undef,
+                set: Undef,
+                accessor: false,
+                enumerable: false,
+                writable: false,
+                configurable: false,
+            )
+            p.props["constructor"] = hidden(Obj(c))
+            p.props[well_known("toStringTag")] = Prop(
+                value: Str(name),
+                get: Undef,
+                set: Undef,
+                accessor: false,
+                enumerable: false,
+                writable: false,
+                configurable: true,
+            )
+            if pc := obj_of(global_obj.props[parent].value)
+                c.proto = Obj(pc)
+            global_obj.props[name] = hidden(Obj(c))
+            done.add(name)
+        if rest.len() == pending.len()
+            break
+        pending = rest
+
+## `Event.NONE` and the phases, on the constructor and the prototype.
+fn Vm.event_constants(mut self, proto ref JsObject)
+    c := obj_of(global_obj.props["Event"].value) else return
+    names := ["NONE", "CAPTURING_PHASE", "AT_TARGET", "BUBBLING_PHASE"]
+    for i in 0..names.len()
+        constant(c, names[i], Num(i.to_float()))
+        constant(proto, names[i], Num(i.to_float()))
+    proto.props[well_known("toStringTag")] = Prop(
+        value: Str("Event"),
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+    )
+
+## The members of `iface` and its parents, parents first.
+fn Vm.event_defaults(self, iface str) List[str]
+    mut chain := List[str]()
+    mut cur := iface
+    while cur != "Event"
+        chain.insert(0, cur)
+        cur = EVENT_PARENTS.get(cur) else "Event"
+    mut out := List[str]()
+    for i in chain
+        for item in (EVENT_MEMBERS.get(i) else "").split(" ")
+            if item != ""
+                out.push(item)
+    out
+
+## An event of interface `iface` (DOM §2.5 "inner event creation steps").
+pub fn Vm.make_event_as(mut self, iface str, type_name str, init Value) Value ! Thrown
+    o := object("Event", proto_of(iface))
+    o.props["type"] = data(Str(type_name))
+    for item in event_defaults(iface)
+        parts := item.split(":")
+        v := match parts[1]
+            "s" => Value.Str("")
+            "n" => Value.Num(0.0)
+            "b" => Value.Bool(false)
+            "u" => Value.Undef
+            _ => Value.Null
+        o.props[parts[0]] = data(v)
+    mut bubbles := false
+    mut cancelable := false
+    mut composed := false
+    if io := obj_of(init)
+        bubbles = truthy(get(init, "bubbles")?)
+        cancelable = truthy(get(init, "cancelable")?)
+        composed = truthy(get(init, "composed")?)
+        for k in own_keys(io)
+            if k != "bubbles" and k != "cancelable" and k != "composed"
+                o.props[k] = data(get(init, k)?)
+    o.props["bubbles"] = data(Bool(bubbles))
+    o.props["cancelable"] = data(Bool(cancelable))
+    o.props["composed"] = data(Bool(composed))
+    o.props["defaultPrevented"] = data(Bool(false))
+    o.props["target"] = data(Null)
+    o.props["currentTarget"] = data(Null)
+    o.props["eventPhase"] = data(Num(0.0))
+    o.props["isTrusted"] = data(Bool(false))
+    o.props["timeStamp"] = data(Num(clock_ms - page_start_ms))
+    Value.Obj(o)
+
+## What went uncaught is told to the window as an `error` event (HTML
+## §8.1.5.5 "report the exception"); a handler that cancels it keeps the
+## console quiet.
+fn Vm.report_error(mut self, err Thrown)
+    text := uncaught_text(err)
+    if in_error or err.limit or not protos.contains("ErrorEvent")
+        report(text)
+        return
+    in_error = true
+    init := plain()
+    init.props["cancelable"] = data(Bool(true))
+    init.props["message"] = data(Str(text))
+    init.props["filename"] = data(Str(location_href))
+    init.props["error"] = data(err.value)
+    mut quiet := false
+    if ev := make_event_as("ErrorEvent", "error", Value.Obj(init))
+        if ok := dispatch(-1, ev)
+            quiet = not ok
+        else e2
+            report(uncaught_text(e2))
+    else e3
+        report(uncaught_text(e3))
+    in_error = false
+    if not quiet
+        report(text)
+
+## An unhandled rejection is offered to `unhandledrejection` handlers first.
+fn Vm.report_rejection(mut self, p ref JsObject)
+    reason := result_of(p)
+    text := uncaught_text(Thrown(value: reason, text: "", limit: false))
+    if not protos.contains("PromiseRejectionEvent")
+        report(text)
+        return
+    init := plain()
+    init.props["cancelable"] = data(Bool(true))
+    init.props["promise"] = data(Value.Obj(p))
+    init.props["reason"] = data(reason)
+    mut quiet := false
+    if ev := make_event_as("PromiseRejectionEvent", "unhandledrejection", Value.Obj(init))
+        if ok := dispatch(-1, ev)
+            quiet = not ok
+        else err
+            report_error(err)
+    else e3
+        report(uncaught_text(e3))
+    if not quiet
+        report(text)

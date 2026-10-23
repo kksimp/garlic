@@ -44,6 +44,9 @@ pub struct Vm
     pub template_frags Map[int, int]
     pub timers List[Timer]
     pub timer_seq int
+    pub timer_level int
+    ## Set while an `error` event runs, so a failing handler can't recurse.
+    pub in_error bool
     pub microtasks List[Value]
     pub started_scripts Set[int]
     ## Requests for the browser: navigations, script fetches, dialogs.
