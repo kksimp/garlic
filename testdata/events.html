@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html><head><title>Events test</title></head>
+<body>
+<p id="out">idle</p>
+<button id="count">Count</button>
+<a id="stay" href="second.html">Second</a>
+<input name="q" id="q">
+<form id="f" action="result.html"><input name="w" id="w"><button id="go">Go</button></form>
+<script>
+let n = 0;
+const out = document.getElementById("out");
+document.getElementById("count").addEventListener("click", () => {
+  n += 1;
+  out.textContent = "clicked " + n;
+  const li = document.createElement("span");
+  li.textContent = " [added " + n + "]";
+  out.appendChild(li);
+});
+document.getElementById("stay").addEventListener("click", e => e.preventDefault());
+document.getElementById("q").addEventListener("input", e => {
+  out.textContent = "typed " + e.target.value;
+});
+document.getElementById("f").addEventListener("submit", e => {
+  e.preventDefault();
+  out.textContent = "submit stopped for " + document.getElementById("w").value;
+});
+</script>
+</body></html>
