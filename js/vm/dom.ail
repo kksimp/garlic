@@ -818,7 +818,19 @@ pub fn Vm.dom_native(
     if p := m.strip_prefix("mo.")
         return mo_method(p, this_val, args)
     if m == "Event"
-        return make_event(to_string(arg_at(args, 0))?, arg_at(args, 1))
+        ev := make_event(to_string(arg_at(args, 0))?, arg_at(args, 1))?
+        # The members an interface adds start empty (UI Events §5).
+        iface := to_string(get(new_target, "name") else Value.Str("")) else ""
+        if o := obj_of(ev)
+            if iface == "KeyboardEvent"
+                for k in ["key", "code"]
+                    if o.props.get(k) == none
+                        o.props[k] = data(Str(""))
+            if iface == "MouseEvent"
+                for k in ["button", "clientX", "clientY"]
+                    if o.props.get(k) == none
+                        o.props[k] = data(Num(0.0))
+        return ev
     if m == "illegal"
         name := to_string(get(new_target, "name") else Value.Str("")) else ""
         return type_error(if name == "" then "Illegal constructor" else "Failed to construct '{name}': Illegal constructor")
@@ -1070,7 +1082,7 @@ fn Vm.dom_get(mut self, p str, this_val Value) Value ! Thrown
         "URL" | "documentURI" => Value.Str(location_href)
         "referrer" => Value.Str("")
         "defaultView" => Value.Obj(global_obj)
-        "activeElement" => get(node_value(0), "body")
+        "activeElement" => if active >= 0 then node_value(active) else get(node_value(0), "body")
         "visibilityState" => Value.Str("visible")
         "characterSet" => Value.Str("UTF-8")
         "compatMode" => Value.Str("CSS1Compat")
@@ -1359,7 +1371,14 @@ fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
         "submit" | "requestSubmit" =>
             submit_form(id, -1)?
             Undef
-        "focus" | "blur" | "select" | "scrollIntoView" | "reset" | "animate" | "attachShadow" => Undef
+        "focus" =>
+            host_focus(id)
+            Undef
+        "blur" =>
+            if active == id
+                host_focus(-1)
+            Undef
+        "select" | "scrollIntoView" | "reset" | "animate" | "attachShadow" => Undef
         "checkValidity" => Value.Bool(true)
         "getBoundingClientRect" =>
             r := plain()
@@ -2510,15 +2529,11 @@ pub fn Vm.host_click(mut self, id int) bool
         report(uncaught_text(err))
     true
 
-## The user changed field `id` to `text`: the value is set, then `input` and
-## `change` fire and bubble (HTML §4.10.5.5).
+## The user typed `text` into field `id` (focus.ail).
 pub fn Vm.host_input(mut self, id int, text str)
     if stopped
         return
-    field_values[id] = text
-    dom_log("set_value", id, -1, -1, "value", text)
-    fire(id, "input", true)
-    fire(id, "change", true)
+    host_type(id, text)
 
 ## The user submitted the form around node `id`. A button is the submitter;
 ## from any other control the form itself stands in, so no button's value
