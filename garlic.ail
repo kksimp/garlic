@@ -815,6 +815,10 @@ fn Browser.act_json(mut self, line str)
     j := parse_json(line) else err
         message = "bad JSON: {err}"
         return
+    act_from(j)
+
+## Does the action in JSON `j` (see `act_json`).
+fn Browser.act_from(mut self, j Json)
     name := j.str("do") else ""
     mut arg := ""
     for key in ["link", "id", "row"]
@@ -835,6 +839,78 @@ fn Browser.session(mut self)
             continue
         act_json(line)
         print(answer())
+
+## The JSON-RPC id of request `j`, as it goes back: a number or a string.
+fn rpc_id(j Json) str
+    if n := j.num("id")
+        return "{n.to_int()}"
+    if t := j.str("id")
+        return page.quote(t)
+    "null"
+
+## One tool call of the `--serve` server: the text it answers with.
+fn Browser.tool(mut self, name str, a Json) str
+    match name
+        "open" =>
+            act("open", a.str("url") else "")
+            answer()
+        "observe" => answer()
+        "act" =>
+            act_from(a)
+            answer()
+        "find" =>
+            act("find", a.str("text") else "")
+            answer()
+        "extract" => pg.text()
+        "screenshot" =>
+            images.prefetch(doc, url, image_options(), mut sizes, mut bits)
+            s := gfx.layout_with(doc, url, 960.0, sheet, sizes)
+            mut lines := ["canvas {s.bg.to_hex()} height {s.height.round()}"]
+            for op in s.ops
+                lines.push(op_line(op))
+            lines.join("\n")
+        _ => "unknown tool `{name}`: open, observe, act, find, extract or screenshot"
+
+## The tool list, with `<` and `>` for the braces of the JSON.
+TOOLS_SRC := """[<"name":"open","description":"Open a URL; answers with the page model.","inputSchema":<"type":"object","properties":<"url":<"type":"string">>,"required":["url"]>>,<"name":"observe","description":"The page model: nodes with ids, roles, names and boxes.","inputSchema":<"type":"object","properties":<>>>,<"name":"act","description":"Do one action: follow, click, type, submit, check, select, back, forward, scroll, reload. Give link, id or row (a number) and text where needed.","inputSchema":<"type":"object","properties":<"do":<"type":"string">,"link":<"type":"integer">,"id":<"type":"integer">,"row":<"type":"integer">,"text":<"type":"string">>,"required":["do"]>>,<"name":"find","description":"Scroll to text on the page.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"extract","description":"The page as plain text.","inputSchema":<"type":"object","properties":<>>>,<"name":"screenshot","description":"The pixel layout as drawing operations.","inputSchema":<"type":"object","properties":<>>>]"""
+
+fn tools_json() str
+    TOOLS_SRC.replace("<", "\{").replace(">", "}")
+
+## The answer to one MCP request line (JSON-RPC 2.0), or "" for a
+## notification, which gets none.
+fn Browser.rpc(mut self, line str) str
+    j := parse_json(line) else err
+        return "\{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":\{\"code\":-32700,\"message\":{page.quote("{err}")}}}"
+    method := j.str("method") else ""
+    id := rpc_id(j)
+    if method.starts_with("notifications/")
+        return ""
+    head := "\{\"jsonrpc\":\"2.0\",\"id\":{id},"
+    match method
+        "initialize" =>
+            "{head}\"result\":\{\"protocolVersion\":\"2024-11-05\",\"capabilities\":\{\"tools\":\{}},\"serverInfo\":\{\"name\":\"garlic\",\"version\":\"0.1\"}}}"
+        "ping" => "{head}\"result\":\{}}"
+        "tools/list" => "{head}\"result\":\{\"tools\":{tools_json()}}}"
+        "tools/call" =>
+            params := j.need("params") else err
+                return "{head}\"error\":\{\"code\":-32602,\"message\":\"missing params\"}}"
+            args := params.need("arguments") else err
+                params
+            text := tool(params.str("name") else "", args)
+            "{head}\"result\":\{\"content\":[\{\"type\":\"text\",\"text\":{page.quote(text)}}]}}"
+        _ => "{head}\"error\":\{\"code\":-32601,\"message\":\"unknown method\"}}"
+
+## `--serve`: an MCP server on stdio, one JSON-RPC message per line, so an
+## agent drives the browser with the tools of `Browser.tool`.
+fn Browser.serve(mut self)
+    while true
+        line := io.read_line() else break
+        if line.trim() == ""
+            continue
+        out := rpc(line)
+        if out != ""
+            print(out)
 
 ## The target node drawn at window cell (`col`, `row`), or none.
 fn Browser.target_at(self, col int, row int) int?
@@ -1402,6 +1478,10 @@ fn main() !
         return
     width := (flag(args, "--width") else "100").to_int() else 100
     height := (flag(args, "--height") else "32").to_int() else 32
+    if args.contains("--serve")
+        mut srv := Browser.empty("about:blank", width, height)
+        srv.serve()
+        return
     mut b := Browser.new(target_of(args), width, height)
     b.viewport_only = args.contains("--viewport")
     b.diff = args.contains("--diff")
@@ -2489,3 +2569,13 @@ fn flat(s gfx.Scene) List[str]
         300.0,
     )
     assert(flat(s).contains("below@0,84"))
+
+@test fn serve_answers_mcp_requests()
+    mut b := Browser.empty("about:blank", 80, 24)
+    init := b.rpc("\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}")
+    assert(init.contains("\"serverInfo\""))
+    assert_eq(b.rpc("\{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}"), "")
+    assert(b.rpc("\{\"jsonrpc\":\"2.0\",\"id\":\"a\",\"method\":\"tools/list\"}").contains("\"screenshot\""))
+    call := b.rpc("\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{testdata()}/form.html\"}}}")
+    assert(call.contains("\"content\""))
+    assert(call.contains("textbox"))
