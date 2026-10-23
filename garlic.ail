@@ -115,26 +115,60 @@ fn fetch(url str, method str, body str) str
 ## `fetch`, sending `cj`'s cookies for the site and keeping the ones the
 ## response sets.
 fn fetch_with(url str, method str, body str, mut cj jar.Jar) str
+    fetch_got(url, method, body, mut cj).text
+
+## What a fetch got: the address it ended at (after redirects) and the page.
+struct Got
+    url str
+    text str
+
+MAX_HOPS := 10
+
+## `fetch_with`, also telling where redirects ended. Every hop sends the
+## cookies the jar holds for it and stores the ones it sets, so a login that
+## sets a cookie on a redirect works; a 301, 302 or 303 turns a POST into a
+## GET without its body.
+fn fetch_got(url str, method str, body str, mut cj jar.Jar) Got
     s := page.scheme(url)
     if s == "http" or s == "https"
         mut o := options()
+        o.max_redirects = 0
+        mut m := method
         if method == "POST"
             o.body = body
             o.headers["content-type"] = "application/x-www-form-urlencoded"
-        cookie := cj.header(url)
-        if cookie != ""
-            o.headers["cookie"] = cookie
-        r := net.request_bytes(method, url, o) else err
-            return error_page(url, "{err}")
-        for line in r.all_headers.get("set-cookie") else List[str]()
-            cj.set_cookie(url, line)
-        if r.status >= 400
-            return "{body_text(r)}<p>(HTTP status {r.status})"
-        return body_text(r)
+        mut cur := url
+        for _ in 0..MAX_HOPS
+            cookie := cj.header_from(cur, "", true)
+            if cookie != ""
+                o.headers["cookie"] = cookie
+            else
+                o.headers.remove("cookie")
+            r := net.request_bytes(m, cur, o) else err
+                return Got(url: cur, text: error_page(cur, "{err}"))
+            for line in r.all_headers.get("set-cookie") else List[str]()
+                cj.set_cookie(cur, line)
+            loc := r.headers.get("location") else ""
+            hop := r.status == 301
+                or r.status == 302
+                or r.status == 303
+                or r.status == 307
+                or r.status == 308
+            if hop and loc != ""
+                cur = page.resolve(cur, loc)
+                if m != "GET" and m != "HEAD" and r.status != 307 and r.status != 308
+                    m = "GET"
+                    o.body = ""
+                    o.headers.remove("content-type")
+                continue
+            if r.status >= 400
+                return Got(url: cur, text: "{body_text(r)}<p>(HTTP status {r.status})")
+            return Got(url: cur, text: body_text(r))
+        return Got(url: cur, text: error_page(cur, "more than {MAX_HOPS} redirects"))
     file := (url.strip_prefix("file://") else url).split("?")[0].split("#")[0]
     data := fs.read_bytes(file) else err
-        return error_page(url, "{err}")
-    decode(data, "")
+        return Got(url, error_page(url, "{err}"))
+    Got(url, decode(data, ""))
 
 ## The labels that name windows-1252, which HTML reads `iso-8859-1` and
 ## `us-ascii` as (WHATWG Encoding).
@@ -261,7 +295,7 @@ fn refresh_target(d html.Doc, url str, scripting bool) str?
 MAX_SHEETS := 8
 
 ## The page's linked style sheets, fetched and parsed in document order.
-fn linked_sheets(d html.Doc, url str) css.Sheet
+fn linked_sheets(d html.Doc, url str, mut cj jar.Jar) css.Sheet
     mut all := css.parse("", 0)
     mut n := 0
     for l in d.all("link")
@@ -276,14 +310,28 @@ fn linked_sheets(d html.Doc, url str) css.Sheet
         if n == MAX_SHEETS
             break
         n += 1
-        all = css.concat(all, css.parse_in(fetch_text(page.resolve(url, href)), 0, media))
+        all = css.concat(all, css.parse_in(
+            fetch_text(page.resolve(url, href), url, mut cj),
+            0,
+            media,
+        ))
     all
 
-## The text of a sub-resource, or "" when it can't be fetched.
-fn fetch_text(url str) str
+## The text of a sub-resource of the page `from`, or "" when it can't be
+## fetched. It carries the jar's cookies (SameSite as for a subresource) and
+## a `Referer`, and stores the cookies it sets.
+fn fetch_text(url str, from str, mut cj jar.Jar) str
     s := page.scheme(url)
     if s == "http" or s == "https"
-        r := net.request_bytes("GET", url, options()) else return ""
+        mut o := options()
+        cookie := cj.header_from(url, from, false)
+        if cookie != ""
+            o.headers["cookie"] = cookie
+        if page.scheme(from) == "http" or page.scheme(from) == "https"
+            o.headers["referer"] = from.split("#")[0]
+        r := net.request_bytes("GET", url, o) else return ""
+        for line in r.all_headers.get("set-cookie") else List[str]()
+            cj.set_cookie(url, line)
         return if r.status < 400 then body_text(r) else ""
     fs.read_text(url.strip_prefix("file://") else url) else ""
 
@@ -299,7 +347,9 @@ fn load_doc(target str, method str, body str, mut cj jar.Jar) Loaded
     mut m := method
     mut b := body
     for _ in 0..MAX_REFRESHES
-        mut d := html.parse(fetch_with(at, m, b, mut cj))
+        got := fetch_got(at, m, b, mut cj)
+        at = got.url
+        mut d := html.parse(got.text)
         if env.args().contains("--no-js")
             next := refresh_target(d, at, false) else return Loaded(url: at, doc: d)
             at = next
@@ -310,7 +360,7 @@ fn load_doc(target str, method str, body str, mut cj jar.Jar) Loaded
         for s in d.all("script")
             if src := d.attr(s, "src")
                 u := page.resolve(at, src)
-                scripts[script_url(u)] = fetch_text(u)
+                scripts[script_url(u)] = fetch_text(u, at, mut cj)
         now := time.now_ms().to_float()
         ## A page with no scripts has nothing to run, and starting the engine
         ## costs about 0.2 s.
@@ -341,7 +391,8 @@ fn load_doc(target str, method str, body str, mut cj jar.Jar) Loaded
             m = out.method
             b = out.body
         at = next
-    Loaded(url: at, doc: html.parse(fetch_with(at, m, b, mut cj)))
+    last := fetch_got(at, m, b, mut cj)
+    Loaded(url: last.url, doc: html.parse(last.text))
 
 ## The address scripts see: a local file gets a file:// URL.
 fn script_url(u str) str
@@ -441,7 +492,7 @@ fn Browser.load(mut self, target str, method str, body str)
     loaded := load_doc(target, method, body, mut cj)
     url = loaded.url
     doc = loaded.doc
-    sheet = linked_sheets(doc, url)
+    sheet = linked_sheets(doc, url, mut cj)
     pg = page.layout_with(doc, url, width, sheet)
     stamp += 1
     scroll = 0
