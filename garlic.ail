@@ -22,6 +22,7 @@ use gfx
 use jsdom
 use images
 use ws
+use svg
 use attach
 
 ## The keys, as `--keys` prints them.
@@ -1582,7 +1583,7 @@ fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
         area_w: w,
         area_h: h,
         pixel: false,
-        scene: gfx.Scene(ops: [], hits: [], height: 0.0, bg: 0xffffff, probes: []),
+        scene: gfx.Scene(ops: [], hits: [], height: 0.0, bg: 0xffffff, probes: [], bits: {}),
         scene_stamp: -1,
         scene_w: 0.0,
         scene_url: "",
@@ -1630,6 +1631,9 @@ fn Gui.refresh(mut self)
         scene_edit = b.editing()
         scene_stamp = b.stamp
         scene_w = area_w
+        for k in scene.bits.keys()
+            if not b.bits.contains(k)
+                b.bits[k] = scene.bits[k]
         for k in b.bits.keys()
             if not sent.contains(k)
                 fresh.add(k)
@@ -3551,3 +3555,30 @@ fn flat(s gfx.Scene) List[str]
     a.bridge.replies.recv()
     a.update(app.external("tick", ""))
     assert(a.events[1].contains("refused"))
+
+@test fn svg_shapes_become_pixels()
+    d := html.parse("<svg viewBox='0 0 4 4' width=4 height=4><rect x=0 y=0 width=2 height=4 fill='#ff0000'/></svg>")
+    ids := d.all("svg")
+    bm := svg.render(d, ids[0], 4, 4, 0) else
+        assert(false)
+        return
+    assert_eq(bm.w, 4)
+    raw := bytes.from_base64(bm.data) else
+        assert(false)
+        return
+    assert_eq(raw.len(), 64)
+    assert_eq(raw[0].to_int(), 255)
+    assert_eq(raw[3].to_int(), 255)
+    assert_eq(raw[11].to_int(), 0)
+
+@test fn inline_svg_icons_are_drawn_as_pictures()
+    src := "<body style='margin:0'><p>Go <svg width=16 height=16 viewBox='0 0 16 16'><path d='M2 2h12v12H2z' fill='#00ff00'/></svg> now</p></body>"
+    s := pixels(src, 300.0)
+    mut found := false
+    for op in s.ops
+        match op
+            Pic(_, _, w, h, p) => if p.starts_with("svg:") and w == 16.0 and h == 16.0
+                found = true
+            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Str(_, _, _, _, _, _, _, _, _) => found = found
+    assert(found)
+    assert_eq(s.bits.len(), 1)
