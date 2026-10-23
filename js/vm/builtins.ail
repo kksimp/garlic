@@ -359,7 +359,7 @@ fn Vm.setup(mut self)
 ## Natives that `new` may call.
 pub fn native_is_ctor(name str) bool
     match name
-        "Object" | "Function" | "Array" | "String" | "Number" | "Boolean" | "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" | "AggregateError" | "Map" | "Set" | "Proxy" | "proxy" | "WeakMap" | "WeakSet" | "WeakRef" | "FinalizationRegistry" | "IntersectionObserver" | "ResizeObserver" | "RegExp" | "Date" | "Promise" | "dom.Event" | "dom.MutationObserver" | "dom.illegal" | "dom.URL" | "dom.URLSearchParams" | "dom.Image" =>
+        "Object" | "Function" | "Array" | "String" | "Number" | "Boolean" | "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" | "AggregateError" | "Map" | "Set" | "Proxy" | "proxy" | "WeakMap" | "WeakSet" | "WeakRef" | "FinalizationRegistry" | "IntersectionObserver" | "ResizeObserver" | "RegExp" | "Date" | "Promise" | "dom.Event" | "dom.MutationObserver" | "dom.illegal" | "dom.URL" | "dom.URLSearchParams" | "dom.Image" | "dom.abort.new.AbortController" =>
             true
         _ => false
 

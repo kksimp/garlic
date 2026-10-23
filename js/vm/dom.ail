@@ -505,6 +505,7 @@ pub fn Vm.dom_setup(mut self)
     getter(class_list_proto, "value", "dom.get.classList.value")
 
     url_setup()
+    abort_setup()
     exception_proto := object("Object", proto_of("Error"))
     protos["DOMException"] = Obj(exception_proto)
     if c := obj_of(native_fn("dom.illegal", "DOMException", 2))
@@ -816,6 +817,8 @@ pub fn Vm.dom_native(
         return make_params(args)
     if m == "MutationObserver"
         return mo_new(args)
+    if p := m.strip_prefix("abort.")
+        return abort_native(p, this_val, args)
     if p := m.strip_prefix("mo.")
         return mo_method(p, this_val, args)
     if m == "Event"
