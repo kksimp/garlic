@@ -1,0 +1,611 @@
+## Inline SVG for the pixel layout (docs/design/garlic-browser.md): the
+## shapes of an `<svg>` element rasterised to a bitmap the host can draw.
+## Fills and strokes of rect, circle, ellipse, line, polyline, polygon and
+## path (M L H V C S Q T A Z, absolute and relative); groups pass their
+## paint down. No gradients, filters, `use` or text.
+
+use std.app
+use html
+use images
+
+## One shape's outline: closed or open subpaths as flat `x, y` lists.
+struct Shape
+    subs List[List[float]]
+    closed List[bool]
+
+## The paint in force: fill and stroke as `0xRRGGBB` or -1 for none, the
+## stroke width and the opacity.
+struct Paint
+    fill int
+    stroke int
+    width float
+    alpha float
+    ink int
+
+## The pixels of the `<svg>` element `id`, `w` by `h`, with `ink` standing
+## for `currentColor`; none when the element draws nothing or has no size.
+pub fn render(d html.Doc, id int, w int, h int, ink int) images.Bitmap?
+    if w <= 0 or h <= 0 or w * h > 262144
+        return none
+    mut vw := w.to_float()
+    mut vh := h.to_float()
+    mut vx := 0.0
+    mut vy := 0.0
+    if vb := d.attr(id, "viewBox")
+        nums := numbers(vb)
+        if nums.len() == 4 and nums[2] > 0.0 and nums[3] > 0.0
+            vx = nums[0]
+            vy = nums[1]
+            vw = nums[2]
+            vh = nums[3]
+    scale := (w.to_float() / vw).min(h.to_float() / vh)
+    ox := (w.to_float() - vw * scale) / 2.0 - vx * scale
+    oy := (h.to_float() - vh * scale) / 2.0 - vy * scale
+    mut canvas := List[float]()
+    for k in 0..w * h * 4
+        canvas.push(0.0)
+    top := Paint(fill: 0, stroke: -1, width: 1.0, alpha: 1.0, ink: ink)
+    mut drew := false
+    for c in d.nodes[id].children
+        if paint_node(d, c, top, scale, ox, oy, w, h, mut canvas)
+            drew = true
+    if not drew
+        return none
+    mut bytes := List[int]()
+    for k in 0..w * h
+        a := canvas[k * 4 + 3]
+        for ch in 0..3
+            v := if a > 0.0 then canvas[k * 4 + ch] / a else 0.0
+            bytes.push((v * 255.0).round().to_int().max(0).min(255))
+        bytes.push((a * 255.0).round().to_int().max(0).min(255))
+    images.Bitmap(w, h, data: app.bitmap_data(bytes))
+
+## The numbers in `s`, split at anything that is not part of one.
+fn numbers(s str) List[float]
+    mut out := List[float]()
+    mut cur := ""
+    mut prev := ' '
+    for ch in s.chars()
+        starts := ch == '-' and cur != "" and prev != 'e' and prev != 'E'
+        sep := ch == ',' or ch == ' ' or ch == '\n' or ch == '\t' or ch == '\r'
+        if sep or starts or (ch == '.' and cur.contains("."))
+            if cur != ""
+                out.push(cur.to_float() else 0.0)
+            cur = ""
+        if not sep
+            cur = "{cur}{ch}"
+        prev = ch
+    if cur != ""
+        out.push(cur.to_float() else 0.0)
+    out
+
+fn attr_num(d html.Doc, id int, name str) float
+    (d.attr(id, name) else "0").trim().replace("px", "").to_float() else 0.0
+
+## A colour word or `#rgb`/`#rrggbb`, else -1 (none), -2 (currentColor).
+fn paint_colour(v str, p Paint) int
+    t := v.trim().to_lower()
+    if t == "" or t == "none" or t == "transparent"
+        return -1
+    if t == "currentcolor"
+        return p.ink
+    if t.starts_with("#")
+        hex := t.slice(1, t.chars().len())
+        if hex.chars().len() == 3
+            chars := hex.chars()
+            return parse_hex("{chars[0]}{chars[0]}{chars[1]}{chars[1]}{chars[2]}{chars[2]}")
+        return parse_hex(hex)
+    if t.starts_with("rgb")
+        inside := t.slice(t.find("(") else 0 + 1, t.chars().len()).replace(")", "").replace("(", "")
+        n := numbers(inside)
+        if n.len() >= 3
+            return n[0].to_int() * 65536 + n[1].to_int() * 256 + n[2].to_int()
+    match t
+        "black" => 0
+        "white" => 0xffffff
+        "red" => 0xff0000
+        "green" => 0x008000
+        "blue" => 0x0000ff
+        "gray" => 0x808080
+        "grey" => 0x808080
+        "yellow" => 0xffff00
+        "orange" => 0xffa500
+        _ => p.fill
+
+fn parse_hex(h str) int
+    mut v := 0
+    for ch in h.chars()
+        digit := "0123456789abcdef".find("{ch}") else 0
+        v = v * 16 + digit
+    v
+
+## The paint `id` sets on top of `p`: attributes, then its `style`.
+fn paint_of(d html.Doc, id int, p Paint) Paint
+    mut out := p
+    mut decl := Map[str, str]()
+    for name in ["fill", "stroke", "stroke-width", "opacity", "fill-opacity", "color"]
+        if v := d.attr(id, name)
+            decl[name] = v
+    if style := d.attr(id, "style")
+        for part in style.split(";")
+            at := part.find(":") else -1
+            if at > 0
+                decl[part.slice(0, at).trim()] = part.slice(at + 1, part.chars().len()).trim()
+    if v := decl.get("color")
+        out.ink = paint_colour(v, p).max(0)
+    if v := decl.get("fill")
+        out.fill = paint_colour(v, out)
+    if v := decl.get("stroke")
+        out.stroke = paint_colour(v, out)
+    if v := decl.get("stroke-width")
+        out.width = v.replace("px", "").to_float() else p.width
+    if v := decl.get("opacity")
+        out.alpha = p.alpha * (v.to_float() else 1.0)
+    if v := decl.get("fill-opacity")
+        out.alpha = out.alpha * (v.to_float() else 1.0)
+    out
+
+## Draws element `id` and what it holds; whether anything was drawn.
+fn paint_node(
+    d html.Doc,
+    id int,
+    parent Paint,
+    sc float,
+    ox float,
+    oy float,
+    w int,
+    h int,
+    mut canvas List[float],
+) bool
+    n := d.nodes[id]
+    if n.kind != html.Kind.Element
+        return false
+    if n.tag == "defs"
+        or n.tag == "clippath"
+        or n.tag == "mask"
+        or n.tag == "style"
+        or n.tag == "title"
+        return false
+    p := paint_of(d, id, parent)
+    if n.tag == "g" or n.tag == "svg" or n.tag == "a"
+        mut drew := false
+        for c in n.children
+            if paint_node(d, c, p, sc, ox, oy, w, h, mut canvas)
+                drew = true
+        return drew
+    shape := shape_of(d, id, n.tag)
+    if shape.subs.len() == 0
+        return false
+    mut drew := false
+    if p.fill >= 0
+        fill_shape(shape, p.fill, p.alpha, sc, ox, oy, w, h, mut canvas)
+        drew = true
+    if p.stroke >= 0 and p.width > 0.0
+        stroke_shape(shape, p.stroke, p.alpha, p.width, sc, ox, oy, w, h, mut canvas)
+        drew = true
+    drew
+
+fn shape_of(d html.Doc, id int, tag str) Shape
+    mut subs := List[List[float]]()
+    mut closed := List[bool]()
+    match tag
+        "rect" =>
+            x := attr_num(d, id, "x")
+            y := attr_num(d, id, "y")
+            rw := attr_num(d, id, "width")
+            rh := attr_num(d, id, "height")
+            subs.push([x, y, x + rw, y, x + rw, y + rh, x, y + rh])
+            closed.push(true)
+        "circle" =>
+            subs.push(ellipse(
+                attr_num(d, id, "cx"),
+                attr_num(d, id, "cy"),
+                attr_num(d, id, "r"),
+                attr_num(d, id, "r"),
+            ))
+            closed.push(true)
+        "ellipse" =>
+            subs.push(ellipse(
+                attr_num(d, id, "cx"),
+                attr_num(d, id, "cy"),
+                attr_num(d, id, "rx"),
+                attr_num(d, id, "ry"),
+            ))
+            closed.push(true)
+        "line" =>
+            subs.push([
+                attr_num(d, id, "x1"),
+                attr_num(d, id, "y1"),
+                attr_num(d, id, "x2"),
+                attr_num(d, id, "y2"),
+            ])
+            closed.push(false)
+        "polyline" =>
+            subs.push(numbers(d.attr(id, "points") else ""))
+            closed.push(false)
+        "polygon" =>
+            subs.push(numbers(d.attr(id, "points") else ""))
+            closed.push(true)
+        "path" => path_subs(d.attr(id, "d") else "", mut subs, mut closed)
+        _ => subs = subs
+    Shape(subs, closed)
+
+fn ellipse(cx float, cy float, rx float, ry float) List[float]
+    mut out := List[float]()
+    for k in 0..48
+        a := k.to_float() * 6.283185307 / 48.0
+        out.push(cx + rx * a.cos())
+        out.push(cy + ry * a.sin())
+    out
+
+## Splits path data into subpaths of line segments (curves are flattened).
+fn path_subs(dd str, mut subs List[List[float]], mut closed List[bool])
+    chars := dd.chars()
+    mut i := 0
+    mut cmd := ' '
+    mut cur := List[float]()
+    mut x := 0.0
+    mut y := 0.0
+    mut sx := 0.0
+    mut sy := 0.0
+    mut cx := 0.0
+    mut cy := 0.0
+    mut last := ' '
+    while i < chars.len()
+        ch := chars[i]
+        if ch.is_alpha() and ch != 'e' and ch != 'E'
+            cmd = ch
+            i += 1
+            if cmd == 'z' or cmd == 'Z'
+                if cur.len() > 0
+                    subs.push(cur)
+                    closed.push(true)
+                    cur = []
+                x = sx
+                y = sy
+                last = 'z'
+            continue
+        need := match cmd.to_upper()
+            'M' => 2
+            'L' => 2
+            'T' => 2
+            'H' => 1
+            'V' => 1
+            'C' => 6
+            'S' => 4
+            'Q' => 4
+            'A' => 7
+            _ => 0
+        if need == 0
+            i += 1
+            continue
+        ## read `need` numbers (arc flags are single digits)
+        mut args := List[float]()
+        while args.len() < need and i < chars.len()
+            while i < chars.len()
+                and (chars[i] == ' ' or chars[i] == ',' or chars[i] == '\n' or chars[i] == '\t')
+                i += 1
+            if i >= chars.len()
+                break
+            mut tok := ""
+            if cmd.to_upper() == 'A' and (args.len() == 3 or args.len() == 4)
+                tok = "{chars[i]}"
+                i += 1
+            else
+                mut seen_dot := false
+                mut j := i
+                while j < chars.len()
+                    c := chars[j]
+                    ok := c.is_digit()
+                        or (c == '.' and not seen_dot)
+                        or ((c == '-' or c == '+') and (j == i or chars[j - 1] == 'e' or chars[j - 1] == 'E'))
+                        or ((c == 'e' or c == 'E') and j > i)
+                    if not ok
+                        break
+                    if c == '.'
+                        seen_dot = true
+                    j += 1
+                if j == i
+                    i += 1
+                    continue
+                tok = dd.slice(i, j)
+                i = j
+            args.push(tok.to_float() else 0.0)
+        if args.len() < need
+            break
+        rel := cmd.is_lower()
+        up := cmd.to_upper()
+        if up == 'M'
+            if cur.len() > 0
+                subs.push(cur)
+                closed.push(false)
+            cur = []
+            x = if rel then x + args[0] else args[0]
+            y = if rel then y + args[1] else args[1]
+            sx = x
+            sy = y
+            cur.push(x)
+            cur.push(y)
+            cmd = if rel then 'l' else 'L'
+            last = 'M'
+        elif up == 'L'
+            x = if rel then x + args[0] else args[0]
+            y = if rel then y + args[1] else args[1]
+            cur.push(x)
+            cur.push(y)
+            last = 'L'
+        elif up == 'H'
+            x = if rel then x + args[0] else args[0]
+            cur.push(x)
+            cur.push(y)
+            last = 'L'
+        elif up == 'V'
+            y = if rel then y + args[0] else args[0]
+            cur.push(x)
+            cur.push(y)
+            last = 'L'
+        elif up == 'C' or up == 'S'
+            mut a := 0
+            mut c1x := x
+            mut c1y := y
+            if up == 'C'
+                c1x = if rel then x + args[0] else args[0]
+                c1y = if rel then y + args[1] else args[1]
+                a = 2
+            elif last == 'C'
+                c1x = 2.0 * x - cx
+                c1y = 2.0 * y - cy
+            c2x := if rel then x + args[a] else args[a]
+            c2y := if rel then y + args[a + 1] else args[a + 1]
+            ex := if rel then x + args[a + 2] else args[a + 2]
+            ey := if rel then y + args[a + 3] else args[a + 3]
+            for s in 1..=12
+                t := s.to_float() / 12.0
+                u := 1.0 - t
+                cur.push(u * u * u * x + 3.0 * u * u * t * c1x + 3.0 * u * t * t * c2x + t * t * t * ex)
+                cur.push(u * u * u * y + 3.0 * u * u * t * c1y + 3.0 * u * t * t * c2y + t * t * t * ey)
+            cx = c2x
+            cy = c2y
+            x = ex
+            y = ey
+            last = 'C'
+        elif up == 'Q' or up == 'T'
+            mut qx := 2.0 * x - cx
+            mut qy := 2.0 * y - cy
+            mut a := 0
+            if up == 'Q'
+                qx = if rel then x + args[0] else args[0]
+                qy = if rel then y + args[1] else args[1]
+                a = 2
+            elif last != 'Q'
+                qx = x
+                qy = y
+            ex := if rel then x + args[a] else args[a]
+            ey := if rel then y + args[a + 1] else args[a + 1]
+            for s in 1..=10
+                t := s.to_float() / 10.0
+                u := 1.0 - t
+                cur.push(u * u * x + 2.0 * u * t * qx + t * t * ex)
+                cur.push(u * u * y + 2.0 * u * t * qy + t * t * ey)
+            cx = qx
+            cy = qy
+            x = ex
+            y = ey
+            last = 'Q'
+        else
+            ex := if rel then x + args[5] else args[5]
+            ey := if rel then y + args[6] else args[6]
+            arc(x, y, args[0], args[1], args[2], args[3] != 0.0, args[4] != 0.0, ex, ey, mut cur)
+            x = ex
+            y = ey
+            last = 'A'
+    if cur.len() > 0
+        subs.push(cur)
+        closed.push(false)
+
+## An SVG elliptical arc from (x1, y1) to (x2, y2) as line segments.
+fn arc(
+    x1 float,
+    y1 float,
+    rx0 float,
+    ry0 float,
+    rot float,
+    large bool,
+    sweep bool,
+    x2 float,
+    y2 float,
+    mut out List[float],
+)
+    mut rx := rx0.abs()
+    mut ry := ry0.abs()
+    if rx == 0.0 or ry == 0.0 or (x1 == x2 and y1 == y2)
+        out.push(x2)
+        out.push(y2)
+        return
+    phi := rot * 3.141592653 / 180.0
+    cp := phi.cos()
+    sp := phi.sin()
+    dx := (x1 - x2) / 2.0
+    dy := (y1 - y2) / 2.0
+    x1p := cp * dx + sp * dy
+    y1p := 0.0 - sp * dx + cp * dy
+    lam := x1p * x1p / (rx * rx) + y1p * y1p / (ry * ry)
+    if lam > 1.0
+        rx = rx * lam.sqrt()
+        ry = ry * lam.sqrt()
+    num := rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p
+    den := rx * rx * y1p * y1p + ry * ry * x1p * x1p
+    mut coef := if den == 0.0 then 0.0 else (num / den).max(0.0).sqrt()
+    if large == sweep
+        coef = 0.0 - coef
+    cxp := coef * rx * y1p / ry
+    cyp := 0.0 - coef * ry * x1p / rx
+    ccx := cp * cxp - sp * cyp + (x1 + x2) / 2.0
+    ccy := sp * cxp + cp * cyp + (y1 + y2) / 2.0
+    th1 := atan2((y1p - cyp) / ry, (x1p - cxp) / rx)
+    th2 := atan2((0.0 - y1p - cyp) / ry, (0.0 - x1p - cxp) / rx)
+    mut dth := th2 - th1
+    if sweep and dth < 0.0
+        dth += 6.283185307
+    if not sweep and dth > 0.0
+        dth -= 6.283185307
+    steps := ((dth.abs() / 0.2).to_int() + 2).min(48)
+    for s in 1..=steps
+        a := th1 + dth * s.to_float() / steps.to_float()
+        out.push(ccx + rx * a.cos() * cp - ry * a.sin() * sp)
+        out.push(ccy + rx * a.cos() * sp + ry * a.sin() * cp)
+
+fn atan2(y float, x float) float
+    if x > 0.0
+        return (y / x).atan()
+    if x < 0.0 and y >= 0.0
+        return (y / x).atan() + 3.141592653
+    if x < 0.0
+        return (y / x).atan() - 3.141592653
+    if y > 0.0
+        return 1.570796327
+    if y < 0.0
+        return 0.0 - 1.570796327
+    0.0
+
+## Fills the shape (non-zero winding) onto `canvas`.
+fn fill_shape(
+    shape Shape,
+    colour int,
+    alpha float,
+    sc float,
+    ox float,
+    oy float,
+    w int,
+    h int,
+    mut canvas List[float],
+)
+    mut edges := List[float]()
+    for sub in shape.subs
+        n := sub.len() / 2
+        if n < 2
+            continue
+        for k in 0..n
+            j := (k + 1) % n
+            edges.push(sub[k * 2] * sc + ox)
+            edges.push(sub[k * 2 + 1] * sc + oy)
+            edges.push(sub[j * 2] * sc + ox)
+            edges.push(sub[j * 2 + 1] * sc + oy)
+    cover_edges(edges, colour, alpha, w, h, mut canvas)
+
+## Strokes each segment of the shape as a quad `width` wide (user units),
+## with a square at each vertex so corners close.
+fn stroke_shape(
+    shape Shape,
+    colour int,
+    alpha float,
+    width float,
+    sc float,
+    ox float,
+    oy float,
+    w int,
+    h int,
+    mut canvas List[float],
+)
+    half := width * sc / 2.0
+    mut edges := List[float]()
+    for si in 0..shape.subs.len()
+        sub := shape.subs[si]
+        n := sub.len() / 2
+        count := if shape.closed[si] then n else n - 1
+        for k in 0..count
+            j := (k + 1) % n
+            ax := sub[k * 2] * sc + ox
+            ay := sub[k * 2 + 1] * sc + oy
+            bx := sub[j * 2] * sc + ox
+            by := sub[j * 2 + 1] * sc + oy
+            len := ((bx - ax) * (bx - ax) + (by - ay) * (by - ay)).sqrt()
+            if len == 0.0
+                continue
+            nx := (by - ay) / len * half
+            ny := 0.0 - (bx - ax) / len * half
+            quad(ax + nx, ay + ny, bx + nx, by + ny, bx - nx, by - ny, ax - nx, ay - ny, mut edges)
+    cover_edges(edges, colour, alpha, w, h, mut canvas)
+
+fn quad(
+    x1 float,
+    y1 float,
+    x2 float,
+    y2 float,
+    x3 float,
+    y3 float,
+    x4 float,
+    y4 float,
+    mut e List[float],
+)
+    for p in [[x1, y1, x2, y2], [x2, y2, x3, y3], [x3, y3, x4, y4], [x4, y4, x1, y1]]
+        e.push(p[0])
+        e.push(p[1])
+        e.push(p[2])
+        e.push(p[3])
+
+## Scan-converts `edges` (`x1, y1, x2, y2` each, in pixels) with four
+## sub-scanlines per row and composites `colour` over `canvas` by coverage.
+fn cover_edges(edges List[float], colour int, alpha float, w int, h int, mut canvas List[float])
+    if edges.len() == 0
+        return
+    r := ((colour / 65536) % 256).to_float() / 255.0
+    g := ((colour / 256) % 256).to_float() / 255.0
+    b := (colour % 256).to_float() / 255.0
+    mut cov := List[float]()
+    for k in 0..w
+        cov.push(0.0)
+    for row in 0..h
+        for k in 0..w
+            cov[k] = 0.0
+        for sub in 0..4
+            sy := row.to_float() + (sub.to_float() + 0.5) / 4.0
+            mut xs := List[float]()
+            mut dirs := List[int]()
+            for e in 0..edges.len() / 4
+                y1 := edges[e * 4 + 1]
+                y2 := edges[e * 4 + 3]
+                if (y1 <= sy and y2 > sy) or (y2 <= sy and y1 > sy)
+                    x1 := edges[e * 4]
+                    x2 := edges[e * 4 + 2]
+                    xs.push(x1 + (sy - y1) * (x2 - x1) / (y2 - y1))
+                    dirs.push(if y2 > y1 then 1 else -1)
+            ## sort crossings by x (few per scanline)
+            for a in 1..xs.len()
+                mut k := a
+                while k > 0 and xs[k - 1] > xs[k]
+                    tx := xs[k]
+                    xs[k] = xs[k - 1]
+                    xs[k - 1] = tx
+                    td := dirs[k]
+                    dirs[k] = dirs[k - 1]
+                    dirs[k - 1] = td
+                    k -= 1
+            mut wind := 0
+            for a in 0..xs.len()
+                if wind != 0 and a > 0
+                    span(xs[a - 1], xs[a], w, mut cov)
+                wind += dirs[a]
+        for px in 0..w
+            c := (cov[px] / 4.0).min(1.0) * alpha
+            if c > 0.0
+                at := (row * w + px) * 4
+                inv := 1.0 - c
+                canvas[at] = canvas[at] * inv + r * c
+                canvas[at + 1] = canvas[at + 1] * inv + g * c
+                canvas[at + 2] = canvas[at + 2] * inv + b * c
+                canvas[at + 3] = canvas[at + 3] * inv + c
+
+## Adds the coverage of the span [x0, x1) to the pixels of one sub-scanline.
+fn span(x0 float, x1 float, w int, mut cov List[float])
+    a := x0.max(0.0)
+    b := x1.min(w.to_float())
+    if b <= a
+        return
+    first := a.floor().to_int()
+    last := (b.ceil().to_int() - 1).min(w - 1)
+    for px in first..=last
+        lo := a.max(px.to_float())
+        hi := b.min(px.to_float() + 1.0)
+        if hi > lo
+            cov[px] = cov[px] + (hi - lo)
