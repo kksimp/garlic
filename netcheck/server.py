@@ -5,11 +5,15 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
 last = {}
-counts = {"css": 0, "304": 0}
+counts = {"css": 0, "304": 0, "conns": 0}
 
 
 class H(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+
+    def setup(self):
+        counts["conns"] += 1
+        super().setup()
 
     def log_message(self, *a):
         pass
@@ -50,6 +54,8 @@ class H(BaseHTTPRequestHandler):
             self.send(200, gzip.compress(b"<title>zipped</title>"), headers=[("Content-Encoding", "gzip")])
         elif self.path == "/counts":
             self.send(200, f"{counts['css']} {counts['304']}".encode(), ctype="text/plain")
+        elif self.path == "/conns":
+            self.send(200, str(counts["conns"]).encode(), ctype="text/plain")
         elif self.path == "/last":
             self.send(200, last.get("css", "").encode(), ctype="text/plain")
         elif self.path == "/loop":

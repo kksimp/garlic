@@ -41,4 +41,4 @@ Native macOS window (needs the SwiftUI host, ADR 0838): `tools/app-host/macos/ru
 - Find: Cmd-F or `/`, type, Enter scrolls to the match and highlights it; `n` finds the next.
 - `garlic --pixels-dump URL` prints the canvas, ops and image decode status.
 
-Network behaviour (cookies on redirects, the final address, gzip, sheets with cookie and Referer) is checked against a scripted site with `tools/garlic/netcheck/check.sh`.
+Network behaviour (cookies on redirects, the final address, gzip, sheets with cookie and Referer) is checked against a scripted site with `tools/garlic/netcheck/check.sh` (`GARLIC=path` runs it against a native build).
