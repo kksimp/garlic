@@ -1,0 +1,70 @@
+## The attach server: agents on this machine drive the running window over
+## MCP (JSON-RPC 2.0 posted to `/mcp`), with a bearer token the window wrote
+## to a private file. Requests go through the app's inbox, so the window's
+## own state answers them.
+use std.app
+use std.net
+use std.proc
+use std.random
+
+## The window side of the bridge: `lock` serialises requests (the browser
+## answers one at a time) and `replies` carries each answer back.
+pub struct Bridge
+    pub lock Mutex[int]
+    pub replies Channel[str]
+
+pub fn Bridge.new() Bridge
+    Bridge(lock: Mutex(0), replies: Channel[str](1))
+
+## A token an agent must present: 24 bytes from the system's random source,
+## else from the generator.
+pub fn make_token() str
+    out := proc.run("sh", ["-c", "head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \\n'"], none, none) else err
+        return fallback_token()
+    got := out.text().trim()
+    if out.ok() and got.chars().len() == 48
+        return got
+    fallback_token()
+
+fn fallback_token() str
+    mut s := ""
+    for k in 0..4
+        s = "{s}{random.int(0, 1000000000000).to_hex()}"
+    s
+
+## Whether `req` carries the bearer token.
+pub fn authorized(req net.Request, token str) bool
+    given := req.headers.get("authorization") else (req.headers.get("Authorization") else "")
+    given == "Bearer {token}"
+
+fn reply(ex net.Exchange, status int, body str)
+    ex.respond(net.Response(
+        status: status,
+        headers: {"content-type": "application/json"},
+        body: body,
+    )) else err
+        return
+
+fn handle(ex net.Exchange, inbox app.Inbox, bridge Bridge, token str)
+    req := ex.request
+    if not authorized(req, token)
+        reply(ex, 401, "\{\"error\":\"missing or wrong bearer token\"}")
+        return
+    if req.method != "POST" or req.path != "/mcp"
+        reply(ex, 404, "\{\"error\":\"POST /mcp\"}")
+        return
+    mut answer := ""
+    with bridge.lock as mut n
+        n += 1
+        inbox.post(app.external("mcp", req.body))
+        answer = bridge.replies.recv() else ""
+    if answer == ""
+        reply(ex, 202, "")
+    else
+        reply(ex, 200, answer)
+
+## Accepts requests until the server is shut down.
+pub fn serve_loop(srv net.Server, inbox app.Inbox, bridge Bridge, token str)
+    while true
+        ex := srv.accept() else break
+        handle(ex, inbox, bridge, token)

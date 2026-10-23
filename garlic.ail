@@ -9,6 +9,7 @@ use std.env
 use std.io
 use std.fs
 use std.net
+use std.proc
 use std.net.jar
 use std.compress
 use std.time
@@ -21,6 +22,7 @@ use gfx
 use jsdom
 use images
 use ws
+use attach
 
 ## The keys, as `--keys` prints them.
 KEYS := [
@@ -1396,6 +1398,8 @@ fn rpc_id(j Json) str
 struct Guard
     allow List[str]
     log List[str]
+    ## Sites allowed at launch, on top of the tabs' (`--allow`).
+    fixed List[str]
 
 ## The host of `url`: "example.com" for "https://example.com:8080/a".
 fn host_of(url str) str
@@ -1411,6 +1415,10 @@ fn Guard.permits(self, url str) bool
 ## Whether `do` sends data: it needs `"confirm":true` to run.
 fn sends(name str) bool
     name == "submit"
+
+## The answer to a `tools/call` request `id` whose result is `text`.
+fn rpc_reply(id str, text str) str
+    "\{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":\{\"content\":[\{\"type\":\"text\",\"text\":{page.quote(text)}}]}}"
 
 ## One tool call of the `--serve` server: the text it answers with. `g`
 ## refuses sites it doesn't permit, holds an action that sends data until
@@ -1454,7 +1462,7 @@ fn Browser.tool(mut self, mut g Guard, name str, a Json) str
         _ => "unknown tool `{name}`: open, observe, act, find, extract, screenshot or log"
 
 ## The tool list, with `<` and `>` for the braces of the JSON.
-TOOLS_SRC := """[<"name":"open","description":"Open a URL; answers with the page model.","inputSchema":<"type":"object","properties":<"url":<"type":"string">>,"required":["url"]>>,<"name":"observe","description":"The page model: nodes with ids, roles, names and boxes.","inputSchema":<"type":"object","properties":<>>>,<"name":"act","description":"Do one action: follow, click, type, submit, check, select, back, forward, scroll, reload. Give link, id or row (a number) and text where needed.","inputSchema":<"type":"object","properties":<"do":<"type":"string">,"link":<"type":"integer">,"id":<"type":"integer">,"row":<"type":"integer">,"text":<"type":"string">>,"required":["do"]>>,<"name":"find","description":"Scroll to text on the page.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"extract","description":"The page as plain text.","inputSchema":<"type":"object","properties":<>>>,<"name":"log","description":"What this session did, one line per call.","inputSchema":<"type":"object","properties":<>>>,<"name":"screenshot","description":"The pixel layout as drawing operations.","inputSchema":<"type":"object","properties":<>>>]"""
+TOOLS_SRC := """[<"name":"open","description":"Open a URL; answers with the page model.","inputSchema":<"type":"object","properties":<"url":<"type":"string">>,"required":["url"]>>,<"name":"observe","description":"The page model: nodes with ids, roles, names and boxes.","inputSchema":<"type":"object","properties":<>>>,<"name":"act","description":"Do one action: follow, click, type, submit, check, select, back, forward, scroll, reload. Give link, id or row (a number) and text where needed.","inputSchema":<"type":"object","properties":<"do":<"type":"string">,"link":<"type":"integer">,"id":<"type":"integer">,"row":<"type":"integer">,"text":<"type":"string">>,"required":["do"]>>,<"name":"find","description":"Scroll to text on the page.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"extract","description":"The page as plain text.","inputSchema":<"type":"object","properties":<>>>,<"name":"watch","description":"Tell me when the page changes: url (else the live tab), contains (text to wait for), every (seconds).","inputSchema":<"type":"object","properties":<"url":<"type":"string">,"contains":<"type":"string">,"every":<"type":"integer">>>>,<"name":"unwatch","description":"Stop watch id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"watches","description":"The watches in force.","inputSchema":<"type":"object","properties":<>>>,<"name":"events","description":"What the watches saw change since the last call.","inputSchema":<"type":"object","properties":<>>>,<"name":"schedule","description":"Run one tool later: tool, arguments, in (seconds). It follows the same site and confirm rules.","inputSchema":<"type":"object","properties":<"tool":<"type":"string">,"arguments":<"type":"object">,"in":<"type":"integer">>,"required":["tool","in"]>>,<"name":"schedules","description":"The jobs waiting to run.","inputSchema":<"type":"object","properties":<>>>,<"name":"unschedule","description":"Cancel job id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"log","description":"What this session did, one line per call.","inputSchema":<"type":"object","properties":<>>>,<"name":"screenshot","description":"The pixel layout as drawing operations.","inputSchema":<"type":"object","properties":<>>>]"""
 
 fn tools_json() str
     TOOLS_SRC.replace("<", "\{").replace(">", "}")
@@ -1486,7 +1494,7 @@ fn Browser.rpc(mut self, mut g Guard, line str) str
 ## `--serve`: an MCP server on stdio, one JSON-RPC message per line, so an
 ## agent drives the browser with the tools of `Browser.tool`.
 fn Browser.serve(mut self, allow List[str])
-    mut g := Guard(allow, log: [])
+    mut g := Guard(allow, log: [], fixed: [])
     while true
         line := io.read_line() else break
         if line.trim() == ""
@@ -1810,10 +1818,145 @@ struct Garlic
     url_text str
     ## The control to give the keyboard focus; cleared by the next event.
     want str
+    ## The attach server's side (`--attach`): its bridge, the rules an agent
+    ## session follows and the number of calls it made; `attached` is false
+    ## without `--attach`.
+    attached bool
+    bridge attach.Bridge
+    guard Guard
+    where str
+    calls int
+    ## Watches agents set, what they have seen and not yet read, and the
+    ## seconds the timer has counted.
+    watches List[attach.Watch]
+    events List[str]
+    seconds int
+    next_watch int
+    jobs List[attach.Job]
 
 fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
     g := Gui.new(b, w, h, cell_w, cell_h)
-    Garlic(g, tabs: [g], cur: 0, url_text: b.url, want: "")
+    Garlic(
+        g,
+        tabs: [g],
+        cur: 0,
+        url_text: b.url,
+        want: "",
+        attached: false,
+        bridge: attach.Bridge.new(),
+        guard: Guard(allow: [], log: [], fixed: []),
+        where: "",
+        calls: 0,
+        watches: [],
+        events: [],
+        seconds: 0,
+        next_watch: 1,
+        jobs: [],
+    )
+
+## Answers one MCP request from an attached agent: the sites it may use are
+## the ones the tabs show plus those allowed at launch, and the answer goes
+## back through the bridge.
+fn Garlic.agent_call(mut self, body str)
+    mut sites := guard.fixed
+    for t in tabs
+        sites.push(host_of(t.b.url))
+    sites.push(host_of(g.b.url))
+    guard.allow = sites
+    j := parse_json(body) else err
+        bridge.replies.send(g.b.rpc(mut guard, body))
+        return
+    calls += 1
+    params := j.need("params") else err
+        bridge.replies.send(g.b.rpc(mut guard, body))
+        return
+    name := params.str("name") else ""
+    args := params.need("arguments") else err
+        params
+    if j.str("method") == "tools/call" and WATCH_TOOLS.contains(name)
+        guard.log.push("{name}")
+        bridge.replies.send(rpc_reply(rpc_id(j), watch_tool(name, args)))
+        return
+    bridge.replies.send(g.b.rpc(mut guard, body))
+
+## The tools that set and read watches; the window answers them, not the page.
+WATCH_TOOLS := {"watch", "unwatch", "watches", "events", "schedule", "schedules", "unschedule"}
+
+## One watch tool call, as text. `watch` takes `url` (else the live tab),
+## `contains` and `every` (seconds, default 30); `events` returns the changes
+## seen since the last call.
+fn Garlic.watch_tool(mut self, name str, args Json) str
+    match name
+        "watch" =>
+            url := args.str("url") else ""
+            if url != "" and not guard.permits(url)
+                return "refused: the agent may not watch `{url}`"
+            w := attach.Watch.start(
+                next_watch,
+                url,
+                args.str("contains") else "",
+                (args.num("every") else 30.0).to_int(),
+                seconds,
+                if url == "" then g.b.pg.text() else watched_text(url),
+            )
+            next_watch += 1
+            watches.push(w)
+            "watching {w.line()}"
+        "unwatch" =>
+            id := (args.num("id") else 0.0).to_int()
+            watches = [w for w in watches if w.id != id]
+            "stopped watch {id}"
+        "watches" => [w.line() for w in watches].join("\n")
+        "schedule" =>
+            call := args.str("tool") else ""
+            if call == "" or WATCH_TOOLS.contains(call)
+                return "schedule needs `tool` (open, observe, act, find, extract, screenshot) and `in` seconds"
+            inner := args.need("arguments") else err
+                Json.Obj([])
+            job := attach.Job(
+                id: next_watch,
+                due: seconds + (args.num("in") else 0.0).to_int(),
+                tool: call,
+                args: inner.to_text(),
+            )
+            next_watch += 1
+            jobs.push(job)
+            "scheduled {job.line(seconds)}"
+        "schedules" => [j.line(seconds) for j in jobs].join("\n")
+        "unschedule" =>
+            id := (args.num("id") else 0.0).to_int()
+            jobs = [j for j in jobs if j.id != id]
+            "cancelled job {id}"
+        _ =>
+            out := events.join("\n")
+            events = []
+            if out == "" then "no changes" else out
+
+fn watched_text(url str) str
+    Browser.new(url, 100, 32).pg.text()
+
+## One timer tick (once a second): looks at each watch that is due and
+## notes what changed.
+fn Garlic.tick(mut self)
+    seconds += 1
+    due := [j for j in jobs if j.due <= seconds]
+    jobs = [j for j in jobs if j.due > seconds]
+    for j in due
+        mut sites := guard.fixed
+        for t in tabs
+            sites.push(host_of(t.b.url))
+        sites.push(host_of(g.b.url))
+        guard.allow = sites
+        answer := g.b.rpc(mut guard, j.request())
+        events.push("job {j.id} ({j.tool}) ran: {answer.slice(0, answer.chars().len().min(160))}")
+    for k in 0..watches.len()
+        if seconds < watches[k].due
+            continue
+        text := if watches[k].url == "" then g.b.pg.text() else watched_text(watches[k].url)
+        change := watches[k].look(text, seconds)
+        if change != ""
+            events.push(change)
+            g.b.message = change
 
 ## Makes tab `k` the one shown.
 fn Garlic.switch(mut self, k int)
@@ -1849,6 +1992,13 @@ fn Garlic.close_tab(mut self)
     cur = cur.min(tabs.len() - 1)
     g = tabs[cur]
     g.refresh()
+
+## The line that tells the user an agent can drive this window; empty
+## without `--attach`.
+fn Garlic.agent_line(self) str
+    if not attached
+        return ""
+    "Agent attached at {where}: {calls} calls so far; {watches.len()} watches, {events.len()} unread changes"
 
 ## The tab strip: one button per tab, titled by its page.
 fn Garlic.strip(self) List[app.Node]
@@ -1890,6 +2040,11 @@ impl app.App for Garlic
                 else
                     g.key(ev.text, ev.alt, ev.shift)
             "edit" => url_text = ev.text
+            "external" =>
+                if ev.id == "mcp"
+                    agent_call(ev.text)
+                elif ev.id == "tick"
+                    tick()
             "submit" => g.open(url_text)
             "press" =>
                 if ev.id == "back"
@@ -1913,12 +2068,12 @@ impl app.App for Garlic
             app.field("url", url_text, "Enter a web address"),
         ])
         ## A canvas of 0 by 0 fills the window; the host reports its size.
-        app.column([
-            app.row(strip()),
-            bar,
-            app.canvas("page", 0.0, 0.0, [to_app(op, g) for op in g.display()]),
-            app.label(g.status()),
-        ])
+        mut rows := [app.row(strip()), bar]
+        if attached
+            rows.push(app.label(agent_line()))
+        rows.push(app.canvas("page", 0.0, 0.0, [to_app(op, g) for op in g.display()]))
+        rows.push(app.label(g.status()))
+        app.column(rows)
 
     fn title(self) str
         "{g.b.pg.title} - Garlic"
@@ -1978,13 +2133,52 @@ GUI_H := 600.0
 GUI_CELL_W := 7.8
 GUI_CELL_H := 16.0
 
-fn app_main(b Browser, pixel bool) !
+fn app_main(b Browser, pixel bool, attached bool, sites str) !
     mut a := Garlic.new(b, GUI_W, GUI_H, GUI_CELL_W, GUI_CELL_H)
     a.g.pixel = pixel
     a.g.refresh()
+    if attached
+        attached_main(mut a, sites)?
+        return
     app.run(mut a) else err
         print("garlic: no native window ({err.message}); the page as text:")
         print(a.g.b.pg.text())
+
+## Posts a `tick` event every second until `stop` is set.
+fn ticker(inbox app.Inbox, stop Atomic[int])
+    while stop.load() == 0
+        time.sleep_ms(1000)
+        inbox.post(app.external("tick", ""))
+
+## The attach server's task (a local function, which `spawn` needs natively).
+fn serve(srv net.Server, inbox app.Inbox, bridge attach.Bridge, token str)
+    attach.serve_loop(srv, inbox, bridge, token)
+
+## `--attach`: the window as `app_main` runs it, with the attach server on
+## 127.0.0.1 (a free port), its address and token in `~/.garlic-attach.json`
+## for the agents on this machine.
+fn attached_main(mut a Garlic, sites str) !
+    srv := net.serve("127.0.0.1:0")?
+    token := attach.make_token()
+    path := "{env.get("HOME") else "."}/.garlic-attach.json"
+    where := "http://{srv.addr()}/mcp"
+    fs.write_text(path, "\{\"url\":\"{where}\",\"token\":\"{token}\"}\n")?
+    mode := proc.run("chmod", ["600", path], none, none) else err
+        print("garlic: could not restrict {path}: {err}")
+        return
+    a.attached = true
+    a.where = where
+    a.guard.fixed = [h for h in sites.split(",") if h != ""]
+    inbox := app.new_inbox()
+    g := TaskGroup()
+    g.add(spawn serve(srv, inbox, a.bridge, token))
+    stop := Atomic(0)
+    g.add(spawn ticker(inbox, stop))
+    print("garlic: agents attach at {where}; the token is in {path}")
+    app.run_with(mut a, app.host_path()?, [], inbox) else err
+        print("garlic: no native window ({err.message})")
+    stop.add(1)
+    srv.shutdown()
 
 ## The value after flag `name` (`--width 60`), or none.
 fn flag(args List[str], name str) str?
@@ -2124,7 +2318,7 @@ fn main() !
     else
         # The window is the std.app host's (ADR 0838); `--app` is the old
         # spelling of the default.
-        app_main(b, not args.contains("--cells")) else err
+        app_main(b, not args.contains("--cells"), args.contains("--attach"), flag(args, "--allow") else "") else err
             print("garlic: {err}")
 
 # ---- Tests -------------------------------------------------------------
@@ -3258,7 +3452,7 @@ fn flat(s gfx.Scene) List[str]
 
 @test fn serve_answers_mcp_requests()
     mut b := Browser.empty("about:blank", 80, 24)
-    mut g := Guard(allow: ["*"], log: [])
+    mut g := Guard(allow: ["*"], log: [], fixed: [])
     init := b.rpc(mut g, "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}")
     assert(init.contains("\"serverInfo\""))
     assert_eq(b.rpc(mut g, "\{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}"), "")
@@ -3276,14 +3470,14 @@ fn flat(s gfx.Scene) List[str]
 
 @test fn serve_enforces_site_permission_confirmation_and_logs()
     mut b := Browser.empty("about:blank", 80, 24)
-    mut g := Guard(allow: ["example.com"], log: [])
+    mut g := Guard(allow: ["example.com"], log: [], fixed: [])
     no := b.rpc(
         mut g,
         "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"https://evil.test/x\"}}}",
     )
     assert(no.contains("refused"))
     assert_eq(host_of("https://example.com:8080/a"), "example.com")
-    mut open := Guard(allow: ["*"], log: [])
+    mut open := Guard(allow: ["*"], log: [], fixed: [])
     b.rpc(
         mut open,
         "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{testdata()}/form.html\"}}}",
@@ -3294,3 +3488,66 @@ fn flat(s gfx.Scene) List[str]
     )
     assert(held.contains("confirm required"))
     assert_eq(open.log.len(), 2)
+
+@test fn an_attached_agent_drives_the_window_through_the_inbox()
+    b := Browser.new("{testdata()}/form.html", 80, 24)
+    mut a := Garlic.new(b, 800.0, 600.0, 7.5, 15.0)
+    a.attached = true
+    a.where = "http://127.0.0.1:1/mcp"
+    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":\{\"name\":\"observe\",\"arguments\":\{}}}"))
+    answer := a.bridge.replies.recv() else "none"
+    assert(answer.contains("Search form"))
+    assert_eq(a.calls, 1)
+    assert(a.agent_line().contains("1 calls"))
+    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"https://elsewhere.test/\"}}}"))
+    refused := a.bridge.replies.recv() else "none"
+    assert(refused.contains("refused"))
+    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":\{\"name\":\"log\",\"arguments\":\{}}}"))
+    assert((a.bridge.replies.recv() else "").contains("open https://elsewhere.test/"))
+
+@test fn the_attach_token_must_match()
+    tok := attach.make_token()
+    assert(tok.chars().len() >= 24)
+    assert(tok != attach.make_token())
+
+@test fn a_watch_reports_changes_and_appearances()
+    mut w := attach.Watch.start(1, "", "", 5, 0, "one")
+    assert_eq(w.look("one", 3), "")
+    assert_eq(w.look("one", 5), "")
+    assert_eq(w.look("two", 10), "watch 1: the page changed")
+    mut k := attach.Watch.start(2, "", "Sold out", 1, 0, "in stock")
+    assert_eq(k.look("In stock", 1), "")
+    assert_eq(k.look("SOLD OUT today", 2), "watch 2: `Sold out` appeared")
+    assert_eq(k.look("back", 3), "watch 2: `Sold out` disappeared")
+
+@test fn agents_set_watches_and_read_their_events_through_the_window()
+    b := Browser.new("{testdata()}/form.html", 80, 24)
+    mut a := Garlic.new(b, 800.0, 600.0, 7.5, 15.0)
+    a.attached = true
+    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":\{\"name\":\"watch\",\"arguments\":\{\"contains\":\"Brand new\",\"every\":1}}}"))
+    assert((a.bridge.replies.recv() else "").contains("watching 1"))
+    a.update(app.external("tick", ""))
+    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"events\",\"arguments\":\{}}}"))
+    assert((a.bridge.replies.recv() else "").contains("no changes"))
+    a.g.b.pg = lay("Brand new text", 40)
+    a.update(app.external("tick", ""))
+    a.update(app.external("tick", ""))
+    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":\{\"name\":\"events\",\"arguments\":\{}}}"))
+    assert((a.bridge.replies.recv() else "").contains("appeared"))
+
+@test fn a_scheduled_action_runs_when_due_and_follows_the_rules()
+    b := Browser.new("{testdata()}/form.html", 80, 24)
+    mut a := Garlic.new(b, 800.0, 600.0, 7.5, 15.0)
+    a.attached = true
+    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":\{\"name\":\"schedule\",\"arguments\":\{\"tool\":\"extract\",\"arguments\":\{},\"in\":2}}}"))
+    assert((a.bridge.replies.recv() else "").contains("scheduled"))
+    a.update(app.external("tick", ""))
+    assert_eq(a.jobs.len(), 1)
+    a.update(app.external("tick", ""))
+    assert_eq(a.jobs.len(), 0)
+    assert(a.events.len() == 1)
+    assert(a.events[0].contains("job"))
+    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"schedule\",\"arguments\":\{\"tool\":\"open\",\"arguments\":\{\"url\":\"https://elsewhere.test/\"},\"in\":1}}}"))
+    a.bridge.replies.recv()
+    a.update(app.external("tick", ""))
+    assert(a.events[1].contains("refused"))
