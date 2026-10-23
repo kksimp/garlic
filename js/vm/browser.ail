@@ -171,6 +171,7 @@ fn Vm.browser_native(mut self, m str, this_val Value, args List[Value]) Value? !
             callback: resolving_functions(p)[0],
             args: [Value.Obj(status)],
             every: 0.0,
+            level: 0,
         ))
         return Value.Obj(p)
     if m == "media.canPlayType"

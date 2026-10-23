@@ -9,7 +9,8 @@
 NET_PRELUDE := r"""
 (function (g) {
   var hook = g.__hostFetch;
-  try { delete g.__hostFetch; } catch (e) {}
+  var wsHook = g.__hostWs;
+  try { delete g.__hostFetch; delete g.__hostWs; } catch (e) {}
   function lower(s) { return String(s).toLowerCase(); }
   function Headers(init) {
     this._h = {};
@@ -110,8 +111,57 @@ NET_PRELUDE := r"""
     });
   };
   g.XMLHttpRequest = XHR;
+
+  var sockets = {};
+  function WS(url, protocols) {
+    var u = String(url);
+    if (!/^wss?:\/\//i.test(u)) throw new SyntaxError("The URL '" + u + "' is invalid.");
+    this.url = u; this.readyState = 0; this.protocol = ""; this.extensions = ""; this.bufferedAmount = 0;
+    this.binaryType = "blob"; this._l = {};
+    this.onopen = null; this.onmessage = null; this.onerror = null; this.onclose = null;
+    var offered = protocols === undefined ? "" : (Array.isArray(protocols) ? protocols.join(",") : String(protocols));
+    this._id = wsHook("open", u, offered);
+    sockets[this._id] = this;
+  }
+  WS.CONNECTING = 0; WS.OPEN = 1; WS.CLOSING = 2; WS.CLOSED = 3;
+  WS.prototype.CONNECTING = 0; WS.prototype.OPEN = 1; WS.prototype.CLOSING = 2; WS.prototype.CLOSED = 3;
+  WS.prototype.addEventListener = XHR.prototype.addEventListener;
+  WS.prototype.removeEventListener = XHR.prototype.removeEventListener;
+  WS.prototype._fire = function (t, extra) {
+    var ev = { type: t, target: this, currentTarget: this };
+    for (var k in extra) ev[k] = extra[k];
+    var h = this["on" + t]; if (typeof h === "function") h.call(this, ev);
+    var a = (this._l[t] || []).slice(); for (var i = 0; i < a.length; i++) a[i].call(this, ev);
+  };
+  WS.prototype.send = function (data) {
+    if (this.readyState === 0) throw new DOMException("Still in CONNECTING state.", "InvalidStateError");
+    if (this.readyState === 1) wsHook("send", this._id, String(data));
+  };
+  WS.prototype.close = function (code, reason) {
+    if (this.readyState >= 2) return;
+    this.readyState = 2;
+    wsHook("close", this._id, String(code === undefined ? 1000 : code));
+  };
+  Object.defineProperty(g, "__wsEvent", { value: function (id, kind, data, code) {
+    var s = sockets[id]; if (!s) return;
+    if (kind === "open") { s.readyState = 1; s.protocol = data; s._fire("open", {}); }
+    else if (kind === "message") s._fire("message", { data: data, origin: s.url, lastEventId: "" });
+    else if (kind === "error") s._fire("error", {});
+    else if (kind === "close") { s.readyState = 3; delete sockets[id]; s._fire("close", { code: code, reason: data, wasClean: code === 1000 || code === 1001 }); }
+  }, enumerable: false });
+  g.WebSocket = WS;
 })(this);
 """
+
+## A WebSocket event for socket `id`: "open" (`data` the protocol), "message"
+## (`data`), "error" or "close" (`data` the reason, with `code`).
+pub fn Vm.ws_event(mut self, id int, kind str, payload str, code int)
+    lit := payload
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+    run_script_text("__wsEvent({id}, \"{kind}\", \"{lit}\", {code})")
 
 ## The browser's JSON answer to request `id`, given to the page's callback.
 pub fn Vm.net_deliver(mut self, id int, json str)
