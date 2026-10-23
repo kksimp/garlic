@@ -81,6 +81,7 @@ USED := {
     "bottom",
     "left",
     "float",
+    "clear",
     "border-radius",
     "height",
     "min-height",

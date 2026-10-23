@@ -385,6 +385,7 @@ struct Bx
     right float?
     left float?
     float_side str
+    bottom float?
     ml_auto bool
     mr_auto bool
 
@@ -550,6 +551,7 @@ fn box_of(tag str, cs Map[str, str], st St, avail float) Bx
         right: none,
         left: none,
         float_side: "",
+        bottom: none,
         ml_auto: false,
         mr_auto: false,
     )
@@ -694,6 +696,8 @@ fn box_of(tag str, cs Map[str, str], st St, avail float) Bx
         b.right = length(v, size, avail)
     if v := cs.get("left")
         b.left = length(v, size, avail)
+    if v := cs.get("bottom")
+        b.bottom = length(v, size, avail)
     if v := cs.get("float")
         b.float_side = v.trim()
     if v := cs.get("height")
@@ -1306,6 +1310,13 @@ fn Ctx.children(mut self, id int, st St, x float, w float)
             side := (cs.get("float") else "").trim()
             if pos == "absolute" or pos == "fixed"
                 continue
+            clr := (cs.get("clear") else "").trim()
+            if clr == "left" or clr == "right" or clr == "both"
+                flush(x, w, st.align)
+                settle()
+                for f in floats
+                    if clr == "both" or (clr == "right") == f.right
+                        y = fmax(y, f.y + f.h)
             if (side == "left" or side == "right") and n.tag != "img"
                 flush(x, w, st.align)
                 self.place_float(c, st, x, w, side == "right")
@@ -1336,9 +1347,25 @@ fn Ctx.place_float(mut self, id int, st St, x float, w float, right bool)
     pend = p0
     floats.push(Float(x: if right then fx - 8.0 else fx, y: y0, w: wide + 8.0, h: h + 4.0, right))
 
+## Operation `op` moved down by `dy`.
+fn lowered(op draw.Op, dy float) draw.Op
+    match op
+        Rect(x, y, w, h, c) => draw.Op.Rect(x, y: y + dy, w, h, color: c)
+        Text(x, y, t, fg, bold, italic, underline) => draw.Op.Text(x, y: y + dy, text: t, fg, bold, italic, underline)
+        Str(x, y, t, font, size, fg, bold, italic, underline) => draw.Op.Str(x, y: y + dy, text: t, font, size, fg, bold, italic, underline)
+        Pic(x, y, w, h, src) => draw.Op.Pic(x, y: y + dy, w, h, src)
+
+## Moves the operations and hit boxes from `o0` and `h0` on down by `dy`.
+fn Ctx.lower(mut self, o0 int, h0 int, dy float)
+    for k in o0..ops.len()
+        ops[k] = lowered(ops[k], dy)
+    for k in h0..hits.len()
+        h := hits[k]
+        hits[k] = Hit(x: h.x, y: h.y + dy, w: h.w, h: h.h, href: h.href, node: h.node)
+
 ## Lays out the absolutely positioned children of `id` against the
 ## positioned ancestor's box, out of the flow.
-fn Ctx.absolutes(mut self, id int, st St)
+fn Ctx.absolutes(mut self, id int, st St, late bool, boxh float)
     for c in d.nodes[id].children
         if d.nodes[c].kind == Element and visible(c)
             cs := element_style(c)
@@ -1348,6 +1375,9 @@ fn Ctx.absolutes(mut self, id int, st St)
             tag := d.nodes[c].tag
             cst := text_style(tag, self.with_attrs(c, tag, cs), st)
             bx := box_of(tag, cs, cst, aw)
+            anchored := bx.bottom != none and bx.top == none
+            if anchored != late
+                continue
             fixed := pos == "fixed"
             ox := if fixed then 0.0 else ax
             oy := if fixed then 0.0 else ay
@@ -1363,8 +1393,17 @@ fn Ctx.absolutes(mut self, id int, st St)
             settle()
             if t := bx.top
                 y = oy + t
+            elif late
+                y = oy
+            start := y
+            o0 := ops.len()
+            h0 := hits.len()
             pend = 0.0
             self.block(c, st, at, wide)
+            if late
+                bb := bx.bottom else 0.0
+                delta := oy + boxh - bb - (y + pend - start) - start
+                self.lower(o0, h0, delta)
             y = y0
             pend = p0
 
@@ -1483,7 +1522,7 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
         ax = left
         ay = top
         aw = border_w
-    self.absolutes(id, st)
+    self.absolutes(id, st, false, 0.0)
     if tag == "table"
         self.table(id, st, content_x, content_w)
     elif FLOW_FLEX.contains(display) and (cs.get("flex-direction") else "row").starts_with("row")
@@ -1509,6 +1548,14 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
         if hh := bx.height
             y = fmax(y, top + hh)
         bottom := y
+        if positioned
+            ax = left
+            ay = top
+            aw = border_w
+            self.absolutes(id, st, true, bottom - top)
+            ax = saved_ax
+            ay = saved_ay
+            aw = saved_aw
         radius := if bx.radius < 0.0 then fmin(
             border_w,
             bottom - top,
