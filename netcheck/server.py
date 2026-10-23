@@ -1,11 +1,11 @@
 """A scripted site for tools/garlic/netcheck/check.sh: redirects that set
 cookies, gzip, a sheet that needs the cookie, and a POST answered by 303."""
-import gzip, sys
+import base64, gzip, hashlib, struct, sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 last = {}
-counts = {"css": 0, "304": 0, "conns": 0, "hit": 0}
+counts = {"css": 0, "304": 0, "conns": 0, "hit": 0, "doc": 0, "doc304": 0, "fresh": 0}
 
 
 class H(BaseHTTPRequestHandler):
@@ -48,6 +48,17 @@ class H(BaseHTTPRequestHandler):
             self.send(200, b"<title>next</title>")
         elif self.path == "/navlast":
             self.send(200, last.get("nav", "").encode(), ctype="text/plain")
+        elif self.path == "/ws":
+            self.websocket()
+        elif self.path == "/wsapp":
+            port = self.server.server_address[1]
+            page = """<p id=a>-</p><script>
+var w = new WebSocket('ws://127.0.0.1:PORT/ws');
+w.onopen = function () { w.send('hi'); };
+w.onmessage = function (e) { document.getElementById('a').textContent = 'ws ' + e.data; if (e.data === 'echo:hi') w.send('bye'); };
+w.onclose = function (e) { document.getElementById('a').textContent += ' closed ' + e.code; };
+</script>""".replace("PORT", str(port))
+            self.send(200, page.encode())
         elif self.path == "/app":
             port = self.server.server_address[1]
             page = """<p id=a>-</p><p id=b>-</p><p id=c>-</p><p id=d>-</p><script>
@@ -69,6 +80,17 @@ fetch('http://localhost:PORT/api/cors').then(function (r) { return r.text(); }).
         elif self.path == "/api/hit":
             counts["hit"] += 1
             self.send(200, b"hit", ctype="text/plain")
+        elif self.path in ("/cdoc", "/fresh"):
+            key = "doc" if self.path == "/cdoc" else "fresh"
+            counts[key] += 1
+            cc = [] if key == "doc" else [("Cache-Control", "max-age=60")]
+            if self.headers.get("If-None-Match") == '"p1"':
+                counts["doc304"] += 1
+                self.send(304, headers=[("ETag", '"p1"')] + cc)
+            else:
+                self.send(200, b"<title>cached page</title>", headers=[("ETag", '"p1"')] + cc)
+        elif self.path == "/pagecounts":
+            self.send(200, f"{counts['doc']} {counts['doc304']} {counts['fresh']}".encode(), ctype="text/plain")
         elif self.path == "/hits":
             self.send(200, str(counts["hit"]).encode(), ctype="text/plain")
         elif self.path == "/api/who":
@@ -89,6 +111,52 @@ fetch('http://localhost:PORT/api/cors').then(function (r) { return r.text(); }).
             self.send(302, headers=[("Location", "/loop")])
         else:
             self.send(404, b"<title>nope</title>")
+
+    def websocket(self):
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        accept = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+        self.send_response(101)
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+        self.close_connection = True
+        rf, wf = self.rfile, self.wfile
+
+        def read(n):
+            b = rf.read(n)
+            if len(b) < n:
+                raise EOFError
+            return b
+
+        def send(op, payload):
+            head = bytes([0x80 | op])
+            n = len(payload)
+            head += bytes([n]) if n < 126 else bytes([126]) + struct.pack(">H", n)
+            wf.write(head + payload)
+            wf.flush()
+
+        try:
+            while True:
+                b0, b1 = read(2)
+                n = b1 & 0x7F
+                if n == 126:
+                    n = struct.unpack(">H", read(2))[0]
+                mask = read(4) if b1 & 0x80 else b"\0\0\0\0"
+                data = bytes(c ^ mask[i % 4] for i, c in enumerate(read(n)))
+                op = b0 & 0x0F
+                if op == 1:
+                    if data == b"bye":
+                        send(8, struct.pack(">H", 1000) + b"done")
+                        return
+                    send(1, b"echo:" + data)
+                elif op == 8:
+                    send(8, data[:2])
+                    return
+                elif op == 9:
+                    send(10, data)
+        except EOFError:
+            return
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length", "0"))

@@ -1,0 +1,198 @@
+## Pseudo-classes of selectors (Selectors Level 4): structural ones
+## (`:nth-child(2n+1)`, `:first-of-type`), the logical ones (`:not`, `:is`,
+## `:where`, `:has`) and the state ones that Garlic can answer.
+
+## Whether element `id` matches the pseudo-class `p` (its name, and its
+## arguments in parentheses if any); `sels` holds the parsed arguments of
+## the logical ones. Pseudo-elements and states with no meaning here
+## (`:hover`, `:visited`) match nothing.
+fn Vm.match_pseudo(self, id int, p str, sels List[List[Compound]]) bool
+    open := p.find("(") else p.chars().len()
+    name := p.slice(0, open).to_lower()
+    arg := if open < p.chars().len() then p.slice(open + 1, p.chars().len() - 1).trim() else ""
+    n := dom[id]
+    match name
+        "first-child" => previous_element(id) < 0
+        "last-child" => next_element(id) < 0
+        "only-child" => previous_element(id) < 0 and next_element(id) < 0
+        "first-of-type" => position_of(id, true, true) == 1
+        "last-of-type" => position_of(id, false, true) == 1
+        "only-of-type" => position_of(id, true, true) == 1 and position_of(id, false, true) == 1
+        "nth-child" => nth_matches(arg, position_of(id, true, false))
+        "nth-last-child" => nth_matches(arg, position_of(id, false, false))
+        "nth-of-type" => nth_matches(arg, position_of(id, true, true))
+        "nth-last-of-type" => nth_matches(arg, position_of(id, false, true))
+        "not" => not matches_selector(id, sels)
+        "is" | "where" | "matches" | "-webkit-any" | "-moz-any" => matches_selector(id, sels)
+        "has" => has_match(id, arg, sels)
+        "checked" =>
+            if n.tag == "option"
+                return option_selected(id)
+            if n.tag == "input"
+                kind := (attr_of(id, "type") else "").to_lower()
+                if kind == "checkbox" or kind == "radio"
+                    return (field_values.get(id) else (if attr_of(id, "checked") != none then "on" else "off"))
+                        == "on"
+            false
+        "selected" => n.tag == "option" and option_selected(id)
+        "disabled" => is_disabled(id)
+        "enabled" => is_form_control(id) and not is_disabled(id)
+        "required" => attr_of(id, "required") != none and is_form_control(id)
+        "optional" => attr_of(id, "required") == none and is_form_control(id)
+        "read-only" => not is_editable(id)
+        "read-write" => is_editable(id)
+        "placeholder-shown" =>
+            (n.tag == "input" or n.tag == "textarea") and attr_of(
+                id,
+                "placeholder",
+            ) != none and (field_values.get(id) else (attr_of(id, "value") else "")) == ""
+        "root" => n.parent == 0
+        "empty" =>
+            for c in n.children
+                if dom[c].kind == 1 or (dom[c].kind == 3 and dom[c].text != "")
+                    return false
+            true
+        "scope" => id == scope_id or (scope_id <= 0 and n.parent == 0)
+        "link" | "any-link" => (n.tag == "a" or n.tag == "area") and attr_of(id, "href") != none
+        "focus" | "focus-visible" => id == active
+        "focus-within" =>
+            mut e := active
+            while e >= 0
+                if e == id
+                    return true
+                e = dom[e].parent
+            false
+        "lang" =>
+            mut e := id
+            while e > 0
+                if l := attr_of(e, "lang")
+                    low := l.to_lower()
+                    want := arg.to_lower()
+                    return low == want or low.starts_with("{want}-")
+                e = dom[e].parent
+            false
+        "defined" => true
+        "indeterminate" | "hover" | "active" | "visited" | "target" | "target-within" | "user-invalid" | "fullscreen" | "modal" => false
+        _ => false
+
+fn Vm.is_form_control(self, id int) bool
+    t := dom[id].tag
+    t == "input" or t == "select" or t == "textarea" or t == "button"
+
+fn Vm.is_disabled(self, id int) bool
+    if not is_form_control(id)
+        and dom[id].tag != "fieldset"
+        and dom[id].tag != "option"
+        and dom[id].tag != "optgroup"
+        return false
+    mut e := id
+    while e > 0
+        if attr_of(e, "disabled") != none and (e == id or dom[e].tag == "fieldset")
+            return true
+        e = dom[e].parent
+    false
+
+fn Vm.is_editable(self, id int) bool
+    t := dom[id].tag
+    if t == "textarea"
+        return attr_of(id, "readonly") == none and attr_of(id, "disabled") == none
+    if t == "input"
+        kind := (attr_of(id, "type") else "text").to_lower()
+        text_kinds := [
+            "text",
+            "search",
+            "url",
+            "tel",
+            "email",
+            "password",
+            "number",
+            "date",
+            "time",
+            "datetime-local",
+            "month",
+            "week",
+            "",
+        ]
+        return text_kinds.contains(kind) and attr_of(
+            id,
+            "readonly",
+        ) == none and attr_of(id, "disabled") == none
+    attr_of(id, "contenteditable") != none
+
+fn Vm.option_selected(self, id int) bool
+    if v := field_values.get(id)
+        return v == "on"
+    attr_of(id, "selected") != none
+
+## The 1-based place of element `id` among its parent's element children,
+## counting from the start or the end, only same-tag ones when `same_tag`.
+fn Vm.position_of(self, id int, from_start bool, same_tag bool) int
+    p := dom[id].parent
+    if p < 0
+        return 1
+    mut kids := List[int]()
+    for c in dom[p].children
+        if dom[c].kind == 1 and (not same_tag or dom[c].tag == dom[id].tag)
+            kids.push(c)
+    i := kids.index_of(id) else 0
+    if from_start then i + 1 else kids.len() - i
+
+## Whether `k` is `a*n + b` for some n >= 0 (the `An+B` microsyntax).
+fn nth_matches(arg str, k int) bool
+    mut text := arg.to_lower().replace(" ", "")
+    if cut := text.find("of")
+        if cut > 0
+            text = text.slice(0, cut)
+    mut a := 0
+    mut b := 0
+    if text == "odd"
+        a = 2
+        b = 1
+    elif text == "even"
+        a = 2
+    elif at := text.find("n")
+        head := text.slice(0, at)
+        if head == "" or head == "+"
+            a = 1
+        elif head == "-"
+            a = -1
+        else
+            a = head.to_int() else 0
+        tail := text.slice(at + 1, text.chars().len())
+        if tail != ""
+            b = (tail.strip_prefix("+") else tail).to_int() else 0
+    else
+        b = text.to_int() else 0
+    if a == 0
+        return k == b
+    d := k - b
+    d % a == 0 and d / a >= 0
+
+## `:has(X)`: some descendant (or child, `> X`; next sibling, `+ X`; a later
+## sibling, `~ X`) matches X.
+fn Vm.has_match(self, id int, arg str, sels List[List[Compound]]) bool
+    rel := if arg.starts_with(">") or arg.starts_with("+") or arg.starts_with("~") then arg.slice(
+        0,
+        1,
+    ) else " "
+    match rel
+        ">" =>
+            for c in dom[id].children
+                if dom[c].kind == 1 and matches_selector(c, sels)
+                    return true
+            false
+        "+" =>
+            nx := next_element(id)
+            nx >= 0 and matches_selector(nx, sels)
+        "~" =>
+            mut nx := next_element(id)
+            while nx >= 0
+                if matches_selector(nx, sels)
+                    return true
+                nx = next_element(nx)
+            false
+        _ =>
+            for e in elements_under(id)
+                if matches_selector(e, sels)
+                    return true
+            false
