@@ -45,6 +45,8 @@ pub struct Vm
     pub timers List[Timer]
     pub timer_seq int
     pub timer_level int
+    ## The element a selector's `:scope` means while one runs.
+    pub scope_id int
     ## Set while an `error` event runs, so a failing handler can't recurse.
     pub in_error bool
     pub microtasks List[Value]
