@@ -42,9 +42,6 @@ pub struct Vm
     pub host_requests List[HostRequest]
     ## Sources of external scripts the browser already fetched, by URL.
     pub external_scripts Map[str, str]
-    ## Replies the browser already fetched for `fetch` and XMLHttpRequest, as
-    ## JSON, by `METHOD url\nCONTENT-TYPE\nBODY` (netapi.ail).
-    pub fetch_replies Map[str, str]
     pub cookies Map[str, str]
     pub location_href str
     pub page_start_ms float

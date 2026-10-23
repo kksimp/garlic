@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 last = {}
-counts = {"css": 0, "304": 0, "conns": 0}
+counts = {"css": 0, "304": 0, "conns": 0, "hit": 0}
 
 
 class H(BaseHTTPRequestHandler):
@@ -51,6 +51,7 @@ class H(BaseHTTPRequestHandler):
         elif self.path == "/app":
             port = self.server.server_address[1]
             page = """<p id=a>-</p><p id=b>-</p><p id=c>-</p><p id=d>-</p><script>
+fetch('/api/hit');
 fetch('/api/who').then(function (r) { return r.json(); }).then(function (j) {
   document.getElementById('a').textContent = 'fetch ' + j.cookie;
 });
@@ -65,6 +66,11 @@ fetch('http://localhost:PORT/api/cors').then(function (r) { return r.text(); }).
 });
 </script>""".replace("PORT", str(port))
             self.send(200, page.encode(), headers=[("Set-Cookie", "sid=xyz; Path=/")])
+        elif self.path == "/api/hit":
+            counts["hit"] += 1
+            self.send(200, b"hit", ctype="text/plain")
+        elif self.path == "/hits":
+            self.send(200, str(counts["hit"]).encode(), ctype="text/plain")
         elif self.path == "/api/who":
             self.send(200, ('{"cookie":"%s"}' % self.headers.get("Cookie", "")).encode(), ctype="application/json")
         elif self.path == "/api/cors":

@@ -1,10 +1,10 @@
 ## `fetch` and XMLHttpRequest, written in JavaScript over one native hook,
-## `__hostFetch(method, url, "TYPE\nBODY")`, which returns the browser's JSON
-## reply for that request or null (and asks the browser for it, which fetches
-## it and runs the page again with the reply in `fetch_replies`). Replies are
-## delivered from a timer, so callers see them asynchronously as in a browser.
-## A request the browser could not make fails as a network error
-## (TypeError "Failed to fetch"; XHR `onerror`).
+## `__hostFetch(method, url, "TYPE\nBODY")`, which hands the request to the
+## browser and returns its number. The browser makes it and answers with
+## JSON through `net_deliver`, which runs the callback kept for that number
+## inside the same live engine, so no script runs twice. A request the
+## browser could not make fails as a network error (TypeError "Failed to
+## fetch"; XHR `onerror`).
 
 NET_PRELUDE := r"""
 (function (g) {
@@ -44,10 +44,14 @@ NET_PRELUDE := r"""
   Response.prototype.json = function () { var s = this._body; this.bodyUsed = true; try { return Promise.resolve(JSON.parse(s)); } catch (e) { return Promise.reject(e); } };
   Response.prototype.clone = function () { return new Response(this._body, { status: this.status, statusText: this.statusText, headers: this.headers, url: this.url }); };
 
-  function ask(method, url, type, body) {
-    var r = hook(method, url, type + "\n" + body);
-    return r === null ? null : JSON.parse(r);
+  var pending = {};
+  function ask(method, url, type, body, done) {
+    pending[hook(method, url, type + "\n" + body)] = done;
   }
+  Object.defineProperty(g, "__netDeliver", { value: function (id, json) {
+    var done = pending[id]; delete pending[id];
+    if (done) done(JSON.parse(json));
+  }, enumerable: false });
   function bodyText(b) { return b == null ? "" : (typeof b === "string" ? b : String(b)); }
 
   g.fetch = function (input, init) {
@@ -58,11 +62,10 @@ NET_PRELUDE := r"""
     var body = method === "GET" || method === "HEAD" ? "" : bodyText(init.body);
     var type = headers.get("content-type") || (init.body && typeof init.body === "object" && "append" in init.body && "toString" in init.body ? "application/x-www-form-urlencoded;charset=UTF-8" : (body ? "text/plain;charset=UTF-8" : ""));
     return new Promise(function (resolve, reject) {
-      setTimeout(function () {
-        var r = ask(method, url, type, body);
-        if (r === null || r.error) { reject(new TypeError("Failed to fetch")); return; }
+      ask(method, url, type, body, function (r) {
+        if (r.error) { reject(new TypeError("Failed to fetch")); return; }
         resolve(new Response(r.body, { status: r.status, statusText: r.statusText, headers: r.headers, url: r.url, redirected: r.url !== url }));
-      }, 0);
+      });
     });
   };
   g.Headers = Headers;
@@ -93,10 +96,9 @@ NET_PRELUDE := r"""
     var self = this, rq = this._req;
     var b = rq.method === "GET" || rq.method === "HEAD" ? "" : bodyText(body);
     var type = rq.headers.get("content-type") || (b ? "text/plain;charset=UTF-8" : "");
-    setTimeout(function () {
+    ask(rq.method, rq.url, type, b, function (r) {
       if (self._aborted) return;
-      var r = ask(rq.method, rq.url, type, b);
-      if (r === null || r.error) { self.readyState = 4; self._fire("readystatechange"); self._fire("error"); self._fire("loadend"); return; }
+      if (r.error) { self.readyState = 4; self._fire("readystatechange"); self._fire("error"); self._fire("loadend"); return; }
       self.status = r.status; self.statusText = r.statusText || ""; self.responseURL = r.url; self._h = new Headers(r.headers);
       self.readyState = 2; self._fire("readystatechange");
       self.readyState = 3; self._fire("readystatechange");
@@ -105,11 +107,20 @@ NET_PRELUDE := r"""
       else self.response = r.body;
       self.readyState = 4; self._fire("readystatechange");
       self._fire("load"); self._fire("loadend");
-    }, 0);
+    });
   };
   g.XMLHttpRequest = XHR;
 })(this);
 """
+
+## The browser's JSON answer to request `id`, given to the page's callback.
+pub fn Vm.net_deliver(mut self, id int, json str)
+    lit := json
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+    run_script_text("__netDeliver({id}, \"{lit}\")")
 
 ## Defines `fetch`, `Headers`, `Response` and `XMLHttpRequest` on the window.
 pub fn Vm.net_setup(mut self)

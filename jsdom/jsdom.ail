@@ -22,20 +22,31 @@ pub struct Outcome
     ## `fetch` and XMLHttpRequest requests that had no reply yet.
     pub asks List[Ask]
 
-## A request from `fetch` or XMLHttpRequest: `packed` is the content type, a
-## newline and the body. Its key in `replies` is `METHOD url\npacked`.
+## A request from `fetch` or XMLHttpRequest, numbered `id`: `packed` is the
+## content type, a newline and the body. The browser makes it and hands the
+## reply to `Session.reply`.
 pub struct Ask
+    pub id int
     pub method str
     pub url str
     pub packed str
 
-pub fn Ask.key(self) str
-    "{method} {url}\n{packed}"
+## A page whose scripts have run and whose engine is kept, so that what
+## the user does afterwards (click, type, submit) reaches the page's
+## listeners and timers (WHATWG HTML §8.1.8, DOM §2.9).
+pub struct Session
+    machine vm.Vm
+    ## How much of the engine's logs earlier calls already handed back.
+    changes int
+    requests int
+    console int
+    cookies int
+    ## Whether the last `click` was cancelled by a listener.
+    pub prevented bool
 
 ## Run the scripts of `d` (the page at `url`): inline ones, and external ones
 ## whose source is in `scripts` by resolved URL. `cookies` are the page's
-## cookies by name, `replies` the JSON answers to earlier `fetch` asks, and
-## `now_ms` the time (ms since 1970). Timers run for
+## cookies by name and `now_ms` the time (ms since 1970). Timers run for
 ## `budget_ms` of virtual time; `max_steps` caps the work (0 for no cap).
 pub fn run(
     mut d html.Doc,
@@ -45,14 +56,26 @@ pub fn run(
     now_ms float,
     budget_ms float,
     max_steps int,
-    replies Map[str, str],
 ) Outcome
+    s := start(mut d, url, scripts, cookies, now_ms, budget_ms, max_steps)
+    s.1
+
+## Like `run`, and keeps the engine for `Session.click`, `Session.input`
+## and `Session.submit`.
+pub fn start(
+    mut d html.Doc,
+    url str,
+    scripts Map[str, str],
+    cookies Map[str, str],
+    now_ms float,
+    budget_ms float,
+    max_steps int,
+)(Session, Outcome)
     mut machine := vm.new_vm()
     machine.step_limit = max_steps
     machine.clock_ms = now_ms
     machine.cookies = cookies
     machine.dom_setup()
-    machine.fetch_replies = replies
     machine.net_setup()
     machine.dom = mirror(d)
     for id in 0..machine.dom.len()
@@ -61,18 +84,33 @@ pub fn run(
                 machine.handler_set(id, a.name)
     machine.external_scripts = scripts
     machine.load_page(url, budget_ms)
+    mut s := Session(
+        machine: machine,
+        changes: 0,
+        requests: 0,
+        console: 0,
+        cookies: 0,
+        prevented: false,
+    )
+    out := s.collect(mut d)
+    (s, out)
+
+## What the engine did since the last call, replayed into `d`.
+fn Session.collect(mut self, mut d html.Doc) Outcome
     mut out := Outcome(
         url: "",
         method: "",
         body: "",
-        console: machine.console_out,
+        console: machine.console_out[console..],
         missing: [],
         changes: 0,
         cookies: [],
         asks: [],
     )
-    out.changes = replay(mut d, machine.mutations)
-    for r in machine.host_requests
+    console = machine.console_out.len()
+    out.changes = replay(mut d, machine.mutations[changes..])
+    changes = machine.mutations.len()
+    for r in machine.host_requests[requests..]
         if r.kind == "navigate" and out.url == ""
             out.url = r.url
             out.method = r.method
@@ -80,10 +118,43 @@ pub fn run(
         if r.kind == "fetch-script"
             out.missing.push(r.url)
         if r.kind == "fetch"
-            out.asks.push(Ask(method: r.method, url: r.url, packed: r.text))
+            out.asks.push(Ask(id: r.node, method: r.method, url: r.url, packed: r.text))
         if r.kind == "cookie"
             out.cookies.push(r.text)
+    requests = machine.host_requests.len()
     out
+
+## The browser's JSON answer to request `id` (see `Ask`): the page's
+## callbacks run, then timers and microtasks that became due.
+pub fn Session.reply(mut self, mut d html.Doc, id int, json str, budget_ms float) Outcome
+    machine.net_deliver(id, json)
+    machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
+    collect(mut d)
+
+## The user clicked node `id`: `click` is dispatched (it bubbles and can be
+## cancelled), then its default action runs (a link, a submit button, a
+## check box), then timers and microtasks that became due.
+pub fn Session.click(mut self, mut d html.Doc, id int, budget_ms float) Outcome
+    if id >= 0 and id < machine.dom.len()
+        prevented = not machine.host_click(id)
+    machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
+    collect(mut d)
+
+## The user set text field `id` to `text`: the value changes, then `input`
+## and `change` fire on it.
+pub fn Session.input(mut self, mut d html.Doc, id int, text str, budget_ms float) Outcome
+    if id >= 0 and id < machine.dom.len()
+        machine.host_input(id, text)
+    machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
+    collect(mut d)
+
+## The user submitted the form of node `id` (a button or a field in it):
+## `submit` fires and, unless cancelled, the form goes on to the browser.
+pub fn Session.submit(mut self, mut d html.Doc, id int, budget_ms float) Outcome
+    if id >= 0 and id < machine.dom.len()
+        machine.host_submit(id)
+    machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
+    collect(mut d)
 
 ## The engine's copy of the tree: the same nodes with the same ids.
 fn mirror(d html.Doc) List[vm.DomNode]

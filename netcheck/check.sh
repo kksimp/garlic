@@ -34,6 +34,7 @@ garlic "$site/dir/home" > /dev/null
 after=$(curl -s "$site/conns")
 expect "a page and its sheet share one connection" "$((before + 2))" "$after"  # one for garlic, one for this curl
 out=$(plain "$site/app")
+expect "a page's scripts run once however many requests they make" "1" "$(curl -s "$site/hits")"
 expect "fetch sends same-origin cookies" "fetch sid=xyz" "$out"
 expect "XMLHttpRequest answers with a status" "xhr 200 sid=xyz" "$out"
 expect "a cross-origin fetch needs CORS permission" "cross blocked" "$out"

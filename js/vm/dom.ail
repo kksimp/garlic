@@ -34,7 +34,7 @@ pub struct Mutation
 
 ## Something a script asked the browser to do that the browser must decide:
 ## "navigate" (to `url` with `method`, and `text` as a POST body), "open",
-## "fetch-script" (`url` for script node `node`), "fetch" (`method`, `url`
+## "fetch-script" (`url` for script node `node`), "fetch" (request number `node`, `method`, `url`
 ## and `text`, the content type, a newline and the body), "cookie" (`text` is the
 ## Set-Cookie line), "alert", "confirm", "prompt".
 pub struct HostRequest
@@ -2096,20 +2096,17 @@ fn Vm.window_method(mut self, m str, args List[Value]) Value ! Thrown
             ))
             Null
         "__hostFetch" =>
-            # The browser's answer to a request, or null and a request for it.
-            method := to_string(a0)?
-            url := resolve_url(to_string(arg_at(args, 1))?)
-            packed := to_string(arg_at(args, 2))?
-            if reply := fetch_replies.get("{method} {url}\n{packed}")
-                return Str(reply)
+            # A request for the browser, which answers it later through
+            # `net_deliver`; the number identifies the request.
+            id := host_requests.len()
             host_requests.push(HostRequest(
                 kind: "fetch",
-                url: url,
-                method: method,
-                node: -1,
-                text: packed,
+                url: resolve_url(to_string(arg_at(args, 1))?),
+                method: to_string(a0)?,
+                node: id,
+                text: to_string(arg_at(args, 2))?,
             ))
-            Null
+            Num(id.to_float())
         "atob" | "btoa" =>
             # Both work on "binary strings": one character per byte (HTML §8.3).
             s := to_string(a0)?
@@ -2380,6 +2377,54 @@ fn Vm.fire(mut self, target int, type_name str, bubbles bool)
     set_event_flag(ev, "bubbles", bubbles)
     if ok := dispatch(target, ev)
         ok
+    else err
+        report(uncaught_text(err))
+
+## The user clicked node `id` (HTML §6.6.3 activation behaviour): `click`
+## goes through its listeners, then the default action runs unless one
+## cancelled it. False when a listener cancelled the click.
+pub fn Vm.host_click(mut self, id int) bool
+    if stopped
+        return true
+    ev := make_event("click", Undef) else return true
+    set_event_flag(ev, "bubbles", true)
+    set_event_flag(ev, "cancelable", true)
+    if ok := dispatch(id, ev)
+        if ok
+            if done := click_default(id)
+                done
+            else err
+                report(uncaught_text(err))
+        return ok
+    else err
+        report(uncaught_text(err))
+    true
+
+## The user changed field `id` to `text`: the value is set, then `input` and
+## `change` fire and bubble (HTML §4.10.5.5).
+pub fn Vm.host_input(mut self, id int, text str)
+    if stopped
+        return
+    field_values[id] = text
+    dom_log("set_value", id, -1, -1, "value", text)
+    fire(id, "input", true)
+    fire(id, "change", true)
+
+## The user submitted the form around node `id`. A button is the submitter;
+## from any other control the form itself stands in, so no button's value
+## is sent.
+pub fn Vm.host_submit(mut self, id int)
+    if stopped
+        return
+    mut f := id
+    while f > 0 and dom[f].tag != "form"
+        f = dom[f].parent
+    if f <= 0
+        return
+    tag := dom[id].tag
+    sub := if tag == "button" or tag == "input" then id else f
+    if done := submit_form(f, sub)
+        done
     else err
         report(uncaught_text(err))
 
