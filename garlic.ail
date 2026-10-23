@@ -69,6 +69,9 @@ struct Browser
     cj jar.Jar
     ## Sheets and scripts fetched before, for `fetch_text`.
     cache Map[str, Cached]
+    ## The page a link or form leads from, for the next load only ("" for a
+    ## typed address, Back or Reload): the `Referer`, and SameSite cookies.
+    refer str
     ## Counts page layouts, so the pixel window knows when to lay out again.
     stamp int
     ## Pixel sizes of the page's pictures by address (`images.prefetch`).
@@ -117,7 +120,24 @@ fn fetch(url str, method str, body str) str
 ## `fetch`, sending `cj`'s cookies for the site and keeping the ones the
 ## response sets.
 fn fetch_with(url str, method str, body str, mut cj jar.Jar) str
-    fetch_got(url, method, body, mut cj).text
+    fetch_got(url, method, body, "", mut cj).text
+
+## The `Referer` for a request to `to` from the page `from`: the whole
+## address within one origin, only the origin across origins, nothing
+## downgrading https to http or from a file or a typed address
+## (strict-origin-when-cross-origin).
+fn referrer(from str, to str) str
+    sf := page.scheme(from)
+    if sf != "http" and sf != "https"
+        return ""
+    st := page.scheme(to)
+    if sf == "https" and st != "https"
+        return ""
+    base := from.split("#")[0]
+    origin := base.split("/")[0..3].join("/")
+    if to.starts_with("{origin}/") or to == origin
+        return base
+    origin
 
 ## What a fetch got: the address it ended at (after redirects) and the page.
 struct Got
@@ -130,7 +150,7 @@ MAX_HOPS := 10
 ## cookies the jar holds for it and stores the ones it sets, so a login that
 ## sets a cookie on a redirect works; a 301, 302 or 303 turns a POST into a
 ## GET without its body.
-fn fetch_got(url str, method str, body str, mut cj jar.Jar) Got
+fn fetch_got(url str, method str, body str, from str, mut cj jar.Jar) Got
     s := page.scheme(url)
     if s == "http" or s == "https"
         mut o := options()
@@ -141,7 +161,12 @@ fn fetch_got(url str, method str, body str, mut cj jar.Jar) Got
             o.headers["content-type"] = "application/x-www-form-urlencoded"
         mut cur := url
         for _ in 0..MAX_HOPS
-            cookie := cj.header_from(cur, "", true)
+            cookie := cj.header_from(cur, from, m == "GET")
+            via_page := referrer(from, cur)
+            if via_page != ""
+                o.headers["referer"] = via_page
+            else
+                o.headers.remove("referer")
             if cookie != ""
                 o.headers["cookie"] = cookie
             else
@@ -356,8 +381,9 @@ fn fetch_text(url str, from str, mut cj jar.Jar, mut cache Map[str, Cached]) str
         cookie := cj.header_from(url, from, false)
         if cookie != ""
             o.headers["cookie"] = cookie
-        if page.scheme(from) == "http" or page.scheme(from) == "https"
-            o.headers["referer"] = from.split("#")[0]
+        sent := referrer(from, url)
+        if sent != ""
+            o.headers["referer"] = sent
         if h := have
             if h.etag != ""
                 o.headers["if-none-match"] = h.etag
@@ -399,12 +425,21 @@ struct Loaded
 
 ## Fetches and parses `target`, then runs its scripts (unless `--no-js`),
 ## which change the tree or send the browser on to another page.
-fn load_doc(target str, method str, body str, mut cj jar.Jar, mut cache Map[str, Cached]) Loaded
+fn load_doc(
+    target str,
+    method str,
+    body str,
+    from str,
+    mut cj jar.Jar,
+    mut cache Map[str, Cached],
+) Loaded
     mut at := target
     mut m := method
     mut b := body
+    mut via := from
     for _ in 0..MAX_REFRESHES
-        got := fetch_got(at, m, b, mut cj)
+        got := fetch_got(at, m, b, via, mut cj)
+        via = at
         at = got.url
         mut d := html.parse(got.text)
         if env.args().contains("--no-js")
@@ -448,7 +483,7 @@ fn load_doc(target str, method str, body str, mut cj jar.Jar, mut cache Map[str,
             m = out.method
             b = out.body
         at = next
-    last := fetch_got(at, m, b, mut cj)
+    last := fetch_got(at, m, b, via, mut cj)
     Loaded(url: last.url, doc: html.parse(last.text))
 
 ## The address scripts see: a local file gets a file:// URL.
@@ -487,6 +522,7 @@ fn Browser.empty(url str, width int, height int) Browser
         last_nodes: {},
         cj: jar.new(),
         cache: {},
+        refer: "",
         stamp: 0,
         sizes: {},
         kept: {},
@@ -514,6 +550,11 @@ fn Browser.relayout(mut self)
 
 ## Opens `target`, remembering the current page for Back.
 fn Browser.go(mut self, target str)
+    refer = url
+    go_typed(target)
+
+## `go` for an address the person typed: no referring page.
+fn Browser.go_typed(mut self, target str)
     leave()
     ahead.clear()
     load(target, "GET", "")
@@ -547,7 +588,8 @@ fn Browser.revisit(mut self, target str)
         load(target, "GET", "")
 
 fn Browser.load(mut self, target str, method str, body str)
-    loaded := load_doc(target, method, body, mut cj, mut cache)
+    loaded := load_doc(target, method, body, refer, mut cj, mut cache)
+    refer = ""
     url = loaded.url
     doc = loaded.doc
     sheet = linked_sheets(doc, url, mut cj, mut cache)
@@ -796,6 +838,7 @@ fn Browser.submit(mut self, id int)
     method := (doc.attr(form, "method") else "get").to_upper()
     leave()
     ahead.clear()
+    refer = url
     if method == "POST"
         load(action, "POST", fields)
     else
@@ -1150,7 +1193,7 @@ fn address(text str) str
 fn Gui.open(mut self, text str)
     t := address(text)
     if t != ""
-        b.go(t)
+        b.go_typed(t)
 
 ## The status line: the address in pixel mode, else the cell view's status.
 fn Gui.status(self) str
@@ -2579,3 +2622,11 @@ fn flat(s gfx.Scene) List[str]
     assert_eq(max_age("public, max-age=60"), 60)
     assert_eq(max_age("no-store"), -1)
     assert_eq(max_age("Max-Age=x"), -1)
+
+@test fn the_referer_follows_the_origin_policy()
+    assert_eq(referrer("https://a.com/x?y=1#f", "https://a.com/z"), "https://a.com/x?y=1")
+    assert_eq(referrer("https://a.com/x", "https://b.com/z"), "https://a.com")
+    assert_eq(referrer("https://a.com/x", "http://a.com/z"), "")
+    assert_eq(referrer("http://a.com/x", "https://b.com/z"), "http://a.com")
+    assert_eq(referrer("file:///tmp/p.html", "https://b.com/"), "")
+    assert_eq(referrer("", "https://b.com/"), "")

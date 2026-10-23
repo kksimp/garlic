@@ -23,6 +23,10 @@ expect "a relative link resolves against the final address" "\"href\":\"$site/di
 expect "a sheet carries the cookie and the referer" "sid=abc|$site/dir/home" "$(curl -s "$site/last")"
 garlic "$site/dir/home" --do reload > /dev/null
 expect "a reload asks again and a 304 renews the copy" "3 1" "$(curl -s "$site/counts")"
+garlic "$site/dir/home" --do follow:1 > /dev/null
+expect "a followed link sends the page as Referer" "$site/dir/home" "$(curl -s "$site/navlast")"
+garlic "$site/dir/next" > /dev/null
+expect "a typed address sends no Referer" "-" "$(curl -s "$site/navlast")"
 expect "a 301 is followed" "\"url\":\"$site/dir/home\"" "$(garlic "$site/old")"
 expect "a gzip page is read" '"title":"zipped"' "$(garlic "$site/zip")"
 expect "a missing page shows its status" "HTTP status 404" "$(./ail run tools/garlic/garlic.ail "$site/nothing" 2>&1)"

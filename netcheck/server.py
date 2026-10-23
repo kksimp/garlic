@@ -39,6 +39,11 @@ class H(BaseHTTPRequestHandler):
                 self.send(304, headers=[("ETag", '"v1"')])
             else:
                 self.send(200, b"p{color:red}" if ok else b"p{color:blue}", ctype="text/css", headers=[("ETag", '"v1"')])
+        elif self.path == "/dir/next":
+            last["nav"] = self.headers.get("Referer", "-")
+            self.send(200, b"<title>next</title>")
+        elif self.path == "/navlast":
+            self.send(200, last.get("nav", "").encode(), ctype="text/plain")
         elif self.path == "/old":
             self.send(301, headers=[("Location", "/dir/home")])
         elif self.path == "/zip":
