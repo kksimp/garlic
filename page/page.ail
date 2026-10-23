@@ -784,6 +784,23 @@ fn Flow.list_marker(self, id int) str
 pub fn layout(d html.Doc, url str, width int) Page
     layout_with(d, url, width, css.parse("", 0))
 
+## The `Referer` for a request to `to` from the page `from`: the whole
+## address within one origin, only the origin across origins, nothing
+## downgrading https to http or from a file or a typed address
+## (strict-origin-when-cross-origin).
+pub fn referrer(from str, to str) str
+    sf := scheme(from)
+    if sf != "http" and sf != "https"
+        return ""
+    st := scheme(to)
+    if sf == "https" and st != "https"
+        return ""
+    base := from.split("#")[0]
+    origin := base.split("/")[0..3].join("/")
+    if to.starts_with("{origin}/") or to == origin
+        return base
+    origin
+
 ## Where relative addresses in `d` start from: its first `<base href>`
 ## (HTML 4.2.3) resolved against the page's own address, else `url`.
 pub fn base_of(d html.Doc, url str) str

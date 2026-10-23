@@ -122,23 +122,6 @@ fn fetch(url str, method str, body str) str
 fn fetch_with(url str, method str, body str, mut cj jar.Jar) str
     fetch_got(url, method, body, "", mut cj).text
 
-## The `Referer` for a request to `to` from the page `from`: the whole
-## address within one origin, only the origin across origins, nothing
-## downgrading https to http or from a file or a typed address
-## (strict-origin-when-cross-origin).
-fn referrer(from str, to str) str
-    sf := page.scheme(from)
-    if sf != "http" and sf != "https"
-        return ""
-    st := page.scheme(to)
-    if sf == "https" and st != "https"
-        return ""
-    base := from.split("#")[0]
-    origin := base.split("/")[0..3].join("/")
-    if to.starts_with("{origin}/") or to == origin
-        return base
-    origin
-
 ## What a fetch got: the address it ended at (after redirects) and the page.
 struct Got
     url str
@@ -208,7 +191,7 @@ fn walk(
     mut cur := url
     for _ in 0..MAX_HOPS
         cookie := if creds then cj.header_from(cur, from, navigation and m == "GET") else ""
-        via_page := referrer(from, cur)
+        via_page := page.referrer(from, cur)
         if via_page != ""
             o.headers["referer"] = via_page
         else
@@ -456,7 +439,7 @@ fn fetch_text(url str, from str, mut cj jar.Jar, mut cache Map[str, Cached]) str
         cookie := cj.header_from(url, from, false)
         if cookie != ""
             o.headers["cookie"] = cookie
-        sent := referrer(from, url)
+        sent := page.referrer(from, url)
         if sent != ""
             o.headers["referer"] = sent
         if h := have
@@ -1237,7 +1220,15 @@ fn Gui.refresh(mut self)
     if not pixel
         return
     if b.stamp != scene_stamp or area_w != scene_w or b.editing() != scene_edit
-        images.prefetch(b.doc, page.base_of(b.doc, b.url), image_options(), mut b.sizes, mut b.bits)
+        images.prefetch(
+            b.doc,
+            page.base_of(b.doc, b.url),
+            b.url,
+            b.cj,
+            image_options(),
+            mut b.sizes,
+            mut b.bits,
+        )
         scene = gfx.layout_measured(b.doc, b.url, area_w, b.sheet, b.sizes, meas, b.editing())
         scene_edit = b.editing()
         scene_stamp = b.stamp
@@ -1664,7 +1655,15 @@ fn op_line(op draw.Op) str
 ## `--pixels-dump`: the pixel layout of the page, one operation per line,
 ## after the canvas colour and height.
 fn pixels_dump(mut b Browser, width float)
-    images.prefetch(b.doc, page.base_of(b.doc, b.url), image_options(), mut b.sizes, mut b.bits)
+    images.prefetch(
+        b.doc,
+        page.base_of(b.doc, b.url),
+        b.url,
+        b.cj,
+        image_options(),
+        mut b.sizes,
+        mut b.bits,
+    )
     s := gfx.layout_with(b.doc, b.url, width, b.sheet, b.sizes)
     print("canvas #{s.bg.to_hex().pad_left(6, '0')} height {s.height.round()} ops {s.ops.len()} links {s.hits.len()}")
     for op in s.ops
@@ -2511,7 +2510,7 @@ fn bench(args List[str])
     d := html.parse("<img src=gray8.png><img src=jpeg420.jpg height=58><img src=missing.png>")
     mut sizes := Map[str, List[int]]()
     mut bits := Map[str, images.Bitmap]()
-    images.prefetch(d, "file://{dir}/page.html", options(), mut sizes, mut bits)
+    images.prefetch(d, "file://{dir}/page.html", "", jar.new(), options(), mut sizes, mut bits)
     assert_eq(bits["file://{dir}/gray8.png"].w, 37)
     assert_eq(sizes["file://{dir}/gray8.png"], [37, 29])
     assert_eq(sizes["file://{dir}/missing.png"], [0, 0])
@@ -2759,12 +2758,12 @@ fn flat(s gfx.Scene) List[str]
     assert_eq(max_age("Max-Age=x"), -1)
 
 @test fn the_referer_follows_the_origin_policy()
-    assert_eq(referrer("https://a.com/x?y=1#f", "https://a.com/z"), "https://a.com/x?y=1")
-    assert_eq(referrer("https://a.com/x", "https://b.com/z"), "https://a.com")
-    assert_eq(referrer("https://a.com/x", "http://a.com/z"), "")
-    assert_eq(referrer("http://a.com/x", "https://b.com/z"), "http://a.com")
-    assert_eq(referrer("file:///tmp/p.html", "https://b.com/"), "")
-    assert_eq(referrer("", "https://b.com/"), "")
+    assert_eq(page.referrer("https://a.com/x?y=1#f", "https://a.com/z"), "https://a.com/x?y=1")
+    assert_eq(page.referrer("https://a.com/x", "https://b.com/z"), "https://a.com")
+    assert_eq(page.referrer("https://a.com/x", "http://a.com/z"), "")
+    assert_eq(page.referrer("http://a.com/x", "https://b.com/z"), "http://a.com")
+    assert_eq(page.referrer("file:///tmp/p.html", "https://b.com/"), "")
+    assert_eq(page.referrer("", "https://b.com/"), "")
 
 @test fn base_href_changes_where_relative_links_start()
     d := html.parse("<base href=/other/><a href=x.html>x</a><img src=p.png>")
