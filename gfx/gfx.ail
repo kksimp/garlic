@@ -1351,8 +1351,26 @@ fn Ctx.place_float(mut self, id int, st St, x float, w float, right bool)
 fn lowered(op draw.Op, dy float) draw.Op
     match op
         Rect(x, y, w, h, c) => draw.Op.Rect(x, y: y + dy, w, h, color: c)
-        Text(x, y, t, fg, bold, italic, underline) => draw.Op.Text(x, y: y + dy, text: t, fg, bold, italic, underline)
-        Str(x, y, t, font, size, fg, bold, italic, underline) => draw.Op.Str(x, y: y + dy, text: t, font, size, fg, bold, italic, underline)
+        Text(x, y, t, fg, bold, italic, underline) => draw.Op.Text(
+            x,
+            y: y + dy,
+            text: t,
+            fg,
+            bold,
+            italic,
+            underline,
+        )
+        Str(x, y, t, font, size, fg, bold, italic, underline) => draw.Op.Str(
+            x,
+            y: y + dy,
+            text: t,
+            font,
+            size,
+            fg,
+            bold,
+            italic,
+            underline,
+        )
         Pic(x, y, w, h, src) => draw.Op.Pic(x, y: y + dy, w, h, src)
 
 ## Moves the operations and hit boxes from `o0` and `h0` on down by `dy`.

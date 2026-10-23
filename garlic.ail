@@ -1233,7 +1233,15 @@ fn Browser.tool(mut self, name str, a Json) str
             answer()
         "extract" => pg.text()
         "screenshot" =>
-            images.prefetch(doc, url, image_options(), mut sizes, mut bits)
+            images.prefetch(
+                doc,
+                page.base_of(doc, url),
+                url,
+                cj,
+                image_options(),
+                mut sizes,
+                mut bits,
+            )
             s := gfx.layout_with(doc, url, 960.0, sheet, sizes)
             mut lines := ["canvas {s.bg.to_hex()} height {s.height.round()}"]
             for op in s.ops
@@ -3008,6 +3016,7 @@ fn flat(s gfx.Scene) List[str]
     mut b := Browser.new("{testdata()}/keys.html", 80, 30)
     b.act("click", "{node_with(b, "button", "id", "btn")}")
     assert(b.pg.text().contains("mousedown0 focus mouseup0 click0"))
+
 @test fn pixel_textarea_shows_its_text()
     b := Browser.new("{testdata()}/form.html", 80, 30)
     s := gfx.layout_with(b.doc, b.url, 600.0, b.sheet, b.sizes)
