@@ -2322,7 +2322,12 @@ fn main() !
     else
         # The window is the std.app host's (ADR 0838); `--app` is the old
         # spelling of the default.
-        app_main(b, not args.contains("--cells"), args.contains("--attach"), flag(args, "--allow") else "") else err
+        app_main(
+            b,
+            not args.contains("--cells"),
+            args.contains("--attach"),
+            flag(args, "--allow") else "",
+        ) else err
             print("garlic: {err}")
 
 # ---- Tests -------------------------------------------------------------
@@ -3498,15 +3503,24 @@ fn flat(s gfx.Scene) List[str]
     mut a := Garlic.new(b, 800.0, 600.0, 7.5, 15.0)
     a.attached = true
     a.where = "http://127.0.0.1:1/mcp"
-    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":\{\"name\":\"observe\",\"arguments\":\{}}}"))
+    a.update(app.external(
+        "mcp",
+        "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":\{\"name\":\"observe\",\"arguments\":\{}}}",
+    ))
     answer := a.bridge.replies.recv() else "none"
     assert(answer.contains("Search form"))
     assert_eq(a.calls, 1)
     assert(a.agent_line().contains("1 calls"))
-    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"https://elsewhere.test/\"}}}"))
+    a.update(app.external(
+        "mcp",
+        "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"https://elsewhere.test/\"}}}",
+    ))
     refused := a.bridge.replies.recv() else "none"
     assert(refused.contains("refused"))
-    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":\{\"name\":\"log\",\"arguments\":\{}}}"))
+    a.update(app.external(
+        "mcp",
+        "\{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":\{\"name\":\"log\",\"arguments\":\{}}}",
+    ))
     assert((a.bridge.replies.recv() else "").contains("open https://elsewhere.test/"))
 
 @test fn the_attach_token_must_match()
@@ -3528,22 +3542,34 @@ fn flat(s gfx.Scene) List[str]
     b := Browser.new("{testdata()}/form.html", 80, 24)
     mut a := Garlic.new(b, 800.0, 600.0, 7.5, 15.0)
     a.attached = true
-    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":\{\"name\":\"watch\",\"arguments\":\{\"contains\":\"Brand new\",\"every\":1}}}"))
+    a.update(app.external(
+        "mcp",
+        "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":\{\"name\":\"watch\",\"arguments\":\{\"contains\":\"Brand new\",\"every\":1}}}",
+    ))
     assert((a.bridge.replies.recv() else "").contains("watching 1"))
     a.update(app.external("tick", ""))
-    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"events\",\"arguments\":\{}}}"))
+    a.update(app.external(
+        "mcp",
+        "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"events\",\"arguments\":\{}}}",
+    ))
     assert((a.bridge.replies.recv() else "").contains("no changes"))
     a.g.b.pg = lay("Brand new text", 40)
     a.update(app.external("tick", ""))
     a.update(app.external("tick", ""))
-    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":\{\"name\":\"events\",\"arguments\":\{}}}"))
+    a.update(app.external(
+        "mcp",
+        "\{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":\{\"name\":\"events\",\"arguments\":\{}}}",
+    ))
     assert((a.bridge.replies.recv() else "").contains("appeared"))
 
 @test fn a_scheduled_action_runs_when_due_and_follows_the_rules()
     b := Browser.new("{testdata()}/form.html", 80, 24)
     mut a := Garlic.new(b, 800.0, 600.0, 7.5, 15.0)
     a.attached = true
-    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":\{\"name\":\"schedule\",\"arguments\":\{\"tool\":\"extract\",\"arguments\":\{},\"in\":2}}}"))
+    a.update(app.external(
+        "mcp",
+        "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":\{\"name\":\"schedule\",\"arguments\":\{\"tool\":\"extract\",\"arguments\":\{},\"in\":2}}}",
+    ))
     assert((a.bridge.replies.recv() else "").contains("scheduled"))
     a.update(app.external("tick", ""))
     assert_eq(a.jobs.len(), 1)
@@ -3551,7 +3577,10 @@ fn flat(s gfx.Scene) List[str]
     assert_eq(a.jobs.len(), 0)
     assert(a.events.len() == 1)
     assert(a.events[0].contains("job"))
-    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"schedule\",\"arguments\":\{\"tool\":\"open\",\"arguments\":\{\"url\":\"https://elsewhere.test/\"},\"in\":1}}}"))
+    a.update(app.external(
+        "mcp",
+        "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"schedule\",\"arguments\":\{\"tool\":\"open\",\"arguments\":\{\"url\":\"https://elsewhere.test/\"},\"in\":1}}}",
+    ))
     a.bridge.replies.recv()
     a.update(app.external("tick", ""))
     assert(a.events[1].contains("refused"))
@@ -3579,6 +3608,16 @@ fn flat(s gfx.Scene) List[str]
         match op
             Pic(_, _, w, h, p) => if p.starts_with("svg:") and w == 16.0 and h == 16.0
                 found = true
-            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Str(_, _, _, _, _, _, _, _, _) => found = found
+            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Str(
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+            ) => found = found
     assert(found)
     assert_eq(s.bits.len(), 1)

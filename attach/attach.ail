@@ -19,7 +19,12 @@ pub fn Bridge.new() Bridge
 ## A token an agent must present: 24 bytes from the system's random source,
 ## else from the generator.
 pub fn make_token() str
-    out := proc.run("sh", ["-c", "head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \\n'"], none, none) else err
+    out := proc.run(
+        "sh",
+        ["-c", "head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \\n'"],
+        none,
+        none,
+    ) else err
         return fallback_token()
     got := out.text().trim()
     if out.ok() and got.chars().len() == 48
