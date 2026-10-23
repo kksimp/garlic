@@ -848,8 +848,39 @@ fn rpc_id(j Json) str
         return page.quote(t)
     "null"
 
-## One tool call of the `--serve` server: the text it answers with.
-fn Browser.tool(mut self, name str, a Json) str
+## The trust rules of an agent session (docs/design/garlic-browser.md): the
+## sites it may use (`*` for any), the log of what it did, and whether one
+## of its actions is waiting for a `confirm`.
+struct Guard
+    allow List[str]
+    log List[str]
+
+## The host of `url`: "example.com" for "https://example.com:8080/a".
+fn host_of(url str) str
+    rest := url.split("://").last() else url
+    hostport := rest.split("/")[0]
+    hostport.split(":")[0]
+
+fn Guard.permits(self, url str) bool
+    if allow.contains("*") or not url.contains("://")
+        return true
+    allow.contains(host_of(url))
+
+## Whether `do` sends data: it needs `"confirm":true` to run.
+fn sends(name str) bool
+    name == "submit"
+
+## One tool call of the `--serve` server: the text it answers with. `g`
+## refuses sites it doesn't permit, holds an action that sends data until
+## it is repeated with `confirm`, and logs every call.
+fn Browser.tool(mut self, mut g Guard, name str, a Json) str
+    g.log.push("{name} {a.str("url") else (a.str("do") else (a.str("text") else ""))}")
+    if name == "open" and not g.permits(a.str("url") else "")
+        return "refused: the agent may not open `{a.str("url") else ""}`; allowed sites: {g.allow.join(", ")}"
+    if not g.permits(url)
+        return "refused: the agent may not use `{host_of(url)}`; allowed sites: {g.allow.join(", ")}"
+    if name == "act" and sends(a.str("do") else "") and not (a.flag("confirm", false))
+        return "confirm required: `{a.str("do") else ""}` sends data to {url}. Repeat it with \"confirm\":true if the user wants that."
     match name
         "open" =>
             act("open", a.str("url") else "")
@@ -869,17 +900,18 @@ fn Browser.tool(mut self, name str, a Json) str
             for op in s.ops
                 lines.push(op_line(op))
             lines.join("\n")
-        _ => "unknown tool `{name}`: open, observe, act, find, extract or screenshot"
+        "log" => g.log.join("\n")
+        _ => "unknown tool `{name}`: open, observe, act, find, extract, screenshot or log"
 
 ## The tool list, with `<` and `>` for the braces of the JSON.
-TOOLS_SRC := """[<"name":"open","description":"Open a URL; answers with the page model.","inputSchema":<"type":"object","properties":<"url":<"type":"string">>,"required":["url"]>>,<"name":"observe","description":"The page model: nodes with ids, roles, names and boxes.","inputSchema":<"type":"object","properties":<>>>,<"name":"act","description":"Do one action: follow, click, type, submit, check, select, back, forward, scroll, reload. Give link, id or row (a number) and text where needed.","inputSchema":<"type":"object","properties":<"do":<"type":"string">,"link":<"type":"integer">,"id":<"type":"integer">,"row":<"type":"integer">,"text":<"type":"string">>,"required":["do"]>>,<"name":"find","description":"Scroll to text on the page.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"extract","description":"The page as plain text.","inputSchema":<"type":"object","properties":<>>>,<"name":"screenshot","description":"The pixel layout as drawing operations.","inputSchema":<"type":"object","properties":<>>>]"""
+TOOLS_SRC := """[<"name":"open","description":"Open a URL; answers with the page model.","inputSchema":<"type":"object","properties":<"url":<"type":"string">>,"required":["url"]>>,<"name":"observe","description":"The page model: nodes with ids, roles, names and boxes.","inputSchema":<"type":"object","properties":<>>>,<"name":"act","description":"Do one action: follow, click, type, submit, check, select, back, forward, scroll, reload. Give link, id or row (a number) and text where needed.","inputSchema":<"type":"object","properties":<"do":<"type":"string">,"link":<"type":"integer">,"id":<"type":"integer">,"row":<"type":"integer">,"text":<"type":"string">>,"required":["do"]>>,<"name":"find","description":"Scroll to text on the page.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"extract","description":"The page as plain text.","inputSchema":<"type":"object","properties":<>>>,<"name":"log","description":"What this session did, one line per call.","inputSchema":<"type":"object","properties":<>>>,<"name":"screenshot","description":"The pixel layout as drawing operations.","inputSchema":<"type":"object","properties":<>>>]"""
 
 fn tools_json() str
     TOOLS_SRC.replace("<", "\{").replace(">", "}")
 
 ## The answer to one MCP request line (JSON-RPC 2.0), or "" for a
 ## notification, which gets none.
-fn Browser.rpc(mut self, line str) str
+fn Browser.rpc(mut self, mut g Guard, line str) str
     j := parse_json(line) else err
         return "\{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":\{\"code\":-32700,\"message\":{page.quote("{err}")}}}"
     method := j.str("method") else ""
@@ -897,18 +929,19 @@ fn Browser.rpc(mut self, line str) str
                 return "{head}\"error\":\{\"code\":-32602,\"message\":\"missing params\"}}"
             args := params.need("arguments") else err
                 params
-            text := tool(params.str("name") else "", args)
+            text := tool(mut g, params.str("name") else "", args)
             "{head}\"result\":\{\"content\":[\{\"type\":\"text\",\"text\":{page.quote(text)}}]}}"
         _ => "{head}\"error\":\{\"code\":-32601,\"message\":\"unknown method\"}}"
 
 ## `--serve`: an MCP server on stdio, one JSON-RPC message per line, so an
 ## agent drives the browser with the tools of `Browser.tool`.
-fn Browser.serve(mut self)
+fn Browser.serve(mut self, allow List[str])
+    mut g := Guard(allow, log: [])
     while true
         line := io.read_line() else break
         if line.trim() == ""
             continue
-        out := rpc(line)
+        out := rpc(mut g, line)
         if out != ""
             print(out)
 
@@ -1404,7 +1437,7 @@ fn usage()
 
 ## Flags that take a value, so the address is the first argument that is
 ## neither a flag nor a value.
-VALUE_FLAGS := {"--width", "--height", "--follow", "--find", "--do", "--budget", "--pixel-width"}
+VALUE_FLAGS := {"--allow", "--width", "--height", "--follow", "--find", "--do", "--budget", "--pixel-width"}
 
 fn target_of(args List[str]) str
     mut k := 0
@@ -1480,7 +1513,7 @@ fn main() !
     height := (flag(args, "--height") else "32").to_int() else 32
     if args.contains("--serve")
         mut srv := Browser.empty("about:blank", width, height)
-        srv.serve()
+        srv.serve((flag(args, "--allow") else "*").split(","))
         return
     mut b := Browser.new(target_of(args), width, height)
     b.viewport_only = args.contains("--viewport")
@@ -2572,10 +2605,23 @@ fn flat(s gfx.Scene) List[str]
 
 @test fn serve_answers_mcp_requests()
     mut b := Browser.empty("about:blank", 80, 24)
-    init := b.rpc("\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}")
+    mut g := Guard(allow: ["*"], log: [])
+    init := b.rpc(mut g, "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}")
     assert(init.contains("\"serverInfo\""))
-    assert_eq(b.rpc("\{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}"), "")
-    assert(b.rpc("\{\"jsonrpc\":\"2.0\",\"id\":\"a\",\"method\":\"tools/list\"}").contains("\"screenshot\""))
-    call := b.rpc("\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{testdata()}/form.html\"}}}")
+    assert_eq(b.rpc(mut g, "\{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}"), "")
+    assert(b.rpc(mut g, "\{\"jsonrpc\":\"2.0\",\"id\":\"a\",\"method\":\"tools/list\"}").contains("\"screenshot\""))
+    call := b.rpc(mut g, "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{testdata()}/form.html\"}}}")
     assert(call.contains("\"content\""))
     assert(call.contains("textbox"))
+
+@test fn serve_enforces_site_permission_confirmation_and_logs()
+    mut b := Browser.empty("about:blank", 80, 24)
+    mut g := Guard(allow: ["example.com"], log: [])
+    no := b.rpc(mut g, "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"https://evil.test/x\"}}}")
+    assert(no.contains("refused"))
+    assert_eq(host_of("https://example.com:8080/a"), "example.com")
+    mut open := Guard(allow: ["*"], log: [])
+    b.rpc(mut open, "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{testdata()}/form.html\"}}}")
+    held := b.rpc(mut open, "\{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":\{\"name\":\"act\",\"arguments\":\{\"do\":\"submit\",\"id\":1}}}")
+    assert(held.contains("confirm required"))
+    assert_eq(open.log.len(), 2)
