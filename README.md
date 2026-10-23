@@ -42,3 +42,6 @@ Native macOS window (needs the SwiftUI host, ADR 0838): `tools/app-host/macos/ru
 - `garlic --pixels-dump URL` prints the canvas, ops and image decode status.
 
 Network behaviour (cookies on redirects, the final address, gzip, sheets with cookie and Referer) is checked against a scripted site with `tools/garlic/netcheck/check.sh` (`GARLIC=path` runs it against a native build).
+## Agents: `garlic --serve`
+
+An MCP server on stdio (JSON-RPC, one message per line). Tools: `open`, `observe`, `act`, `find`, `extract`, `screenshot` (the pixel layout as drawing operations). Same page model and actions as `--session`. `ail build tools/garlic/garlic.ail` builds natively; the dumps match the interpreter's and run about 5x faster.
