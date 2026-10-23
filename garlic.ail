@@ -1823,7 +1823,16 @@ fn usage()
 
 ## Flags that take a value, so the address is the first argument that is
 ## neither a flag nor a value.
-VALUE_FLAGS := {"--allow", "--width", "--height", "--follow", "--find", "--do", "--budget", "--pixel-width"}
+VALUE_FLAGS := {
+    "--allow",
+    "--width",
+    "--height",
+    "--follow",
+    "--find",
+    "--do",
+    "--budget",
+    "--pixel-width",
+}
 
 fn target_of(args List[str]) str
     mut k := 0
@@ -3080,19 +3089,35 @@ fn flat(s gfx.Scene) List[str]
     init := b.rpc(mut g, "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}")
     assert(init.contains("\"serverInfo\""))
     assert_eq(b.rpc(mut g, "\{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}"), "")
-    assert(b.rpc(mut g, "\{\"jsonrpc\":\"2.0\",\"id\":\"a\",\"method\":\"tools/list\"}").contains("\"screenshot\""))
-    call := b.rpc(mut g, "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{testdata()}/form.html\"}}}")
+    assert(
+        b
+            .rpc(mut g, "\{\"jsonrpc\":\"2.0\",\"id\":\"a\",\"method\":\"tools/list\"}")
+            .contains("\"screenshot\""),
+    )
+    call := b.rpc(
+        mut g,
+        "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{testdata()}/form.html\"}}}",
+    )
     assert(call.contains("\"content\""))
     assert(call.contains("textbox"))
 
 @test fn serve_enforces_site_permission_confirmation_and_logs()
     mut b := Browser.empty("about:blank", 80, 24)
     mut g := Guard(allow: ["example.com"], log: [])
-    no := b.rpc(mut g, "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"https://evil.test/x\"}}}")
+    no := b.rpc(
+        mut g,
+        "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"https://evil.test/x\"}}}",
+    )
     assert(no.contains("refused"))
     assert_eq(host_of("https://example.com:8080/a"), "example.com")
     mut open := Guard(allow: ["*"], log: [])
-    b.rpc(mut open, "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{testdata()}/form.html\"}}}")
-    held := b.rpc(mut open, "\{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":\{\"name\":\"act\",\"arguments\":\{\"do\":\"submit\",\"id\":1}}}")
+    b.rpc(
+        mut open,
+        "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{testdata()}/form.html\"}}}",
+    )
+    held := b.rpc(
+        mut open,
+        "\{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":\{\"name\":\"act\",\"arguments\":\{\"do\":\"submit\",\"id\":1}}}",
+    )
     assert(held.contains("confirm required"))
     assert_eq(open.log.len(), 2)
