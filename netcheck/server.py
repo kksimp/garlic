@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
 last = {}
+counts = {"css": 0, "304": 0}
 
 
 class H(BaseHTTPRequestHandler):
@@ -32,11 +33,18 @@ class H(BaseHTTPRequestHandler):
         elif self.path == "/dir/s.css":
             ok = "sid=abc" in cookie
             last["css"] = cookie + "|" + self.headers.get("Referer", "")
-            self.send(200, b"p{color:red}" if ok else b"p{color:blue}", ctype="text/css")
+            counts["css"] += 1
+            if self.headers.get("If-None-Match") == '"v1"':
+                counts["304"] += 1
+                self.send(304, headers=[("ETag", '"v1"')])
+            else:
+                self.send(200, b"p{color:red}" if ok else b"p{color:blue}", ctype="text/css", headers=[("ETag", '"v1"')])
         elif self.path == "/old":
             self.send(301, headers=[("Location", "/dir/home")])
         elif self.path == "/zip":
             self.send(200, gzip.compress(b"<title>zipped</title>"), headers=[("Content-Encoding", "gzip")])
+        elif self.path == "/counts":
+            self.send(200, f"{counts['css']} {counts['304']}".encode(), ctype="text/plain")
         elif self.path == "/last":
             self.send(200, last.get("css", "").encode(), ctype="text/plain")
         elif self.path == "/loop":

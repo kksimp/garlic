@@ -21,6 +21,8 @@ expect "a cookie set on a redirect is sent on the next hop" '"title":"home sid=a
 expect "the address is where redirects ended" "\"url\":\"$site/dir/home\"" "$out"
 expect "a relative link resolves against the final address" "\"href\":\"$site/dir/next\"" "$out"
 expect "a sheet carries the cookie and the referer" "sid=abc|$site/dir/home" "$(curl -s "$site/last")"
+garlic "$site/dir/home" --do reload > /dev/null
+expect "a reload asks again and a 304 renews the copy" "3 1" "$(curl -s "$site/counts")"
 expect "a 301 is followed" "\"url\":\"$site/dir/home\"" "$(garlic "$site/old")"
 expect "a gzip page is read" '"title":"zipped"' "$(garlic "$site/zip")"
 expect "a missing page shows its status" "HTTP status 404" "$(./ail run tools/garlic/garlic.ail "$site/nothing" 2>&1)"
