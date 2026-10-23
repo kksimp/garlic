@@ -3195,7 +3195,8 @@ fn bench(args List[str])
         want.push(op_line(op))
     assert_eq(native.out.trim(), want.join("\n"))
     assert(native.out.contains("canvas #0a0a0f"))
-    assert(native.out.contains("sans 14.0 #6b6b80 GitHub"))
+    ## The GitHub icon is an inline svg, drawn as a picture.
+    assert(native.out.contains("svg:"))
 
 ## The `Str` and `Rect` operations of `s` as `text@x,y` and `rect@x,y wxh`.
 fn flat(s gfx.Scene) List[str]
