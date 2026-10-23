@@ -47,3 +47,7 @@ Network behaviour (cookies on redirects, the final address, gzip, sheets with co
 An MCP server on stdio (JSON-RPC, one message per line). Tools: `open`, `observe`, `act`, `find`, `extract`, `screenshot` (the pixel layout as drawing operations). Same page model and actions as `--session`. `ail build tools/garlic/garlic.ail` builds natively; the dumps match the interpreter's and run about 5x faster.
 
 Trust rules in `--serve`: `--allow host,host` limits the sites an agent may open or use (default `*`); an `act` that sends data (`submit`) is held until repeated with `"confirm":true`; the `log` tool returns what the session did.
+
+## Agents on the running window: `--attach`
+
+`garlic --app --attach [--allow host,host]` starts the window with an MCP server on 127.0.0.1 (a free port, `POST /mcp`, JSON-RPC). The address and a bearer token go to `~/.garlic-attach.json` (mode 600); agents on this machine, including a Claude session on the same Mac, read it and send the same tools as `--serve`. The window shows an "Agent attached" line with the call count. An agent may use the sites the tabs show plus those from `--allow`; `submit` needs `"confirm":true`; the `log` tool lists what it did. It rides the `std.app` inbox (ADR 0861), so the window answers between user events. Without `--attach` nothing listens.

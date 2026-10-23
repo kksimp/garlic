@@ -9,6 +9,7 @@ use std.env
 use std.io
 use std.fs
 use std.net
+use std.proc
 use std.net.jar
 use std.compress
 use std.time
@@ -20,6 +21,7 @@ use draw
 use gfx
 use jsdom
 use images
+use attach
 
 ## The keys, as `--keys` prints them.
 KEYS := [
@@ -1224,6 +1226,8 @@ fn rpc_id(j Json) str
 struct Guard
     allow List[str]
     log List[str]
+    ## Sites allowed at launch, on top of the tabs' (`--allow`).
+    fixed List[str]
 
 ## The host of `url`: "example.com" for "https://example.com:8080/a".
 fn host_of(url str) str
@@ -1314,7 +1318,7 @@ fn Browser.rpc(mut self, mut g Guard, line str) str
 ## `--serve`: an MCP server on stdio, one JSON-RPC message per line, so an
 ## agent drives the browser with the tools of `Browser.tool`.
 fn Browser.serve(mut self, allow List[str])
-    mut g := Guard(allow, log: [])
+    mut g := Guard(allow, log: [], fixed: [])
     while true
         line := io.read_line() else break
         if line.trim() == ""
@@ -1638,10 +1642,42 @@ struct Garlic
     url_text str
     ## The control to give the keyboard focus; cleared by the next event.
     want str
+    ## The attach server's side (`--attach`): its bridge, the rules an agent
+    ## session follows and the number of calls it made; `attached` is false
+    ## without `--attach`.
+    attached bool
+    bridge attach.Bridge
+    guard Guard
+    where str
+    calls int
 
 fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
     g := Gui.new(b, w, h, cell_w, cell_h)
-    Garlic(g, tabs: [g], cur: 0, url_text: b.url, want: "")
+    Garlic(
+        g,
+        tabs: [g],
+        cur: 0,
+        url_text: b.url,
+        want: "",
+        attached: false,
+        bridge: attach.Bridge.new(),
+        guard: Guard(allow: [], log: [], fixed: []),
+        where: "",
+        calls: 0,
+    )
+
+## Answers one MCP request from an attached agent: the sites it may use are
+## the ones the tabs show plus those allowed at launch, and the answer goes
+## back through the bridge.
+fn Garlic.agent_call(mut self, body str)
+    mut sites := guard.fixed
+    for t in tabs
+        sites.push(host_of(t.b.url))
+    sites.push(host_of(g.b.url))
+    guard.allow = sites
+    answer := g.b.rpc(mut guard, body)
+    calls += 1
+    bridge.replies.send(answer)
 
 ## Makes tab `k` the one shown.
 fn Garlic.switch(mut self, k int)
@@ -1677,6 +1713,13 @@ fn Garlic.close_tab(mut self)
     cur = cur.min(tabs.len() - 1)
     g = tabs[cur]
     g.refresh()
+
+## The line that tells the user an agent can drive this window; empty
+## without `--attach`.
+fn Garlic.agent_line(self) str
+    if not attached
+        return ""
+    "Agent attached at {where}: {calls} calls so far (the log tool lists them)"
 
 ## The tab strip: one button per tab, titled by its page.
 fn Garlic.strip(self) List[app.Node]
@@ -1717,6 +1760,9 @@ impl app.App for Garlic
                 else
                     g.key(ev.text, ev.alt, ev.shift)
             "edit" => url_text = ev.text
+            "external" =>
+                if ev.id == "mcp"
+                    agent_call(ev.text)
             "submit" => g.open(url_text)
             "press" =>
                 if ev.id == "back"
@@ -1740,12 +1786,12 @@ impl app.App for Garlic
             app.field("url", url_text, "Enter a web address"),
         ])
         ## A canvas of 0 by 0 fills the window; the host reports its size.
-        app.column([
-            app.row(strip()),
-            bar,
-            app.canvas("page", 0.0, 0.0, [to_app(op, g) for op in g.display()]),
-            app.label(g.status()),
-        ])
+        mut rows := [app.row(strip()), bar]
+        if attached
+            rows.push(app.label(agent_line()))
+        rows.push(app.canvas("page", 0.0, 0.0, [to_app(op, g) for op in g.display()]))
+        rows.push(app.label(g.status()))
+        app.column(rows)
 
     fn title(self) str
         "{g.b.pg.title} - Garlic"
@@ -1805,13 +1851,43 @@ GUI_H := 600.0
 GUI_CELL_W := 7.8
 GUI_CELL_H := 16.0
 
-fn app_main(b Browser, pixel bool) !
+fn app_main(b Browser, pixel bool, attached bool, sites str) !
     mut a := Garlic.new(b, GUI_W, GUI_H, GUI_CELL_W, GUI_CELL_H)
     a.g.pixel = pixel
     a.g.refresh()
+    if attached
+        attached_main(mut a, sites)?
+        return
     app.run(mut a) else err
         print("garlic: no native window ({err.message}); the page as text:")
         print(a.g.b.pg.text())
+
+## The attach server's task (a local function, which `spawn` needs natively).
+fn serve(srv net.Server, inbox app.Inbox, bridge attach.Bridge, token str)
+    attach.serve_loop(srv, inbox, bridge, token)
+
+## `--attach`: the window as `app_main` runs it, with the attach server on
+## 127.0.0.1 (a free port), its address and token in `~/.garlic-attach.json`
+## for the agents on this machine.
+fn attached_main(mut a Garlic, sites str) !
+    srv := net.serve("127.0.0.1:0")?
+    token := attach.make_token()
+    path := "{env.get("HOME") else "."}/.garlic-attach.json"
+    where := "http://{srv.addr()}/mcp"
+    fs.write_text(path, "\{\"url\":\"{where}\",\"token\":\"{token}\"}\n")?
+    mode := proc.run("chmod", ["600", path], none, none) else err
+        print("garlic: could not restrict {path}: {err}")
+        return
+    a.attached = true
+    a.where = where
+    a.guard.fixed = [h for h in sites.split(",") if h != ""]
+    inbox := app.new_inbox()
+    g := TaskGroup()
+    g.add(spawn serve(srv, inbox, a.bridge, token))
+    print("garlic: agents attach at {where}; the token is in {path}")
+    app.run_with(mut a, app.host_path()?, [], inbox) else err
+        print("garlic: no native window ({err.message})")
+    srv.shutdown()
 
 ## The value after flag `name` (`--width 60`), or none.
 fn flag(args List[str], name str) str?
@@ -1951,7 +2027,7 @@ fn main() !
     else
         # The window is the std.app host's (ADR 0838); `--app` is the old
         # spelling of the default.
-        app_main(b, not args.contains("--cells")) else err
+        app_main(b, not args.contains("--cells"), args.contains("--attach"), flag(args, "--allow") else "") else err
             print("garlic: {err}")
 
 # ---- Tests -------------------------------------------------------------
@@ -3085,7 +3161,7 @@ fn flat(s gfx.Scene) List[str]
 
 @test fn serve_answers_mcp_requests()
     mut b := Browser.empty("about:blank", 80, 24)
-    mut g := Guard(allow: ["*"], log: [])
+    mut g := Guard(allow: ["*"], log: [], fixed: [])
     init := b.rpc(mut g, "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}")
     assert(init.contains("\"serverInfo\""))
     assert_eq(b.rpc(mut g, "\{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}"), "")
@@ -3103,14 +3179,14 @@ fn flat(s gfx.Scene) List[str]
 
 @test fn serve_enforces_site_permission_confirmation_and_logs()
     mut b := Browser.empty("about:blank", 80, 24)
-    mut g := Guard(allow: ["example.com"], log: [])
+    mut g := Guard(allow: ["example.com"], log: [], fixed: [])
     no := b.rpc(
         mut g,
         "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"https://evil.test/x\"}}}",
     )
     assert(no.contains("refused"))
     assert_eq(host_of("https://example.com:8080/a"), "example.com")
-    mut open := Guard(allow: ["*"], log: [])
+    mut open := Guard(allow: ["*"], log: [], fixed: [])
     b.rpc(
         mut open,
         "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{testdata()}/form.html\"}}}",
@@ -3121,3 +3197,24 @@ fn flat(s gfx.Scene) List[str]
     )
     assert(held.contains("confirm required"))
     assert_eq(open.log.len(), 2)
+
+@test fn an_attached_agent_drives_the_window_through_the_inbox()
+    b := Browser.new("{testdata()}/form.html", 80, 24)
+    mut a := Garlic.new(b, 800.0, 600.0, 7.5, 15.0)
+    a.attached = true
+    a.where = "http://127.0.0.1:1/mcp"
+    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":\{\"name\":\"observe\",\"arguments\":\{}}}"))
+    answer := a.bridge.replies.recv() else "none"
+    assert(answer.contains("Search form"))
+    assert_eq(a.calls, 1)
+    assert(a.agent_line().contains("1 calls"))
+    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"https://elsewhere.test/\"}}}"))
+    refused := a.bridge.replies.recv() else "none"
+    assert(refused.contains("refused"))
+    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":\{\"name\":\"log\",\"arguments\":\{}}}"))
+    assert((a.bridge.replies.recv() else "").contains("open https://elsewhere.test/"))
+
+@test fn the_attach_token_must_match()
+    tok := attach.make_token()
+    assert(tok.chars().len() >= 24)
+    assert(tok != attach.make_token())
