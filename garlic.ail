@@ -78,6 +78,9 @@ struct Browser
     ahead List[str]
     ## The pictures decoded for the window host, by address.
     bits Map[str, images.Bitmap]
+    ## The page's engine while its scripts listen; clicks, typing and
+    ## submits go through it first (GL-JS events).
+    js jsdom.Session?
 
 ## A page as it was left: its tree, style sheets and place.
 struct Kept
@@ -291,6 +294,8 @@ fn fetch_text(url str) str
 struct Loaded
     url str
     doc html.Doc
+    ## The page's engine, when scripts ran and are still listening.
+    js jsdom.Session?
 
 ## Fetches and parses `target`, then runs its scripts (unless `--no-js`),
 ## which change the tree or send the browser on to another page.
@@ -301,7 +306,7 @@ fn load_doc(target str, method str, body str, mut cj jar.Jar) Loaded
     for _ in 0..MAX_REFRESHES
         mut d := html.parse(fetch_with(at, m, b, mut cj))
         if env.args().contains("--no-js")
-            next := refresh_target(d, at, false) else return Loaded(url: at, doc: d)
+            next := refresh_target(d, at, false) else return Loaded(url: at, doc: d, js: none)
             at = next
             m = "GET"
             b = ""
@@ -314,7 +319,8 @@ fn load_doc(target str, method str, body str, mut cj jar.Jar) Loaded
         now := time.now_ms().to_float()
         ## A page with no scripts has nothing to run, and starting the engine
         ## costs about 0.2 s.
-        out := if d.all("script").len() == 0 then jsdom.Outcome(
+        mut session := none
+        mut out := jsdom.Outcome(
             url: "",
             method: "",
             body: "",
@@ -322,7 +328,19 @@ fn load_doc(target str, method str, body str, mut cj jar.Jar) Loaded
             missing: [],
             changes: 0,
             cookies: [],
-        ) else jsdom.run(mut d, script_url(at), scripts, cj.for_script(at), now, 1000.0, 5000000)
+        )
+        if d.all("script").len() > 0
+            ran := jsdom.start(
+                mut d,
+                script_url(at),
+                scripts,
+                cj.for_script(at),
+                now,
+                1000.0,
+                5000000,
+            )
+            session = ran.0
+            out = ran.1
         for line in out.cookies
             cj.set_from_script(at, line)
         if env.args().contains("--console")
@@ -334,14 +352,14 @@ fn load_doc(target str, method str, body str, mut cj jar.Jar) Loaded
             # without scripts (HTML §4.12.2).
             next = refresh_target(d, at, true) else ""
             if next == ""
-                return Loaded(url: at, doc: d)
+                return Loaded(url: at, doc: d, js: session)
             m = "GET"
             b = ""
         else
             m = out.method
             b = out.body
         at = next
-    Loaded(url: at, doc: html.parse(fetch_with(at, m, b, mut cj)))
+    Loaded(url: at, doc: html.parse(fetch_with(at, m, b, mut cj)), js: none)
 
 ## The address scripts see: a local file gets a file:// URL.
 fn script_url(u str) str
@@ -384,6 +402,7 @@ fn Browser.empty(url str, width int, height int) Browser
         kept_order: [],
         ahead: [],
         bits: {},
+        js: none,
     )
     b
 
@@ -430,6 +449,7 @@ fn Browser.revisit(mut self, target str)
         doc = k.doc
         sheet = k.sheet
         pg = page.layout_with(doc, url, width, sheet)
+        js = none
         stamp += 1
         scroll_to(k.scroll)
         focus = 0
@@ -441,6 +461,7 @@ fn Browser.load(mut self, target str, method str, body str)
     loaded := load_doc(target, method, body, mut cj)
     url = loaded.url
     doc = loaded.doc
+    js = loaded.js
     sheet = linked_sheets(doc, url)
     pg = page.layout_with(doc, url, width, sheet)
     stamp += 1
@@ -587,15 +608,50 @@ fn Browser.activate(mut self, id int)
     b := target(id) else
         message = "node {id} has no action"
         return
+    if b.role == "textbox"
+        prompt = Field(id, b.value)
+        return
+    if js_click(id)
+        return
     if b.link > 0
         follow(b.link)
         return
     match b.role
         "link" => follow(b.link)
-        "textbox" => prompt = Field(id, b.value)
         "button" => submit(id)
         "checkbox" | "radio" => check(id)
         _ => message = "use select:{id}=OPTION to choose an option"
+
+## The page's scripts take a click on node `id` first. True when they dealt
+## with it (cancelled it, navigated, or toggled a check box); false when
+## the browser's own action should follow.
+fn Browser.js_click(mut self, id int) bool
+    mut s := js else return false
+    out := s.click(mut doc, id, 1000.0)
+    js = s
+    if js_went(out)
+        return true
+    if s.prevented
+        relayout()
+        return true
+    if role_of(id) == "checkbox"
+        relayout()
+        return true
+    if out.changes > 0
+        relayout()
+    false
+
+## Follows a navigation a script or a default action asked for.
+fn Browser.js_went(mut self, out jsdom.Outcome) bool
+    next := local_url(out.url)
+    if out.url == "" or next == url
+        if out.changes > 0
+            relayout()
+        return false
+    leave()
+    ahead.clear()
+    load(next, if out.method == "" then "GET" else out.method, out.body)
+    true
 
 ## Types `text` into text field `id`, replacing its value.
 fn Browser.type_into(mut self, id int, text str)
@@ -604,6 +660,13 @@ fn Browser.type_into(mut self, id int, text str)
         return
     if b.role != "textbox"
         message = "node {id} is a {b.role}, not a textbox"
+        return
+    if js != none
+        mut s := js else return
+        out := s.input(mut doc, id, text, 1000.0)
+        js = s
+        if not js_went(out)
+            relayout()
         return
     doc.set_attr(id, "value", text)
     relayout()
@@ -681,6 +744,13 @@ fn Browser.choose(mut self, id int, choice str)
 fn Browser.submit(mut self, id int)
     form := doc.enclosing(id, "form") else
         message = "node {id} is not in a form"
+        return
+    if js != none
+        mut s := js else return
+        out := s.submit(mut doc, id, 1000.0)
+        js = s
+        if not js_went(out)
+            relayout()
         return
     fields := form_fields(doc, form, id)
     action := page.resolve(url, doc.attr(form, "action") else "")
@@ -2465,3 +2535,28 @@ fn flat(s gfx.Scene) List[str]
     assert_eq(g.found, "SECOND")
     assert(g.b.message.contains("found"))
     assert(g.marked().len() > g.scene.ops.len())
+
+@test fn clicks_typing_and_submits_reach_the_pages_listeners()
+    mut b := Browser.new("{testdata()}/events.html", 80, 30)
+    assert(b.pg.text().contains("idle"))
+    count := node_with(b, "button", "id", "count")
+    assert(b.act("click", "{count}"))
+    assert(b.pg.text().contains("clicked 1 [added 1]"))
+    b.act("click", "{count}")
+    assert(b.pg.text().contains("clicked 2 [added 2]"))
+    # A listener's preventDefault keeps the link from navigating.
+    b.act("click", "{node_with(b, "a", "id", "stay")}")
+    assert_eq(b.pg.title, "Events test")
+    b.act("type", "{node_with(b, "input", "id", "q")}=onion")
+    assert(b.pg.text().contains("typed onion"))
+    b.act("type", "{node_with(b, "input", "id", "w")}=leek")
+    b.act("click", "{node_with(b, "button", "id", "go")}")
+    assert_eq(b.pg.title, "Events test")
+    assert(b.pg.text().contains("submit stopped for leek"))
+
+@test fn an_uncancelled_script_form_still_submits()
+    mut b := Browser.new("{testdata()}/script.html", 80, 30)
+    b.act("type", "{node_with(b, "input", "id", "q")}=hello")
+    b.act("click", "{node_with(b, "button", "id", "go")}")
+    assert_eq(b.pg.title, "Results")
+    assert(b.url.ends_with("/result.html?q=hello"))
