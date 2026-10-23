@@ -1196,7 +1196,7 @@ fn Vm.delete_expr(mut self, operand syntax.Expr, env ref Env) bool ! Thrown
             base := eval(object, env)?
             key := member_key(prop, computed, env)?
             o := to_object(base)?
-            ok := delete(o, key)
+            ok := if o.class == "Proxy" then proxy_delete(o, key)? else delete(o, key)
             if not ok and env.strict
                 return type_error("Cannot delete property '{key}' of {describe(base)}")
             ok
@@ -1283,7 +1283,11 @@ fn Vm.binary_slow(mut self, op str, a Value, b Value) Value ! Thrown
         "instanceof" => Value.Bool(instance_of(a, b)?)
         "in" =>
             match b
-                Obj(o) => Value.Bool(has_property(o, to_key(a)?))
+                Obj(o) =>
+                    key := to_key(a)?
+                    if o.class == "Proxy"
+                        return Value.Bool(proxy_has(o, key)?)
+                    Value.Bool(has_property(o, key))
                 Undef | Null | Bool | Num | Str =>
                     return type_error("Cannot use 'in' operator to search for '{to_string(a)?}' in {to_string(b)?}")
         _ => return syntax_error("Unknown operator {op}")

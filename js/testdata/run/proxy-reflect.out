@@ -1,0 +1,12 @@
+1 default
+10 true false true undefined
+get a,get zzz,set c=5,has a,has hidden,delete a
+1 2 true x,y {"x":1,"y":2}
+30 3 function object
+7 true
+true 2 true
+3 4 true true
+true false 1
+TypeError
+TypeError
+[object Reflect]

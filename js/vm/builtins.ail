@@ -291,6 +291,7 @@ fn Vm.setup(mut self)
     )
     getter(set_proto, "size", "Set.prototype.size")
     weak_setup()
+    reflect_setup()
     map_ctor.props["length"] = hidden(Num(0.0))
     set_ctor.props["length"] = hidden(Num(0.0))
 
@@ -358,7 +359,7 @@ fn Vm.setup(mut self)
 ## Natives that `new` may call.
 pub fn native_is_ctor(name str) bool
     match name
-        "Object" | "Function" | "Array" | "String" | "Number" | "Boolean" | "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" | "AggregateError" | "Map" | "Set" | "WeakMap" | "WeakSet" | "WeakRef" | "FinalizationRegistry" | "IntersectionObserver" | "ResizeObserver" | "RegExp" | "Date" | "Promise" | "dom.Event" | "dom.MutationObserver" | "dom.illegal" | "dom.URL" | "dom.URLSearchParams" | "dom.Image" =>
+        "Object" | "Function" | "Array" | "String" | "Number" | "Boolean" | "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" | "AggregateError" | "Map" | "Set" | "Proxy" | "proxy" | "WeakMap" | "WeakSet" | "WeakRef" | "FinalizationRegistry" | "IntersectionObserver" | "ResizeObserver" | "RegExp" | "Date" | "Promise" | "dom.Event" | "dom.MutationObserver" | "dom.illegal" | "dom.URL" | "dom.URLSearchParams" | "dom.Image" =>
             true
         _ => false
 
@@ -376,6 +377,12 @@ pub fn Vm.native(
         return promise_native(name, this_val, args, new_target)
     if name.starts_with("Symbol")
         return symbol_native(name, this_val, args, new_target)
+    if name == "proxy"
+        return proxy_call(f, this_val, args, new_target)
+    if name == "Proxy"
+        return proxy_new(args, new_target)
+    if m := name.strip_prefix("Reflect.")
+        return reflect_function(m, args)
     if name.starts_with("Iterator.")
         return iterator_native(name, this_val)
     if m := name.strip_prefix("Generator.prototype.")
