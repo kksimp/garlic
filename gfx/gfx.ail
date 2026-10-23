@@ -1211,12 +1211,15 @@ fn Ctx.control_atom(mut self, id int, st St) Atom?
         w = fmax(tw(label, st.size, false, false) + 30.0, 80.0)
     else
         label = d.attr(id, "value") else ""
+        if label == "" and tag == "textarea"
+            label = d.text(id).trim()
         if label == ""
             label = d.attr(id, "placeholder") else ""
             ink.color = 0x8a8a8a
     mut edge := 0x767676
     if id == editing
-        label = "{d.attr(id, "value") else ""}|"
+        typed := d.attr(id, "value") else (if tag == "textarea" then d.text(id) else "")
+        label = "{typed}|"
         ink.color = st.color
         edge = 0x0a84ff
     Atom(

@@ -2465,3 +2465,13 @@ fn flat(s gfx.Scene) List[str]
     assert_eq(g.found, "SECOND")
     assert(g.b.message.contains("found"))
     assert(g.marked().len() > g.scene.ops.len())
+
+@test fn pixel_textarea_shows_its_text()
+    b := Browser.new("{testdata()}/form.html", 80, 30)
+    s := gfx.layout_with(b.doc, b.url, 600.0, b.sheet, b.sizes)
+    lines := show_ops(s.ops)
+    mut seen := false
+    for l in lines
+        if l.starts_with("hi@")
+            seen = true
+    assert(seen)
