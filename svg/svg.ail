@@ -146,11 +146,25 @@ fn paint_of(d html.Doc, id int, p Paint) Paint
     out
 
 ## Draws element `id` and what it holds; whether anything was drawn.
-fn paint_node(d html.Doc, id int, parent Paint, sc float, ox float, oy float, w int, h int, mut canvas List[float]) bool
+fn paint_node(
+    d html.Doc,
+    id int,
+    parent Paint,
+    sc float,
+    ox float,
+    oy float,
+    w int,
+    h int,
+    mut canvas List[float],
+) bool
     n := d.nodes[id]
     if n.kind != html.Kind.Element
         return false
-    if n.tag == "defs" or n.tag == "clippath" or n.tag == "mask" or n.tag == "style" or n.tag == "title"
+    if n.tag == "defs"
+        or n.tag == "clippath"
+        or n.tag == "mask"
+        or n.tag == "style"
+        or n.tag == "title"
         return false
     p := paint_of(d, id, parent)
     if n.tag == "g" or n.tag == "svg" or n.tag == "a"
@@ -183,13 +197,28 @@ fn shape_of(d html.Doc, id int, tag str) Shape
             subs.push([x, y, x + rw, y, x + rw, y + rh, x, y + rh])
             closed.push(true)
         "circle" =>
-            subs.push(ellipse(attr_num(d, id, "cx"), attr_num(d, id, "cy"), attr_num(d, id, "r"), attr_num(d, id, "r")))
+            subs.push(ellipse(
+                attr_num(d, id, "cx"),
+                attr_num(d, id, "cy"),
+                attr_num(d, id, "r"),
+                attr_num(d, id, "r"),
+            ))
             closed.push(true)
         "ellipse" =>
-            subs.push(ellipse(attr_num(d, id, "cx"), attr_num(d, id, "cy"), attr_num(d, id, "rx"), attr_num(d, id, "ry")))
+            subs.push(ellipse(
+                attr_num(d, id, "cx"),
+                attr_num(d, id, "cy"),
+                attr_num(d, id, "rx"),
+                attr_num(d, id, "ry"),
+            ))
             closed.push(true)
         "line" =>
-            subs.push([attr_num(d, id, "x1"), attr_num(d, id, "y1"), attr_num(d, id, "x2"), attr_num(d, id, "y2")])
+            subs.push([
+                attr_num(d, id, "x1"),
+                attr_num(d, id, "y1"),
+                attr_num(d, id, "x2"),
+                attr_num(d, id, "y2"),
+            ])
             closed.push(false)
         "polyline" =>
             subs.push(numbers(d.attr(id, "points") else ""))
@@ -253,7 +282,8 @@ fn path_subs(dd str, mut subs List[List[float]], mut closed List[bool])
         ## read `need` numbers (arc flags are single digits)
         mut args := List[float]()
         while args.len() < need and i < chars.len()
-            while i < chars.len() and (chars[i] == ' ' or chars[i] == ',' or chars[i] == '\n' or chars[i] == '\t')
+            while i < chars.len()
+                and (chars[i] == ' ' or chars[i] == ',' or chars[i] == '\n' or chars[i] == '\t')
                 i += 1
             if i >= chars.len()
                 break
@@ -266,7 +296,10 @@ fn path_subs(dd str, mut subs List[List[float]], mut closed List[bool])
                 mut j := i
                 while j < chars.len()
                     c := chars[j]
-                    ok := c.is_digit() or (c == '.' and not seen_dot) or ((c == '-' or c == '+') and (j == i or chars[j - 1] == 'e' or chars[j - 1] == 'E')) or ((c == 'e' or c == 'E') and j > i)
+                    ok := c.is_digit()
+                        or (c == '.' and not seen_dot)
+                        or ((c == '-' or c == '+') and (j == i or chars[j - 1] == 'e' or chars[j - 1] == 'E'))
+                        or ((c == 'e' or c == 'E') and j > i)
                     if not ok
                         break
                     if c == '.'
@@ -371,7 +404,18 @@ fn path_subs(dd str, mut subs List[List[float]], mut closed List[bool])
         closed.push(false)
 
 ## An SVG elliptical arc from (x1, y1) to (x2, y2) as line segments.
-fn arc(x1 float, y1 float, rx0 float, ry0 float, rot float, large bool, sweep bool, x2 float, y2 float, mut out List[float])
+fn arc(
+    x1 float,
+    y1 float,
+    rx0 float,
+    ry0 float,
+    rot float,
+    large bool,
+    sweep bool,
+    x2 float,
+    y2 float,
+    mut out List[float],
+)
     mut rx := rx0.abs()
     mut ry := ry0.abs()
     if rx == 0.0 or ry == 0.0 or (x1 == x2 and y1 == y2)
@@ -425,7 +469,17 @@ fn atan2(y float, x float) float
     0.0
 
 ## Fills the shape (non-zero winding) onto `canvas`.
-fn fill_shape(shape Shape, colour int, alpha float, sc float, ox float, oy float, w int, h int, mut canvas List[float])
+fn fill_shape(
+    shape Shape,
+    colour int,
+    alpha float,
+    sc float,
+    ox float,
+    oy float,
+    w int,
+    h int,
+    mut canvas List[float],
+)
     mut edges := List[float]()
     for sub in shape.subs
         n := sub.len() / 2
@@ -441,7 +495,18 @@ fn fill_shape(shape Shape, colour int, alpha float, sc float, ox float, oy float
 
 ## Strokes each segment of the shape as a quad `width` wide (user units),
 ## with a square at each vertex so corners close.
-fn stroke_shape(shape Shape, colour int, alpha float, width float, sc float, ox float, oy float, w int, h int, mut canvas List[float])
+fn stroke_shape(
+    shape Shape,
+    colour int,
+    alpha float,
+    width float,
+    sc float,
+    ox float,
+    oy float,
+    w int,
+    h int,
+    mut canvas List[float],
+)
     half := width * sc / 2.0
     mut edges := List[float]()
     for si in 0..shape.subs.len()
@@ -462,7 +527,17 @@ fn stroke_shape(shape Shape, colour int, alpha float, width float, sc float, ox 
             quad(ax + nx, ay + ny, bx + nx, by + ny, bx - nx, by - ny, ax - nx, ay - ny, mut edges)
     cover_edges(edges, colour, alpha, w, h, mut canvas)
 
-fn quad(x1 float, y1 float, x2 float, y2 float, x3 float, y3 float, x4 float, y4 float, mut e List[float])
+fn quad(
+    x1 float,
+    y1 float,
+    x2 float,
+    y2 float,
+    x3 float,
+    y3 float,
+    x4 float,
+    y4 float,
+    mut e List[float],
+)
     for p in [[x1, y1, x2, y2], [x2, y2, x3, y3], [x3, y3, x4, y4], [x4, y4, x1, y1]]
         e.push(p[0])
         e.push(p[1])
