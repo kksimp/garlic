@@ -1290,7 +1290,7 @@ fn Browser.tool(mut self, mut g Guard, name str, a Json) str
         _ => "unknown tool `{name}`: open, observe, act, find, extract, screenshot or log"
 
 ## The tool list, with `<` and `>` for the braces of the JSON.
-TOOLS_SRC := """[<"name":"open","description":"Open a URL; answers with the page model.","inputSchema":<"type":"object","properties":<"url":<"type":"string">>,"required":["url"]>>,<"name":"observe","description":"The page model: nodes with ids, roles, names and boxes.","inputSchema":<"type":"object","properties":<>>>,<"name":"act","description":"Do one action: follow, click, type, submit, check, select, back, forward, scroll, reload. Give link, id or row (a number) and text where needed.","inputSchema":<"type":"object","properties":<"do":<"type":"string">,"link":<"type":"integer">,"id":<"type":"integer">,"row":<"type":"integer">,"text":<"type":"string">>,"required":["do"]>>,<"name":"find","description":"Scroll to text on the page.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"extract","description":"The page as plain text.","inputSchema":<"type":"object","properties":<>>>,<"name":"watch","description":"Tell me when the page changes: url (else the live tab), contains (text to wait for), every (seconds).","inputSchema":<"type":"object","properties":<"url":<"type":"string">,"contains":<"type":"string">,"every":<"type":"integer">>>>,<"name":"unwatch","description":"Stop watch id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"watches","description":"The watches in force.","inputSchema":<"type":"object","properties":<>>>,<"name":"events","description":"What the watches saw change since the last call.","inputSchema":<"type":"object","properties":<>>>,<"name":"log","description":"What this session did, one line per call.","inputSchema":<"type":"object","properties":<>>>,<"name":"screenshot","description":"The pixel layout as drawing operations.","inputSchema":<"type":"object","properties":<>>>]"""
+TOOLS_SRC := """[<"name":"open","description":"Open a URL; answers with the page model.","inputSchema":<"type":"object","properties":<"url":<"type":"string">>,"required":["url"]>>,<"name":"observe","description":"The page model: nodes with ids, roles, names and boxes.","inputSchema":<"type":"object","properties":<>>>,<"name":"act","description":"Do one action: follow, click, type, submit, check, select, back, forward, scroll, reload. Give link, id or row (a number) and text where needed.","inputSchema":<"type":"object","properties":<"do":<"type":"string">,"link":<"type":"integer">,"id":<"type":"integer">,"row":<"type":"integer">,"text":<"type":"string">>,"required":["do"]>>,<"name":"find","description":"Scroll to text on the page.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"extract","description":"The page as plain text.","inputSchema":<"type":"object","properties":<>>>,<"name":"watch","description":"Tell me when the page changes: url (else the live tab), contains (text to wait for), every (seconds).","inputSchema":<"type":"object","properties":<"url":<"type":"string">,"contains":<"type":"string">,"every":<"type":"integer">>>>,<"name":"unwatch","description":"Stop watch id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"watches","description":"The watches in force.","inputSchema":<"type":"object","properties":<>>>,<"name":"events","description":"What the watches saw change since the last call.","inputSchema":<"type":"object","properties":<>>>,<"name":"schedule","description":"Run one tool later: tool, arguments, in (seconds). It follows the same site and confirm rules.","inputSchema":<"type":"object","properties":<"tool":<"type":"string">,"arguments":<"type":"object">,"in":<"type":"integer">>,"required":["tool","in"]>>,<"name":"schedules","description":"The jobs waiting to run.","inputSchema":<"type":"object","properties":<>>>,<"name":"unschedule","description":"Cancel job id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"log","description":"What this session did, one line per call.","inputSchema":<"type":"object","properties":<>>>,<"name":"screenshot","description":"The pixel layout as drawing operations.","inputSchema":<"type":"object","properties":<>>>]"""
 
 fn tools_json() str
     TOOLS_SRC.replace("<", "\{").replace(">", "}")
@@ -1660,6 +1660,7 @@ struct Garlic
     events List[str]
     seconds int
     next_watch int
+    jobs List[attach.Job]
 
 fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
     g := Gui.new(b, w, h, cell_w, cell_h)
@@ -1678,6 +1679,7 @@ fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
         events: [],
         seconds: 0,
         next_watch: 1,
+        jobs: [],
     )
 
 ## Answers one MCP request from an attached agent: the sites it may use are
@@ -1706,7 +1708,7 @@ fn Garlic.agent_call(mut self, body str)
     bridge.replies.send(g.b.rpc(mut guard, body))
 
 ## The tools that set and read watches; the window answers them, not the page.
-WATCH_TOOLS := {"watch", "unwatch", "watches", "events"}
+WATCH_TOOLS := {"watch", "unwatch", "watches", "events", "schedule", "schedules", "unschedule"}
 
 ## One watch tool call, as text. `watch` takes `url` (else the live tab),
 ## `contains` and `every` (seconds, default 30); `events` returns the changes
@@ -1733,6 +1735,26 @@ fn Garlic.watch_tool(mut self, name str, args Json) str
             watches = [w for w in watches if w.id != id]
             "stopped watch {id}"
         "watches" => [w.line() for w in watches].join("\n")
+        "schedule" =>
+            call := args.str("tool") else ""
+            if call == "" or WATCH_TOOLS.contains(call)
+                return "schedule needs `tool` (open, observe, act, find, extract, screenshot) and `in` seconds"
+            inner := args.need("arguments") else err
+                Json.Obj([])
+            job := attach.Job(
+                id: next_watch,
+                due: seconds + (args.num("in") else 0.0).to_int(),
+                tool: call,
+                args: inner.to_text(),
+            )
+            next_watch += 1
+            jobs.push(job)
+            "scheduled {job.line(seconds)}"
+        "schedules" => [j.line(seconds) for j in jobs].join("\n")
+        "unschedule" =>
+            id := (args.num("id") else 0.0).to_int()
+            jobs = [j for j in jobs if j.id != id]
+            "cancelled job {id}"
         _ =>
             out := events.join("\n")
             events = []
@@ -1745,6 +1767,16 @@ fn watched_text(url str) str
 ## notes what changed.
 fn Garlic.tick(mut self)
     seconds += 1
+    due := [j for j in jobs if j.due <= seconds]
+    jobs = [j for j in jobs if j.due > seconds]
+    for j in due
+        mut sites := guard.fixed
+        for t in tabs
+            sites.push(host_of(t.b.url))
+        sites.push(host_of(g.b.url))
+        guard.allow = sites
+        answer := g.b.rpc(mut guard, j.request())
+        events.push("job {j.id} ({j.tool}) ran: {answer.slice(0, answer.chars().len().min(160))}")
     for k in 0..watches.len()
         if seconds < watches[k].due
             continue
@@ -3329,3 +3361,20 @@ fn flat(s gfx.Scene) List[str]
     a.update(app.external("tick", ""))
     a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":\{\"name\":\"events\",\"arguments\":\{}}}"))
     assert((a.bridge.replies.recv() else "").contains("appeared"))
+
+@test fn a_scheduled_action_runs_when_due_and_follows_the_rules()
+    b := Browser.new("{testdata()}/form.html", 80, 24)
+    mut a := Garlic.new(b, 800.0, 600.0, 7.5, 15.0)
+    a.attached = true
+    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":\{\"name\":\"schedule\",\"arguments\":\{\"tool\":\"extract\",\"arguments\":\{},\"in\":2}}}"))
+    assert((a.bridge.replies.recv() else "").contains("scheduled"))
+    a.update(app.external("tick", ""))
+    assert_eq(a.jobs.len(), 1)
+    a.update(app.external("tick", ""))
+    assert_eq(a.jobs.len(), 0)
+    assert(a.events.len() == 1)
+    assert(a.events[0].contains("job"))
+    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"schedule\",\"arguments\":\{\"tool\":\"open\",\"arguments\":\{\"url\":\"https://elsewhere.test/\"},\"in\":1}}}"))
+    a.bridge.replies.recv()
+    a.update(app.external("tick", ""))
+    assert(a.events[1].contains("refused"))

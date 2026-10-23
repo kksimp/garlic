@@ -1,0 +1,21 @@
+## Scheduled actions: an agent asks the window to run one tool call later,
+## such as `observe` in ten minutes or a `click` at a given moment. The job
+## runs through the same rules as a live call (sites, confirm, log).
+
+pub struct Job
+    pub id int
+    ## The second, on the window's timer, when it runs.
+    pub due int
+    ## The tool's name and its arguments as JSON text.
+    pub tool str
+    pub args str
+
+pub fn Job.line(self, now int) str
+    "{id}: {tool} {args} in {(due - now).max(0)}s"
+
+## The JSON-RPC request that runs the job.
+pub fn Job.request(self) str
+    "\{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"tools/call\",\"params\":\{\"name\":{quote(tool)},\"arguments\":{args}}}"
+
+fn quote(s str) str
+    "\"{s.replace("\\", "\\\\").replace("\"", "\\\"")}\""
