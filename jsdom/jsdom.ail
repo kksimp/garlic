@@ -21,6 +21,8 @@ pub struct Outcome
     pub cookies List[str]
     ## `fetch` and XMLHttpRequest requests that had no reply yet.
     pub asks List[Ask]
+    ## What WebSockets asked for since the last call, in order.
+    pub sockets List[SockOp]
 
 ## A request from `fetch` or XMLHttpRequest, numbered `id`: `packed` is the
 ## content type, a newline and the body. The browser makes it and hands the
@@ -30,6 +32,14 @@ pub struct Ask
     pub method str
     pub url str
     pub packed str
+
+## A WebSocket operation: `op` is "open" (`url`, `text` the protocols),
+## "send" (`text`) or "close" (`text` the code) on socket `id`.
+pub struct SockOp
+    pub op str
+    pub id int
+    pub url str
+    pub text str
 
 ## A page whose scripts have run and whose engine is kept, so that what
 ## the user does afterwards (click, type, submit) reaches the page's
@@ -106,6 +116,7 @@ fn Session.collect(mut self, mut d html.Doc) Outcome
         changes: 0,
         cookies: [],
         asks: [],
+        sockets: [],
     )
     console = machine.console_out.len()
     out.changes = replay(mut d, machine.mutations[changes..])
@@ -119,6 +130,8 @@ fn Session.collect(mut self, mut d html.Doc) Outcome
             out.missing.push(r.url)
         if r.kind == "fetch"
             out.asks.push(Ask(id: r.node, method: r.method, url: r.url, packed: r.text))
+        if r.kind == "ws"
+            out.sockets.push(SockOp(op: r.method, id: r.node, url: r.url, text: r.text))
         if r.kind == "cookie"
             out.cookies.push(r.text)
     requests = machine.host_requests.len()
@@ -128,6 +141,21 @@ fn Session.collect(mut self, mut d html.Doc) Outcome
 ## callbacks run, then timers and microtasks that became due.
 pub fn Session.reply(mut self, mut d html.Doc, id int, json str, budget_ms float) Outcome
     machine.net_deliver(id, json)
+    machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
+    collect(mut d)
+
+## A WebSocket event for socket `id` (see `Vm.ws_event`), then the timers
+## and microtasks it made due.
+pub fn Session.ws_event(
+    mut self,
+    mut d html.Doc,
+    id int,
+    kind str,
+    payload str,
+    code int,
+    budget_ms float,
+) Outcome
+    machine.ws_event(id, kind, payload, code)
     machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
     collect(mut d)
 

@@ -1,0 +1,310 @@
+## ws: a WebSocket client (RFC 6455) over `std.net` raw TCP, for the page
+## scripts' `WebSocket` (docs/design/garlic-js.md). `connect` opens the
+## connection and checks the server's handshake; `poll` collects what has
+## arrived (answering pings, joining fragments) without waiting longer than
+## a millisecond; `send_text` and `close` write frames, masked as a client
+## must.
+use std.net
+use std.random
+
+OP_CONT := 0
+OP_TEXT := 1
+OP_BIN := 2
+OP_CLOSE := 8
+OP_PING := 9
+OP_PONG := 10
+
+## The GUID the server's answer is hashed with (RFC 6455 1.3).
+GUID := "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+## An open connection: `buf` holds bytes read but not yet framed, `part`
+## the pieces of a fragmented message.
+pub struct Sock
+    conn net.Conn
+    buf List[int]
+    part List[int]
+    part_op int
+    pub open bool
+    ## What the server accepted of the requested sub-protocols.
+    pub protocol str
+
+## Something that happened on a connection: "message" (`text`), "close"
+## (`code`, `text` the reason) or "error".
+pub struct Event
+    pub kind str
+    pub text str
+    pub code int
+
+fn fail(url str, message str) net.NetError
+    net.NetError(url: url, kind: "protocol", message: message)
+
+# ---------------------------------------------------------------- SHA-1
+
+fn rol(x int, n int) int
+    m := x.bit_and(0xffffffff)
+    m.shl(n).bit_or(m.shr(32 - n)).bit_and(0xffffffff)
+
+## The SHA-1 digest of `data` (FIPS 180-4), as 20 byte values.
+pub fn sha1(data List[int]) List[int]
+    mut msg := data
+    n := data.len()
+    msg.push(0x80)
+    while msg.len() % 64 != 56
+        msg.push(0)
+    bits := n * 8
+    for i in 0..8
+        msg.push(bits.shr(56 - 8 * i).bit_and(0xff))
+    mut h0 := 0x67452301
+    mut h1 := 0xefcdab89
+    mut h2 := 0x98badcfe
+    mut h3 := 0x10325476
+    mut h4 := 0xc3d2e1f0
+    mut at := 0
+    while at < msg.len()
+        mut w := [0 for _ in 0..80]
+        for i in 0..16
+            w[i] = msg[at + 4 * i]
+                .shl(24)
+                .bit_or(msg[at + 4 * i + 1].shl(16))
+                .bit_or(msg[at + 4 * i + 2].shl(8))
+                .bit_or(msg[at + 4 * i + 3])
+        for i in 16..80
+            w[i] = rol(w[i - 3].bit_xor(w[i - 8]).bit_xor(w[i - 14]).bit_xor(w[i - 16]), 1)
+        mut a := h0
+        mut b := h1
+        mut c := h2
+        mut d := h3
+        mut e := h4
+        for i in 0..80
+            mut f := 0
+            mut k := 0
+            if i < 20
+                f = b.bit_and(c).bit_or(b.bit_xor(0xffffffff).bit_and(d))
+                k = 0x5a827999
+            elif i < 40
+                f = b.bit_xor(c).bit_xor(d)
+                k = 0x6ed9eba1
+            elif i < 60
+                f = b.bit_and(c).bit_or(b.bit_and(d)).bit_or(c.bit_and(d))
+                k = 0x8f1bbcdc
+            else
+                f = b.bit_xor(c).bit_xor(d)
+                k = 0xca62c1d6
+            t := (rol(a, 5) + f + e + k + w[i]).bit_and(0xffffffff)
+            e = d
+            d = c
+            c = rol(b, 30)
+            b = a
+            a = t
+        h0 = (h0 + a).bit_and(0xffffffff)
+        h1 = (h1 + b).bit_and(0xffffffff)
+        h2 = (h2 + c).bit_and(0xffffffff)
+        h3 = (h3 + d).bit_and(0xffffffff)
+        h4 = (h4 + e).bit_and(0xffffffff)
+        at += 64
+    mut out := List[int]()
+    for h in [h0, h1, h2, h3, h4]
+        for i in 0..4
+            out.push(h.shr(24 - 8 * i).bit_and(0xff))
+    out
+
+fn bytes_of(xs List[int]) bytes
+    bytes.from_list([v.to_u8() for v in xs])
+
+fn ints_of(b bytes) List[int]
+    [v.to_int() for v in b.to_list()]
+
+## The `Sec-WebSocket-Accept` a server must answer `key` with.
+pub fn accept_for(key str) str
+    bytes_of(sha1(ints_of("{key}{GUID}".to_bytes()))).base64()
+
+# ---------------------------------------------------------------- handshake
+
+## Splits `ws://host:port/path` or `wss://...` into (tls, host, port, path).
+fn parse(url str)(bool, str, int, str) ! net.NetError
+    tls := url.starts_with("wss://")
+    if not tls and not url.starts_with("ws://")
+        return fail(url, "not a ws:// or wss:// address")
+    rest := url.strip_prefix("wss://") else (url.strip_prefix("ws://") else "")
+    auth := rest.split("/")[0]
+    segs := rest.split("/")
+    path := if segs.len() > 1 then "/{segs[1..segs.len()].join("/")}" else "/"
+    mut host := auth
+    mut port := if tls then 443 else 80
+    if auth.contains(":")
+        host = auth.split(":")[0]
+        port = auth.split(":")[1].to_int() else return fail(url, "bad port")
+    (tls, host, port, path)
+
+fn read_head(conn net.Conn) List[str] ! net.NetError
+    mut lines := List[str]()
+    for _ in 0..100
+        line := conn.read_line()?
+        t := (line else "").trim()
+        if t == ""
+            return lines
+        lines.push(t)
+    lines
+
+## Opens `url`, offering `protocols` (comma-separated, may be empty), the
+## page's `origin` and its `cookie` header, and checks the handshake.
+pub fn connect(url str, protocols str, origin str, cookie str) Sock ! net.NetError
+    p := parse(url)?
+    conn := if p.0 then net.connect_tls(p.1, p.2)? else net.connect(p.1, p.2)?
+    conn.set_timeout(10000)
+    mut key_bytes := List[int]()
+    for _ in 0..16
+        key_bytes.push(random.int(0, 255))
+    key := bytes_of(key_bytes).base64()
+    mut req := "GET {p.3} HTTP/1.1\r\nHost: {p.1}:{p.2}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n"
+    if origin != ""
+        req = "{req}Origin: {origin}\r\n"
+    if protocols != ""
+        req = "{req}Sec-WebSocket-Protocol: {protocols}\r\n"
+    if cookie != ""
+        req = "{req}Cookie: {cookie}\r\n"
+    conn.write("{req}\r\n")?
+    head := read_head(conn)?
+    if head.len() == 0 or not head[0].contains(" 101")
+        conn.close()
+        return fail(
+            url,
+            "the server did not switch protocols: {if head.len() > 0 then head[0] else "no answer"}",
+        )
+    mut accept := ""
+    mut protocol := ""
+    for line in head[1..head.len()]
+        at := line.find(":") else continue
+        name := line.split(":")[0].trim().to_lower()
+        value := line.split(":")[1..line.split(":").len()].join(":").trim()
+        if name == "sec-websocket-accept"
+            accept = value
+        if name == "sec-websocket-protocol"
+            protocol = value
+    if accept != accept_for(key)
+        conn.close()
+        return fail(url, "the server's Sec-WebSocket-Accept is wrong")
+    conn.set_timeout(1)
+    Sock(conn: conn, buf: [], part: [], part_op: 0, open: true, protocol: protocol)
+
+# ---------------------------------------------------------------- frames
+
+## Writes one masked frame; false when the write failed.
+fn Sock.frame(mut self, op int, payload List[int]) bool
+    mut out := [0x80.bit_or(op)]
+    n := payload.len()
+    if n < 126
+        out.push(0x80.bit_or(n))
+    elif n < 65536
+        out.push(0x80 + 126)
+        out.push(n.shr(8).bit_and(0xff))
+        out.push(n.bit_and(0xff))
+    else
+        out.push(0x80 + 127)
+        for i in 0..8
+            out.push(n.shr(56 - 8 * i).bit_and(0xff))
+    mut mask := List[int]()
+    for _ in 0..4
+        mask.push(random.int(0, 255))
+    out.extend(mask)
+    for i in 0..n
+        out.push(payload[i].bit_xor(mask[i % 4]))
+    conn.write_bytes(bytes_of(out)) else return false
+    true
+
+## Sends `text` as one text message.
+pub fn Sock.send_text(mut self, text str) ! net.NetError
+    if not open
+        return fail("", "the connection is closed")
+    if not frame(OP_TEXT, ints_of(text.to_bytes()))
+        open = false
+        return fail("", "the write failed")
+
+## Starts the closing handshake with `code` (1000 for a normal close).
+pub fn Sock.close(mut self, code int)
+    if open
+        frame(OP_CLOSE, [code.shr(8).bit_and(0xff), code.bit_and(0xff)])
+    open = false
+    conn.close()
+
+## Pulls what has arrived into `buf`; false when the connection ended.
+fn Sock.fill(mut self) bool
+    got := conn.read_bytes(65536) else return true
+    if got.len() == 0
+        return false
+    buf.extend(ints_of(got))
+    true
+
+## The events for the frames now complete, waiting up to `wait_ms` for data.
+pub fn Sock.poll(mut self, wait_ms int) List[Event]
+    mut out := List[Event]()
+    if not open
+        return out
+    conn.set_timeout(wait_ms.max(1))
+    alive := fill()
+    while buf.len() >= 2
+        op := buf[0].bit_and(0x0f)
+        fin := buf[0].bit_and(0x80) != 0
+        masked := buf[1].bit_and(0x80) != 0
+        mut n := buf[1].bit_and(0x7f)
+        mut at := 2
+        if n == 126
+            if buf.len() < 4
+                break
+            n = buf[2].shl(8).bit_or(buf[3])
+            at = 4
+        elif n == 127
+            if buf.len() < 10
+                break
+            n = 0
+            for i in 0..8
+                n = n.shl(8).bit_or(buf[2 + i])
+            at = 10
+        if masked
+            at += 4
+        if buf.len() < at + n
+            break
+        mut payload := buf[at..at + n]
+        if masked
+            for i in 0..n
+                payload[i] = payload[i].bit_xor(buf[at - 4 + i % 4])
+        buf = buf[at + n..buf.len()]
+        if op == OP_PING
+            frame(OP_PONG, payload)
+        elif op == OP_CLOSE
+            code := if payload.len() >= 2 then payload[0].shl(8).bit_or(payload[1]) else 1005
+            reason := if payload.len() > 2 then bytes_of(payload[2..payload.len()]).text() else ""
+            frame(OP_CLOSE, payload[0..payload.len().min(2)])
+            open = false
+            conn.close()
+            out.push(Event(kind: "close", text: reason, code: code))
+            return out
+        elif op == OP_TEXT or op == OP_BIN or op == OP_CONT
+            if op != OP_CONT
+                part = []
+                part_op = op
+            part.extend(payload)
+            if fin
+                out.push(Event(kind: "message", text: bytes_of(part).text(), code: 0))
+                part = []
+    if not alive and open
+        open = false
+        out.push(Event(kind: "close", text: "", code: 1006))
+    out
+
+@test fn sha1_matches_the_fips_vectors()
+    assert_eq(bytes_of(sha1([0x61, 0x62, 0x63])).hex(), "a9993e364706816aba3e25717850c26c9cd0d89d")
+    assert_eq(bytes_of(sha1([])).hex(), "da39a3ee5e6b4b0d3255bfef95601890afd80709")
+    long := ints_of("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq".to_bytes())
+    assert_eq(bytes_of(sha1(long)).hex(), "84983e441c3bd26ebaae4aa1f95129e5e54670f1")
+
+@test fn the_accept_key_follows_rfc_6455()
+    assert_eq(accept_for("dGhlIHNhbXBsZSBub25jZQ=="), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
+
+@test fn addresses_split_into_host_port_and_path()
+    a := parse("ws://example.com:8080/chat/room?x=1") else (false, "", 0, "")
+    assert_eq(a, (false, "example.com", 8080, "/chat/room?x=1"))
+    b := parse("wss://example.com") else (false, "", 0, "")
+    assert_eq(b, (true, "example.com", 443, "/"))
+    c := parse("http://x/") else (true, "refused", 0, "")
+    assert_eq(c.1, "refused")

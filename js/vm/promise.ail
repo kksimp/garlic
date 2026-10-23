@@ -332,5 +332,5 @@ pub fn Vm.report_unhandled(mut self)
     for u in unhandled
         if p := obj_of(u)
             if not truthy(hidden_of(p, "{PRIVATE}handled"))
-                report(uncaught_text(Thrown(value: result_of(p), text: "", limit: false)))
+                report_rejection(p)
     unhandled = []

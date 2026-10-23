@@ -88,7 +88,7 @@ pub fn Vm.parse_into(mut self, parent int, src str)
     mut i := 0
     mut open := [parent]
     while i < cs.len()
-        current := open[open.len() - 1]
+        mut current := open[open.len() - 1]
         if cs[i] == '<' and i + 1 < cs.len()
             if starts_at(cs, i, "<!--")
                 end := find_at(cs, i + 4, "-->") else cs.len()
@@ -117,6 +117,8 @@ pub fn Vm.parse_into(mut self, parent int, src str)
                 while j < cs.len() and not cs[j].is_space() and cs[j] != '>' and cs[j] != '/'
                     j += 1
                 tag := cs[i + 1..j].join("").to_lower()
+                tree_adjust(mut open, tag)
+                current = open[open.len() - 1]
                 el := dom_create(tag, 1, "")
                 # Attributes.
                 while j < cs.len() and cs[j] != '>'
@@ -250,3 +252,93 @@ pub fn Vm.outer_html(self, id int) str
 
 pub fn Vm.inner_html(self, id int) str
     [outer_html(c) for c in dom[id].children].join("")
+
+## Elements that end an open `<p>` when they start (HTML §13.2.6.4.7).
+P_CLOSERS := [
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "center",
+    "details",
+    "dialog",
+    "dir",
+    "div",
+    "dl",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hgroup",
+    "hr",
+    "main",
+    "menu",
+    "nav",
+    "ol",
+    "p",
+    "pre",
+    "section",
+    "table",
+    "ul",
+]
+
+## Pop the open elements that `tag` ends by itself (a `<p>` before a
+## block, an `<li>` before an `<li>`, cells and rows), and open the
+## `<tbody>` and `<tr>` a table row or cell needs, as the tree builder does.
+fn Vm.tree_adjust(mut self, mut open List[int], tag str)
+    if P_CLOSERS.contains(tag)
+        pop_to(mut open, ["p"], ["table", "td", "th", "caption", "template", "button"])
+    match tag
+        "li" => pop_to(mut open, ["li"], ["ul", "ol", "menu", "table", "td", "th"])
+        "dd" | "dt" => pop_to(mut open, ["dd", "dt"], ["dl", "table", "td", "th"])
+        "option" => pop_to(mut open, ["option"], ["select", "datalist", "table"])
+        "optgroup" => pop_to(mut open, ["option", "optgroup"], ["select", "table"])
+        "tr" =>
+            pop_to(mut open, ["tr"], ["table", "tbody", "thead", "tfoot", "template"])
+            if dom[open[open.len() - 1]].tag == "table"
+                open_new(mut open, "tbody")
+        "td" | "th" =>
+            pop_to(mut open, ["td", "th"], ["tr", "table", "template"])
+            top := dom[open[open.len() - 1]].tag
+            if top == "table"
+                open_new(mut open, "tbody")
+            top2 := dom[open[open.len() - 1]].tag
+            if top2 == "tbody" or top2 == "thead" or top2 == "tfoot"
+                open_new(mut open, "tr")
+        "tbody" | "thead" | "tfoot" => pop_to(
+            mut open,
+            ["tbody", "thead", "tfoot", "tr", "td", "th"],
+            ["table", "template"],
+        )
+        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" =>
+            top := dom[open[open.len() - 1]].tag
+            if top.len() == 2 and top.starts_with("h") and open.len() > 1
+                open.pop()
+        _ => return
+
+## Close the nearest open element named in `names`, and everything inside
+## it, unless a `stop` element is met first.
+fn Vm.pop_to(mut self, mut open List[int], names List[str], stop List[str])
+    mut k := open.len() - 1
+    while k > 0
+        t := dom[open[k]].tag
+        if names.contains(t)
+            while open.len() > k
+                open.pop()
+            return
+        if stop.contains(t)
+            return
+        k -= 1
+
+fn Vm.open_new(mut self, mut open List[int], tag str)
+    el := dom_create(tag, 1, "")
+    dom_append(open[open.len() - 1], el)
+    open.push(el)

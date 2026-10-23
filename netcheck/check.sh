@@ -39,6 +39,10 @@ expect "fetch sends same-origin cookies" "fetch sid=xyz" "$out"
 expect "XMLHttpRequest answers with a status" "xhr 200 sid=xyz" "$out"
 expect "a cross-origin fetch needs CORS permission" "cross blocked" "$out"
 expect "a cross-origin fetch the server allows" "cors open" "$out"
+garlic "$site/cdoc" --do reload > /dev/null
+garlic "$site/fresh" --do "open:$site/fresh" > /dev/null
+expect "a reload asks about a kept page; a fresh page is not asked again" "2 1 1" "$(curl -s "$site/pagecounts")"
+expect "a WebSocket opens, echoes and closes" "ws echo:hi closed 1000" "$(plain "$site/wsapp")"
 expect "a 301 is followed" "\"url\":\"$site/dir/home\"" "$(garlic "$site/old")"
 expect "a gzip page is read" '"title":"zipped"' "$(garlic "$site/zip")"
 expect "a missing page shows its status" "HTTP status 404" "$(plain "$site/nothing")"

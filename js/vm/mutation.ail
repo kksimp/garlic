@@ -170,7 +170,7 @@ fn Vm.mo_deliver(mut self) bool
         if v := call(observers[k].callback, observers[k].obj, [array(recs), observers[k].obj])
             v
         else err
-            report(uncaught_text(err))
+            report_error(err)
             if err.limit
                 stopped = true
                 return ran
