@@ -34,6 +34,12 @@ pub struct Vm
     ## Form fields' current values ("on"/"off" for checkboxes).
     pub field_values Map[int, str]
     pub listeners List[Listener]
+    pub observers List[Observer]
+    ## While set, inserted nodes gather in `mo_held` for one record.
+    pub mo_hold bool
+    pub mo_held List[int]
+    ## Template element id -> its content fragment.
+    pub template_frags Map[int, int]
     pub timers List[Timer]
     pub timer_seq int
     pub microtasks List[Value]

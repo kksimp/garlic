@@ -1,0 +1,9 @@
+1 b true false true false true
+TypeError
+true true true true false
+TypeError
+true
+undefined false
+TypeError
+function true [object WeakMap]
+TypeError

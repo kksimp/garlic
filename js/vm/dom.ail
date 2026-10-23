@@ -89,6 +89,7 @@ fn Vm.dom_log(mut self, op str, node int, parent int, before int, name str, valu
             name: name,
             value: value,
         ))
+        mo_note(op, node, parent, name)
 
 pub fn Vm.dom_detach(mut self, id int)
     p := dom[id].parent
@@ -132,6 +133,8 @@ pub fn Vm.set_attr(mut self, id int, name str, value str)
         if v := node_objs.get(id)
             if o := obj_of(v)
                 o.props.remove(name)
+    if name == "style"
+        refresh_style(id, value)
     for i in 0..dom[id].attrs.len()
         if dom[id].attrs[i].name == name
             dom[id].attrs[i].value = value
@@ -139,6 +142,14 @@ pub fn Vm.set_attr(mut self, id int, name str, value str)
             return
     dom[id].attrs.push(DomAttr(name: name, value: value))
     dom_log("set_attr", id, -1, -1, name, value)
+
+## The attribute changed behind `el.style`: its declarations follow.
+fn Vm.refresh_style(mut self, id int, text str)
+    v := style_objs.get(id) else return
+    o := obj_of(v) else return
+    o.props = {}
+    for pair in style_pairs(text)
+        o.props[style_key(pair.name)] = data(Str(pair.value))
 
 pub fn Vm.remove_attr(mut self, id int, name str)
     for i in 0..dom[id].attrs.len()
@@ -321,7 +332,6 @@ pub fn Vm.dom_setup(mut self)
         "childElementCount",
         "classList",
         "style",
-        "outerHTML",
         "attributes",
         "dataset",
         "form",
@@ -338,6 +348,8 @@ pub fn Vm.dom_setup(mut self)
         "id",
         "className",
         "innerHTML",
+        "outerHTML",
+        "defaultValue",
         "innerText",
         "value",
         "checked",
@@ -365,7 +377,7 @@ pub fn Vm.dom_setup(mut self)
     methods(
         element_proto,
         "dom",
-        "getAttribute:1 setAttribute:2 removeAttribute:1 hasAttribute:1 toggleAttribute:1 getAttributeNames:0 getElementsByTagName:1 getElementsByClassName:1 querySelector:1 querySelectorAll:1 closest:1 matches:1 remove:0 append:0 prepend:0 before:0 after:0 replaceWith:0 click:0 focus:0 blur:0 submit:0 reset:0 select:0 getBoundingClientRect:0 getClientRects:0 insertAdjacentHTML:2 insertAdjacentElement:2 insertAdjacentText:2 scrollIntoView:0 animate:0 requestSubmit:0 checkValidity:0 attachShadow:1",
+        "getAttribute:1 setAttribute:2 removeAttribute:1 replaceChildren:0 normalize:0 hasAttribute:1 toggleAttribute:1 getAttributeNames:0 getElementsByTagName:1 getElementsByClassName:1 querySelector:1 querySelectorAll:1 closest:1 matches:1 remove:0 append:0 prepend:0 before:0 after:0 replaceWith:0 click:0 focus:0 blur:0 submit:0 reset:0 select:0 getBoundingClientRect:0 getClientRects:0 insertAdjacentHTML:2 insertAdjacentElement:2 insertAdjacentText:2 scrollIntoView:0 animate:0 requestSubmit:0 checkValidity:0 attachShadow:1",
     )
     html_element := object("Object", Obj(element_proto))
     protos["HTMLElement"] = Obj(html_element)
@@ -462,8 +474,25 @@ pub fn Vm.dom_setup(mut self)
         global_obj.props[name] = hidden(Obj(c))
     event_proto.props["constructor"] = hidden(global_obj.props["Event"].value)
 
+    mo_proto := object("Object", object_proto)
+    protos["MutationObserver"] = Obj(mo_proto)
+    methods(mo_proto, "dom.mo", "observe:2 disconnect:0 takeRecords:0")
+    if c := obj_of(native_fn("dom.MutationObserver", "MutationObserver", 1))
+        c.props["prototype"] = Prop(
+            value: Obj(mo_proto),
+            get: Undef,
+            set: Undef,
+            accessor: false,
+            enumerable: false,
+            writable: false,
+            configurable: false,
+        )
+        mo_proto.props["constructor"] = hidden(Obj(c))
+        global_obj.props["MutationObserver"] = hidden(Obj(c))
     style_proto := object("Object", object_proto)
     protos["CSSStyle"] = Obj(style_proto)
+    accessor_named(style_proto, "cssText", "style.cssText")
+    getter(style_proto, "length", "dom.get.style.length")
     methods(style_proto, "dom.style", "setProperty:2 getPropertyValue:1 removeProperty:1")
     class_list_proto := object("Object", object_proto)
     protos["ClassList"] = Obj(class_list_proto)
@@ -785,6 +814,10 @@ pub fn Vm.dom_native(
         return make_url(args, new_target)
     if m == "URLSearchParams"
         return make_params(args)
+    if m == "MutationObserver"
+        return mo_new(args)
+    if p := m.strip_prefix("mo.")
+        return mo_method(p, this_val, args)
     if m == "Event"
         return make_event(to_string(arg_at(args, 0))?, arg_at(args, 1))
     if m == "illegal"
@@ -866,6 +899,12 @@ fn Vm.listener_method(mut self, m str, target int, args List[Value]) Value ! Thr
 fn Vm.dom_get(mut self, p str, this_val Value) Value ! Thrown
     if p == "location"
         return location_value()
+    if p == "style.cssText" or p == "style.length"
+        so := obj_of(this_val) else return type_error("Illegal invocation")
+        text := style_text(so)
+        if p == "style.cssText"
+            return Value.Str(text)
+        return Value.Num(style_pairs(text).len().to_float())
     if p == "classList.length" or p == "classList.value"
         id := class_list_owner(this_val)?
         cls := classes_of(id)
@@ -919,6 +958,16 @@ fn Vm.dom_get(mut self, p str, this_val Value) Value ! Thrown
         "nodeValue" | "data" => if n.kind == 3 or n.kind == 8 then Value.Str(n.text) else Null
         "innerHTML" => Value.Str(inner_html(id))
         "outerHTML" => Value.Str(outer_html(id))
+        "content" if n.tag == "template" =>
+            if f := template_frags.get(id)
+                for c in dom[id].children
+                    dom_append(f, c)
+                return node_value(f)
+            f := dom_create("#fragment", 1, "")
+            for c in dom[id].children
+                dom_append(f, c)
+            template_frags[id] = f
+            node_value(f)
         "id" | "className" | "title" | "lang" | "name" | "placeholder" | "alt" | "rel" | "target" | "content" | "srcdoc" =>
             attr := match p
                 "className" => "class"
@@ -971,7 +1020,7 @@ fn Vm.dom_get(mut self, p str, this_val Value) Value ! Thrown
             o.prim = Num(id.to_float())
             style_objs[id] = Obj(o)
             for pair in style_pairs(attr_of(id, "style") else "")
-                o.props[css_to_camel(pair.name)] = data(Str(pair.value))
+                o.props[style_key(pair.name)] = data(Str(pair.value))
             Value.Obj(o)
         "attributes" =>
             mut items := List[Value]()
@@ -981,8 +1030,11 @@ fn Vm.dom_get(mut self, p str, this_val Value) Value ! Thrown
                 ao.props["value"] = data(Str(a.value))
                 items.push(Obj(ao))
             array(items)
+        "defaultValue" =>
+            Value.Str(if n.tag == "textarea" then text_content(id) else (attr_of(id, "value") else ""))
         "dataset" =>
-            o := plain()
+            o := object("DataSet", proto_of("Object"))
+            o.prim = Num(id.to_float())
             for a in n.attrs
                 if k := a.name.strip_prefix("data-")
                     o.props[css_to_camel(k)] = data(Str(a.value))
@@ -1051,8 +1103,26 @@ fn Vm.dom_set(mut self, p str, this_val Value, v Value) ! Thrown
         elif lp == "hash"
             location_href = with_hash(location_href, to_string(v)?)
         return
+    if p == "style.cssText"
+        so := obj_of(this_val) else return
+        style_write(so, "cssText", v)?
+        return
     id := node_id(this_val) else return
     match p
+        "outerHTML" =>
+            parent := dom[id].parent
+            if parent < 0
+                return
+            holder := dom_create("#fragment", 1, "")
+            parse_into(holder, to_string(v)?)
+            for c in dom[holder].children
+                insert_checked(parent, c, id)?
+            dom_detach(id)
+        "defaultValue" =>
+            if dom[id].tag == "textarea"
+                set_text_content(id, to_string(v)?)
+            else
+                set_attr(id, "value", to_string(v)?)
         "textContent" | "innerText" | "nodeValue" | "data" | "text" =>
             if p == "nodeValue" or p == "data"
                 if dom[id].kind == 1
@@ -1235,6 +1305,20 @@ fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
         "remove" =>
             dom_detach(id)
             Undef
+        "replaceChildren" =>
+            mut ids := List[int]()
+            for a in args
+                ids.push(node_id(a) else dom_create("#text", 3, to_string(a)?))
+            for c in dom[id].children
+                dom_detach(c)
+            mo_begin()
+            for c in ids
+                insert_checked(id, c, -1)?
+            mo_end(id)
+            Undef
+        "normalize" =>
+            normalize_text(id)
+            Undef
         "append" | "prepend" | "before" | "after" | "replaceWith" =>
             mut ids := List[int]()
             for a in args
@@ -1247,8 +1331,10 @@ fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
                 "before" | "replaceWith" => id
                 "after" => next_sibling(id)
                 _ => -1
+            mo_begin()
             for c in ids
                 insert_checked(parent, c, anchor)?
+            mo_end(parent)
             if m == "replaceWith"
                 dom_detach(id)
             Undef
@@ -1306,6 +1392,22 @@ fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
                 return a1
             Undef
         _ => return type_error("{m} is not a function")
+
+## Node.normalize (DOM §4.4): drop empty text nodes and join adjacent ones.
+fn Vm.normalize_text(mut self, id int)
+    mut prev := -1
+    for c in dom[id].children
+        if dom[c].kind == 3
+            if dom[c].text == ""
+                dom_detach(c)
+            elif prev >= 0
+                set_text_content(prev, "{dom[prev].text}{dom[c].text}")
+                dom_detach(c)
+            else
+                prev = c
+        else
+            prev = -1
+            normalize_text(c)
 
 fn Vm.next_sibling(self, id int) int
     p := dom[id].parent
@@ -1406,6 +1508,20 @@ fn style_pairs(text str) List[DomAttr]
             out.push(DomAttr(name: name, value: part.slice(i + 1, part.chars().len()).trim()))
     out
 
+## The property key a CSS name gets on a style object: camelCase, except
+## custom properties (`--x`), which keep their name.
+fn style_key(name str) str
+    if name.starts_with("--") then name else css_to_camel(name)
+
+## The declarations of a style object as `name: value;` text.
+fn Vm.style_text(self, o ref JsObject) str
+    mut parts := List[str]()
+    for k in o.props.keys()
+        if s := str_of(o.props[k].value)
+            if s != ""
+                parts.push("{camel_to_css(k)}: {s};")
+    parts.join(" ")
+
 fn css_to_camel(name str) str
     mut out := List[str]()
     mut up := false
@@ -1430,26 +1546,27 @@ fn camel_to_css(name str) str
 
 ## A write to `el.style.x`: the element's style attribute changes.
 pub fn Vm.style_write(mut self, o ref JsObject, key str, v Value) ! Thrown
-    o.props[key] = data(Str(if is_nullish(v) then "" else to_string(v)?))
+    if key == "cssText"
+        o.props = {}
+        for pair in style_pairs(if is_nullish(v) then "" else to_string(v)?)
+            o.props[style_key(pair.name)] = data(Str(pair.value))
+    else
+        o.props[key] = data(Str(if is_nullish(v) then "" else to_string(v)?))
     id := int_of(num_of(o.prim) else -1.0)
     if id < 0
         return
     sync_style(o, id)
 
 fn Vm.sync_style(mut self, o ref JsObject, id int)
-    mut parts := List[str]()
-    for k in o.props.keys()
-        if s := str_of(o.props[k].value)
-            if s != ""
-                parts.push("{camel_to_css(k)}: {s};")
-    if parts.len() == 0
+    text := style_text(o)
+    if text == ""
         remove_attr(id, "style")
     else
-        set_attr(id, "style", parts.join(" "))
+        set_attr(id, "style", text)
 
 fn Vm.style_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
     o := obj_of(this_val) else return Undef
-    key := css_to_camel(to_string(arg_at(args, 0))?)
+    key := style_key(to_string(arg_at(args, 0))?)
     match m
         "setProperty" => style_write(o, key, arg_at(args, 1))?
         "removeProperty" =>
@@ -2179,6 +2296,12 @@ pub fn Vm.run_microtasks(mut self)
     mut n := 0
     while microtasks.len() > 0 and n < 100000
         cb := microtasks.remove_at(0)
+        # The marker `mo_note` queued: observers hear of their changes in
+        # the order the jobs were queued (DOM §4.3.3).
+        if cb == Value.Str(MO_MARK)
+            mo_deliver()
+            n += 1
+            continue
         if v := call(cb, Undef, [])
             v
         else err
