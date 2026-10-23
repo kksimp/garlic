@@ -290,6 +290,7 @@ fn Vm.setup(mut self)
         "add:1 has:1 delete:1 clear:0 forEach:1 keys:0 values:0 entries:0",
     )
     getter(set_proto, "size", "Set.prototype.size")
+    weak_setup()
     map_ctor.props["length"] = hidden(Num(0.0))
     set_ctor.props["length"] = hidden(Num(0.0))
 
@@ -357,7 +358,7 @@ fn Vm.setup(mut self)
 ## Natives that `new` may call.
 pub fn native_is_ctor(name str) bool
     match name
-        "Object" | "Function" | "Array" | "String" | "Number" | "Boolean" | "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" | "AggregateError" | "Map" | "Set" | "RegExp" | "Date" | "Promise" | "dom.Event" | "dom.MutationObserver" | "dom.illegal" | "dom.URL" | "dom.URLSearchParams" | "dom.Image" =>
+        "Object" | "Function" | "Array" | "String" | "Number" | "Boolean" | "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" | "AggregateError" | "Map" | "Set" | "WeakMap" | "WeakSet" | "WeakRef" | "FinalizationRegistry" | "IntersectionObserver" | "ResizeObserver" | "RegExp" | "Date" | "Promise" | "dom.Event" | "dom.MutationObserver" | "dom.illegal" | "dom.URL" | "dom.URLSearchParams" | "dom.Image" =>
             true
         _ => false
 
@@ -405,6 +406,12 @@ pub fn Vm.native(
         return map_method(m, this_val, args)
     if m := name.strip_prefix("Set.prototype.")
         return set_method(m, this_val, args)
+    for w in ["IntersectionObserver", "ResizeObserver"]
+        if m := name.strip_prefix("{w}.prototype.")
+            return if m == "takeRecords" then array([]) else Value.Undef
+    for w in ["WeakMap", "WeakSet", "WeakRef", "FinalizationRegistry"]
+        if m := name.strip_prefix("{w}.prototype.")
+            return weak_method(w, m, this_val, args)
     if m := name.strip_prefix("Date.prototype.")
         return date_method(m, this_val, args)
     if m := name.strip_prefix("RegExp.prototype.")
@@ -575,6 +582,12 @@ pub fn Vm.native(
                     else
                         set_add(o, item)
             Obj(o)
+        "WeakMap" | "WeakSet" | "WeakRef" | "FinalizationRegistry" => weak_new(
+            name,
+            args,
+            new_target,
+        )
+        "IntersectionObserver" | "ResizeObserver" => observer_stub_new(name, args, new_target)
         "RegExp" =>
             src := if a0 == Undef then "(?:)" else to_string(a0)?
             flags := if arg_at(args, 1) == Undef then "" else to_string(arg_at(args, 1))?

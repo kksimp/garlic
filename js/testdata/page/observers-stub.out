@@ -1,0 +1,15 @@
+undefined undefined undefined 0 undefined
+[object IntersectionObserver] [object ResizeObserver] function function
+TypeError
+TypeError
+TypeError
+== body
+<script>
+const io = new IntersectionObserver(() => {}, { threshold: [0, 1] });
+const ro = new ResizeObserver(() => {});
+console.log(io.disconnect(), io.unobserve(document.body), ro.disconnect(), io.takeRecords().length, typeof ro.takeRecords);
+console.log(Object.prototype.toString.call(io), Object.prototype.toString.call(ro), typeof io.observe, typeof ro.observe);
+try { new IntersectionObserver(); } catch (e) { console.log(e.name); }
+try { new ResizeObserver(); } catch (e) { console.log(e.name); }
+try { IntersectionObserver(() => {}); } catch (e) { console.log(e.name); }
+</script>
