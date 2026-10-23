@@ -1,0 +1,43 @@
+p.first b 1
+li:nth-child(2) 1
+li:last-child 1
+p + p 1
+ul > li.sel 1
+[data-x] 1
+#root.a.b 1
+li:not(.sel) 2
+li:first-child, li:last-child 2
+input:checked 1
+p:nth-of-type(2) 1
+li:nth-child(odd) 2
+p:first-of-type 1
+p:empty 0
+[class~=sel] 1
+[class^=fi] 1
+:scope > ul 0
+li:nth-child(2n+1) 2
+p ~ ul 1
+li:nth-last-child(1) 1
+input[type=checkbox] 1
+option:checked 1
+a:link 0
+li:only-child 0
+body > div 1
+div:has(p) 1
+li:is(.sel, :first-child) 2
+html 1
+li:nth-child(-n+2) 2
+[name=cb] 1
+p:not(:first-child) 1
+option[selected] 1
+ul li:last-of-type 1
+== body
+
+<div id="root" class="a b" data-x="1"><p class="first">One <b>bold</b></p><p>Two</p><!-- c --><ul><li>1</li><li class="sel">2</li><li>3</li></ul><input type="checkbox" checked="" name="cb"><select id="s"><option value="1">A</option><option value="2" selected="">B</option></select><textarea id="ta">hello</textarea></div>
+<script>
+const r = document.getElementById("root");
+for (const s of ["p.first b","li:nth-child(2)","li:last-child","p + p","ul > li.sel","[data-x]","#root.a.b","li:not(.sel)","li:first-child, li:last-child","input:checked","p:nth-of-type(2)","li:nth-child(odd)","p:first-of-type","p:empty","[class~=sel]","[class^=fi]",":scope > ul","li:nth-child(2n+1)","p ~ ul","li:nth-last-child(1)","input[type=checkbox]","option:checked","a:link","li:only-child","body > div","div:has(p)","li:is(.sel, :first-child)","html","li:nth-child(-n+2)","[name=cb]","p:not(:first-child)","option[selected]","ul li:last-of-type"]) {
+  try { console.log(s, document.querySelectorAll(s).length); } catch (e) { console.log(s, "ERR", e.name); }
+}
+</script>
+

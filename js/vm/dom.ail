@@ -1263,6 +1263,7 @@ fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
             node_list(out)
         "querySelector" | "querySelectorAll" =>
             sel := parse_selector(to_string(a0)?)?
+            scope_id = id
             mut out := List[int]()
             for e in elements_under(id)
                 if matches_selector(e, sel)
@@ -1274,6 +1275,7 @@ fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
             node_list(out)
         "closest" =>
             sel := parse_selector(to_string(a0)?)?
+            scope_id = id
             mut e := id
             while e > 0
                 if dom[e].kind == 1 and matches_selector(e, sel)
@@ -1282,6 +1284,7 @@ fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
             Null
         "matches" =>
             sel := parse_selector(to_string(a0)?)?
+            scope_id = id
             Value.Bool(matches_selector(id, sel))
         "appendChild" =>
             child := need_node(a0, "appendChild")?
@@ -1967,6 +1970,9 @@ struct Compound
     ## [name, op, value]; op is "", "=", "~=", "^=", "$=", "*=", "|=".
     attrs List[List[str]]
     pseudos List[str]
+    ## For each pseudo-class, the selector lists inside its parentheses
+    ## (`:not(...)`, `:is(...)`, `:has(...)`), else an empty list.
+    pseudo_sels List[List[List[Compound]]]
     ## How this compound relates to the one before it in the chain.
     combinator str
 
@@ -1999,6 +2005,7 @@ fn Vm.parse_selector(mut self, text str) List[List[Compound]] ! Thrown
                 classes: [],
                 attrs: [],
                 pseudos: [],
+                pseudo_sels: [],
                 combinator: if chain.len() == 0 then "" else comb,
             )
             comb = ""
@@ -2032,7 +2039,21 @@ fn Vm.parse_selector(mut self, text str) List[List[Compound]] ! Thrown
                     mut end := k
                     if k < cs.len() and cs[k] == '('
                         end = (find_at(cs, k, ")") else cs.len() - 1) + 1
-                    cur.pseudos.push(cs[j..end].join(""))
+                    pseudo := cs[j..end].join("")
+                    cur.pseudos.push(pseudo)
+                    mut inner := List[List[Compound]]()
+                    if open := pseudo.find("(")
+                        pname := pseudo.slice(0, open).to_lower()
+                        if pname == "not"
+                            or pname == "is"
+                            or pname == "where"
+                            or pname == "matches"
+                            or pname == "has"
+                            inner = parse_selector(pseudo.slice(
+                                open + 1,
+                                pseudo.chars().len() - 1,
+                            ))?
+                    cur.pseudo_sels.push(inner)
                     i = end
                 elif ch == '*'
                     i += 1
@@ -2155,48 +2176,10 @@ fn Vm.match_compound(self, id int, c Compound) bool
             _ => v == t[2] or v.starts_with("{t[2]}-")
         if not ok
             return false
-    for p in c.pseudos
-        ok := match p
-            "first-child" => previous_element(id) < 0
-            "last-child" => next_element(id) < 0
-            "only-child" => previous_element(id) < 0 and next_element(id) < 0
-            "checked" => (field_values.get(id) else (if attr_of(id, "checked") != none then "on" else "off"))
-                == "on"
-            "disabled" => attr_of(id, "disabled") != none
-            "enabled" => attr_of(id, "disabled") == none
-            "root" => n.parent == 0
-            "empty" => n.children.len() == 0
-            _ =>
-                if inner := p.strip_prefix("not(")
-                    sel := inner.slice(0, inner.chars().len() - 1)
-                    c2 := Compound(
-                        tag: "",
-                        ids: [],
-                        classes: [],
-                        attrs: [],
-                        pseudos: [],
-                        combinator: "",
-                    )
-                    not simple_match(id, sel, c2)
-                else
-                    false
-        if not ok
+    for i in 0..c.pseudos.len()
+        if not match_pseudo(id, c.pseudos[i], c.pseudo_sels[i])
             return false
     true
-
-## `:not(X)` for a simple X: a tag, `.class`, `#id` or `[attr]`.
-fn Vm.simple_match(self, id int, sel str, base Compound) bool
-    mut c := base
-    s := sel.trim()
-    if name := s.strip_prefix(".")
-        c.classes.push(name)
-    elif name := s.strip_prefix("#")
-        c.ids.push(name)
-    elif s.starts_with("[")
-        c.attrs.push(attr_test(s.slice(1, s.chars().len() - 1)))
-    else
-        c.tag = s.to_lower()
-    match_compound(id, c)
 
 fn Vm.next_element(self, id int) int
     p := dom[id].parent

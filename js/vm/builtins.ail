@@ -63,6 +63,7 @@ pub fn new_vm() Vm
         observers: [],
         active: -1,
         timer_level: 0,
+        scope_id: -1,
         in_error: false,
         mo_hold: false,
         mo_held: [],

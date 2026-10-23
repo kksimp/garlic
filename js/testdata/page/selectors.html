@@ -1,0 +1,8 @@
+<!DOCTYPE html><html><body>
+<div id="root" class="a b" data-x="1"><p class="first">One <b>bold</b></p><p>Two</p><!-- c --><ul><li>1</li><li class="sel">2</li><li>3</li></ul><input type="checkbox" checked name="cb"><select id="s"><option value="1">A</option><option value="2" selected>B</option></select><textarea id="ta">hello</textarea></div>
+<script>
+const r = document.getElementById("root");
+for (const s of ["p.first b","li:nth-child(2)","li:last-child","p + p","ul > li.sel","[data-x]","#root.a.b","li:not(.sel)","li:first-child, li:last-child","input:checked","p:nth-of-type(2)","li:nth-child(odd)","p:first-of-type","p:empty","[class~=sel]","[class^=fi]",":scope > ul","li:nth-child(2n+1)","p ~ ul","li:nth-last-child(1)","input[type=checkbox]","option:checked","a:link","li:only-child","body > div","div:has(p)","li:is(.sel, :first-child)","html","li:nth-child(-n+2)","[name=cb]","p:not(:first-child)","option[selected]","ul li:last-of-type"]) {
+  try { console.log(s, document.querySelectorAll(s).length); } catch (e) { console.log(s, "ERR", e.name); }
+}
+</script></body></html>
