@@ -33,6 +33,11 @@ before=$(curl -s "$site/conns")
 garlic "$site/dir/home" > /dev/null
 after=$(curl -s "$site/conns")
 expect "a page and its sheet share one connection" "$((before + 2))" "$after"  # one for garlic, one for this curl
+out=$(plain "$site/app")
+expect "fetch sends same-origin cookies" "fetch sid=xyz" "$out"
+expect "XMLHttpRequest answers with a status" "xhr 200 sid=xyz" "$out"
+expect "a cross-origin fetch needs CORS permission" "cross blocked" "$out"
+expect "a cross-origin fetch the server allows" "cors open" "$out"
 expect "a 301 is followed" "\"url\":\"$site/dir/home\"" "$(garlic "$site/old")"
 expect "a gzip page is read" '"title":"zipped"' "$(garlic "$site/zip")"
 expect "a missing page shows its status" "HTTP status 404" "$(plain "$site/nothing")"

@@ -19,10 +19,23 @@ pub struct Outcome
     pub changes int
     ## What scripts assigned to `document.cookie`, in order.
     pub cookies List[str]
+    ## `fetch` and XMLHttpRequest requests that had no reply yet.
+    pub asks List[Ask]
+
+## A request from `fetch` or XMLHttpRequest: `packed` is the content type, a
+## newline and the body. Its key in `replies` is `METHOD url\npacked`.
+pub struct Ask
+    pub method str
+    pub url str
+    pub packed str
+
+pub fn Ask.key(self) str
+    "{method} {url}\n{packed}"
 
 ## Run the scripts of `d` (the page at `url`): inline ones, and external ones
 ## whose source is in `scripts` by resolved URL. `cookies` are the page's
-## cookies by name and `now_ms` the time (ms since 1970). Timers run for
+## cookies by name, `replies` the JSON answers to earlier `fetch` asks, and
+## `now_ms` the time (ms since 1970). Timers run for
 ## `budget_ms` of virtual time; `max_steps` caps the work (0 for no cap).
 pub fn run(
     mut d html.Doc,
@@ -32,12 +45,15 @@ pub fn run(
     now_ms float,
     budget_ms float,
     max_steps int,
+    replies Map[str, str],
 ) Outcome
     mut machine := vm.new_vm()
     machine.step_limit = max_steps
     machine.clock_ms = now_ms
     machine.cookies = cookies
     machine.dom_setup()
+    machine.fetch_replies = replies
+    machine.net_setup()
     machine.dom = mirror(d)
     for id in 0..machine.dom.len()
         for a in machine.dom[id].attrs
@@ -53,6 +69,7 @@ pub fn run(
         missing: [],
         changes: 0,
         cookies: [],
+        asks: [],
     )
     out.changes = replay(mut d, machine.mutations)
     for r in machine.host_requests
@@ -62,6 +79,8 @@ pub fn run(
             out.body = r.text
         if r.kind == "fetch-script"
             out.missing.push(r.url)
+        if r.kind == "fetch"
+            out.asks.push(Ask(method: r.method, url: r.url, packed: r.text))
         if r.kind == "cookie"
             out.cookies.push(r.text)
     out

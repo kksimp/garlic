@@ -1,7 +1,7 @@
 """A scripted site for tools/garlic/netcheck/check.sh: redirects that set
 cookies, gzip, a sheet that needs the cookie, and a POST answered by 303."""
 import gzip, sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 last = {}
@@ -11,7 +11,7 @@ counts = {"css": 0, "304": 0, "conns": 0}
 class H(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def setup(self):
+    def setup(self):  # one per connection
         counts["conns"] += 1
         super().setup()
 
@@ -48,6 +48,27 @@ class H(BaseHTTPRequestHandler):
             self.send(200, b"<title>next</title>")
         elif self.path == "/navlast":
             self.send(200, last.get("nav", "").encode(), ctype="text/plain")
+        elif self.path == "/app":
+            port = self.server.server_address[1]
+            page = """<p id=a>-</p><p id=b>-</p><p id=c>-</p><p id=d>-</p><script>
+fetch('/api/who').then(function (r) { return r.json(); }).then(function (j) {
+  document.getElementById('a').textContent = 'fetch ' + j.cookie;
+});
+var x = new XMLHttpRequest();
+x.open('GET', '/api/who');
+x.onload = function () { document.getElementById('b').textContent = 'xhr ' + x.status + ' ' + JSON.parse(x.responseText).cookie; };
+x.send();
+fetch('http://localhost:PORT/api/who').then(function () { document.getElementById('c').textContent = 'cross open'; },
+  function () { document.getElementById('c').textContent = 'cross blocked'; });
+fetch('http://localhost:PORT/api/cors').then(function (r) { return r.text(); }).then(function (t) {
+  document.getElementById('d').textContent = 'cors ' + t;
+});
+</script>""".replace("PORT", str(port))
+            self.send(200, page.encode(), headers=[("Set-Cookie", "sid=xyz; Path=/")])
+        elif self.path == "/api/who":
+            self.send(200, ('{"cookie":"%s"}' % self.headers.get("Cookie", "")).encode(), ctype="application/json")
+        elif self.path == "/api/cors":
+            self.send(200, b"open", ctype="text/plain", headers=[("Access-Control-Allow-Origin", "*")])
         elif self.path == "/old":
             self.send(301, headers=[("Location", "/dir/home")])
         elif self.path == "/zip":
@@ -72,6 +93,11 @@ class H(BaseHTTPRequestHandler):
             self.send(404)
 
 
-s = HTTPServer(("127.0.0.1", 0), H)
+class Quiet(ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        pass
+
+
+s = Quiet(("127.0.0.1", 0), H)
 print(s.server_address[1], flush=True)
 s.serve_forever()

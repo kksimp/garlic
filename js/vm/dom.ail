@@ -34,7 +34,8 @@ pub struct Mutation
 
 ## Something a script asked the browser to do that the browser must decide:
 ## "navigate" (to `url` with `method`, and `text` as a POST body), "open",
-## "fetch-script" (`url` for script node `node`), "cookie" (`text` is the
+## "fetch-script" (`url` for script node `node`), "fetch" (`method`, `url`
+## and `text`, the content type, a newline and the body), "cookie" (`text` is the
 ## Set-Cookie line), "alert", "confirm", "prompt".
 pub struct HostRequest
     pub kind str
@@ -504,7 +505,7 @@ pub fn Vm.dom_setup(mut self)
     methods(
         global_obj,
         "dom.window",
-        "setTimeout:1 setInterval:1 clearTimeout:1 clearInterval:1 requestAnimationFrame:1 cancelAnimationFrame:1 queueMicrotask:1 requestIdleCallback:1 addEventListener:2 removeEventListener:2 dispatchEvent:1 getComputedStyle:1 matchMedia:1 alert:1 confirm:1 prompt:1 scrollTo:2 scrollBy:2 scroll:2 open:1 close:0 focus:0 blur:0 postMessage:1 atob:1 btoa:1",
+        "setTimeout:1 setInterval:1 clearTimeout:1 clearInterval:1 requestAnimationFrame:1 cancelAnimationFrame:1 queueMicrotask:1 requestIdleCallback:1 addEventListener:2 removeEventListener:2 dispatchEvent:1 getComputedStyle:1 matchMedia:1 alert:1 confirm:1 prompt:1 scrollTo:2 scrollBy:2 scroll:2 open:1 close:0 focus:0 blur:0 postMessage:1 atob:1 btoa:1 __hostFetch:3",
     )
     global_obj.props["location"] = Prop(
         value: Undef,
@@ -2092,6 +2093,21 @@ fn Vm.window_method(mut self, m str, args List[Value]) Value ! Thrown
                 method: "GET",
                 node: -1,
                 text: "",
+            ))
+            Null
+        "__hostFetch" =>
+            # The browser's answer to a request, or null and a request for it.
+            method := to_string(a0)?
+            url := resolve_url(to_string(arg_at(args, 1))?)
+            packed := to_string(arg_at(args, 2))?
+            if reply := fetch_replies.get("{method} {url}\n{packed}")
+                return Str(reply)
+            host_requests.push(HostRequest(
+                kind: "fetch",
+                url: url,
+                method: method,
+                node: -1,
+                text: packed,
             ))
             Null
         "atob" | "btoa" =>

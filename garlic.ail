@@ -146,6 +146,10 @@ struct Got
 
 MAX_HOPS := 10
 
+## Runs of a page's scripts to answer `fetch` rounds, and replies kept.
+MAX_PASSES := 4
+MAX_REPLIES := 32
+
 ## `fetch_with`, also telling where redirects ended. Every hop sends the
 ## cookies the jar holds for it and stores the ones it sets, so a login that
 ## sets a cookie on a redirect works; a 301, 302 or 303 turns a POST into a
@@ -153,49 +157,92 @@ MAX_HOPS := 10
 fn fetch_got(url str, method str, body str, from str, mut cj jar.Jar) Got
     s := page.scheme(url)
     if s == "http" or s == "https"
-        mut o := options()
-        o.max_redirects = 0
-        mut m := method
-        if method == "POST"
-            o.body = body
-            o.headers["content-type"] = "application/x-www-form-urlencoded"
-        mut cur := url
-        for _ in 0..MAX_HOPS
-            cookie := cj.header_from(cur, from, m == "GET")
-            via_page := referrer(from, cur)
-            if via_page != ""
-                o.headers["referer"] = via_page
-            else
-                o.headers.remove("referer")
-            if cookie != ""
-                o.headers["cookie"] = cookie
-            else
-                o.headers.remove("cookie")
-            r := net.request_bytes(m, cur, o) else err
-                return Got(url: cur, text: error_page(cur, "{err}"))
-            for line in r.all_headers.get("set-cookie") else List[str]()
-                cj.set_cookie(cur, line)
-            loc := r.headers.get("location") else ""
-            hop := r.status == 301
-                or r.status == 302
-                or r.status == 303
-                or r.status == 307
-                or r.status == 308
-            if hop and loc != ""
-                cur = page.resolve(cur, loc)
-                if m != "GET" and m != "HEAD" and r.status != 307 and r.status != 308
-                    m = "GET"
-                    o.body = ""
-                    o.headers.remove("content-type")
-                continue
-            if r.status >= 400
-                return Got(url: cur, text: "{body_text(r)}<p>(HTTP status {r.status})")
-            return Got(url: cur, text: body_text(r))
-        return Got(url: cur, text: error_page(cur, "more than {MAX_HOPS} redirects"))
+        w := walk(
+            method,
+            url,
+            body,
+            if method == "POST" then "application/x-www-form-urlencoded" else "",
+            from,
+            true,
+            true,
+            mut cj,
+        )
+        if w.failure != ""
+            return Got(url: w.url, text: error_page(w.url, w.failure))
+        if w.status >= 400
+            return Got(url: w.url, text: "{w.text}<p>(HTTP status {w.status})")
+        return Got(url: w.url, text: w.text)
     file := (url.strip_prefix("file://") else url).split("?")[0].split("#")[0]
     data := fs.read_bytes(file) else err
         return Got(url, error_page(url, "{err}"))
     Got(url, decode(data, ""))
+
+## Where a request ended up after its redirects, and what it got.
+struct Walked
+    url str
+    ## "" or why no response came.
+    failure str
+    status int
+    headers Map[str, str]
+    text str
+
+## `method` `url` with `body` (of `ctype`), following redirects by hand. A
+## navigation (`navigation`) from the page `from` sends its lax cookies; a
+## request that is cross-site sends none (fetch's credentials "same-origin").
+fn walk(
+    method str,
+    url str,
+    body str,
+    ctype str,
+    from str,
+    navigation bool,
+    creds bool,
+    mut cj jar.Jar,
+) Walked
+    mut o := options()
+    o.max_redirects = 0
+    mut m := method
+    if body != "" and m != "GET" and m != "HEAD"
+        o.body = body
+        o.headers["content-type"] = if ctype == "" then "text/plain;charset=UTF-8" else ctype
+    mut cur := url
+    for _ in 0..MAX_HOPS
+        cookie := if creds then cj.header_from(cur, from, navigation and m == "GET") else ""
+        via_page := referrer(from, cur)
+        if via_page != ""
+            o.headers["referer"] = via_page
+        else
+            o.headers.remove("referer")
+        if cookie != ""
+            o.headers["cookie"] = cookie
+        else
+            o.headers.remove("cookie")
+        r := net.request_bytes(m, cur, o) else err
+            return Walked(url: cur, failure: "{err}", status: 0, headers: {}, text: "")
+        if creds
+            for line in r.all_headers.get("set-cookie") else List[str]()
+                cj.set_cookie(cur, line)
+        loc := r.headers.get("location") else ""
+        hop := r.status == 301
+            or r.status == 302
+            or r.status == 303
+            or r.status == 307
+            or r.status == 308
+        if hop and loc != ""
+            cur = page.resolve(cur, loc)
+            if m != "GET" and m != "HEAD" and r.status != 307 and r.status != 308
+                m = "GET"
+                o.body = ""
+                o.headers.remove("content-type")
+            continue
+        return Walked(
+            url: cur,
+            failure: "",
+            status: r.status,
+            headers: r.headers,
+            text: body_text(r),
+        )
+    Walked(url: cur, failure: "more than {MAX_HOPS} redirects", status: 0, headers: {}, text: "")
 
 ## The labels that name windows-1252, which HTML reads `iso-8859-1` and
 ## `us-ascii` as (WHATWG Encoding).
@@ -484,7 +531,7 @@ fn load_doc(
         now := time.now_ms().to_float()
         ## A page with no scripts has nothing to run, and starting the engine
         ## costs about 0.2 s.
-        out := if d.all("script").len() == 0 then jsdom.Outcome(
+        mut out := jsdom.Outcome(
             url: "",
             method: "",
             body: "",
@@ -492,7 +539,33 @@ fn load_doc(
             missing: [],
             changes: 0,
             cookies: [],
-        ) else jsdom.run(mut d, script_url(at), scripts, cj.for_script(at), now, 1000.0, 5000000)
+            asks: [],
+        )
+        if d.all("script").len() > 0
+            ## `fetch` and XMLHttpRequest answer from `replies`. A request
+            ## with no reply yet is made here and the page's scripts run
+            ## again on a fresh tree, so each pass sees one more round.
+            mut replies := Map[str, str]()
+            for pass in 0..MAX_PASSES
+                mut tree := html.parse(got.text)
+                out = jsdom.run(
+                    mut tree,
+                    script_url(at),
+                    scripts,
+                    cj.for_script(at),
+                    now,
+                    1000.0,
+                    5000000,
+                    replies,
+                )
+                d = tree
+                mut more := false
+                for ask in out.asks
+                    if not replies.contains(ask.key()) and replies.len() < MAX_REPLIES
+                        replies[ask.key()] = script_reply(ask, at, mut cj)
+                        more = true
+                if not more
+                    break
         for line in out.cookies
             cj.set_from_script(at, line)
         if env.args().contains("--console")
@@ -513,6 +586,40 @@ fn load_doc(
         at = next
     last := fetch_got(at, m, b, via, mut cj)
     Loaded(url: last.url, doc: html.parse(last.text))
+
+## The origin (`scheme://host:port`) of an address.
+fn origin_of(u str) str
+    parts := u.split("/")
+    if parts.len() < 3
+        return ""
+    parts[0..3].join("/")
+
+## What `fetch` or XMLHttpRequest from the page `from` gets for `ask`, as the
+## JSON the script side reads (jsdom, vm/netapi.ail). Cookies go only to the
+## page's own origin; another origin must allow it with
+## `Access-Control-Allow-Origin` (`*` or the page's origin), else the script
+## sees a network error, as in a browser. Custom request headers and
+## preflights are not sent.
+fn script_reply(ask jsdom.Ask, from str, mut cj jar.Jar) str
+    failed := r"""{"error":true}"""
+    s := page.scheme(ask.url)
+    if s != "http" and s != "https"
+        return failed
+    lines := ask.packed.split("\n")
+    ctype := lines[0]
+    body := lines[1..lines.len()].join("\n")
+    same := origin_of(from) == origin_of(ask.url)
+    w := walk(ask.method, ask.url, body, ctype, from, false, same, mut cj)
+    if w.failure != ""
+        return failed
+    if origin_of(w.url) != origin_of(from)
+        allow := w.headers.get("access-control-allow-origin") else ""
+        if allow != "*" and allow != origin_of(from)
+            return failed
+    mut hs := List[str]()
+    for k in w.headers.keys()
+        hs.push("{page.quote(k)}:{page.quote(w.headers[k])}")
+    "\{\"status\":{w.status},\"statusText\":\"\",\"url\":{page.quote(w.url)},\"headers\":\{{hs.join(",")}},\"body\":{page.quote(w.text)}}"
 
 ## The address scripts see: a local file gets a file:// URL.
 fn script_url(u str) str
