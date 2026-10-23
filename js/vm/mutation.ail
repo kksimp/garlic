@@ -1,0 +1,190 @@
+## MutationObserver (WHATWG DOM §4.3): scripts watch the tree change.
+## Every logged change is offered to the observers (`Vm.mo_note`); records
+## are delivered to callbacks after the running script, as a microtask
+## checkpoint does (`Vm.mo_deliver`).
+
+## What one `observe()` call asked for.
+pub struct MoTarget
+    pub node int
+    pub child_list bool
+    pub attributes bool
+    pub character_data bool
+    pub subtree bool
+    pub filter List[str]
+
+pub struct Observer
+    pub callback Value
+    pub obj Value
+    pub targets List[MoTarget]
+    pub records List[Value]
+
+## The microtask that stands for "notify mutation observers".
+pub MO_MARK := "\u{0}mutation-observers"
+
+## `new MutationObserver(callback)`.
+fn Vm.mo_new(mut self, args List[Value]) Value ! Thrown
+    cb := arg_at(args, 0)
+    if not is_callable(cb)
+        return type_error("Failed to construct 'MutationObserver': The callback provided as parameter 1 is not a function.")
+    o := object("MutationObserver", proto_of("MutationObserver"))
+    o.prim = Num(observers.len().to_float())
+    observers.push(Observer(callback: cb, obj: Obj(o), targets: [], records: []))
+    Value.Obj(o)
+
+fn Vm.mo_index(mut self, this_val Value) int ! Thrown
+    o := obj_of(this_val) else return type_error("Illegal invocation")
+    if o.class != "MutationObserver"
+        return type_error("Illegal invocation")
+    int_of(num_of(o.prim) else -1.0)
+
+fn Vm.mo_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    k := mo_index(this_val)?
+    match m
+        "observe" =>
+            node := node_id(
+                arg_at(args, 0),
+            ) else return type_error("Failed to execute 'observe' on 'MutationObserver': parameter 1 is not of type 'Node'.")
+            init := arg_at(args, 1)
+            mut child_list := false
+            mut attributes := false
+            mut character_data := false
+            mut subtree := false
+            mut filter := List[str]()
+            if obj_of(init) != none
+                child_list = truthy(get(init, "childList")?)
+                subtree = truthy(get(init, "subtree")?)
+                a := get(init, "attributes")?
+                attributes = truthy(a)
+                character_data = truthy(get(init, "characterData")?)
+                f := get(init, "attributeFilter")?
+                if obj_of(f) != none
+                    attributes = true
+                    n := int_of(to_number(get(f, "length")?)?)
+                    for i in 0..n
+                        filter.push(to_string(get(f, "{i}")?)?)
+            if not child_list and not attributes and not character_data
+                return type_error("Failed to execute 'observe' on 'MutationObserver': The options object must set at least one of 'attributes', 'characterData', or 'childList' to true.")
+            spec := MoTarget(
+                node: node,
+                child_list: child_list,
+                attributes: attributes,
+                character_data: character_data,
+                subtree: subtree,
+                filter: filter,
+            )
+            # Observing a node again replaces the earlier options (§4.3.1).
+            mut kept := [t for t in observers[k].targets if t.node != node]
+            kept.push(spec)
+            observers[k].targets = kept
+            Undef
+        "disconnect" =>
+            observers[k].targets = []
+            observers[k].records = []
+            Undef
+        _ =>
+            out := observers[k].records
+            observers[k].records = []
+            array(out)
+
+## The change `op` was logged: queue a record for each observer it matches.
+fn Vm.mo_note(mut self, op str, node int, parent int, name str)
+    if observers.len() == 0
+        return
+    kind := match op
+        "append" | "insert_before" | "detach" => "childList"
+        "set_attr" | "remove_attr" => "attributes"
+        "set_text" => "characterData"
+        _ => return
+    target := if kind == "childList" then parent else node
+    if target < 0
+        return
+    if mo_hold and op != "detach" and kind == "childList"
+        mo_held.push(node)
+        return
+    mo_queue(kind, target, op, [node], name)
+
+## A change to `target` is offered to every observer that wants it.
+fn Vm.mo_queue(mut self, kind str, target int, op str, nodes List[int], name str)
+    mut record := Value.Undef
+    for k in 0..observers.len()
+        mut hit := false
+        for t in observers[k].targets
+            if not t.subtree and t.node != target
+                continue
+            if t.subtree and not within(target, t.node)
+                continue
+            ok := match kind
+                "childList" => t.child_list
+                "attributes" => t.attributes and (t.filter.len() == 0 or t.filter.contains(name))
+                _ => t.character_data
+            if ok
+                hit = true
+                break
+        if not hit
+            continue
+        if record == Value.Undef
+            record = mo_record(kind, target, op, nodes, name)
+        observers[k].records.push(record)
+        if not microtasks.contains(Value.Str(MO_MARK))
+            microtasks.push(Value.Str(MO_MARK))
+
+fn Vm.within(self, node int, ancestor int) bool
+    mut e := node
+    while e >= 0
+        if e == ancestor
+            return true
+        e = dom[e].parent
+    false
+
+fn Vm.mo_record(mut self, kind str, target int, op str, nodes List[int], name str) Value
+    o := plain()
+    o.props["type"] = data(Str(kind))
+    o.props["target"] = data(node_value(target))
+    mut added := List[Value]()
+    mut removed := List[Value]()
+    if kind == "childList"
+        for node in nodes
+            if op == "detach"
+                removed.push(node_value(node))
+            else
+                added.push(node_value(node))
+    o.props["addedNodes"] = data(array(added))
+    o.props["removedNodes"] = data(array(removed))
+    o.props["previousSibling"] = data(Null)
+    o.props["nextSibling"] = data(Null)
+    o.props["attributeName"] = data(if kind == "attributes" then Str(name) else Null)
+    o.props["attributeNamespace"] = data(Null)
+    o.props["oldValue"] = data(Null)
+    Value.Obj(o)
+
+## Hand each observer its queued records (§4.3.3 notify mutation observers).
+## True when a callback ran, which may have changed the tree again.
+fn Vm.mo_deliver(mut self) bool
+    mut ran := false
+    for k in 0..observers.len()
+        if observers[k].records.len() == 0
+            continue
+        recs := observers[k].records
+        observers[k].records = []
+        ran = true
+        if v := call(observers[k].callback, observers[k].obj, [array(recs), observers[k].obj])
+            v
+        else err
+            report(uncaught_text(err))
+            if err.limit
+                stopped = true
+                return ran
+    ran
+
+## Insertions until `mo_end` make one record, as DOM §4.2.2 does for
+## `append(a, b)`.
+fn Vm.mo_begin(mut self)
+    mo_hold = true
+    mo_held = []
+
+fn Vm.mo_end(mut self, parent int)
+    mo_hold = false
+    held := mo_held
+    mo_held = []
+    if held.len() > 0 and parent >= 0
+        mo_queue("childList", parent, "append", held, "")

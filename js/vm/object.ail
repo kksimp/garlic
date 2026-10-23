@@ -154,6 +154,13 @@ pub fn Vm.set_own(mut self, o ref JsObject, key str, v Value) ! Thrown
         return
     if o.class == "CSSStyle"
         return style_write(o, key, v)
+    if o.class == "DataSet"
+        id := int_of(num_of(o.prim) else -1.0)
+        text := if is_nullish(v) then "null" else to_string(v)?
+        o.props[key] = data(Str(text))
+        if id >= 0
+            set_attr(id, "data-{camel_to_css(key)}", text)
+        return
     if key.starts_with("on")
         and (o.class == "Node" or o.class == "global")
         and dom.len() > 0
