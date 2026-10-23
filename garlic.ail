@@ -338,7 +338,7 @@ fn linked_sheets(d html.Doc, url str, mut cj jar.Jar, mut cache Map[str, Cached]
             break
         n += 1
         all = css.concat(all, css.parse_in(
-            fetch_text(page.resolve(url, href), url, mut cj, mut cache),
+            fetch_text(page.resolve(page.base_of(d, url), href), url, mut cj, mut cache),
             0,
             media,
         ))
@@ -451,7 +451,7 @@ fn load_doc(
         mut scripts := Map[str, str]()
         for s in d.all("script")
             if src := d.attr(s, "src")
-                u := page.resolve(at, src)
+                u := page.resolve(page.base_of(d, at), src)
                 scripts[script_url(u)] = fetch_text(u, at, mut cj, mut cache)
         now := time.now_ms().to_float()
         ## A page with no scripts has nothing to run, and starting the engine
@@ -834,7 +834,7 @@ fn Browser.submit(mut self, id int)
         message = "node {id} is not in a form"
         return
     fields := form_fields(doc, form, id)
-    action := page.resolve(url, doc.attr(form, "action") else "")
+    action := page.resolve(page.base_of(doc, url), doc.attr(form, "action") else "")
     method := (doc.attr(form, "method") else "get").to_upper()
     leave()
     ahead.clear()
@@ -1102,7 +1102,7 @@ fn Gui.refresh(mut self)
     if not pixel
         return
     if b.stamp != scene_stamp or area_w != scene_w or b.editing() != scene_edit
-        images.prefetch(b.doc, b.url, image_options(), mut b.sizes, mut b.bits)
+        images.prefetch(b.doc, page.base_of(b.doc, b.url), image_options(), mut b.sizes, mut b.bits)
         scene = gfx.layout_measured(b.doc, b.url, area_w, b.sheet, b.sizes, meas, b.editing())
         scene_edit = b.editing()
         scene_stamp = b.stamp
@@ -1529,7 +1529,7 @@ fn op_line(op draw.Op) str
 ## `--pixels-dump`: the pixel layout of the page, one operation per line,
 ## after the canvas colour and height.
 fn pixels_dump(mut b Browser, width float)
-    images.prefetch(b.doc, b.url, image_options(), mut b.sizes, mut b.bits)
+    images.prefetch(b.doc, page.base_of(b.doc, b.url), image_options(), mut b.sizes, mut b.bits)
     s := gfx.layout_with(b.doc, b.url, width, b.sheet, b.sizes)
     print("canvas #{s.bg.to_hex().pad_left(6, '0')} height {s.height.round()} ops {s.ops.len()} links {s.hits.len()}")
     for op in s.ops
@@ -2630,3 +2630,12 @@ fn flat(s gfx.Scene) List[str]
     assert_eq(referrer("http://a.com/x", "https://b.com/z"), "http://a.com")
     assert_eq(referrer("file:///tmp/p.html", "https://b.com/"), "")
     assert_eq(referrer("", "https://b.com/"), "")
+
+@test fn base_href_changes_where_relative_links_start()
+    d := html.parse("<base href=/other/><a href=x.html>x</a><img src=p.png>")
+    assert_eq(page.base_of(d, "https://a.test/dir/page.html"), "https://a.test/other/")
+    p := page.layout_with(d, "https://a.test/dir/page.html", 40, css.parse("", 0))
+    assert_eq(p.boxes[p.links[0]].href, "https://a.test/other/x.html")
+    assert_eq(p.url, "https://a.test/dir/page.html")
+    plain := html.parse("<a href=x>x</a>")
+    assert_eq(page.base_of(plain, "https://a.test/dir/page.html"), "https://a.test/dir/page.html")

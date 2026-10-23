@@ -784,6 +784,15 @@ fn Flow.list_marker(self, id int) str
 pub fn layout(d html.Doc, url str, width int) Page
     layout_with(d, url, width, css.parse("", 0))
 
+## Where relative addresses in `d` start from: its first `<base href>`
+## (HTML 4.2.3) resolved against the page's own address, else `url`.
+pub fn base_of(d html.Doc, url str) str
+    for id in d.all("base")
+        if h := d.attr(id, "href")
+            if h.trim() != ""
+                return resolve(url, h.trim())
+    url
+
 ## CSS pixels per text cell, for `@media` widths: a 100-cell window is
 ## 800 px wide, so narrow windows get sites' small-screen layouts.
 PX_PER_CELL := 8
@@ -815,7 +824,7 @@ pub fn layout_with(d html.Doc, url str, width int, sheet css.Sheet) Page
         targets: [],
         open: [],
         links: [],
-        base: url,
+        base: base_of(d, url),
         sheet: css.for_width(css.concat(sheet, css.document_sheet(d)), width.max(10) * PX_PER_CELL),
         flex: false,
         grid: [],
