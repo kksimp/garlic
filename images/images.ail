@@ -7,6 +7,7 @@
 ## can take them.
 
 use std.net
+use std.net.jar
 use std.fs
 use std.app
 use html
@@ -33,6 +34,8 @@ MAX_PIXELS := 4000000
 pub fn prefetch(
     d html.Doc,
     url str,
+    from str,
+    cj jar.Jar,
     o net.Options,
     mut sizes Map[str, List[int]],
     mut bits Map[str, Bitmap],
@@ -48,7 +51,7 @@ pub fn prefetch(
         if n == MAX_IMAGES
             break
         n += 1
-        raw := load(at, o) else
+        raw := load(at, o, from, cj) else
             sizes[at] = [0, 0]
             continue
         sizes[at] = image.dims(raw)
@@ -57,9 +60,16 @@ pub fn prefetch(
             bits[at] = Bitmap(w: px.width, h: px.height, data: app.bitmap_data(px.bytes()))
 
 ## The bytes of the picture at `at`, or none.
-fn load(at str, o net.Options) List[int]?
+fn load(at str, base net.Options, from str, cj jar.Jar) List[int]?
     s := page.scheme(at)
     if s == "http" or s == "https"
+        mut o := base
+        cookie := cj.header_from(at, from, false)
+        if cookie != ""
+            o.headers["cookie"] = cookie
+        sent := page.referrer(from, at)
+        if sent != ""
+            o.headers["referer"] = sent
         r := net.request_bytes("GET", at, o) else return none
         if r.status >= 400 or r.data.len() > MAX_BYTES
             return none

@@ -67,6 +67,11 @@ struct Browser
     last_nodes Map[int, str]
     ## Cookies from responses and scripts, sent back to their sites.
     cj jar.Jar
+    ## Sheets and scripts fetched before, for `fetch_text`.
+    cache Map[str, Cached]
+    ## The page a link or form leads from, for the next load only ("" for a
+    ## typed address, Back or Reload): the `Referer`, and SameSite cookies.
+    refer str
     ## Counts page layouts, so the pixel window knows when to lay out again.
     stamp int
     ## Pixel sizes of the page's pictures by address (`images.prefetch`).
@@ -118,26 +123,111 @@ fn fetch(url str, method str, body str) str
 ## `fetch`, sending `cj`'s cookies for the site and keeping the ones the
 ## response sets.
 fn fetch_with(url str, method str, body str, mut cj jar.Jar) str
+    fetch_got(url, method, body, "", mut cj).text
+
+## What a fetch got: the address it ended at (after redirects) and the page.
+struct Got
+    url str
+    text str
+
+MAX_HOPS := 10
+
+## Replies to a page's `fetch` and XMLHttpRequest asks, per load.
+MAX_REPLIES := 32
+
+## `fetch_with`, also telling where redirects ended. Every hop sends the
+## cookies the jar holds for it and stores the ones it sets, so a login that
+## sets a cookie on a redirect works; a 301, 302 or 303 turns a POST into a
+## GET without its body.
+fn fetch_got(url str, method str, body str, from str, mut cj jar.Jar) Got
     s := page.scheme(url)
     if s == "http" or s == "https"
-        mut o := options()
-        if method == "POST"
-            o.body = body
-            o.headers["content-type"] = "application/x-www-form-urlencoded"
-        cookie := cj.header(url)
-        if cookie != ""
-            o.headers["cookie"] = cookie
-        r := net.request_bytes(method, url, o) else err
-            return error_page(url, "{err}")
-        for line in r.all_headers.get("set-cookie") else List[str]()
-            cj.set_cookie(url, line)
-        if r.status >= 400
-            return "{body_text(r)}<p>(HTTP status {r.status})"
-        return body_text(r)
+        w := walk(
+            method,
+            url,
+            body,
+            if method == "POST" then "application/x-www-form-urlencoded" else "",
+            from,
+            true,
+            true,
+            mut cj,
+        )
+        if w.failure != ""
+            return Got(url: w.url, text: error_page(w.url, w.failure))
+        if w.status >= 400
+            return Got(url: w.url, text: "{w.text}<p>(HTTP status {w.status})")
+        return Got(url: w.url, text: w.text)
     file := (url.strip_prefix("file://") else url).split("?")[0].split("#")[0]
     data := fs.read_bytes(file) else err
-        return error_page(url, "{err}")
-    decode(data, "")
+        return Got(url, error_page(url, "{err}"))
+    Got(url, decode(data, ""))
+
+## Where a request ended up after its redirects, and what it got.
+struct Walked
+    url str
+    ## "" or why no response came.
+    failure str
+    status int
+    headers Map[str, str]
+    text str
+
+## `method` `url` with `body` (of `ctype`), following redirects by hand. A
+## navigation (`navigation`) from the page `from` sends its lax cookies; a
+## request that is cross-site sends none (fetch's credentials "same-origin").
+fn walk(
+    method str,
+    url str,
+    body str,
+    ctype str,
+    from str,
+    navigation bool,
+    creds bool,
+    mut cj jar.Jar,
+) Walked
+    mut o := options()
+    o.max_redirects = 0
+    mut m := method
+    if body != "" and m != "GET" and m != "HEAD"
+        o.body = body
+        o.headers["content-type"] = if ctype == "" then "text/plain;charset=UTF-8" else ctype
+    mut cur := url
+    for _ in 0..MAX_HOPS
+        cookie := if creds then cj.header_from(cur, from, navigation and m == "GET") else ""
+        via_page := page.referrer(from, cur)
+        if via_page != ""
+            o.headers["referer"] = via_page
+        else
+            o.headers.remove("referer")
+        if cookie != ""
+            o.headers["cookie"] = cookie
+        else
+            o.headers.remove("cookie")
+        r := net.request_bytes(m, cur, o) else err
+            return Walked(url: cur, failure: "{err}", status: 0, headers: {}, text: "")
+        if creds
+            for line in r.all_headers.get("set-cookie") else List[str]()
+                cj.set_cookie(cur, line)
+        loc := r.headers.get("location") else ""
+        hop := r.status == 301
+            or r.status == 302
+            or r.status == 303
+            or r.status == 307
+            or r.status == 308
+        if hop and loc != ""
+            cur = page.resolve(cur, loc)
+            if m != "GET" and m != "HEAD" and r.status != 307 and r.status != 308
+                m = "GET"
+                o.body = ""
+                o.headers.remove("content-type")
+            continue
+        return Walked(
+            url: cur,
+            failure: "",
+            status: r.status,
+            headers: r.headers,
+            text: body_text(r),
+        )
+    Walked(url: cur, failure: "more than {MAX_HOPS} redirects", status: 0, headers: {}, text: "")
 
 ## The labels that name windows-1252, which HTML reads `iso-8859-1` and
 ## `us-ascii` as (WHATWG Encoding).
@@ -264,7 +354,7 @@ fn refresh_target(d html.Doc, url str, scripting bool) str?
 MAX_SHEETS := 8
 
 ## The page's linked style sheets, fetched and parsed in document order.
-fn linked_sheets(d html.Doc, url str) css.Sheet
+fn linked_sheets(d html.Doc, url str, mut cj jar.Jar, mut cache Map[str, Cached]) css.Sheet
     mut all := css.parse("", 0)
     mut n := 0
     for l in d.all("link")
@@ -279,15 +369,113 @@ fn linked_sheets(d html.Doc, url str) css.Sheet
         if n == MAX_SHEETS
             break
         n += 1
-        all = css.concat(all, css.parse_in(fetch_text(page.resolve(url, href)), 0, media))
+        all = css.concat(all, css.parse_in(
+            fetch_text(page.resolve(page.base_of(d, url), href), url, mut cj, mut cache),
+            0,
+            media,
+        ))
     all
 
-## The text of a sub-resource, or "" when it can't be fetched.
-fn fetch_text(url str) str
+## The bytes of a `data:` URL's payload (RFC 2397): base64 or %-escapes.
+fn data_bytes(url str) bytes
+    raw := (url.strip_prefix("data:") else "").to_bytes()
+    at := raw.find(b",") else return b""
+    payload := raw[at + 1..raw.len()]
+    if raw[0..at].text().to_lower().ends_with(";base64")
+        return bytes.from_base64(payload.text()) else b""
+    mut out := List[u8]()
+    mut i := 0
+    while i < payload.len()
+        if payload[i].to_int() == 37 and i + 2 < payload.len()
+            h := bytes.from_hex(payload[i + 1..i + 3].text()) else b""
+            if h.len() == 1
+                out.push(h[0])
+                i += 3
+                continue
+        out.push(payload[i])
+        i += 1
+    bytes.from_list(out)
+
+## The text of a `data:` URL, read by its media type's charset.
+fn data_text(url str) str
+    rest := url.strip_prefix("data:") else ""
+    meta := (rest.split(",")[0]).trim()
+    decode(data_bytes(url), meta)
+
+## A sub-resource kept for later: its text, its validators, and when it
+## stops being fresh (ms; 0 means check again on every use).
+struct Cached
+    text str
+    etag str
+    modified str
+    fresh_until int
+
+## Sub-resources kept per browser.
+MAX_CACHED := 64
+
+## The seconds of `max-age` in a `Cache-Control` value, -1 when absent.
+fn max_age(cc str) int
+    for part in cc.to_lower().split(",")
+        p := part.trim()
+        if p.starts_with("max-age=")
+            return (p.strip_prefix("max-age=") else "").to_int() else -1
+    -1
+
+## The text of a sub-resource of the page `from`, or "" when it can't be
+## fetched. It carries the jar's cookies (SameSite as for a subresource) and
+## a `Referer`, and stores the cookies it sets. A copy still fresh by
+## `max-age` is used without a request; an older one is asked about with
+## `If-None-Match` or `If-Modified-Since`, and a 304 renews it. `no-store`
+## and `private` responses are not kept.
+fn fetch_text(url str, from str, mut cj jar.Jar, mut cache Map[str, Cached]) str
     s := page.scheme(url)
+    if url.starts_with("data:")
+        return data_text(url)
     if s == "http" or s == "https"
-        r := net.request_bytes("GET", url, options()) else return ""
-        return if r.status < 400 then body_text(r) else ""
+        now := time.now_ms()
+        have := cache.get(url)
+        if h := have
+            if h.fresh_until > now
+                return h.text
+        mut o := options()
+        cookie := cj.header_from(url, from, false)
+        if cookie != ""
+            o.headers["cookie"] = cookie
+        sent := page.referrer(from, url)
+        if sent != ""
+            o.headers["referer"] = sent
+        if h := have
+            if h.etag != ""
+                o.headers["if-none-match"] = h.etag
+            if h.modified != ""
+                o.headers["if-modified-since"] = h.modified
+        r := net.request_bytes("GET", url, o) else return ""
+        for line in r.all_headers.get("set-cookie") else List[str]()
+            cj.set_cookie(url, line)
+        cc := r.headers.get("cache-control") else ""
+        age := max_age(cc)
+        fresh := if age > 0 then now + age * 1000 else 0
+        if r.status == 304
+            if h := have
+                cache[url] = Cached(
+                    text: h.text,
+                    etag: h.etag,
+                    modified: h.modified,
+                    fresh_until: fresh,
+                )
+                return h.text
+            return ""
+        if r.status >= 400
+            return ""
+        text := body_text(r)
+        etag := r.headers.get("etag") else ""
+        modified := r.headers.get("last-modified") else ""
+        keep := not cc.to_lower().contains("no-store") and not cc.to_lower().contains("private")
+        if keep and (etag != "" or modified != "" or fresh > 0) and cache.len() < MAX_CACHED
+            cache[url] = Cached(text, etag, modified, fresh_until: fresh)
+        elif cache.contains(url)
+            cache.remove(url)
+        return text
     fs.read_text(url.strip_prefix("file://") else url) else ""
 
 ## A loaded page: where it ended up and its tree.
@@ -299,12 +487,23 @@ struct Loaded
 
 ## Fetches and parses `target`, then runs its scripts (unless `--no-js`),
 ## which change the tree or send the browser on to another page.
-fn load_doc(target str, method str, body str, mut cj jar.Jar) Loaded
+fn load_doc(
+    target str,
+    method str,
+    body str,
+    from str,
+    mut cj jar.Jar,
+    mut cache Map[str, Cached],
+) Loaded
     mut at := target
     mut m := method
     mut b := body
+    mut via := from
     for _ in 0..MAX_REFRESHES
-        mut d := html.parse(fetch_with(at, m, b, mut cj))
+        got := fetch_got(at, m, b, via, mut cj)
+        via = at
+        at = got.url
+        mut d := html.parse(got.text)
         if env.args().contains("--no-js")
             next := refresh_target(d, at, false) else return Loaded(url: at, doc: d, js: none)
             at = next
@@ -314,8 +513,8 @@ fn load_doc(target str, method str, body str, mut cj jar.Jar) Loaded
         mut scripts := Map[str, str]()
         for s in d.all("script")
             if src := d.attr(s, "src")
-                u := page.resolve(at, src)
-                scripts[script_url(u)] = fetch_text(u)
+                u := page.resolve(page.base_of(d, at), src)
+                scripts[script_url(u)] = fetch_text(u, at, mut cj, mut cache)
         now := time.now_ms().to_float()
         ## A page with no scripts has nothing to run, and starting the engine
         ## costs about 0.2 s.
@@ -328,6 +527,7 @@ fn load_doc(target str, method str, body str, mut cj jar.Jar) Loaded
             missing: [],
             changes: 0,
             cookies: [],
+            asks: [],
         )
         if d.all("script").len() > 0
             ran := jsdom.start(
@@ -339,8 +539,9 @@ fn load_doc(target str, method str, body str, mut cj jar.Jar) Loaded
                 1000.0,
                 5000000,
             )
-            session = ran.0
-            out = ran.1
+            mut live := ran.0
+            out = answer_asks(mut live, mut d, ran.1, at, mut cj)
+            session = live
         for line in out.cookies
             cj.set_from_script(at, line)
         if env.args().contains("--console")
@@ -359,7 +560,71 @@ fn load_doc(target str, method str, body str, mut cj jar.Jar) Loaded
             m = out.method
             b = out.body
         at = next
-    Loaded(url: at, doc: html.parse(fetch_with(at, m, b, mut cj)), js: none)
+    last := fetch_got(at, m, b, via, mut cj)
+    Loaded(url: last.url, doc: html.parse(last.text), js: none)
+
+## `fetch` and XMLHttpRequest ask the browser (`out.asks`), which makes each
+## request and hands the reply to the live engine `live`; the scripts never
+## run again. An answer can ask for more. What the answers did is added to
+## `out`.
+fn answer_asks(
+    mut live jsdom.Session,
+    mut d html.Doc,
+    first jsdom.Outcome,
+    at str,
+    mut cj jar.Jar,
+) jsdom.Outcome
+    mut out := first
+    mut waiting := first.asks
+    out.asks = []
+    mut answered := 0
+    while waiting.len() > 0 and answered < MAX_REPLIES
+        ask := waiting.remove_at(0)
+        answered += 1
+        more := live.reply(mut d, ask.id, script_reply(ask, at, mut cj), 1000.0)
+        if out.url == ""
+            out.url = more.url
+            out.method = more.method
+            out.body = more.body
+        out.console.extend(more.console)
+        out.cookies.extend(more.cookies)
+        out.changes += more.changes
+        waiting.extend(more.asks)
+    out
+
+## The origin (`scheme://host:port`) of an address.
+fn origin_of(u str) str
+    parts := u.split("/")
+    if parts.len() < 3
+        return ""
+    parts[0..3].join("/")
+
+## What `fetch` or XMLHttpRequest from the page `from` gets for `ask`, as the
+## JSON the script side reads (jsdom, vm/netapi.ail). Cookies go only to the
+## page's own origin; another origin must allow it with
+## `Access-Control-Allow-Origin` (`*` or the page's origin), else the script
+## sees a network error, as in a browser. Custom request headers and
+## preflights are not sent.
+fn script_reply(ask jsdom.Ask, from str, mut cj jar.Jar) str
+    failed := r"""{"error":true}"""
+    s := page.scheme(ask.url)
+    if s != "http" and s != "https"
+        return failed
+    lines := ask.packed.split("\n")
+    ctype := lines[0]
+    body := lines[1..lines.len()].join("\n")
+    same := origin_of(from) == origin_of(ask.url)
+    w := walk(ask.method, ask.url, body, ctype, from, false, same, mut cj)
+    if w.failure != ""
+        return failed
+    if origin_of(w.url) != origin_of(from)
+        allow := w.headers.get("access-control-allow-origin") else ""
+        if allow != "*" and allow != origin_of(from)
+            return failed
+    mut hs := List[str]()
+    for k in w.headers.keys()
+        hs.push("{page.quote(k)}:{page.quote(w.headers[k])}")
+    "\{\"status\":{w.status},\"statusText\":\"\",\"url\":{page.quote(w.url)},\"headers\":\{{hs.join(",")}},\"body\":{page.quote(w.text)}}"
 
 ## The address scripts see: a local file gets a file:// URL.
 fn script_url(u str) str
@@ -396,6 +661,8 @@ fn Browser.empty(url str, width int, height int) Browser
         last_url: "",
         last_nodes: {},
         cj: jar.new(),
+        cache: {},
+        refer: "",
         stamp: 0,
         sizes: {},
         kept: {},
@@ -424,6 +691,11 @@ fn Browser.relayout(mut self)
 
 ## Opens `target`, remembering the current page for Back.
 fn Browser.go(mut self, target str)
+    refer = url
+    go_typed(target)
+
+## `go` for an address the person typed: no referring page.
+fn Browser.go_typed(mut self, target str)
     leave()
     ahead.clear()
     load(target, "GET", "")
@@ -458,11 +730,12 @@ fn Browser.revisit(mut self, target str)
         load(target, "GET", "")
 
 fn Browser.load(mut self, target str, method str, body str)
-    loaded := load_doc(target, method, body, mut cj)
+    loaded := load_doc(target, method, body, refer, mut cj, mut cache)
+    refer = ""
     url = loaded.url
     doc = loaded.doc
     js = loaded.js
-    sheet = linked_sheets(doc, url)
+    sheet = linked_sheets(doc, url, mut cj, mut cache)
     pg = page.layout_with(doc, url, width, sheet)
     stamp += 1
     scroll = 0
@@ -627,7 +900,7 @@ fn Browser.activate(mut self, id int)
 ## the browser's own action should follow.
 fn Browser.js_click(mut self, id int) bool
     mut s := js else return false
-    out := s.click(mut doc, id, 1000.0)
+    out := answer_asks(mut s, mut doc, s.click(mut doc, id, 1000.0), url, mut cj)
     js = s
     if js_went(out)
         return true
@@ -663,7 +936,7 @@ fn Browser.type_into(mut self, id int, text str)
         return
     if js != none
         mut s := js else return
-        out := s.input(mut doc, id, text, 1000.0)
+        out := answer_asks(mut s, mut doc, s.input(mut doc, id, text, 1000.0), url, mut cj)
         js = s
         if not js_went(out)
             relayout()
@@ -747,16 +1020,17 @@ fn Browser.submit(mut self, id int)
         return
     if js != none
         mut s := js else return
-        out := s.submit(mut doc, id, 1000.0)
+        out := answer_asks(mut s, mut doc, s.submit(mut doc, id, 1000.0), url, mut cj)
         js = s
         if not js_went(out)
             relayout()
         return
     fields := form_fields(doc, form, id)
-    action := page.resolve(url, doc.attr(form, "action") else "")
+    action := page.resolve(page.base_of(doc, url), doc.attr(form, "action") else "")
     method := (doc.attr(form, "method") else "get").to_upper()
     leave()
     ahead.clear()
+    refer = url
     if method == "POST"
         load(action, "POST", fields)
     else
@@ -1020,7 +1294,15 @@ fn Gui.refresh(mut self)
     if not pixel
         return
     if b.stamp != scene_stamp or area_w != scene_w or b.editing() != scene_edit
-        images.prefetch(b.doc, b.url, image_options(), mut b.sizes, mut b.bits)
+        images.prefetch(
+            b.doc,
+            page.base_of(b.doc, b.url),
+            b.url,
+            b.cj,
+            image_options(),
+            mut b.sizes,
+            mut b.bits,
+        )
         scene = gfx.layout_measured(b.doc, b.url, area_w, b.sheet, b.sizes, meas, b.editing())
         scene_edit = b.editing()
         scene_stamp = b.stamp
@@ -1111,7 +1393,7 @@ fn address(text str) str
 fn Gui.open(mut self, text str)
     t := address(text)
     if t != ""
-        b.go(t)
+        b.go_typed(t)
 
 ## The status line: the address in pixel mode, else the cell view's status.
 fn Gui.status(self) str
@@ -1447,7 +1729,15 @@ fn op_line(op draw.Op) str
 ## `--pixels-dump`: the pixel layout of the page, one operation per line,
 ## after the canvas colour and height.
 fn pixels_dump(mut b Browser, width float)
-    images.prefetch(b.doc, b.url, image_options(), mut b.sizes, mut b.bits)
+    images.prefetch(
+        b.doc,
+        page.base_of(b.doc, b.url),
+        b.url,
+        b.cj,
+        image_options(),
+        mut b.sizes,
+        mut b.bits,
+    )
     s := gfx.layout_with(b.doc, b.url, width, b.sheet, b.sizes)
     print("canvas #{s.bg.to_hex().pad_left(6, '0')} height {s.height.round()} ops {s.ops.len()} links {s.hits.len()}")
     for op in s.ops
@@ -2294,7 +2584,7 @@ fn bench(args List[str])
     d := html.parse("<img src=gray8.png><img src=jpeg420.jpg height=58><img src=missing.png>")
     mut sizes := Map[str, List[int]]()
     mut bits := Map[str, images.Bitmap]()
-    images.prefetch(d, "file://{dir}/page.html", options(), mut sizes, mut bits)
+    images.prefetch(d, "file://{dir}/page.html", "", jar.new(), options(), mut sizes, mut bits)
     assert_eq(bits["file://{dir}/gray8.png"].w, 37)
     assert_eq(sizes["file://{dir}/gray8.png"], [37, 29])
     assert_eq(sizes["file://{dir}/missing.png"], [0, 0])
@@ -2535,6 +2825,34 @@ fn flat(s gfx.Scene) List[str]
     assert_eq(g.found, "SECOND")
     assert(g.b.message.contains("found"))
     assert(g.marked().len() > g.scene.ops.len())
+
+@test fn max_age_is_read_from_cache_control()
+    assert_eq(max_age("public, max-age=60"), 60)
+    assert_eq(max_age("no-store"), -1)
+    assert_eq(max_age("Max-Age=x"), -1)
+
+@test fn the_referer_follows_the_origin_policy()
+    assert_eq(page.referrer("https://a.com/x?y=1#f", "https://a.com/z"), "https://a.com/x?y=1")
+    assert_eq(page.referrer("https://a.com/x", "https://b.com/z"), "https://a.com")
+    assert_eq(page.referrer("https://a.com/x", "http://a.com/z"), "")
+    assert_eq(page.referrer("http://a.com/x", "https://b.com/z"), "http://a.com")
+    assert_eq(page.referrer("file:///tmp/p.html", "https://b.com/"), "")
+    assert_eq(page.referrer("", "https://b.com/"), "")
+
+@test fn base_href_changes_where_relative_links_start()
+    d := html.parse("<base href=/other/><a href=x.html>x</a><img src=p.png>")
+    assert_eq(page.base_of(d, "https://a.test/dir/page.html"), "https://a.test/other/")
+    p := page.layout_with(d, "https://a.test/dir/page.html", 40, css.parse("", 0))
+    assert_eq(p.boxes[p.links[0]].href, "https://a.test/other/x.html")
+    assert_eq(p.url, "https://a.test/dir/page.html")
+    plain := html.parse("<a href=x>x</a>")
+    assert_eq(page.base_of(plain, "https://a.test/dir/page.html"), "https://a.test/dir/page.html")
+
+@test fn data_urls_give_sheets_and_scripts()
+    assert_eq(data_text("data:text/css,p%7Bcolor:red%7D"), r"p{color:red}")
+    assert_eq(data_text("data:text/plain;base64,aGk="), "hi")
+    assert_eq(data_text("data:,a%2"), "a%2")
+    assert_eq(data_text("data:nope"), "")
 
 @test fn clicks_typing_and_submits_reach_the_pages_listeners()
     mut b := Browser.new("{testdata()}/events.html", 80, 30)

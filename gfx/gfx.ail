@@ -1908,7 +1908,7 @@ pub fn layout_measured(
     mut c := Ctx(
         d,
         sheet: all,
-        url,
+        url: page.base_of(d, url),
         ops: [],
         hits: [],
         atoms: [],
