@@ -1,0 +1,47 @@
+## Watches: an agent asks to be told when a page changes. A watch looks at
+## the text of a page (the live tab, or a URL fetched on a timer) and
+## reports when it changes, or when `contains` appears or disappears.
+
+pub struct Watch
+    pub id int
+    ## The page to fetch each time, or "" for the live tab.
+    pub url str
+    ## Text to look for; "" watches the whole page text.
+    pub contains str
+    ## Seconds between looks.
+    pub every int
+    ## The second of the next look.
+    pub due int
+    ## What the last look saw.
+    pub last str
+
+## What a look at page text `text` notes for this watch.
+fn Watch.state(self, text str) str
+    if contains == ""
+        return text
+    if text.to_lower().contains(contains.to_lower()) then "present" else "absent"
+
+pub fn Watch.start(id int, url str, contains str, every int, now int, text str) Watch
+    w := Watch(id, url, contains, every: every.max(1), due: now, last: "")
+    Watch(id, url, contains, every: w.every, due: now + w.every, last: w.state(text))
+
+## Looks at `text` at second `now`; the change it sees, or "". A look before
+## the watch is due sees nothing.
+pub fn Watch.look(mut self, text str, now int) str
+    if now < due
+        return ""
+    due = now + every
+    seen := state(text)
+    if seen == last
+        return ""
+    last = seen
+    if contains == ""
+        return "watch {id}: the page changed"
+    if seen == "present"
+        return "watch {id}: `{contains}` appeared"
+    "watch {id}: `{contains}` disappeared"
+
+pub fn Watch.line(self) str
+    what := if contains == "" then "any change" else "`{contains}`"
+    where := if url == "" then "the live tab" else url
+    "{id}: {what} on {where} every {every}s"

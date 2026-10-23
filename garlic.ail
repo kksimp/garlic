@@ -1244,6 +1244,10 @@ fn Guard.permits(self, url str) bool
 fn sends(name str) bool
     name == "submit"
 
+## The answer to a `tools/call` request `id` whose result is `text`.
+fn rpc_reply(id str, text str) str
+    "\{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":\{\"content\":[\{\"type\":\"text\",\"text\":{page.quote(text)}}]}}"
+
 ## One tool call of the `--serve` server: the text it answers with. `g`
 ## refuses sites it doesn't permit, holds an action that sends data until
 ## it is repeated with `confirm`, and logs every call.
@@ -1286,7 +1290,7 @@ fn Browser.tool(mut self, mut g Guard, name str, a Json) str
         _ => "unknown tool `{name}`: open, observe, act, find, extract, screenshot or log"
 
 ## The tool list, with `<` and `>` for the braces of the JSON.
-TOOLS_SRC := """[<"name":"open","description":"Open a URL; answers with the page model.","inputSchema":<"type":"object","properties":<"url":<"type":"string">>,"required":["url"]>>,<"name":"observe","description":"The page model: nodes with ids, roles, names and boxes.","inputSchema":<"type":"object","properties":<>>>,<"name":"act","description":"Do one action: follow, click, type, submit, check, select, back, forward, scroll, reload. Give link, id or row (a number) and text where needed.","inputSchema":<"type":"object","properties":<"do":<"type":"string">,"link":<"type":"integer">,"id":<"type":"integer">,"row":<"type":"integer">,"text":<"type":"string">>,"required":["do"]>>,<"name":"find","description":"Scroll to text on the page.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"extract","description":"The page as plain text.","inputSchema":<"type":"object","properties":<>>>,<"name":"log","description":"What this session did, one line per call.","inputSchema":<"type":"object","properties":<>>>,<"name":"screenshot","description":"The pixel layout as drawing operations.","inputSchema":<"type":"object","properties":<>>>]"""
+TOOLS_SRC := """[<"name":"open","description":"Open a URL; answers with the page model.","inputSchema":<"type":"object","properties":<"url":<"type":"string">>,"required":["url"]>>,<"name":"observe","description":"The page model: nodes with ids, roles, names and boxes.","inputSchema":<"type":"object","properties":<>>>,<"name":"act","description":"Do one action: follow, click, type, submit, check, select, back, forward, scroll, reload. Give link, id or row (a number) and text where needed.","inputSchema":<"type":"object","properties":<"do":<"type":"string">,"link":<"type":"integer">,"id":<"type":"integer">,"row":<"type":"integer">,"text":<"type":"string">>,"required":["do"]>>,<"name":"find","description":"Scroll to text on the page.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"extract","description":"The page as plain text.","inputSchema":<"type":"object","properties":<>>>,<"name":"watch","description":"Tell me when the page changes: url (else the live tab), contains (text to wait for), every (seconds).","inputSchema":<"type":"object","properties":<"url":<"type":"string">,"contains":<"type":"string">,"every":<"type":"integer">>>>,<"name":"unwatch","description":"Stop watch id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"watches","description":"The watches in force.","inputSchema":<"type":"object","properties":<>>>,<"name":"events","description":"What the watches saw change since the last call.","inputSchema":<"type":"object","properties":<>>>,<"name":"log","description":"What this session did, one line per call.","inputSchema":<"type":"object","properties":<>>>,<"name":"screenshot","description":"The pixel layout as drawing operations.","inputSchema":<"type":"object","properties":<>>>]"""
 
 fn tools_json() str
     TOOLS_SRC.replace("<", "\{").replace(">", "}")
@@ -1650,6 +1654,12 @@ struct Garlic
     guard Guard
     where str
     calls int
+    ## Watches agents set, what they have seen and not yet read, and the
+    ## seconds the timer has counted.
+    watches List[attach.Watch]
+    events List[str]
+    seconds int
+    next_watch int
 
 fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
     g := Gui.new(b, w, h, cell_w, cell_h)
@@ -1664,6 +1674,10 @@ fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
         guard: Guard(allow: [], log: [], fixed: []),
         where: "",
         calls: 0,
+        watches: [],
+        events: [],
+        seconds: 0,
+        next_watch: 1,
     )
 
 ## Answers one MCP request from an attached agent: the sites it may use are
@@ -1675,9 +1689,70 @@ fn Garlic.agent_call(mut self, body str)
         sites.push(host_of(t.b.url))
     sites.push(host_of(g.b.url))
     guard.allow = sites
-    answer := g.b.rpc(mut guard, body)
+    j := parse_json(body) else err
+        bridge.replies.send(g.b.rpc(mut guard, body))
+        return
     calls += 1
-    bridge.replies.send(answer)
+    params := j.need("params") else err
+        bridge.replies.send(g.b.rpc(mut guard, body))
+        return
+    name := params.str("name") else ""
+    args := params.need("arguments") else err
+        params
+    if j.str("method") == "tools/call" and WATCH_TOOLS.contains(name)
+        guard.log.push("{name}")
+        bridge.replies.send(rpc_reply(rpc_id(j), watch_tool(name, args)))
+        return
+    bridge.replies.send(g.b.rpc(mut guard, body))
+
+## The tools that set and read watches; the window answers them, not the page.
+WATCH_TOOLS := {"watch", "unwatch", "watches", "events"}
+
+## One watch tool call, as text. `watch` takes `url` (else the live tab),
+## `contains` and `every` (seconds, default 30); `events` returns the changes
+## seen since the last call.
+fn Garlic.watch_tool(mut self, name str, args Json) str
+    match name
+        "watch" =>
+            url := args.str("url") else ""
+            if url != "" and not guard.permits(url)
+                return "refused: the agent may not watch `{url}`"
+            w := attach.Watch.start(
+                next_watch,
+                url,
+                args.str("contains") else "",
+                (args.num("every") else 30.0).to_int(),
+                seconds,
+                if url == "" then g.b.pg.text() else watched_text(url),
+            )
+            next_watch += 1
+            watches.push(w)
+            "watching {w.line()}"
+        "unwatch" =>
+            id := (args.num("id") else 0.0).to_int()
+            watches = [w for w in watches if w.id != id]
+            "stopped watch {id}"
+        "watches" => [w.line() for w in watches].join("\n")
+        _ =>
+            out := events.join("\n")
+            events = []
+            if out == "" then "no changes" else out
+
+fn watched_text(url str) str
+    Browser.new(url, 100, 32).pg.text()
+
+## One timer tick (once a second): looks at each watch that is due and
+## notes what changed.
+fn Garlic.tick(mut self)
+    seconds += 1
+    for k in 0..watches.len()
+        if seconds < watches[k].due
+            continue
+        text := if watches[k].url == "" then g.b.pg.text() else watched_text(watches[k].url)
+        change := watches[k].look(text, seconds)
+        if change != ""
+            events.push(change)
+            g.b.message = change
 
 ## Makes tab `k` the one shown.
 fn Garlic.switch(mut self, k int)
@@ -1719,7 +1794,7 @@ fn Garlic.close_tab(mut self)
 fn Garlic.agent_line(self) str
     if not attached
         return ""
-    "Agent attached at {where}: {calls} calls so far (the log tool lists them)"
+    "Agent attached at {where}: {calls} calls so far; {watches.len()} watches, {events.len()} unread changes"
 
 ## The tab strip: one button per tab, titled by its page.
 fn Garlic.strip(self) List[app.Node]
@@ -1763,6 +1838,8 @@ impl app.App for Garlic
             "external" =>
                 if ev.id == "mcp"
                     agent_call(ev.text)
+                elif ev.id == "tick"
+                    tick()
             "submit" => g.open(url_text)
             "press" =>
                 if ev.id == "back"
@@ -1862,6 +1939,12 @@ fn app_main(b Browser, pixel bool, attached bool, sites str) !
         print("garlic: no native window ({err.message}); the page as text:")
         print(a.g.b.pg.text())
 
+## Posts a `tick` event every second until `stop` is set.
+fn ticker(inbox app.Inbox, stop Atomic[int])
+    while stop.load() == 0
+        time.sleep_ms(1000)
+        inbox.post(app.external("tick", ""))
+
 ## The attach server's task (a local function, which `spawn` needs natively).
 fn serve(srv net.Server, inbox app.Inbox, bridge attach.Bridge, token str)
     attach.serve_loop(srv, inbox, bridge, token)
@@ -1884,9 +1967,12 @@ fn attached_main(mut a Garlic, sites str) !
     inbox := app.new_inbox()
     g := TaskGroup()
     g.add(spawn serve(srv, inbox, a.bridge, token))
+    stop := Atomic(0)
+    g.add(spawn ticker(inbox, stop))
     print("garlic: agents attach at {where}; the token is in {path}")
     app.run_with(mut a, app.host_path()?, [], inbox) else err
         print("garlic: no native window ({err.message})")
+    stop.add(1)
     srv.shutdown()
 
 ## The value after flag `name` (`--width 60`), or none.
@@ -3218,3 +3304,28 @@ fn flat(s gfx.Scene) List[str]
     tok := attach.make_token()
     assert(tok.chars().len() >= 24)
     assert(tok != attach.make_token())
+
+@test fn a_watch_reports_changes_and_appearances()
+    mut w := attach.Watch.start(1, "", "", 5, 0, "one")
+    assert_eq(w.look("one", 3), "")
+    assert_eq(w.look("one", 5), "")
+    assert_eq(w.look("two", 10), "watch 1: the page changed")
+    mut k := attach.Watch.start(2, "", "Sold out", 1, 0, "in stock")
+    assert_eq(k.look("In stock", 1), "")
+    assert_eq(k.look("SOLD OUT today", 2), "watch 2: `Sold out` appeared")
+    assert_eq(k.look("back", 3), "watch 2: `Sold out` disappeared")
+
+@test fn agents_set_watches_and_read_their_events_through_the_window()
+    b := Browser.new("{testdata()}/form.html", 80, 24)
+    mut a := Garlic.new(b, 800.0, 600.0, 7.5, 15.0)
+    a.attached = true
+    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":\{\"name\":\"watch\",\"arguments\":\{\"contains\":\"Brand new\",\"every\":1}}}"))
+    assert((a.bridge.replies.recv() else "").contains("watching 1"))
+    a.update(app.external("tick", ""))
+    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"events\",\"arguments\":\{}}}"))
+    assert((a.bridge.replies.recv() else "").contains("no changes"))
+    a.g.b.pg = lay("Brand new text", 40)
+    a.update(app.external("tick", ""))
+    a.update(app.external("tick", ""))
+    a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":\{\"name\":\"events\",\"arguments\":\{}}}"))
+    assert((a.bridge.replies.recv() else "").contains("appeared"))
