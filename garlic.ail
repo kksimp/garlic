@@ -351,6 +351,12 @@ fn local_url(u str) str
     u.strip_prefix("file://local/") else u
 
 fn Browser.new(url str, width int, height int) Browser
+    mut b := Browser.empty(url, width, height)
+    b.load(url, "GET", "")
+    b
+
+## A browser showing nothing yet, as a new tab does (`url` is only its label).
+fn Browser.empty(url str, width int, height int) Browser
     d := html.parse("")
     sheet := css.parse("", 0)
     mut b := Browser(
@@ -379,7 +385,6 @@ fn Browser.new(url str, width int, height int) Browser
         ahead: [],
         bits: {},
     )
-    b.load(url, "GET", "")
     b
 
 ## Rows of page the window shows: all but the status row.
@@ -629,6 +634,32 @@ fn Browser.check(mut self, id int)
         return
     relayout()
 
+## The role of control `id`, or "" when it has none.
+fn Browser.role_of(self, id int) str
+    t := target(id) else return ""
+    t.role
+
+## The text field being typed into (a node), or -1.
+fn Browser.editing(self) int
+    match prompt
+        Field(id, _) => id
+        Url(_) | Find(_) | Status => -1
+
+## Moves select `id` to its next option, wrapping round.
+fn Browser.cycle(mut self, id int)
+    mut opts := List[int]()
+    for o in doc.all("option")
+        if doc.within(o, id)
+            opts.push(o)
+    if opts.len() == 0
+        return
+    mut at := 0
+    for k in 0..opts.len()
+        if doc.attr(opts[k], "selected") != none
+            at = k
+    next := opts[(at + 1) % opts.len()]
+    choose(id, html.collapse(doc.text(next)))
+
 ## Chooses the option of select `id` whose text or value is `choice`.
 fn Browser.choose(mut self, id int, choice str)
     for o in doc.all("option")
@@ -861,12 +892,17 @@ struct Gui
     scene_stamp int
     scene_w float
     scene_url str
+    scene_edit int
+    ## The text found by the last find-in-page, drawn highlighted.
+    found str
     top float
     ## Pictures whose pixels went to the host in an earlier view, and those
     ## that go with this one: the host keeps a picture by address, so later
     ## views carry its id alone.
     sent Set[str]
     fresh Set[str]
+    ## Text widths the host measured, by `gfx.probe_key` (std.app.13).
+    meas Map[str, float]
 
 fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
     mut g := Gui(
@@ -879,13 +915,16 @@ fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
         area_w: w,
         area_h: h,
         pixel: false,
-        scene: gfx.Scene(ops: [], hits: [], height: 0.0, bg: 0xffffff),
+        scene: gfx.Scene(ops: [], hits: [], height: 0.0, bg: 0xffffff, probes: []),
         scene_stamp: -1,
         scene_w: 0.0,
         scene_url: "",
+        scene_edit: -1,
+        found: "",
         top: 0.0,
         sent: {},
         fresh: {},
+        meas: {},
     )
     g.resize(w, h, cell_w, cell_h)
     g
@@ -910,9 +949,10 @@ fn Gui.resize(mut self, w float, h float, cw float, ch float)
 fn Gui.refresh(mut self)
     if not pixel
         return
-    if b.stamp != scene_stamp or area_w != scene_w
+    if b.stamp != scene_stamp or area_w != scene_w or b.editing() != scene_edit
         images.prefetch(b.doc, b.url, image_options(), mut b.sizes, mut b.bits)
-        scene = gfx.layout_with(b.doc, b.url, area_w, b.sheet, b.sizes)
+        scene = gfx.layout_measured(b.doc, b.url, area_w, b.sheet, b.sizes, meas, b.editing())
+        scene_edit = b.editing()
         scene_stamp = b.stamp
         scene_w = area_w
         for k in b.bits.keys()
@@ -928,9 +968,15 @@ fn Gui.click(mut self, x float, y float)
     if pixel
         if h := scene.hit_at(x, y + top)
             if h.node >= 0
-                b.activate(h.node)
+                role := b.role_of(h.node)
+                if role == "combobox"
+                    b.cycle(h.node)
+                else
+                    b.activate(h.node)
             else
                 b.go(h.href)
+        else
+            b.prompt = Status
         return
     at := draw.cell_at(x, y, cell_w, cell_h)
     if id := b.target_at(at.0, at.1)
@@ -960,9 +1006,28 @@ fn Gui.key(mut self, key str, alt bool, shift bool) bool
             "pageup" => scroll(0.0 - page_h)
             "home" => top = 0.0
             "end" => top = scene.height
-            _ => return b.key(key, alt, shift)
+            _ => return self.typed(key, alt, shift)
         return true
-    b.key(key, alt, shift)
+    self.typed(key, alt, shift)
+
+## A key for the browser; text typed into a field shows in it at once.
+fn Gui.typed(mut self, key str, alt bool, shift bool) bool
+    if pixel and key == "enter"
+        match b.prompt
+            Find(text) =>
+                b.prompt = Status
+                self.find_text(text)
+                return true
+            Url(_) | Field(_, _) | Status => pending = 0.0
+    if pixel and key == "n" and b.prompt == Status and found != ""
+        self.find_text(found)
+        return true
+    stay := b.key(key, alt, shift)
+    if pixel
+        match b.prompt
+            Field(id, text) => b.type_into(id, text)
+            Url(_) | Find(_) | Status => pending = 0.0
+    stay
 
 ## What a typed address means: a URL as it is, a path to a file that exists
 ## as it is, and anything else (`projects.voltare.us/x`) as an `https` URL.
@@ -984,10 +1049,85 @@ fn Gui.status(self) str
         return b.url
     b.status()
 
+## The text runs the layout estimated, for the host to measure, at most
+## `MEASURE_RUNS` at a time.
+MEASURE_RUNS := 5000
+
+fn Gui.wanted(self) List[app.Measure]
+    mut out := List[app.Measure]()
+    for p in scene.probes
+        if out.len() == MEASURE_RUNS
+            break
+        if not meas.contains(gfx.probe_key(p.text, p.size, p.bold, p.mono))
+            out.push(app.Measure(
+                text: p.text,
+                font: if p.mono then "mono" else "sans",
+                size: p.size,
+                bold: p.bold,
+                italic: false,
+            ))
+    out
+
+## Keeps the host's widths and lays the page out again with them.
+fn Gui.learn(mut self, runs List[app.Measure], widths List[float])
+    for k in 0..runs.len()
+        r := runs[k]
+        meas[gfx.probe_key(r.text, r.size, r.bold, r.font == "mono")] = widths[k]
+    scene_stamp = -1
+    refresh()
+
+## The scene's operations with a highlight behind each `found` match.
+fn Gui.marked(self) List[draw.Op]
+    if found == ""
+        return scene.ops
+    want := found.to_lower()
+    mut out := List[draw.Op]()
+    for op in scene.ops
+        match op
+            Str(x, y, t, font, size, fg, bold, _, _) =>
+                at := t.to_lower().find(want) else
+                    out.push(op)
+                    continue
+                before := t.slice(0, at)
+                out.push(draw.Op.Rect(
+                    x: x + gfx.text_width(before, size, bold, font == "mono"),
+                    y: y,
+                    w: gfx.text_width(found, size, bold, font == "mono"),
+                    h: size * 1.3,
+                    color: 0xffe066,
+                ))
+                out.push(op)
+            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => out.push(op)
+    out
+
+## Scrolls to the next line of the page with `needle` in it (case does not
+## matter), wrapping round, and highlights the matches.
+fn Gui.find_text(mut self, needle str)
+    found = needle
+    b.last_find = needle
+    if needle == ""
+        return
+    want := needle.to_lower()
+    mut ys := List[float]()
+    for op in scene.ops
+        match op
+            Str(_, y, t, _, _, _, _, _, _) => if t.to_lower().contains(want)
+                ys.push(y)
+            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => ys = ys
+    if ys.len() == 0
+        b.message = "`{needle}` not found"
+        return
+    mut pick := ys[0]
+    for y in ys
+        if y > top + 24.0 and pick <= top + 24.0
+            pick = y
+    top = (pick - 40.0).max(0.0).min((scene.height - area_h).max(0.0))
+    b.message = "found `{needle}` ({ys.len()} matches)"
+
 ## What the page area shows, as drawing operations.
 fn Gui.display(self) List[draw.Op]
     if pixel
-        return draw.shift(scene.ops, scene.bg, area_w, area_h, top)
+        return draw.shift(self.marked(), scene.bg, area_w, area_h, top)
     draw.display_list(b.pg, b.scroll, rows, cols, b.focus, cell_w, cell_h)
 
 ## The native window as a `std.app` app (docs/design/garlic-browser.md,
@@ -995,13 +1135,63 @@ fn Gui.display(self) List[draw.Op]
 ## the status line below it.
 struct Garlic
     g Gui
+    ## Every tab's window state; `tabs[cur]` is out of date while it is
+    ## `g`, which is swapped in and out by `switch`.
+    tabs List[Gui]
+    cur int
     ## The address field's text.
     url_text str
     ## The control to give the keyboard focus; cleared by the next event.
     want str
 
 fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
-    Garlic(g: Gui.new(b, w, h, cell_w, cell_h), url_text: b.url, want: "")
+    g := Gui.new(b, w, h, cell_w, cell_h)
+    Garlic(g, tabs: [g], cur: 0, url_text: b.url, want: "")
+
+## Makes tab `k` the one shown.
+fn Garlic.switch(mut self, k int)
+    if k < 0 or k >= tabs.len() or k == cur
+        return
+    tabs[cur] = g
+    g = tabs[k]
+    cur = k
+    g.refresh()
+
+## Opens an empty tab and shows it.
+fn Garlic.new_tab(mut self)
+    tabs[cur] = g
+    mut fresh_gui := Gui.new(
+        Browser.empty("", g.b.width, g.b.height),
+        g.area_w,
+        g.area_h,
+        g.cell_w,
+        g.cell_h,
+    )
+    fresh_gui.pixel = g.pixel
+    fresh_gui.refresh()
+    tabs.push(fresh_gui)
+    cur = tabs.len() - 1
+    g = fresh_gui
+    want = "url"
+
+## Closes the shown tab (the last one stays).
+fn Garlic.close_tab(mut self)
+    if tabs.len() < 2
+        return
+    tabs.remove_at(cur)
+    cur = cur.min(tabs.len() - 1)
+    g = tabs[cur]
+    g.refresh()
+
+## The tab strip: one button per tab, titled by its page.
+fn Garlic.strip(self) List[app.Node]
+    mut out := List[app.Node]()
+    for k in 0..tabs.len()
+        t := if k == cur then g else tabs[k]
+        title := if t.b.pg.title == "" then "New tab" else t.b.pg.title
+        mark := if k == cur then "> " else ""
+        out.push(app.button("tab:{k}", "{mark}{title.slice(0, title.chars().len().min(18))}"))
+    out
 
 impl app.App for Garlic
     fn update(mut self, ev app.Event)
@@ -1021,6 +1211,14 @@ impl app.App for Garlic
                     g.b.go_back()
                 elif ev.meta and ev.text == "]"
                     g.b.go_forward()
+                elif ev.meta and ev.text == "f"
+                    g.b.prompt = Find("")
+                elif ev.meta and ev.text == "t"
+                    new_tab()
+                elif ev.meta and ev.text == "w"
+                    close_tab()
+                elif ev.ctrl and ev.text == "tab"
+                    switch((cur + 1) % tabs.len())
                 else
                     g.key(ev.text, ev.alt, ev.shift)
             "edit" => url_text = ev.text
@@ -1030,6 +1228,10 @@ impl app.App for Garlic
                     g.b.go_back()
                 elif ev.id == "reload"
                     g.b.load(g.b.url, "GET", "")
+                elif ev.id == "newtab"
+                    new_tab()
+                elif ev.id.starts_with("tab:")
+                    switch(ev.id.slice(4, ev.id.chars().len()).to_int() else cur)
             _ => url_text = url_text
         g.refresh()
         if ev.kind != "edit"
@@ -1039,10 +1241,12 @@ impl app.App for Garlic
         bar := app.row([
             app.button("back", "Back"),
             app.button("reload", "Reload"),
+            app.button("newtab", "+"),
             app.field("url", url_text, "Enter a web address"),
         ])
         ## A canvas of 0 by 0 fills the window; the host reports its size.
         app.column([
+            app.row(strip()),
             bar,
             app.canvas("page", 0.0, 0.0, [to_app(op, g) for op in g.display()]),
             app.label(g.status()),
@@ -1050,6 +1254,12 @@ impl app.App for Garlic
 
     fn title(self) str
         "{g.b.pg.title} - Garlic"
+
+    fn measures(self) List[app.Measure]
+        g.wanted()
+
+    fn measured(mut self, runs List[app.Measure], widths List[float])
+        g.learn(runs, widths)
 
     fn focus(self) str
         want
@@ -1166,11 +1376,17 @@ fn op_line(op draw.Op) str
 
 ## `--pixels-dump`: the pixel layout of the page, one operation per line,
 ## after the canvas colour and height.
-fn pixels_dump(b Browser, width float)
-    s := gfx.layout(b.doc, b.url, width, b.sheet)
+fn pixels_dump(mut b Browser, width float)
+    images.prefetch(b.doc, b.url, image_options(), mut b.sizes, mut b.bits)
+    s := gfx.layout_with(b.doc, b.url, width, b.sheet, b.sizes)
     print("canvas #{s.bg.to_hex().pad_left(6, '0')} height {s.height.round()} ops {s.ops.len()} links {s.hits.len()}")
     for op in s.ops
         print(op_line(op))
+    for at in b.sizes.keys()
+        dims := b.sizes[at]
+        state := if dims[0] * dims[1]
+            == 0 then "failed" else (if b.bits.contains(at) then "decoded" else "too big to decode")
+        print("image {at} {dims[0]}x{dims[1]} {state}")
 
 fn main() !
     args := env.args()
@@ -1205,7 +1421,7 @@ fn main() !
                 spec.chars().len(),
             ))
     if args.contains("--pixels-dump")
-        pixels_dump(b, (flag(args, "--pixel-width") else "960").to_float() else 960.0)
+        pixels_dump(mut b, (flag(args, "--pixel-width") else "960").to_float() else 960.0)
     elif args.contains("--session")
         b.session()
     elif args.contains("--print")
@@ -1634,9 +1850,10 @@ fn clicked(x float, y float) app.Event
     top := outlines[0].split("\n")
     assert_eq(top[0], "column")
     assert_eq(top[1], "  row")
-    assert(top[2].starts_with("    [Back] #back"))
-    assert(top[4].contains("#url"))
-    assert(top[5].starts_with("  canvas #page"))
+    assert(top[2].starts_with("    [> "))
+    assert(top[4].starts_with("    [Back] #back"))
+    assert(top[7].contains("#url"))
+    assert(top[8].starts_with("  canvas #page"))
     assert(outlines[0].contains("str 0.0,32.0 \"# Garlic\" mono 13.0 dcdcaa"))
     assert(top[top.len() - 1].starts_with("  \""))
     link := a.g.b.pg.boxes[a.g.b.pg.links[0]]
@@ -2092,3 +2309,159 @@ fn bench(args List[str])
     assert_eq(native.out.trim(), want.join("\n"))
     assert(native.out.contains("canvas #0a0a0f"))
     assert(native.out.contains("sans 14.0 #6b6b80 GitHub"))
+
+## The `Str` and `Rect` operations of `s` as `text@x,y` and `rect@x,y wxh`.
+fn flat(s gfx.Scene) List[str]
+    mut out := List[str]()
+    for op in s.ops
+        match op
+            Str(
+                x,
+                y,
+                t,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+            ) => out.push("{t}@{x.round().to_int()},{y.round().to_int()}")
+            Rect(
+                x,
+                y,
+                w,
+                h,
+                _,
+            ) => out.push("rect@{x.round().to_int()},{y.round().to_int()} {w.round().to_int()}x{h.round().to_int()}")
+            Pic(
+                x,
+                y,
+                w,
+                h,
+                _,
+            ) => out.push("pic@{x.round().to_int()},{y.round().to_int()} {w.round().to_int()}x{h.round().to_int()}")
+            Text(_, _, _, _, _, _, _) => out = out
+    out
+
+@test fn absolute_children_sit_at_the_positioned_ancestors_offsets()
+    s := pixels(
+        "<body style='margin:0'><div style='position:relative;height:100px;width:200px;background:#eee'><span style='position:absolute;top:10px;right:5px;width:40px;height:12px;background:#f00'></span>hi</div><p>after</p></body>",
+        400.0,
+    )
+    f := flat(s)
+    assert(f.contains("rect@155,10 40x12"))
+    assert(f.contains("hi@0,0"))
+
+@test fn floats_take_a_corner_and_text_wraps_beside_them()
+    s := pixels(
+        "<body style='margin:0'><img src=a.png width=100 height=80 style='float:right'><p style='margin:0'>aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll</p></body>",
+        300.0,
+    )
+    f := flat(s)
+    assert(f.contains("pic@200,0 100x80"))
+    mut max_right := 0.0
+    for op in s.ops
+        match op
+            Str(x, _, t, _, size, _, _, _, _) => max_right = max_right.max(x + gfx.text_width(
+                t,
+                size,
+                false,
+                false,
+            ))
+            Rect(_, _, _, _, _) | Text(
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+            ) | Pic(_, _, _, _, _) => max_right = max_right
+    assert(max_right <= 200.0)
+
+@test fn rounded_corners_cut_the_rectangle_into_strips()
+    s := pixels(
+        "<body style='margin:0'><div style='width:40px;height:40px;background:#f00;border-radius:8px'></div></body>",
+        200.0,
+    )
+    f := flat(s)
+    assert(f.len() > 5)
+    assert(f.contains("rect@0,8 40x24"))
+    assert(f.contains("rect@5,0 30x1"))
+
+@test fn wrapping_chips_keep_their_padding_apart()
+    s := pixels(
+        "<body style='margin:0'><div style='display:flex;flex-wrap:wrap;gap:6px'><span style='padding:2px 8px;background:#333'>one</span><span style='padding:2px 8px;background:#333'>two</span></div></body>",
+        300.0,
+    )
+    mut starts := List[float]()
+    mut ends := List[float]()
+    for op in s.ops
+        match op
+            Rect(x, _, w, _, c) => if c == 0x333333
+                starts.push(x)
+                ends.push(x + w)
+            Str(
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+            ) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => starts = starts
+    assert_eq(starts.len(), 2)
+    assert(starts[1] >= ends[0] + 5.0)
+
+@test fn pixel_forms_take_typing_and_submit_with_enter()
+    b := Browser.new("{testdata()}/form.html", 60, 12)
+    mut g := Gui.new(b, 600.0, 400.0, 7.5, 15.0)
+    g.pixel = true
+    g.refresh()
+    mut at := -1
+    for k in 0..g.scene.hits.len()
+        h := g.scene.hits[k]
+        if at < 0 and h.node >= 0 and g.b.role_of(h.node) == "textbox"
+            at = k
+    assert(at >= 0)
+    f := g.scene.hits[at]
+    g.click(f.x + 2.0, f.y + 2.0)
+    assert_eq(g.b.editing(), f.node)
+    g.refresh()
+    assert(g.scene_edit == f.node)
+    g.key("h", false, false)
+    g.key("i", false, false)
+    assert_eq(g.b.doc.attr(f.node, "value"), "hi")
+    g.key("enter", false, false)
+    assert(g.b.url.contains("q=hi"))
+
+@test fn tabs_keep_their_own_pages_and_switch_back()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut a := Garlic.new(b, 600.0, 300.0, 7.5, 15.0)
+    a.new_tab()
+    assert_eq((a.tabs.len(), a.cur), (2, 1))
+    assert_eq(a.g.b.pg.title, "")
+    a.g.open("{testdata()}/second.html")
+    assert_eq(a.g.b.pg.title, "Second page")
+    a.switch(0)
+    assert_eq(a.g.b.pg.title, "Garlic test page")
+    a.switch(1)
+    assert_eq(a.g.b.pg.title, "Second page")
+    assert_eq(a.strip().len(), 2)
+    a.close_tab()
+    assert_eq((a.tabs.len(), a.g.b.pg.title), (1, "Garlic test page"))
+
+@test fn find_in_page_scrolls_to_the_match_and_marks_it()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut g := Gui.new(b, 400.0, 60.0, 7.5, 15.0)
+    g.pixel = true
+    g.refresh()
+    g.b.prompt = Find("")
+    for c in "SECOND".chars()
+        g.key("{c}", false, false)
+    g.key("enter", false, false)
+    assert_eq(g.found, "SECOND")
+    assert(g.b.message.contains("found"))
+    assert(g.marked().len() > g.scene.ops.len())
