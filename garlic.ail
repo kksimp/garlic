@@ -2605,3 +2605,8 @@ fn flat(s gfx.Scene) List[str]
     d.key("enter", false, false)
     assert_eq(d.pg.title, "Keys test")
     assert(d.pg.text().contains("enter stopped"))
+
+@test fn a_click_is_a_press_and_a_release_and_focuses_the_control()
+    mut b := Browser.new("{testdata()}/keys.html", 80, 30)
+    b.act("click", "{node_with(b, "button", "id", "btn")}")
+    assert(b.pg.text().contains("mousedown0 focus mouseup0 click0"))

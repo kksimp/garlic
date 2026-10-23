@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html><head><title>Keys test</title></head>
 <body>
-<p id="out">idle</p>
+<p id="out">idle</p><button id="btn">Press</button><span id="trail"></span>
 <input name="q" id="q"><input name="r" id="r">
 <form id="f" action="result.html"><input name="w" id="w"></form>
 <script>
@@ -14,5 +14,7 @@ q.addEventListener("keydown", e => { log.push("down " + e.key); if (e.key === "x
 q.addEventListener("input", () => log.push("input " + q.value));
 q.addEventListener("change", () => { log.push("change " + q.value); document.getElementById("out").textContent = log.join(" | "); });
 w.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); document.getElementById("out").textContent = "enter stopped"; } });
+const btn = document.getElementById("btn"), trail = document.getElementById("trail");
+for (const t of ["mousedown", "focus", "mouseup", "click"]) btn.addEventListener(t, e => { trail.textContent += t + (e.button === undefined ? "" : e.button) + " "; });
 </script>
 </body></html>

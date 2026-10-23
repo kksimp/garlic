@@ -13,6 +13,16 @@ fn Vm.key_event(mut self, type_name str, key str) Value
     init.props["code"] = data(Str(code))
     make_event(type_name, Value.Obj(init)) else Value.Undef
 
+## A MouseEvent of the primary button.
+fn Vm.mouse_event(mut self, type_name str) Value
+    init := plain()
+    init.props["bubbles"] = data(Bool(true))
+    init.props["cancelable"] = data(Bool(true))
+    init.props["button"] = data(Num(0.0))
+    init.props["clientX"] = data(Num(0.0))
+    init.props["clientY"] = data(Num(0.0))
+    make_event(type_name, Value.Obj(init)) else Value.Undef
+
 fn Vm.fire_event(mut self, target int, ev Value) bool
     if ev == Value.Undef
         return true

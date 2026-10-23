@@ -2515,9 +2515,23 @@ fn Vm.fire(mut self, target int, type_name str, bubbles bool)
 pub fn Vm.host_click(mut self, id int) bool
     if stopped
         return true
-    ev := make_event("click", Undef) else return true
-    set_event_flag(ev, "bubbles", true)
-    set_event_flag(ev, "cancelable", true)
+    # A click is a press and a release first (UI Events §3.4); pressing a
+    # control moves focus to it.
+    pressed := fire_event(id, mouse_event("mousedown"))
+    if pressed
+        mut f := id
+        while f > 0
+            tag := dom[f].tag
+            if tag == "input"
+                or tag == "textarea"
+                or tag == "select"
+                or tag == "button"
+                or tag == "a"
+                host_focus(f)
+                break
+            f = dom[f].parent
+    fire_event(id, mouse_event("mouseup"))
+    ev := mouse_event("click")
     if ok := dispatch(id, ev)
         if ok
             if done := click_default(id)
