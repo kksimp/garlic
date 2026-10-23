@@ -344,6 +344,32 @@ fn linked_sheets(d html.Doc, url str, mut cj jar.Jar, mut cache Map[str, Cached]
         ))
     all
 
+## The bytes of a `data:` URL's payload (RFC 2397): base64 or %-escapes.
+fn data_bytes(url str) bytes
+    raw := (url.strip_prefix("data:") else "").to_bytes()
+    at := raw.find(b",") else return b""
+    payload := raw[at + 1..raw.len()]
+    if raw[0..at].text().to_lower().ends_with(";base64")
+        return bytes.from_base64(payload.text()) else b""
+    mut out := List[u8]()
+    mut i := 0
+    while i < payload.len()
+        if payload[i].to_int() == 37 and i + 2 < payload.len()
+            h := bytes.from_hex(payload[i + 1..i + 3].text()) else b""
+            if h.len() == 1
+                out.push(h[0])
+                i += 3
+                continue
+        out.push(payload[i])
+        i += 1
+    bytes.from_list(out)
+
+## The text of a `data:` URL, read by its media type's charset.
+fn data_text(url str) str
+    rest := url.strip_prefix("data:") else ""
+    meta := (rest.split(",")[0]).trim()
+    decode(data_bytes(url), meta)
+
 ## A sub-resource kept for later: its text, its validators, and when it
 ## stops being fresh (ms; 0 means check again on every use).
 struct Cached
@@ -371,6 +397,8 @@ fn max_age(cc str) int
 ## and `private` responses are not kept.
 fn fetch_text(url str, from str, mut cj jar.Jar, mut cache Map[str, Cached]) str
     s := page.scheme(url)
+    if url.starts_with("data:")
+        return data_text(url)
     if s == "http" or s == "https"
         now := time.now_ms()
         have := cache.get(url)
@@ -2639,3 +2667,9 @@ fn flat(s gfx.Scene) List[str]
     assert_eq(p.url, "https://a.test/dir/page.html")
     plain := html.parse("<a href=x>x</a>")
     assert_eq(page.base_of(plain, "https://a.test/dir/page.html"), "https://a.test/dir/page.html")
+
+@test fn data_urls_give_sheets_and_scripts()
+    assert_eq(data_text("data:text/css,p%7Bcolor:red%7D"), r"p{color:red}")
+    assert_eq(data_text("data:text/plain;base64,aGk="), "hi")
+    assert_eq(data_text("data:,a%2"), "a%2")
+    assert_eq(data_text("data:nope"), "")
