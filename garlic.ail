@@ -1400,6 +1400,8 @@ struct Guard
     log List[str]
     ## Sites allowed at launch, on top of the tabs' (`--allow`).
     fixed List[str]
+    ## The user said yes to the one send now being retried.
+    ok_once bool
 
 ## The host of `url`: "example.com" for "https://example.com:8080/a".
 fn host_of(url str) str
@@ -1429,7 +1431,7 @@ fn Browser.tool(mut self, mut g Guard, name str, a Json) str
         return "refused: the agent may not open `{a.str("url") else ""}`; allowed sites: {g.allow.join(", ")}"
     if not g.permits(url)
         return "refused: the agent may not use `{host_of(url)}`; allowed sites: {g.allow.join(", ")}"
-    if name == "act" and sends(a.str("do") else "") and not (a.flag("confirm", false))
+    if name == "act" and sends(a.str("do") else "") and not (a.flag("confirm", false) or g.ok_once)
         return "confirm required: `{a.str("do") else ""}` sends data to {url}. Repeat it with \"confirm\":true if the user wants that."
     match name
         "open" =>
@@ -1494,7 +1496,7 @@ fn Browser.rpc(mut self, mut g Guard, line str) str
 ## `--serve`: an MCP server on stdio, one JSON-RPC message per line, so an
 ## agent drives the browser with the tools of `Browser.tool`.
 fn Browser.serve(mut self, allow List[str])
-    mut g := Guard(allow, log: [], fixed: [])
+    mut g := Guard(allow, log: [], fixed: [], ok_once: false)
     while true
         line := io.read_line() else break
         if line.trim() == ""
@@ -1828,6 +1830,11 @@ struct Garlic
     calls int
     ## Watches agents set, what they have seen and not yet read, and the
     ## seconds the timer has counted.
+    ## An agent call waiting for the user's yes or no: the request, what it
+    ## wants, and the site if it is a site.
+    pending str
+    asks str
+    ask_site str
     watches List[attach.Watch]
     events List[str]
     seconds int
@@ -1844,9 +1851,12 @@ fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
         want: "",
         attached: false,
         bridge: attach.Bridge.new(),
-        guard: Guard(allow: [], log: [], fixed: []),
+        guard: Guard(allow: [], log: [], fixed: [], ok_once: false),
         where: "",
         calls: 0,
+        pending: "",
+        asks: "",
+        ask_site: "",
         watches: [],
         events: [],
         seconds: 0,
@@ -1877,7 +1887,42 @@ fn Garlic.agent_call(mut self, body str)
         guard.log.push("{name}")
         bridge.replies.send(rpc_reply(rpc_id(j), watch_tool(name, args)))
         return
-    bridge.replies.send(g.b.rpc(mut guard, body))
+    answer := g.b.rpc(mut guard, body)
+    guard.ok_once = false
+    if answer.contains("confirm required:")
+        pending = body
+        asks = "send data from {g.b.url} ({name})"
+        ask_site = ""
+        g.b.message = "An agent wants to {asks}: Allow or Deny"
+        return
+    if answer.contains("refused: the agent may not")
+        site := host_of(if name == "open" then (args.str("url") else "") else g.b.url)
+        if site != "" and ["open", "act", "find"].contains(name)
+            pending = body
+            asks = "use {site}"
+            ask_site = site
+            g.b.message = "An agent wants to {asks}: Allow or Deny"
+            return
+    bridge.replies.send(answer)
+
+## The user's answer to a pending agent request: allowed, the request runs
+## again with that one permission; denied, the agent is told so.
+fn Garlic.decide(mut self, allowed bool)
+    if pending == ""
+        return
+    body := pending
+    pending = ""
+    if not allowed
+        guard.log.push("denied: {asks}")
+        id := rpc_id(parse_json(body) else Json.Null)
+        bridge.replies.send(rpc_reply(id, "denied: the user did not allow the agent to {asks}"))
+        return
+    guard.log.push("allowed: {asks}")
+    if ask_site != ""
+        guard.fixed.push(ask_site)
+    else
+        guard.ok_once = true
+    agent_call(body)
 
 ## The tools that set and read watches; the window answers them, not the page.
 WATCH_TOOLS := {"watch", "unwatch", "watches", "events", "schedule", "schedules", "unschedule"}
@@ -2051,6 +2096,10 @@ impl app.App for Garlic
                     g.b.go_back()
                 elif ev.id == "reload"
                     g.b.reload()
+                elif ev.id == "agent_allow"
+                    decide(true)
+                elif ev.id == "agent_deny"
+                    decide(false)
                 elif ev.id == "newtab"
                     new_tab()
                 elif ev.id.starts_with("tab:")
@@ -2071,6 +2120,12 @@ impl app.App for Garlic
         mut rows := [app.row(strip()), bar]
         if attached
             rows.push(app.label(agent_line()))
+        if pending != ""
+            rows.push(app.row([
+                app.label("The agent wants to {asks}."),
+                app.button("agent_allow", "Allow"),
+                app.button("agent_deny", "Deny"),
+            ]))
         rows.push(app.canvas("page", 0.0, 0.0, [to_app(op, g) for op in g.display()]))
         rows.push(app.label(g.status()))
         app.column(rows)
@@ -3452,7 +3507,7 @@ fn flat(s gfx.Scene) List[str]
 
 @test fn serve_answers_mcp_requests()
     mut b := Browser.empty("about:blank", 80, 24)
-    mut g := Guard(allow: ["*"], log: [], fixed: [])
+    mut g := Guard(allow: ["*"], log: [], fixed: [], ok_once: false)
     init := b.rpc(mut g, "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}")
     assert(init.contains("\"serverInfo\""))
     assert_eq(b.rpc(mut g, "\{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}"), "")
@@ -3470,14 +3525,14 @@ fn flat(s gfx.Scene) List[str]
 
 @test fn serve_enforces_site_permission_confirmation_and_logs()
     mut b := Browser.empty("about:blank", 80, 24)
-    mut g := Guard(allow: ["example.com"], log: [], fixed: [])
+    mut g := Guard(allow: ["example.com"], log: [], fixed: [], ok_once: false)
     no := b.rpc(
         mut g,
         "\{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"https://evil.test/x\"}}}",
     )
     assert(no.contains("refused"))
     assert_eq(host_of("https://example.com:8080/a"), "example.com")
-    mut open := Guard(allow: ["*"], log: [], fixed: [])
+    mut open := Guard(allow: ["*"], log: [], fixed: [], ok_once: false)
     b.rpc(
         mut open,
         "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{testdata()}/form.html\"}}}",
@@ -3500,8 +3555,10 @@ fn flat(s gfx.Scene) List[str]
     assert_eq(a.calls, 1)
     assert(a.agent_line().contains("1 calls"))
     a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"https://elsewhere.test/\"}}}"))
+    assert(a.pending != "")
+    a.update(app.press("agent_deny"))
     refused := a.bridge.replies.recv() else "none"
-    assert(refused.contains("refused"))
+    assert(refused.contains("denied"))
     a.update(app.external("mcp", "\{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":\{\"name\":\"log\",\"arguments\":\{}}}"))
     assert((a.bridge.replies.recv() else "").contains("open https://elsewhere.test/"))
 
@@ -3551,3 +3608,22 @@ fn flat(s gfx.Scene) List[str]
     a.bridge.replies.recv()
     a.update(app.external("tick", ""))
     assert(a.events[1].contains("refused"))
+
+@test fn the_user_decides_on_an_agents_site_and_send_requests()
+    b := Browser.new("{testdata()}/form.html", 80, 24)
+    mut a := Garlic.new(b, 800.0, 600.0, 7.5, 15.0)
+    a.attached = true
+    open := "\{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{testdata()}/index.html\"}}}"
+    a.update(app.external("mcp", open.replace("{testdata()}/index.html", "https://elsewhere.test/")))
+    assert(a.pending != "")
+    assert_eq(a.ask_site, "elsewhere.test")
+    assert(app.outline(a.view()).contains("#agent_allow"))
+    a.update(app.press("agent_deny"))
+    assert_eq(a.pending, "")
+    assert((a.bridge.replies.recv() else "").contains("denied"))
+    ## a yes allows the site and runs the call again (the fetch itself may fail)
+    a.update(app.external("mcp", open.replace("{testdata()}/index.html", "https://elsewhere.test/")))
+    a.update(app.press("agent_allow"))
+    assert(a.guard.fixed.contains("elsewhere.test"))
+    got := a.bridge.replies.recv() else ""
+    assert(got != "")
