@@ -72,6 +72,8 @@ struct Browser
     ## The page a link or form leads from, for the next load only ("" for a
     ## typed address, Back or Reload): the `Referer`, and SameSite cookies.
     refer str
+    ## Set by Reload for the next load: ask the server even if the copy is fresh.
+    reloading bool
     ## Counts page layouts, so the pixel window knows when to lay out again.
     stamp int
     ## Pixel sizes of the page's pictures by address (`images.prefetch`).
@@ -123,12 +125,16 @@ fn fetch(url str, method str, body str) str
 ## `fetch`, sending `cj`'s cookies for the site and keeping the ones the
 ## response sets.
 fn fetch_with(url str, method str, body str, mut cj jar.Jar) str
-    fetch_got(url, method, body, "", mut cj).text
+    mut none_kept := Map[str, Cached]()
+    fetch_got(url, method, body, "", true, false, mut cj, mut none_kept).text
 
 ## What a fetch got: the address it ended at (after redirects) and the page.
 struct Got
     url str
     text str
+    ## False when nothing came or the status was 400 or more (`text` then
+    ## shows why).
+    ok bool
 
 MAX_HOPS := 10
 
@@ -139,28 +145,94 @@ MAX_REPLIES := 32
 ## cookies the jar holds for it and stores the ones it sets, so a login that
 ## sets a cookie on a redirect works; a 301, 302 or 303 turns a POST into a
 ## GET without its body.
-fn fetch_got(url str, method str, body str, from str, mut cj jar.Jar) Got
+fn fetch_got(
+    url str,
+    method str,
+    body str,
+    from str,
+    navigation bool,
+    reload bool,
+    mut cj jar.Jar,
+    mut cache Map[str, Cached],
+) Got
     s := page.scheme(url)
     if s == "http" or s == "https"
+        now := time.now_ms()
+        have := if method == "GET" then cache.get(url) else none
+        if h := have
+            if not reload and h.fresh_until > now
+                return Got(url: h.final_url, text: h.text, ok: true)
+        mut cond := Map[str, str]()
+        if h := have
+            ## Only an answer that didn't come through a redirect can be asked
+            ## about on the first request.
+            if h.final_url == url
+                if h.etag != ""
+                    cond["if-none-match"] = h.etag
+                if h.modified != ""
+                    cond["if-modified-since"] = h.modified
         w := walk(
             method,
             url,
             body,
             if method == "POST" then "application/x-www-form-urlencoded" else "",
             from,
+            navigation,
             true,
-            true,
+            cond,
             mut cj,
         )
         if w.failure != ""
-            return Got(url: w.url, text: error_page(w.url, w.failure))
+            return Got(url: w.url, text: error_page(w.url, w.failure), ok: false)
+        if w.status == 304
+            if h := have
+                cache[url] = Cached(
+                    text: h.text,
+                    final_url: h.final_url,
+                    etag: h.etag,
+                    modified: h.modified,
+                    fresh_until: fresh_until(w.headers, now, h.fresh_until),
+                )
+                return Got(url: h.final_url, text: h.text, ok: true)
         if w.status >= 400
-            return Got(url: w.url, text: "{w.text}<p>(HTTP status {w.status})")
-        return Got(url: w.url, text: w.text)
+            return Got(url: w.url, text: "{w.text}<p>(HTTP status {w.status})", ok: false)
+        if method == "GET" and w.status == 200
+            keep_cached(url, w, now, mut cache)
+        return Got(url: w.url, text: w.text, ok: true)
     file := (url.strip_prefix("file://") else url).split("?")[0].split("#")[0]
     data := fs.read_bytes(file) else err
-        return Got(url, error_page(url, "{err}"))
-    Got(url, decode(data, ""))
+        return Got(url, error_page(url, "{err}"), false)
+    Got(url, decode(data, ""), true)
+
+## When a response stops being fresh (ms): by `max-age`, else `fallback`
+## (a 304 without one keeps what the copy had, a new answer passes 0).
+fn fresh_until(headers Map[str, str], now int, fallback int) int
+    age := max_age(headers.get("cache-control") else "")
+    if age > 0
+        return now + age * 1000
+    if age == 0
+        return 0
+    fallback
+
+## Keeps the answer `w` for `url` when it can be asked about again or is
+## fresh, unless it says `no-store` or is large.
+fn keep_cached(url str, w Walked, now int, mut cache Map[str, Cached])
+    cc := (w.headers.get("cache-control") else "").to_lower()
+    etag := w.headers.get("etag") else ""
+    modified := w.headers.get("last-modified") else ""
+    fresh := fresh_until(w.headers, now, 0)
+    useful := etag != "" or modified != "" or fresh > 0
+    if cc.contains("no-store") or not useful or w.text.len() > MAX_CACHED_TEXT
+        cache.remove(url)
+        return
+    if cache.contains(url) or cache.len() < MAX_CACHED
+        cache[url] = Cached(
+            text: w.text,
+            final_url: w.url,
+            etag: etag,
+            modified: modified,
+            fresh_until: fresh,
+        )
 
 ## Where a request ended up after its redirects, and what it got.
 struct Walked
@@ -182,10 +254,14 @@ fn walk(
     from str,
     navigation bool,
     creds bool,
+    extra Map[str, str],
     mut cj jar.Jar,
 ) Walked
     mut o := options()
     o.max_redirects = 0
+    ## `extra` (conditional headers) goes to the first request only.
+    for k in extra.keys()
+        o.headers[k] = extra[k]
     mut m := method
     if body != "" and m != "GET" and m != "HEAD"
         o.body = body
@@ -215,6 +291,8 @@ fn walk(
             or r.status == 308
         if hop and loc != ""
             cur = page.resolve(cur, loc)
+            for k in extra.keys()
+                o.headers.remove(k)
             if m != "GET" and m != "HEAD" and r.status != 307 and r.status != 308
                 m = "GET"
                 o.body = ""
@@ -406,12 +484,15 @@ fn data_text(url str) str
 ## stops being fresh (ms; 0 means check again on every use).
 struct Cached
     text str
+    ## Where a page came to rest after redirects (sheets and scripts: the address).
+    final_url str
     etag str
     modified str
     fresh_until int
 
-## Sub-resources kept per browser.
+## Pages, sheets and scripts kept per browser, and the longest text kept.
 MAX_CACHED := 64
+MAX_CACHED_TEXT := 2000000
 
 ## The seconds of `max-age` in a `Cache-Control` value, -1 when absent.
 fn max_age(cc str) int
@@ -426,57 +507,12 @@ fn max_age(cc str) int
 ## a `Referer`, and stores the cookies it sets. A copy still fresh by
 ## `max-age` is used without a request; an older one is asked about with
 ## `If-None-Match` or `If-Modified-Since`, and a 304 renews it. `no-store`
-## and `private` responses are not kept.
+## responses are not kept.
 fn fetch_text(url str, from str, mut cj jar.Jar, mut cache Map[str, Cached]) str
-    s := page.scheme(url)
     if url.starts_with("data:")
         return data_text(url)
-    if s == "http" or s == "https"
-        now := time.now_ms()
-        have := cache.get(url)
-        if h := have
-            if h.fresh_until > now
-                return h.text
-        mut o := options()
-        cookie := cj.header_from(url, from, false)
-        if cookie != ""
-            o.headers["cookie"] = cookie
-        sent := page.referrer(from, url)
-        if sent != ""
-            o.headers["referer"] = sent
-        if h := have
-            if h.etag != ""
-                o.headers["if-none-match"] = h.etag
-            if h.modified != ""
-                o.headers["if-modified-since"] = h.modified
-        r := net.request_bytes("GET", url, o) else return ""
-        for line in r.all_headers.get("set-cookie") else List[str]()
-            cj.set_cookie(url, line)
-        cc := r.headers.get("cache-control") else ""
-        age := max_age(cc)
-        fresh := if age > 0 then now + age * 1000 else 0
-        if r.status == 304
-            if h := have
-                cache[url] = Cached(
-                    text: h.text,
-                    etag: h.etag,
-                    modified: h.modified,
-                    fresh_until: fresh,
-                )
-                return h.text
-            return ""
-        if r.status >= 400
-            return ""
-        text := body_text(r)
-        etag := r.headers.get("etag") else ""
-        modified := r.headers.get("last-modified") else ""
-        keep := not cc.to_lower().contains("no-store") and not cc.to_lower().contains("private")
-        if keep and (etag != "" or modified != "" or fresh > 0) and cache.len() < MAX_CACHED
-            cache[url] = Cached(text, etag, modified, fresh_until: fresh)
-        elif cache.contains(url)
-            cache.remove(url)
-        return text
-    fs.read_text(url.strip_prefix("file://") else url) else ""
+    got := fetch_got(url, "GET", "", from, false, false, mut cj, mut cache)
+    if got.ok then got.text else ""
 
 ## A loaded page: where it ended up and its tree.
 struct Loaded
@@ -492,6 +528,7 @@ fn load_doc(
     method str,
     body str,
     from str,
+    reload bool,
     mut cj jar.Jar,
     mut cache Map[str, Cached],
 ) Loaded
@@ -499,8 +536,10 @@ fn load_doc(
     mut m := method
     mut b := body
     mut via := from
+    mut first := true
     for _ in 0..MAX_REFRESHES
-        got := fetch_got(at, m, b, via, mut cj)
+        got := fetch_got(at, m, b, via, true, reload and first, mut cj, mut cache)
+        first = false
         via = at
         at = got.url
         mut d := html.parse(got.text)
@@ -560,7 +599,7 @@ fn load_doc(
             m = out.method
             b = out.body
         at = next
-    last := fetch_got(at, m, b, via, mut cj)
+    last := fetch_got(at, m, b, via, true, false, mut cj, mut cache)
     Loaded(url: last.url, doc: html.parse(last.text), js: none)
 
 ## `fetch` and XMLHttpRequest ask the browser (`out.asks`), which makes each
@@ -614,7 +653,7 @@ fn script_reply(ask jsdom.Ask, from str, mut cj jar.Jar) str
     ctype := lines[0]
     body := lines[1..lines.len()].join("\n")
     same := origin_of(from) == origin_of(ask.url)
-    w := walk(ask.method, ask.url, body, ctype, from, false, same, mut cj)
+    w := walk(ask.method, ask.url, body, ctype, from, false, same, {}, mut cj)
     if w.failure != ""
         return failed
     if origin_of(w.url) != origin_of(from)
@@ -663,6 +702,7 @@ fn Browser.empty(url str, width int, height int) Browser
         cj: jar.new(),
         cache: {},
         refer: "",
+        reloading: false,
         stamp: 0,
         sizes: {},
         kept: {},
@@ -729,8 +769,14 @@ fn Browser.revisit(mut self, target str)
     else
         load(target, "GET", "")
 
+## Fetches the current page again, asking the server about any kept copy.
+fn Browser.reload(mut self)
+    reloading = true
+    load(url, "GET", "")
+
 fn Browser.load(mut self, target str, method str, body str)
-    loaded := load_doc(target, method, body, refer, mut cj, mut cache)
+    loaded := load_doc(target, method, body, refer, reloading, mut cj, mut cache)
+    reloading = false
     refer = ""
     url = loaded.url
     doc = loaded.doc
@@ -863,7 +909,7 @@ fn Browser.key(mut self, key str, alt bool, shift bool) bool
         "g" => prompt = Url("")
         "/" => prompt = Find("")
         "n" => find(last_find)
-        "r" => load(url, "GET", "")
+        "r" => reload()
         _ => return true
     true
 
@@ -1111,7 +1157,7 @@ fn Browser.act(mut self, name str, arg str) bool
         "forward" => go_forward()
         "find" => find(arg)
         "scroll" => scroll_to(arg.to_int() else 0)
-        "reload" => load(url, "GET", "")
+        "reload" => reload()
         _ =>
             message = "unknown action `{name}`: try follow, click, type, submit, check, select, open, back, forward, find, scroll or reload"
             return false
@@ -1558,7 +1604,7 @@ impl app.App for Garlic
                 if (ev.meta and ev.text == "l") or (ev.text == "g" and g.b.reading())
                     want = "url"
                 elif ev.meta and ev.text == "r"
-                    g.b.load(g.b.url, "GET", "")
+                    g.b.reload()
                 elif ev.meta and ev.text == "["
                     g.b.go_back()
                 elif ev.meta and ev.text == "]"
@@ -1579,7 +1625,7 @@ impl app.App for Garlic
                 if ev.id == "back"
                     g.b.go_back()
                 elif ev.id == "reload"
-                    g.b.load(g.b.url, "GET", "")
+                    g.b.reload()
                 elif ev.id == "newtab"
                     new_tab()
                 elif ev.id.starts_with("tab:")

@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 last = {}
-counts = {"css": 0, "304": 0, "conns": 0, "hit": 0}
+counts = {"css": 0, "304": 0, "conns": 0, "hit": 0, "doc": 0, "doc304": 0, "fresh": 0}
 
 
 class H(BaseHTTPRequestHandler):
@@ -69,6 +69,17 @@ fetch('http://localhost:PORT/api/cors').then(function (r) { return r.text(); }).
         elif self.path == "/api/hit":
             counts["hit"] += 1
             self.send(200, b"hit", ctype="text/plain")
+        elif self.path in ("/cdoc", "/fresh"):
+            key = "doc" if self.path == "/cdoc" else "fresh"
+            counts[key] += 1
+            cc = [] if key == "doc" else [("Cache-Control", "max-age=60")]
+            if self.headers.get("If-None-Match") == '"p1"':
+                counts["doc304"] += 1
+                self.send(304, headers=[("ETag", '"p1"')] + cc)
+            else:
+                self.send(200, b"<title>cached page</title>", headers=[("ETag", '"p1"')] + cc)
+        elif self.path == "/pagecounts":
+            self.send(200, f"{counts['doc']} {counts['doc304']} {counts['fresh']}".encode(), ctype="text/plain")
         elif self.path == "/hits":
             self.send(200, str(counts["hit"]).encode(), ctype="text/plain")
         elif self.path == "/api/who":
