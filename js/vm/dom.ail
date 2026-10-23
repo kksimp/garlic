@@ -34,7 +34,7 @@ pub struct Mutation
 
 ## Something a script asked the browser to do that the browser must decide:
 ## "navigate" (to `url` with `method`, and `text` as a POST body), "open",
-## "fetch-script" (`url` for script node `node`), "fetch" (request number `node`, `method`, `url`
+## "fetch-script" (`url` for script node `node`), "ws" (`method` open, send or close for socket `node`, with `url` and `text`), "fetch" (request number `node`, `method`, `url`
 ## and `text`, the content type, a newline and the body), "cookie" (`text` is the
 ## Set-Cookie line), "alert", "confirm", "prompt".
 pub struct HostRequest
@@ -535,7 +535,7 @@ pub fn Vm.dom_setup(mut self)
     methods(
         global_obj,
         "dom.window",
-        "setTimeout:1 setInterval:1 clearTimeout:1 clearInterval:1 requestAnimationFrame:1 cancelAnimationFrame:1 queueMicrotask:1 requestIdleCallback:1 addEventListener:2 removeEventListener:2 dispatchEvent:1 getComputedStyle:1 matchMedia:1 alert:1 confirm:1 prompt:1 scrollTo:2 scrollBy:2 scroll:2 open:1 close:0 focus:0 blur:0 postMessage:1 atob:1 btoa:1 __hostFetch:3",
+        "setTimeout:1 setInterval:1 clearTimeout:1 clearInterval:1 requestAnimationFrame:1 cancelAnimationFrame:1 queueMicrotask:1 requestIdleCallback:1 addEventListener:2 removeEventListener:2 dispatchEvent:1 getComputedStyle:1 matchMedia:1 alert:1 confirm:1 prompt:1 scrollTo:2 scrollBy:2 scroll:2 open:1 close:0 focus:0 blur:0 postMessage:1 atob:1 btoa:1 __hostFetch:3 __hostWs:3",
     )
     global_obj.props["location"] = Prop(
         value: Undef,
@@ -2242,6 +2242,20 @@ fn Vm.window_method(mut self, m str, args List[Value]) Value ! Thrown
                 kind: "fetch",
                 url: resolve_url(to_string(arg_at(args, 1))?),
                 method: to_string(a0)?,
+                node: id,
+                text: to_string(arg_at(args, 2))?,
+            ))
+            Num(id.to_float())
+        "__hostWs" =>
+            # A WebSocket operation for the browser: "open" (`url`, `text`
+            # the protocols; the result numbers the socket), "send" and
+            # "close" (`node` the socket, `text` the data or code).
+            op := to_string(a0)?
+            id := if op == "open" then host_requests.len() else to_number(arg_at(args, 1))?.to_int()
+            host_requests.push(HostRequest(
+                kind: "ws",
+                url: if op == "open" then to_string(arg_at(args, 1))? else "",
+                method: op,
                 node: id,
                 text: to_string(arg_at(args, 2))?,
             ))
