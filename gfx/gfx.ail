@@ -17,6 +17,8 @@ use html
 use css
 use draw
 use page
+use images
+use svg
 
 ## The screen rectangle of a link, in page pixels.
 pub struct Hit
@@ -37,6 +39,8 @@ pub struct Scene
     pub bg int
     ## The text runs whose widths were estimated, not measured.
     pub probes List[Probe]
+    ## Pictures drawn by the layout itself (inline SVG), by the `src` of their `Pic`.
+    pub bits Map[str, images.Bitmap]
 
 ## A text run whose width the host can measure (docs/spec/std-app.md,
 ## std.app.13).
@@ -794,6 +798,7 @@ struct Float
 
 struct Ctx
     d html.Doc
+    svgs Map[str, images.Bitmap]
     sheet css.Sheet
     url str
     ops List[draw.Op]
@@ -1239,6 +1244,36 @@ fn Ctx.control_atom(mut self, id int, st St) Atom?
         node: id,
     )
 
+## An inline `<svg>` as a picture atom: its size from `width`/`height` (the
+## attribute or the style), else its `viewBox`, else 24 points; none when
+## it draws nothing.
+fn Ctx.svg_atom(mut self, id int, cs Map[str, str], st St, avail float) Atom?
+    mut w := (d.attr(id, "width") else "0").replace("px", "").to_float() else 0.0
+    mut h := (d.attr(id, "height") else "0").replace("px", "").to_float() else 0.0
+    if v := cs.get("width")
+        w = length(v, st.size, avail) else w
+    if v := cs.get("height")
+        h = length(v, st.size, avail) else h
+    if w <= 0.0 or h <= 0.0
+        vb := d.attr(id, "viewBox") else ""
+        parts := [p for p in vb.replace(",", " ").split(" ") if p != ""]
+        vw := if parts.len() == 4 then (parts[2].to_float() else 24.0) else 24.0
+        vh := if parts.len() == 4 then (parts[3].to_float() else 24.0) else 24.0
+        if w > 0.0
+            h = w * vh / vw
+        elif h > 0.0
+            w = h * vw / vh
+        else
+            w = vw
+            h = vh
+    w = w.min(avail)
+    key := "svg:{id}:{w.round().to_int()}x{h.round().to_int()}:{st.color.to_hex()}"
+    if not svgs.contains(key)
+        bm := svg.render(d, id, w.round().to_int().max(1), h.round().to_int().max(1), st.color) else
+            return none
+        svgs[key] = bm
+    Atom(kind: IMAGE, text: "", w, h, size: st.size, st, src: key, fill: 0, edge: 0, node: -1)
+
 ## Adds element `id`'s inline content to the pending atoms.
 fn Ctx.inline(mut self, id int, parent St, avail float)
     n := d.nodes[id]
@@ -1254,7 +1289,9 @@ fn Ctx.inline(mut self, id int, parent St, avail float)
     ecs := self.with_attrs(id, tag, cs)
     st := text_style(tag, ecs, parent)
     if tag == "svg"
-        if parent.alt != ""
+        if a := self.svg_atom(id, cs, st, avail)
+            atoms.push(a)
+        elif parent.alt != ""
             add_text(parent.alt, parent)
         return
     if tag == "br"
@@ -1482,8 +1519,13 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
     if display == "none" or (cs.get("visibility") else "") == "hidden"
         return
     if tag == "svg"
-        ## An icon: its link's label stands for it.
-        if parent.alt != ""
+        ## An icon is drawn; one that draws nothing is stood for by its link's label.
+        cs0 := element_style(id)
+        st0 := text_style(tag, self.with_attrs(id, tag, cs0), parent)
+        if a := self.svg_atom(id, cs0, st0, w)
+            atoms.push(a)
+            flush(x, w, parent.align)
+        elif parent.alt != ""
             add_text(parent.alt, parent)
             flush(x, w, parent.align)
         return
@@ -1975,6 +2017,7 @@ pub fn layout_measured(
     all := css.for_width(css.concat(sheet, css.document_sheet(d)), width.to_int())
     mut c := Ctx(
         d,
+        svgs: {},
         sheet: all,
         url: page.base_of(d, url),
         ops: [],
@@ -2004,7 +2047,7 @@ pub fn layout_measured(
     )
     c.block(0, base, 0.0, width)
     c.settle()
-    Scene(ops: c.ops, hits: c.hits, height: c.y, bg: c.canvas, probes: c.probes)
+    Scene(ops: c.ops, hits: c.hits, height: c.y, bg: c.canvas, probes: c.probes, bits: c.svgs)
 
 ## The link or control under point (`x`, `y`) of the page, if any.
 pub fn Scene.hit_at(self, x float, y float) Hit?
