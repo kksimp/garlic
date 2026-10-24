@@ -927,7 +927,8 @@ fn Browser.record(mut self, out jsdom.Outcome)
         net_log = net_log[net_log.len() - LOG_KEEP..]
 
 ## Lets the page's timers, requests and sockets run for one second of its
-## clock. True when something happened (a change, a request or a log line).
+## clock. True when something happened (a change, a request or a log line) or a
+## timer is still waiting.
 fn Browser.settle(mut self) bool
     mut s := js else return false
     mut out := serve_page(mut s, mut doc, s.idle(mut doc, 1000.0), url, mut cj, mut socks)
@@ -935,7 +936,11 @@ fn Browser.settle(mut self) bool
     record(out)
     if not js_went(out)
         relayout()
-    out.changes > 0 or out.net.len() > 0 or out.console.len() > 0 or out.sockets.len() > 0
+    out.changes > 0
+        or out.net.len() > 0
+        or out.console.len() > 0
+        or out.sockets.len() > 0
+        or s.pending() > 0
 
 ## `wait:idle` runs the page until it has nothing more to do (at most
 ## `MAX_WAIT_ROUNDS` seconds of its clock); `wait:text=T` runs it until `T`

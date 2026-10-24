@@ -153,6 +153,10 @@ pub fn Session.idle(mut self, mut d html.Doc, budget_ms float) Outcome
     machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
     collect(mut d)
 
+## How many timers the page still has waiting.
+pub fn Session.pending(self) int
+    machine.timers.len()
+
 ## A WebSocket event for socket `id` (see `Vm.ws_event`), then the timers
 ## and microtasks it made due.
 pub fn Session.ws_event(
