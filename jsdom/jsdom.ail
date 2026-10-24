@@ -150,7 +150,11 @@ pub fn Session.reply(mut self, mut d html.Doc, id int, json str, budget_ms float
 ## Lets the page's timers and microtasks run for `budget_ms` of its own clock
 ## (`wait:idle`), and replays what they changed.
 pub fn Session.idle(mut self, mut d html.Doc, budget_ms float) Outcome
-    machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
+    until := machine.clock_ms + budget_ms
+    machine.run_event_loop(until, 10000)
+    ## The clock only moves to timers that ran; a quiet second still passes.
+    if machine.clock_ms < until
+        machine.clock_ms = until
     collect(mut d)
 
 ## How many timers the page still has waiting.
