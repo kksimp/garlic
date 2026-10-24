@@ -26,6 +26,7 @@ use attach
 use ws
 use look
 use forms
+use extract
 use tabstrip
 use svg
 
@@ -1497,6 +1498,9 @@ fn Browser.tool(mut self, mut g Guard, name str, a Json) str
             answer()
         "extract" => pg.text()
         "forms" => forms.schema(doc)
+        "tables" => extract.tables_json(doc)
+        "reader" => extract.reader_json(doc)
+        "fields" => extract.fields_json(doc, a.str("text") else "")
         "at" => pg.at_json(a.int("x") else 0, a.int("y") else 0)
         "where" => pg.where_json(a.str("text") else "")
         "screenshot" | "screen" =>
@@ -1520,7 +1524,7 @@ fn Browser.tool(mut self, mut g Guard, name str, a Json) str
         _ => "unknown tool `{name}`: open, observe, act, find, extract, screenshot or log"
 
 ## The tool list, with `<` and `>` for the braces of the JSON.
-TOOLS_SRC := """[<"name":"open","description":"Open a URL; answers with the page model.","inputSchema":<"type":"object","properties":<"url":<"type":"string">>,"required":["url"]>>,<"name":"observe","description":"The page model: nodes with ids, roles, names and boxes.","inputSchema":<"type":"object","properties":<>>>,<"name":"act","description":"Do one action: follow, click, type, submit, check, select, back, forward, scroll, reload. Give link, id or row (a number) and text where needed.","inputSchema":<"type":"object","properties":<"do":<"type":"string">,"link":<"type":"integer">,"id":<"type":"integer">,"row":<"type":"integer">,"text":<"type":"string">>,"required":["do"]>>,<"name":"find","description":"Scroll to text on the page.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"extract","description":"The page as plain text.","inputSchema":<"type":"object","properties":<>>>,<"name":"forms","description":"The page's forms as a schema: each field's label, type, name, required, value and options, and the submit buttons. Fill one with act do=fill and fields, an object of label to value; it then submits.","inputSchema":<"type":"object","properties":<>>>,<"name":"at","description":"The box under a point of the page model: x is the column, y the row.","inputSchema":<"type":"object","properties":<"x":<"type":"integer">,"y":<"type":"integer">>,"required":["x","y"]>>,<"name":"where","description":"The boxes whose role is the text or whose name contains it, with their positions.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"watch","description":"Tell me when the page changes: url (else the live tab), contains (text to wait for), every (seconds).","inputSchema":<"type":"object","properties":<"url":<"type":"string">,"contains":<"type":"string">,"every":<"type":"integer">>>>,<"name":"unwatch","description":"Stop watch id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"watches","description":"The watches in force.","inputSchema":<"type":"object","properties":<>>>,<"name":"events","description":"What the watches saw change since the last call.","inputSchema":<"type":"object","properties":<>>>,<"name":"schedule","description":"Run one tool later: tool, arguments, in (seconds). It follows the same site and confirm rules.","inputSchema":<"type":"object","properties":<"tool":<"type":"string">,"arguments":<"type":"object">,"in":<"type":"integer">>,"required":["tool","in"]>>,<"name":"schedules","description":"The jobs waiting to run.","inputSchema":<"type":"object","properties":<>>>,<"name":"unschedule","description":"Cancel job id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"log","description":"What this session did, one line per call.","inputSchema":<"type":"object","properties":<>>>,<"name":"screen","description":"Ask about what is drawn: x,y (what is there), x,y,w,h (a region), role, color or text (find). budget limits tokens.","inputSchema":<"type":"object","properties":<"x":<"type":"number">,"y":<"type":"number">,"w":<"type":"number">,"h":<"type":"number">,"role":<"type":"string">,"color":<"type":"string">,"text":<"type":"string">,"budget":<"type":"integer">>>>,<"name":"screenshot","description":"The pixel layout as drawing operations.","inputSchema":<"type":"object","properties":<>>>]"""
+TOOLS_SRC := """[<"name":"open","description":"Open a URL; answers with the page model.","inputSchema":<"type":"object","properties":<"url":<"type":"string">>,"required":["url"]>>,<"name":"observe","description":"The page model: nodes with ids, roles, names and boxes.","inputSchema":<"type":"object","properties":<>>>,<"name":"act","description":"Do one action: follow, click, type, submit, check, select, back, forward, scroll, reload. Give link, id or row (a number) and text where needed.","inputSchema":<"type":"object","properties":<"do":<"type":"string">,"link":<"type":"integer">,"id":<"type":"integer">,"row":<"type":"integer">,"text":<"type":"string">>,"required":["do"]>>,<"name":"find","description":"Scroll to text on the page.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"extract","description":"The page as plain text.","inputSchema":<"type":"object","properties":<>>>,<"name":"forms","description":"The page's forms as a schema: each field's label, type, name, required, value and options, and the submit buttons. Fill one with act do=fill and fields, an object of label to value; it then submits.","inputSchema":<"type":"object","properties":<>>>,<"name":"tables","description":"The page's tables as JSON: caption, header and rows of cell text.","inputSchema":<"type":"object","properties":<>>>,<"name":"reader","description":"The main content only (navigation, footers and forms dropped) with title and a token count.","inputSchema":<"type":"object","properties":<>>>,<"name":"fields","description":"Values found by label: text is a comma-separated list of labels; each answers its value or null.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"at","description":"The box under a point of the page model: x is the column, y the row.","inputSchema":<"type":"object","properties":<"x":<"type":"integer">,"y":<"type":"integer">>,"required":["x","y"]>>,<"name":"where","description":"The boxes whose role is the text or whose name contains it, with their positions.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"watch","description":"Tell me when the page changes: url (else the live tab), contains (text to wait for), every (seconds).","inputSchema":<"type":"object","properties":<"url":<"type":"string">,"contains":<"type":"string">,"every":<"type":"integer">>>>,<"name":"unwatch","description":"Stop watch id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"watches","description":"The watches in force.","inputSchema":<"type":"object","properties":<>>>,<"name":"events","description":"What the watches saw change since the last call.","inputSchema":<"type":"object","properties":<>>>,<"name":"schedule","description":"Run one tool later: tool, arguments, in (seconds). It follows the same site and confirm rules.","inputSchema":<"type":"object","properties":<"tool":<"type":"string">,"arguments":<"type":"object">,"in":<"type":"integer">>,"required":["tool","in"]>>,<"name":"schedules","description":"The jobs waiting to run.","inputSchema":<"type":"object","properties":<>>>,<"name":"unschedule","description":"Cancel job id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"log","description":"What this session did, one line per call.","inputSchema":<"type":"object","properties":<>>>,<"name":"screen","description":"Ask about what is drawn: x,y (what is there), x,y,w,h (a region), role, color or text (find). budget limits tokens.","inputSchema":<"type":"object","properties":<"x":<"type":"number">,"y":<"type":"number">,"w":<"type":"number">,"h":<"type":"number">,"role":<"type":"string">,"color":<"type":"string">,"text":<"type":"string">,"budget":<"type":"integer">>>>,<"name":"screenshot","description":"The pixel layout as drawing operations.","inputSchema":<"type":"object","properties":<>>>]"""
 
 fn tools_json() str
     TOOLS_SRC.replace("<", "\{").replace(">", "}")
@@ -2424,6 +2428,8 @@ fn usage()
 ## Flags that take a value, so the address is the first argument that is
 ## neither a flag nor a value.
 VALUE_FLAGS := {
+    "--csv",
+    "--extract",
     "--at",
     "--where",
     "--allow",
@@ -2544,6 +2550,14 @@ fn main() !
         b.session()
     elif args.contains("--print")
         print(b.pg.text())
+    elif args.contains("--tables")
+        print(extract.tables_json(b.doc))
+    elif args.contains("--csv")
+        print(extract.table_csv(b.doc, (flag(args, "--csv") else "0").to_int() else 0))
+    elif args.contains("--reader")
+        print(extract.reader_json(b.doc))
+    elif args.contains("--extract")
+        print(extract.fields_json(b.doc, flag(args, "--extract") else ""))
     elif args.contains("--forms")
         print(forms.schema(b.doc))
     elif args.contains("--at")
