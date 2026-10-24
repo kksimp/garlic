@@ -961,10 +961,18 @@ pub fn Page.to_json_budget(self, scroll int, height int, max_chars int) str
     omitted := nodes.len() - out.len()
     "\{{head_json(scroll, height)},\"omitted\":{omitted},\"nodes\":[{out.join(",")}]}"
 
-## The drawn box at column `x`, row `y` as its JSON object, or `null`: the
+## The drawn box at column `x`, row `y` as its JSON object, or `null` (also
+## where the row has no text): the
 ## innermost one, which is the box starting last and then the shortest. A box
 ## covers from (row, col) up to (end_row - 1, end_col), as in `ail api` spans.
 pub fn Page.at_json(self, x int, y int) str
+    if y < 0 or y >= rows.len()
+        return "null"
+    mut drawn := 0
+    for r in rows[y]
+        drawn = drawn.max(r.col + r.text.chars().len())
+    if x < 0 or x >= drawn
+        return "null"
     nodes := node_objects(0, rows.len())
     mut best := -1
     mut best_start := -1
