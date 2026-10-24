@@ -1341,7 +1341,7 @@ fn Browser.fill(mut self, spec str)
             Str(t) => t
             Bool(b) => "{b}"
             Num(n) => if n == n.floor() then "{n.to_int()}" else "{n}"
-            _ => ""
+            Null | Arr(_) | Obj(_) => ""
         pairs.push((m.key, v))
     mut missing := List[str]()
     steps := forms.plan(doc, pairs, mut missing)
