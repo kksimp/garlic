@@ -28,6 +28,7 @@ use look
 use forms
 use extract
 use hush
+use flows
 use tabstrip
 use svg
 
@@ -68,6 +69,9 @@ struct Browser
     ## The page's console lines and requests since it loaded (the last `LOG_KEEP` of each).
     console_log List[str]
     net_log List[str]
+    ## The steps done since the page was opened, as `flows` replays them, and where flows are kept.
+    trail List[str]
+    flows_file str
     prompt Prompt
     last_find str
     ## Whether the page model lists only the viewport's nodes (`--viewport`).
@@ -820,6 +824,8 @@ fn Browser.empty(url str, width int, height int) Browser
         message: "",
         console_log: [],
         net_log: [],
+        trail: [],
+        flows_file: flows.default_path(),
         prompt: Status,
         last_find: "",
         viewport_only: false,
@@ -1378,6 +1384,7 @@ fn Browser.act(mut self, name str, arg str) bool
     eq := arg.find("=") else arg.chars().len()
     id := arg.slice(0, eq).to_int() else -1
     rest := arg.slice((eq + 1).min(arg.chars().len()), arg.chars().len())
+    step := step_for(name, arg, id)
     match name
         "follow" => follow(arg.to_int() else 0)
         "click" => activate(id)
@@ -1387,6 +1394,9 @@ fn Browser.act(mut self, name str, arg str) bool
         "select" => choose(id, rest)
         "fill" => fill(arg)
         "wait" => wait(arg)
+        "set" => set(arg)
+        "save" => save_flow(arg)
+        "run" => run_flow(arg)
         "open" => go(arg)
         "back" => go_back()
         "forward" => go_forward()
@@ -1395,22 +1405,32 @@ fn Browser.act(mut self, name str, arg str) bool
         "scroll" => scroll_to(arg.to_int() else 0)
         "reload" => reload()
         _ =>
-            message = "unknown action `{name}`: try follow, click, type, submit, check, select, fill, wait, open, back, forward, find, scroll or reload"
+            message = "unknown action `{name}`: try follow, click, type, submit, check, select, fill, set, wait, save, run, open, back, forward, find, scroll or reload"
             return false
+    note_step(name, step)
     if prompt != Status
         prompt = Status
     true
+
+## `set:{"label": value, ...}`: like `fill`, but does not submit.
+fn Browser.set(mut self, spec str)
+    set_fields(spec, false)
 
 ## `fill:{"label": value, ...}`: sets each field named by its label (see the
 ## `forms` schema) and submits the form of the last one. A label no field
 ## matches stops it before anything is typed.
 fn Browser.fill(mut self, spec str)
+    set_fields(spec, true)
+
+## `fill` without the submit: sets the fields by label. False, with a message, when
+## the spec is not a JSON object or a label matches no field.
+fn Browser.set_fields(mut self, spec str, send bool) bool
     j := parse_json(spec) else
         message = "fill needs a JSON object of label: value"
-        return
+        return false
     members := j.as_obj() else
         message = "fill needs a JSON object of label: value"
-        return
+        return false
     mut pairs := List[(str, str)]()
     for m in members
         v := match m.value
@@ -1423,13 +1443,124 @@ fn Browser.fill(mut self, spec str)
     steps := forms.plan(doc, pairs, mut missing)
     if missing.len() > 0
         message = "no field is labelled: {missing.join(", ")}; see the forms schema"
-        return
+        return false
     for st in steps
         match st.kind
             "type" => type_into(st.id, st.arg)
             "check" => check(st.id)
             "select" => choose(st.id, st.arg)
-            _ => submit(st.id)
+            _ =>
+                if send
+                    submit(st.id)
+    true
+
+## Activates the link, button or control whose visible name is `name` (ignoring
+## case; else the first whose name contains it). The name of a node is what the
+## page model calls it.
+fn Browser.press(mut self, name str) bool
+    id := named_target(name) else
+        message = "nothing here is named `{name}`"
+        return false
+    activate(id)
+    true
+
+fn Browser.named_target(self, name str) int?
+    want := name.to_lower()
+    mut partial := -1
+    for t in pg.targets
+        bx := pg.boxes[t]
+        low := bx.name.to_lower()
+        if low == want
+            return bx.id
+        if partial < 0 and low != "" and low.contains(want)
+            partial = bx.id
+    if partial >= 0
+        return partial
+    none
+
+## The page's own name for node `id`, for a flow step.
+fn Browser.name_of(self, id int) str
+    t := target(id) else return ""
+    t.name
+
+## The flow step an action stands for, worked out before it runs (the page and
+## its node numbers are about to change); "" for actions a flow doesn't keep.
+fn Browser.step_for(self, name str, arg str, id int) str
+    label := if id >= 0 then forms.field_label(doc, id) else ""
+    value := arg.slice((arg.find("=") else -1) + 1, arg.chars().len())
+    match name
+        "open" => "open {arg}"
+        "follow" => "press {name_of_link(arg.to_int() else 0)}"
+        "click" => "press {name_of(id)}"
+        "fill" => "fill {arg}"
+        "set" => "set {arg}"
+        "wait" => "wait {arg}"
+        "type" | "select" => "set \{{page.quote(label)}:{page.quote(value)}}"
+        "check" =>
+            now := doc.attr(id, "checked") == none or page.input_type(doc, id) == "radio"
+            "set \{{page.quote(label)}:{now}}"
+        "submit" => "submit {if label != "" then label else name_of(id)}"
+        _ => ""
+
+## Adds `step` to the trail (an `open` starts a new one).
+fn Browser.note_step(mut self, name str, step str)
+    if step == ""
+        return
+    if name == "open"
+        trail = [step]
+    elif trail.len() > 0
+        trail.push(step)
+
+fn Browser.name_of_link(self, n int) str
+    if n < 1 or n > pg.links.len()
+        return ""
+    pg.boxes[pg.links[n - 1]].name
+
+## Saves the trail as flow `name` for this site.
+fn Browser.save_flow(mut self, name str)
+    if trail.len() < 1 or name == ""
+        message = "nothing to save: open a page and act on it first, and name the flow"
+        return
+    flows.save(flows_file, host_of(url), name, trail) else err
+        message = "could not save the flow: {err}"
+        return
+    message = "saved flow `{name}` ({trail.len()} steps)"
+
+## Replays flow `name`, stopping at the first step that does not work.
+fn Browser.run_flow(mut self, name str)
+    f := flows.find(flows.load(flows_file), host_of(url), name) else
+        message = "no flow named `{name}` for this site"
+        return
+    mut done := 0
+    for step in f.steps
+        if not run_step(step)
+            message = "flow `{name}` stopped at step {done + 1} (`{step}`): {message}"
+            return
+        done += 1
+    trail = f.steps
+    message = "ran flow `{name}` ({done} steps)"
+
+fn Browser.run_step(mut self, step str) bool
+    parts := flows.split_step(step)
+    match parts.0
+        "open" =>
+            go(parts.1)
+            true
+        "set" => set_fields(parts.1, false)
+        "fill" => set_fields(parts.1, true)
+        "press" => press(parts.1)
+        "submit" =>
+            id := named_target(parts.1) else
+                message = "nothing here is named `{parts.1}`"
+                return false
+            submit(id)
+            true
+        "wait" =>
+            wait(parts.1)
+            true
+        _ =>
+            message = "unknown step"
+            false
 
 ## The page model, within the token budget if one is set, with the last
 ## action's message.
@@ -1543,7 +1674,7 @@ fn Guard.permits(self, url str) bool
 
 ## Whether `do` sends data: it needs `"confirm":true` to run.
 fn sends(name str) bool
-    name == "submit" or name == "fill"
+    name == "submit" or name == "fill" or name == "run"
 
 ## The answer to a `tools/call` request `id` whose result is `text`.
 fn rpc_reply(id str, text str) str
@@ -1585,6 +1716,10 @@ fn Browser.tool(mut self, mut g Guard, name str, a Json) str
             answer()
         "extract" => pg.text()
         "forms" => forms.schema(doc)
+        "flows" => flows.list_json(
+            flows.load(flows_file),
+            if a.flag("all", false) then "" else host_of(url),
+        )
         "tables" => extract.tables_json(doc)
         "reader" => extract.reader_json(doc)
         "fields" => extract.fields_json(doc, a.str("text") else "")
@@ -1611,7 +1746,7 @@ fn Browser.tool(mut self, mut g Guard, name str, a Json) str
         _ => "unknown tool `{name}`: open, observe, act, find, extract, screenshot or log"
 
 ## The tool list, with `<` and `>` for the braces of the JSON.
-TOOLS_SRC := """[<"name":"open","description":"Open a URL; answers with the page model.","inputSchema":<"type":"object","properties":<"url":<"type":"string">>,"required":["url"]>>,<"name":"observe","description":"The page model: nodes with ids, roles, names and boxes.","inputSchema":<"type":"object","properties":<>>>,<"name":"act","description":"Do one action: follow, click, type, submit, check, select, fill, wait (idle:true, or text to wait for), back, forward, scroll, reload. Give link, id or row (a number) and text where needed.","inputSchema":<"type":"object","properties":<"do":<"type":"string">,"link":<"type":"integer">,"id":<"type":"integer">,"row":<"type":"integer">,"text":<"type":"string">>,"required":["do"]>>,<"name":"find","description":"Scroll to text on the page.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"extract","description":"The page as plain text.","inputSchema":<"type":"object","properties":<>>>,<"name":"forms","description":"The page's forms as a schema: each field's label, type, name, required, value and options, and the submit buttons. Fill one with act do=fill and fields, an object of label to value; it then submits.","inputSchema":<"type":"object","properties":<>>>,<"name":"tables","description":"The page's tables as JSON: caption, header and rows of cell text.","inputSchema":<"type":"object","properties":<>>>,<"name":"reader","description":"The main content only (navigation, footers and forms dropped) with title and a token count.","inputSchema":<"type":"object","properties":<>>>,<"name":"fields","description":"Values found by label: text is a comma-separated list of labels; each answers its value or null.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"at","description":"The box under a point of the page model: x is the column, y the row.","inputSchema":<"type":"object","properties":<"x":<"type":"integer">,"y":<"type":"integer">>,"required":["x","y"]>>,<"name":"where","description":"The boxes whose role is the text or whose name contains it, with their positions.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"watch","description":"Tell me when the page changes: url (else the live tab), contains (text to wait for), every (seconds).","inputSchema":<"type":"object","properties":<"url":<"type":"string">,"contains":<"type":"string">,"every":<"type":"integer">>>>,<"name":"unwatch","description":"Stop watch id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"watches","description":"The watches in force.","inputSchema":<"type":"object","properties":<>>>,<"name":"events","description":"What the watches saw change since the last call.","inputSchema":<"type":"object","properties":<>>>,<"name":"schedule","description":"Run one tool later: tool, arguments, in (seconds). It follows the same site and confirm rules.","inputSchema":<"type":"object","properties":<"tool":<"type":"string">,"arguments":<"type":"object">,"in":<"type":"integer">>,"required":["tool","in"]>>,<"name":"schedules","description":"The jobs waiting to run.","inputSchema":<"type":"object","properties":<>>>,<"name":"unschedule","description":"Cancel job id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"log","description":"What this session did, one line per call.","inputSchema":<"type":"object","properties":<>>>,<"name":"screen","description":"Ask about what is drawn: x,y (what is there), x,y,w,h (a region), role, color or text (find). budget limits tokens.","inputSchema":<"type":"object","properties":<"x":<"type":"number">,"y":<"type":"number">,"w":<"type":"number">,"h":<"type":"number">,"role":<"type":"string">,"color":<"type":"string">,"text":<"type":"string">,"budget":<"type":"integer">>>>,<"name":"screenshot","description":"The pixel layout as drawing operations.","inputSchema":<"type":"object","properties":<>>>]"""
+TOOLS_SRC := """[<"name":"open","description":"Open a URL; answers with the page model.","inputSchema":<"type":"object","properties":<"url":<"type":"string">>,"required":["url"]>>,<"name":"observe","description":"The page model: nodes with ids, roles, names and boxes.","inputSchema":<"type":"object","properties":<>>>,<"name":"act","description":"Do one action: follow, click, type, submit, check, select, fill, wait (idle:true, or text to wait for), back, forward, scroll, reload. Give link, id or row (a number) and text where needed.","inputSchema":<"type":"object","properties":<"do":<"type":"string">,"link":<"type":"integer">,"id":<"type":"integer">,"row":<"type":"integer">,"text":<"type":"string">>,"required":["do"]>>,<"name":"find","description":"Scroll to text on the page.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"extract","description":"The page as plain text.","inputSchema":<"type":"object","properties":<>>>,<"name":"forms","description":"The page's forms as a schema: each field's label, type, name, required, value and options, and the submit buttons. Fill one with act do=fill and fields, an object of label to value; it then submits.","inputSchema":<"type":"object","properties":<>>>,<"name":"tables","description":"The page's tables as JSON: caption, header and rows of cell text.","inputSchema":<"type":"object","properties":<>>>,<"name":"reader","description":"The main content only (navigation, footers and forms dropped) with title and a token count.","inputSchema":<"type":"object","properties":<>>>,<"name":"fields","description":"Values found by label: text is a comma-separated list of labels; each answers its value or null.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"flows","description":"Saved flows for this site (all:true for every site): named step lists. act do=save text=NAME saves what you did since opening the page; act do=run text=NAME replays it.","inputSchema":<"type":"object","properties":<"all":<"type":"boolean">>>>,<"name":"at","description":"The box under a point of the page model: x is the column, y the row.","inputSchema":<"type":"object","properties":<"x":<"type":"integer">,"y":<"type":"integer">>,"required":["x","y"]>>,<"name":"where","description":"The boxes whose role is the text or whose name contains it, with their positions.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"watch","description":"Tell me when the page changes: url (else the live tab), contains (text to wait for), every (seconds).","inputSchema":<"type":"object","properties":<"url":<"type":"string">,"contains":<"type":"string">,"every":<"type":"integer">>>>,<"name":"unwatch","description":"Stop watch id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"watches","description":"The watches in force.","inputSchema":<"type":"object","properties":<>>>,<"name":"events","description":"What the watches saw change since the last call.","inputSchema":<"type":"object","properties":<>>>,<"name":"schedule","description":"Run one tool later: tool, arguments, in (seconds). It follows the same site and confirm rules.","inputSchema":<"type":"object","properties":<"tool":<"type":"string">,"arguments":<"type":"object">,"in":<"type":"integer">>,"required":["tool","in"]>>,<"name":"schedules","description":"The jobs waiting to run.","inputSchema":<"type":"object","properties":<>>>,<"name":"unschedule","description":"Cancel job id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"log","description":"What this session did, one line per call.","inputSchema":<"type":"object","properties":<>>>,<"name":"screen","description":"Ask about what is drawn: x,y (what is there), x,y,w,h (a region), role, color or text (find). budget limits tokens.","inputSchema":<"type":"object","properties":<"x":<"type":"number">,"y":<"type":"number">,"w":<"type":"number">,"h":<"type":"number">,"role":<"type":"string">,"color":<"type":"string">,"text":<"type":"string">,"budget":<"type":"integer">>>>,<"name":"screenshot","description":"The pixel layout as drawing operations.","inputSchema":<"type":"object","properties":<>>>]"""
 
 fn tools_json() str
     TOOLS_SRC.replace("<", "\{").replace(">", "}")
@@ -3234,6 +3369,27 @@ fn node_with(b Browser, tag str, attr str, value str) int
     assert(b.act("fill", "\{\"query\": \"garlic bread\", \"exact\": true, \"lang\": \"French\"}"))
     assert_eq(b.pg.title, "Results")
     assert(b.url.ends_with("/result.html?q=garlic+bread&src=garlic&exact=on&sort=new&lang=fr&note=hi"))
+
+@test fn a_saved_flow_replays_by_label_on_a_fresh_browser()
+    path := "{env.get("TMPDIR") else "/tmp"}/garlic-flow-test-{time.now_ms()}.json"
+    mut b := Browser.new("{testdata()}/form.html", 80, 30)
+    b.flows_file = path
+    b.act("open", "{testdata()}/form.html")
+    b.act("type", "{node_with(b, "input", "id", "q")}=leek")
+    b.act("check", "{node_with(b, "input", "name", "exact")}")
+    b.act("save", "search leek")
+    assert(b.message.starts_with("saved flow `search leek` (3 steps)"))
+    assert(fs.read_text(path).contains("\"set \\\{\\\"Query\\\":\\\"leek\\\"}\""))
+    mut c := Browser.new("{testdata()}/index.html", 80, 30)
+    c.flows_file = path
+    c.act("run", "search leek")
+    assert_eq(c.message, "ran flow `search leek` (3 steps)")
+    assert(c.pg.text().contains("[leek"))
+    assert(c.pg.text().contains("[x] Exact"))
+    c.act("run", "no such flow")
+    assert(c.message.starts_with("no flow named"))
+    fs.remove(path) else err
+        assert(false)
 
 @test fn enter_in_a_field_types_then_submits()
     mut b := Browser.new("{testdata()}/form.html", 80, 30)

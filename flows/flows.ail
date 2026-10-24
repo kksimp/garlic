@@ -1,0 +1,103 @@
+## flows: site memory (Garlic AI-first item 9). A flow is a named list of
+## steps saved for a site and replayed later, so a repeat task costs a few
+## tokens: `open URL`, `set {label: value}`, `fill {label: value}` (sets and
+## submits), `press NAME`, `submit NAME` and `wait idle|text=T`. Steps name
+## controls by label or visible name, never by node number, which changes
+## from visit to visit. The store is one JSON file:
+## `{"host": {"name": ["step", ...]}}`.
+
+use std.fs
+use std.env
+use std.time
+use page
+
+## `{host: {name: steps}}`.
+pub struct Flow
+    pub host str
+    pub name str
+    pub steps List[str]
+
+## Where flows are kept: `$GARLIC_FLOWS`, else `~/.garlic-flows.json`.
+pub fn default_path() str
+    if p := env.get("GARLIC_FLOWS")
+        if p != ""
+            return p
+    "{env.get("HOME") else "."}/.garlic-flows.json"
+
+## Every saved flow in the file at `path`; none when it is missing or unreadable.
+pub fn load(path str) List[Flow]
+    text := fs.read_text(path) else return []
+    j := parse_json(text) else return []
+    mut out := List[Flow]()
+    for h in j.as_obj() else return []
+        for f in h.value.as_obj() else []
+            mut steps := List[str]()
+            for s in f.value.as_arr() else []
+                steps.push(s.as_str() else "")
+            out.push(Flow(host: h.key, name: f.key, steps: steps))
+    out
+
+fn render(all List[Flow]) str
+    mut hosts := List[str]()
+    for f in all
+        if not hosts.contains(f.host)
+            hosts.push(f.host)
+    mut parts := List[str]()
+    for h in hosts
+        mut flows := List[str]()
+        for f in all
+            if f.host == h
+                flows.push("{page.quote(f.name)}:[{[page.quote(s) for s in f.steps].join(",")}]")
+        parts.push("{page.quote(h)}:\{{flows.join(",")}}")
+    "\{{parts.join(",")}}\n"
+
+## Saves `steps` as flow `name` of `host`, replacing one of that name.
+pub fn save(path str, host str, name str, steps List[str]) ! fs.IoError
+    mut all := [f for f in load(path) if not (f.host == host and f.name == name)]
+    all.push(Flow(host: host, name: name, steps: steps))
+    fs.write_text(path, render(all))?
+
+## The flow `name` for `host`; else the only flow of that name on any site.
+pub fn find(all List[Flow], host str, name str) Flow?
+    for f in all
+        if f.host == host and f.name == name
+            return f
+    mut same := [f for f in all if f.name == name]
+    if same.len() == 1
+        return same[0]
+    none
+
+## `{"flows":[{"host","name","steps"}]}` for `host`, or for every site when it is "".
+pub fn list_json(all List[Flow], host str) str
+    mut out := List[str]()
+    for f in all
+        if host == "" or f.host == host
+            out.push("\{\"host\":{page.quote(f.host)},\"name\":{page.quote(f.name)},\"steps\":[{[page.quote(s) for s in f.steps].join(",")}]}")
+    "\{\"flows\":[{out.join(",")}]}"
+
+## A step split into its kind and the rest.
+pub fn split_step(step str)(str, str)
+    at := step.find(" ") else return (step, "")
+    (step.slice(0, at), step.slice(at + 1, step.chars().len()))
+
+@test fn flows_are_saved_per_site_replaced_by_name_and_found_again()
+    path := "{env.get("TMPDIR") else "/tmp"}/garlic-flows-test-{time.now_ms()}.json"
+    save(path, "a.test", "login", ["open https://a.test/", "press Sign in"]) else err
+        assert(false)
+    save(path, "b.test", "login", ["open https://b.test/"]) else err
+        assert(false)
+    save(path, "a.test", "login", ["open https://a.test/x", "wait idle"]) else err
+        assert(false)
+    all := load(path)
+    assert_eq(all.len(), 2)
+    assert_eq(find(all, "a.test", "login")?.steps, ["open https://a.test/x", "wait idle"])
+    assert(find(all, "c.test", "login") == none)
+    save(path, "a.test", "only-here", ["wait idle"]) else err
+        assert(false)
+    assert_eq(find(load(path), "z.test", "only-here")?.host, "a.test")
+    assert(list_json(load(path), "b.test").contains("\"host\":\"b.test\""))
+    assert(not list_json(load(path), "b.test").contains("a.test"))
+    fs.remove(path) else err
+        assert(false)
+    assert_eq(split_step("set \{\"a\": 1}"), ("set", "\{\"a\": 1}"))
+    assert_eq(split_step("wait"), ("wait", ""))
