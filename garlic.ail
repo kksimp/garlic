@@ -14,6 +14,7 @@ use std.net.jar
 use std.compress
 use std.time
 use std.app
+use std.screen
 use html
 use page
 use css
@@ -23,6 +24,7 @@ use jsdom
 use images
 use attach
 use ws
+use look
 use svg
 
 ## The keys, as `--keys` prints them.
@@ -1423,6 +1425,18 @@ fn sends(name str) bool
 fn rpc_reply(id str, text str) str
     "\{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":\{\"content\":[\{\"type\":\"text\",\"text\":{page.quote(text)}}]}}"
 
+## The answer of the `screen` tool (std.screen.2, std.screen.4) over `sc`.
+fn look_answer(sc screen.Screen, a Json) str
+    budget := (a.num("budget") else 0.0).to_int()
+    x := a.num("x")
+    y := a.num("y")
+    if px := x
+        if py := y
+            if rw := a.num("w")
+                return sc.describe(px, py, rw, a.num("h") else 1.0, budget)
+            return sc.what_is_at(px, py)
+    sc.find(a.str("role") else "", a.str("color") else "", a.str("text") else "", budget)
+
 ## One tool call of the `--serve` server: the text it answers with. `g`
 ## refuses sites it doesn't permit, holds an action that sends data until
 ## it is repeated with `confirm`, and logs every call.
@@ -1446,7 +1460,7 @@ fn Browser.tool(mut self, mut g Guard, name str, a Json) str
             act("find", a.str("text") else "")
             answer()
         "extract" => pg.text()
-        "screenshot" =>
+        "screenshot" | "screen" =>
             images.prefetch(
                 doc,
                 page.base_of(doc, url),
@@ -1457,6 +1471,8 @@ fn Browser.tool(mut self, mut g Guard, name str, a Json) str
                 mut bits,
             )
             s := gfx.layout_with(doc, url, 960.0, sheet, sizes)
+            if name == "screen"
+                return look_answer(look.of(s, 960.0, 640.0, 0.0), a)
             mut lines := ["canvas {s.bg.to_hex()} height {s.height.round()}"]
             for op in s.ops
                 lines.push(op_line(op))
@@ -1465,7 +1481,7 @@ fn Browser.tool(mut self, mut g Guard, name str, a Json) str
         _ => "unknown tool `{name}`: open, observe, act, find, extract, screenshot or log"
 
 ## The tool list, with `<` and `>` for the braces of the JSON.
-TOOLS_SRC := """[<"name":"open","description":"Open a URL; answers with the page model.","inputSchema":<"type":"object","properties":<"url":<"type":"string">>,"required":["url"]>>,<"name":"observe","description":"The page model: nodes with ids, roles, names and boxes.","inputSchema":<"type":"object","properties":<>>>,<"name":"act","description":"Do one action: follow, click, type, submit, check, select, back, forward, scroll, reload. Give link, id or row (a number) and text where needed.","inputSchema":<"type":"object","properties":<"do":<"type":"string">,"link":<"type":"integer">,"id":<"type":"integer">,"row":<"type":"integer">,"text":<"type":"string">>,"required":["do"]>>,<"name":"find","description":"Scroll to text on the page.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"extract","description":"The page as plain text.","inputSchema":<"type":"object","properties":<>>>,<"name":"watch","description":"Tell me when the page changes: url (else the live tab), contains (text to wait for), every (seconds).","inputSchema":<"type":"object","properties":<"url":<"type":"string">,"contains":<"type":"string">,"every":<"type":"integer">>>>,<"name":"unwatch","description":"Stop watch id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"watches","description":"The watches in force.","inputSchema":<"type":"object","properties":<>>>,<"name":"events","description":"What the watches saw change since the last call.","inputSchema":<"type":"object","properties":<>>>,<"name":"schedule","description":"Run one tool later: tool, arguments, in (seconds). It follows the same site and confirm rules.","inputSchema":<"type":"object","properties":<"tool":<"type":"string">,"arguments":<"type":"object">,"in":<"type":"integer">>,"required":["tool","in"]>>,<"name":"schedules","description":"The jobs waiting to run.","inputSchema":<"type":"object","properties":<>>>,<"name":"unschedule","description":"Cancel job id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"log","description":"What this session did, one line per call.","inputSchema":<"type":"object","properties":<>>>,<"name":"screenshot","description":"The pixel layout as drawing operations.","inputSchema":<"type":"object","properties":<>>>]"""
+TOOLS_SRC := """[<"name":"open","description":"Open a URL; answers with the page model.","inputSchema":<"type":"object","properties":<"url":<"type":"string">>,"required":["url"]>>,<"name":"observe","description":"The page model: nodes with ids, roles, names and boxes.","inputSchema":<"type":"object","properties":<>>>,<"name":"act","description":"Do one action: follow, click, type, submit, check, select, back, forward, scroll, reload. Give link, id or row (a number) and text where needed.","inputSchema":<"type":"object","properties":<"do":<"type":"string">,"link":<"type":"integer">,"id":<"type":"integer">,"row":<"type":"integer">,"text":<"type":"string">>,"required":["do"]>>,<"name":"find","description":"Scroll to text on the page.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"extract","description":"The page as plain text.","inputSchema":<"type":"object","properties":<>>>,<"name":"watch","description":"Tell me when the page changes: url (else the live tab), contains (text to wait for), every (seconds).","inputSchema":<"type":"object","properties":<"url":<"type":"string">,"contains":<"type":"string">,"every":<"type":"integer">>>>,<"name":"unwatch","description":"Stop watch id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"watches","description":"The watches in force.","inputSchema":<"type":"object","properties":<>>>,<"name":"events","description":"What the watches saw change since the last call.","inputSchema":<"type":"object","properties":<>>>,<"name":"schedule","description":"Run one tool later: tool, arguments, in (seconds). It follows the same site and confirm rules.","inputSchema":<"type":"object","properties":<"tool":<"type":"string">,"arguments":<"type":"object">,"in":<"type":"integer">>,"required":["tool","in"]>>,<"name":"schedules","description":"The jobs waiting to run.","inputSchema":<"type":"object","properties":<>>>,<"name":"unschedule","description":"Cancel job id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"log","description":"What this session did, one line per call.","inputSchema":<"type":"object","properties":<>>>,<"name":"screen","description":"Ask about what is drawn: x,y (what is there), x,y,w,h (a region), role, color or text (find). budget limits tokens.","inputSchema":<"type":"object","properties":<"x":<"type":"number">,"y":<"type":"number">,"w":<"type":"number">,"h":<"type":"number">,"role":<"type":"string">,"color":<"type":"string">,"text":<"type":"string">,"budget":<"type":"integer">>>>,<"name":"screenshot","description":"The pixel layout as drawing operations.","inputSchema":<"type":"object","properties":<>>>]"""
 
 fn tools_json() str
     TOOLS_SRC.replace("<", "\{").replace(">", "}")
@@ -3184,6 +3200,16 @@ fn bench(args List[str])
             draw.Op.Text(_, _, _, _, _, _, _) => 0
             draw.Op.Str(_, _, _, _, _, _, _, _, _) => 0
     assert_eq(got, [[37.0, 29.0], [74.0, 58.0]])
+
+@test fn the_screen_model_names_links_and_colours()
+    d := html.parse("<p><a href=\"/pay\">Pay now</a></p><button>Go</button>")
+    scene := gfx.layout_with(d, "https://shop.example/", 400.0, css.parse("", 0), {})
+    sc := look.of(scene, 400.0, 300.0, 0.0)
+    found := sc.find("link", "", "pay", 0)
+    assert(found.contains("link 'Pay now', blue"))
+    assert(found.contains("links to https://shop.example/pay"))
+    assert(sc.find("control", "", "", 0).contains("'Go'"))
+    assert_eq(sc.find("link", "", "nothing here", 0), "nothing")
 
 @test fn back_and_forward_show_kept_pages_without_a_fetch()
     mut b := Browser.new("{testdata()}/index.html", 60, 12)

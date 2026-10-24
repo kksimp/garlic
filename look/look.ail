@@ -1,0 +1,94 @@
+## look: Garlic's laid-out page as a `std.screen` model (ADR 0878, spec
+## std.screen.1-9), so an agent can ask what is at a point, what is red, or
+## what changed, instead of reading pixels. It only reads the scene.
+
+use std.screen
+use draw
+use gfx
+
+fn hash(s str) int
+    mut h := 7
+    for c in s.chars()
+        h = (h * 31 + c.code()) % 900000
+    h
+
+fn within(hit gfx.Hit, x float, y float) bool
+    x >= hit.x - 1.0 and x < hit.x + hit.w + 1.0 and y >= hit.y - 1.0 and y < hit.y + hit.h + 1.0
+
+## The items of scene `s` that show in an area `w` by `h` scrolled `top`
+## down, in paint order, with the page's links and controls as `link` and
+## `control` items that carry the text and colour drawn inside them.
+pub fn of(s gfx.Scene, w float, h float, top float) screen.Screen
+    mut items := List[screen.Item]()
+    mut texts := List[screen.Item]()
+    for op in s.ops
+        match op
+            Rect(x, y, rw, rh, c) =>
+                if c != s.bg and y + rh >= top and y <= top + h
+                    items.push(screen.item(
+                        2000000 + hash("{x}{y}{rw}{rh}"),
+                        "box",
+                        "",
+                        c,
+                        x,
+                        y - top,
+                        rw,
+                        rh,
+                    ))
+            Text(x, y, t, fg, _, _, _) =>
+                texts.push(screen.item(
+                    3000000 + hash(t),
+                    "text",
+                    t,
+                    fg,
+                    x,
+                    y - top,
+                    t.chars().len().to_float() * 8.0,
+                    16.0,
+                ))
+            Str(x, y, t, font, size, fg, bold, _, _) =>
+                if y + size * 2.0 >= top and y <= top + h
+                    tw := gfx.text_width(t, size, bold, font == "mono")
+                    texts.push(screen.item(
+                        3000000 + hash("{t}{x}{y}"),
+                        "text",
+                        t,
+                        fg,
+                        x,
+                        y - top,
+                        tw,
+                        size * 1.3,
+                    ))
+            Pic(x, y, pw, ph, src) =>
+                if y + ph >= top and y <= top + h
+                    items.push(screen.item(
+                        4000000 + hash(src),
+                        "image",
+                        src,
+                        0x808080,
+                        x,
+                        y - top,
+                        pw,
+                        ph,
+                    ))
+    mut used := Set[int]()
+    for hit in s.hits
+        if hit.y + hit.h < top or hit.y > top + h
+            continue
+        mut label := ""
+        mut col := 0x569cd6
+        for k in 0..texts.len()
+            t := texts[k]
+            if not used.contains(k) and within(hit, t.x, t.y + top)
+                label = if label == "" then t.text else "{label} {t.text}"
+                col = t.color
+                used.add(k)
+        role := if hit.href != "" then "link" else "control"
+        id := if hit.node >= 0 then hit.node else 1000000 + hash("{hit.href}{label}")
+        mut it := screen.item(id, role, label, col, hit.x, hit.y - top, hit.w, hit.h)
+        it.href = hit.href
+        items.push(it)
+    for k in 0..texts.len()
+        if not used.contains(k)
+            items.push(texts[k])
+    screen.Screen(w: w, h: h, items: items)

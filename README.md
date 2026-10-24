@@ -44,7 +44,7 @@ Native macOS window (needs the SwiftUI host, ADR 0838): `tools/app-host/macos/ru
 Network behaviour (cookies on redirects, the final address, gzip, sheets with cookie and Referer) is checked against a scripted site with `tools/garlic/netcheck/check.sh` (`GARLIC=path` runs it against a native build).
 ## Agents: `garlic --serve`
 
-An MCP server on stdio (JSON-RPC, one message per line). Tools: `open`, `observe`, `act`, `find`, `extract`, `screenshot` (the pixel layout as drawing operations). Same page model and actions as `--session`. `ail build tools/garlic/garlic.ail` builds natively; the dumps match the interpreter's and run about 5x faster.
+An MCP server on stdio (JSON-RPC, one message per line). Tools: `open`, `observe`, `act`, `find`, `extract`, `screen` (what is drawn, as items an agent can ask about by point, region, role, colour or text, within a token budget; `std.screen`, ADR 0878), `screenshot` (the pixel layout as drawing operations). Same page model and actions as `--session`. `ail build tools/garlic/garlic.ail` builds natively; the dumps match the interpreter's and run about 5x faster.
 
 Trust rules in `--serve`: `--allow host,host` limits the sites an agent may open or use (default `*`); an `act` that sends data (`submit`) is held until repeated with `"confirm":true`; the `log` tool returns what the session did.
 
