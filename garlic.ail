@@ -23,6 +23,7 @@ use jsdom
 use images
 use attach
 use ws
+use tabstrip
 use svg
 
 ## The keys, as `--keys` prints them.
@@ -1820,6 +1821,13 @@ struct Garlic
     ## `g`, which is swapped in and out by `switch`.
     tabs List[Gui]
     cur int
+    ## The tabs closed so far, newest last, for Cmd-Shift-T.
+    closed List[tabstrip.Item]
+    ## The open tab menu: the tab it is for (-1 for none) and its left edge;
+    ## `strip_w` is the strip canvas's width.
+    menu_tab int
+    menu_x float
+    strip_w float
     ## The address field's text.
     url_text str
     ## The control to give the keyboard focus; cleared by the next event.
@@ -1851,6 +1859,10 @@ fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
         g,
         tabs: [g],
         cur: 0,
+        closed: [],
+        menu_tab: -1,
+        menu_x: 0.0,
+        strip_w: w,
         url_text: b.url,
         want: "",
         attached: false,
@@ -2033,14 +2045,95 @@ fn Garlic.new_tab(mut self)
     g = fresh_gui
     want = "url"
 
-## Closes the shown tab (the last one stays).
-fn Garlic.close_tab(mut self)
-    if tabs.len() < 2
+## The shown tab's page, or tab `k`'s, as the strip lists it.
+fn Garlic.item(self, k int) tabstrip.Item
+    t := if k == cur then g else tabs[k]
+    tabstrip.Item(title: t.b.pg.title, url: t.b.url)
+
+## Closes tab `k` and remembers it for `reopen` (the last tab stays).
+fn Garlic.close_at(mut self, k int)
+    if tabs.len() < 2 or k < 0 or k >= tabs.len()
         return
-    tabs.remove_at(cur)
+    it := item(k)
+    if it.url != ""
+        closed.push(it)
+    tabs[cur] = g
+    tabs.remove_at(k)
+    if k < cur
+        cur -= 1
     cur = cur.min(tabs.len() - 1)
     g = tabs[cur]
     g.refresh()
+
+## Closes the shown tab (the last one stays).
+fn Garlic.close_tab(mut self)
+    close_at(cur)
+
+## Closes every tab but `k`, from the right so `k` keeps its place until last.
+fn Garlic.close_others(mut self, k int)
+    mut n := tabs.len() - 1
+    mut keep := k
+    while n >= 0
+        if n < keep
+            break
+        if n != keep
+            close_at(n)
+        n -= 1
+    while keep > 0
+        close_at(0)
+        keep -= 1
+
+## Closes the tabs to the right of tab `k`.
+fn Garlic.close_right(mut self, k int)
+    while tabs.len() > k + 1
+        close_at(tabs.len() - 1)
+
+## Opens the tab closed last in a new tab, as Cmd-Shift-T does.
+fn Garlic.reopen(mut self)
+    if closed.len() == 0
+        return
+    it := closed[closed.len() - 1]
+    closed.remove_at(closed.len() - 1)
+    new_tab()
+    g.open(it.url)
+    want = ""
+
+## The rows of the open tab menu; none when no menu is open.
+fn Garlic.menu_rows(self) List[str]
+    if menu_tab < 0
+        return []
+    tabstrip.menu_rows(menu_tab, tabs.len(), closed.len())
+
+## Does what row `r` of the tab menu says.
+fn Garlic.menu_pick(mut self, r int)
+    rows := menu_rows()
+    k := menu_tab
+    menu_tab = -1
+    if r < 0 or r >= rows.len()
+        return
+    match rows[r]
+        "Close tab" => close_at(k)
+        "Close other tabs" => close_others(k)
+        "Close tabs to the right" => close_right(k)
+        "Reopen closed tab" => reopen()
+        _ => menu_tab = -1
+
+## A click on the tab strip.
+fn Garlic.strip_click(mut self, ev app.Event)
+    h := tabstrip.hit(ev.x, ev.y, tabs.len(), strip_w, menu_rows().len(), menu_x)
+    if h.kind == "menu"
+        menu_pick(h.k)
+        return
+    menu_tab = -1
+    if h.kind == "plus"
+        new_tab()
+    elif h.kind == "tab" and ev.text == "right"
+        menu_tab = h.k
+        menu_x = ev.x.min((strip_w - tabstrip.MENU_W).max(0.0))
+    elif h.kind == "close" or (h.kind == "tab" and ev.text == "other")
+        close_at(h.k)
+    elif h.kind == "tab"
+        switch(h.k)
 
 ## The line that tells the user an agent can drive this window; empty
 ## without `--attach`.
@@ -2049,15 +2142,16 @@ fn Garlic.agent_line(self) str
         return ""
     "Agent attached at {where}: {calls} calls so far; {watches.len()} watches, {events.len()} unread changes"
 
-## The tab strip: one button per tab, titled by its page.
-fn Garlic.strip(self) List[app.Node]
-    mut out := List[app.Node]()
-    for k in 0..tabs.len()
-        t := if k == cur then g else tabs[k]
-        title := if t.b.pg.title == "" then "New tab" else t.b.pg.title
-        mark := if k == cur then "> " else ""
-        out.push(app.button("tab:{k}", "{mark}{title.slice(0, title.chars().len().min(18))}"))
-    out
+## The tab strip: a canvas of its own (see `tabs`).
+fn Garlic.strip(self) app.Node
+    items := [item(k) for k in 0..tabs.len()]
+    rows := menu_rows()
+    app.canvas(
+        "tabs",
+        0.0,
+        tabstrip.height(rows.len()),
+        tabstrip.draw(tabstrip.dark(), items, cur, strip_w, rows, menu_x),
+    )
 
 impl app.App for Garlic
     fn update(mut self, ev app.Event)
@@ -2066,11 +2160,26 @@ impl app.App for Garlic
         g.sent = g.sent.union(g.fresh)
         g.fresh = {}
         match ev.kind
-            "resize" => g.resize(ev.dx, ev.dy, ev.cell_w, ev.cell_h)
-            "click" => g.click(ev.x, ev.y)
-            "scroll" => g.scroll(ev.dy)
+            "resize" =>
+                if ev.id == "tabs"
+                    strip_w = ev.dx
+                else
+                    g.resize(ev.dx, ev.dy, ev.cell_w, ev.cell_h)
+            "click" =>
+                if ev.id == "tabs"
+                    strip_click(ev)
+                else
+                    menu_tab = -1
+                    g.click(ev.x, ev.y)
+            "scroll" =>
+                if ev.id != "tabs"
+                    g.scroll(ev.dy)
             "key" =>
-                if (ev.meta and ev.text == "l") or (ev.text == "g" and g.b.reading())
+                if ev.meta and ev.shift and (ev.text == "t" or ev.text == "T")
+                    reopen()
+                elif ev.text == "escape" and menu_tab >= 0
+                    menu_tab = -1
+                elif (ev.meta and ev.text == "l") or (ev.text == "g" and g.b.reading())
                     want = "url"
                 elif ev.meta and ev.text == "r"
                     g.b.reload()
@@ -2104,8 +2213,6 @@ impl app.App for Garlic
                     decide(true)
                 elif ev.id == "agent_deny"
                     decide(false)
-                elif ev.id == "newtab"
-                    new_tab()
                 elif ev.id.starts_with("tab:")
                     switch(ev.id.slice(4, ev.id.chars().len()).to_int() else cur)
             _ => url_text = url_text
@@ -2117,11 +2224,10 @@ impl app.App for Garlic
         bar := app.row([
             app.button("back", "Back"),
             app.button("reload", "Reload"),
-            app.button("newtab", "+"),
             app.field("url", url_text, "Enter a web address"),
         ])
         ## A canvas of 0 by 0 fills the window; the host reports its size.
-        mut rows := [app.row(strip()), bar]
+        mut rows := [strip(), bar]
         if attached
             rows.push(app.label(agent_line()))
         if pending != ""
@@ -2796,11 +2902,10 @@ fn clicked(x float, y float) app.Event
     outlines := app.script(mut a, [resized(480.0, 96.0)])
     top := outlines[0].split("\n")
     assert_eq(top[0], "column")
-    assert_eq(top[1], "  row")
-    assert(top[2].starts_with("    [> "))
-    assert(top[4].starts_with("    [Back] #back"))
-    assert(top[7].contains("#url"))
-    assert(top[8].starts_with("  canvas #page"))
+    assert(top[1].starts_with("  canvas #tabs"))
+    assert(outlines[0].contains("\n  row\n    [Back] #back"))
+    assert(outlines[0].contains("#url"))
+    assert(outlines[0].contains("\n  canvas #page"))
     assert(outlines[0].contains("str 0.0,32.0 \"# Garlic\" mono 13.0 dcdcaa"))
     assert(top[top.len() - 1].starts_with("  \""))
     link := a.g.b.pg.boxes[a.g.b.pg.links[0]]
@@ -3397,7 +3502,7 @@ fn flat(s gfx.Scene) List[str]
     assert_eq(a.g.b.pg.title, "Garlic test page")
     a.switch(1)
     assert_eq(a.g.b.pg.title, "Second page")
-    assert_eq(a.strip().len(), 2)
+    assert_eq(a.item(1).title, "Second page")
     a.close_tab()
     assert_eq((a.tabs.len(), a.g.b.pg.title), (1, "Garlic test page"))
 
@@ -3704,3 +3809,49 @@ fn flat(s gfx.Scene) List[str]
             ) => found = found
     assert(found)
     assert_eq(s.bits.len(), 1)
+
+@test fn closing_tabs_remembers_them_for_reopen()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut a := Garlic.new(b, 600.0, 300.0, 7.5, 15.0)
+    a.new_tab()
+    a.g.open("{testdata()}/second.html")
+    a.new_tab()
+    assert_eq(a.tabs.len(), 3)
+    a.close_at(1)
+    assert_eq((a.tabs.len(), a.cur, a.closed.len()), (2, 1, 1))
+    a.reopen()
+    assert_eq((a.tabs.len(), a.g.b.pg.title, a.closed.len()), (3, "Second page", 0))
+
+@test fn close_others_and_close_right_keep_the_right_tabs()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut a := Garlic.new(b, 600.0, 300.0, 7.5, 15.0)
+    a.new_tab()
+    a.g.open("{testdata()}/second.html")
+    a.new_tab()
+    a.new_tab()
+    a.close_right(1)
+    assert_eq(a.tabs.len(), 2)
+    a.close_others(1)
+    assert_eq((a.tabs.len(), a.g.b.pg.title), (1, "Second page"))
+
+@test fn the_strip_menu_and_middle_click_close_tabs()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut a := Garlic.new(b, 600.0, 300.0, 7.5, 15.0)
+    a.new_tab()
+    a.new_tab()
+    mut ev := app.event("click")
+    ev.id = "tabs"
+    ev.x = tabstrip.tab_x(1, 3, a.strip_w) + 20.0
+    ev.y = 20.0
+    ev.text = "other"
+    a.update(ev)
+    assert_eq(a.tabs.len(), 2)
+    ev.text = "right"
+    ev.x = tabstrip.tab_x(0, 2, a.strip_w) + 20.0
+    a.update(ev)
+    assert_eq(a.menu_tab, 0)
+    ev.text = "left"
+    ev.y = tabstrip.BAR_H + 4.0 + 3.0
+    ev.x = a.menu_x + 5.0
+    a.update(ev)
+    assert_eq((a.tabs.len(), a.menu_tab), (1, -1))
