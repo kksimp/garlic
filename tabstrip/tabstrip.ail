@@ -24,18 +24,56 @@ pub struct Theme
     pub menu_text int
     pub menu_hot int
 
-pub fn dark() Theme
+## Clove: dark, violet accent, pill tabs (the look Kaleb chose, 2026-10-24).
+pub fn clove() Theme
     Theme(
-        bar: 0x1b1a1f,
-        tab: 0x26242b,
-        active: 0x34303c,
-        text: 0x9e98a8,
-        active_text: 0xf2eef8,
+        bar: 0x1d1a23,
+        tab: 0x1d1a23,
+        active: 0x2e2a38,
+        text: 0x8f89a0,
+        active_text: 0xf3effa,
         accent: 0xb48cff,
-        menu: 0x2d2a34,
+        menu: 0x27232f,
         menu_text: 0xe6e1ee,
-        menu_hot: 0x453f52,
+        menu_hot: 0x35303f,
     )
+
+## A rectangle with its corners cut by `r` points in two steps.
+pub fn round(mut ops List[app.Op], x float, y float, w float, h float, r float, c int)
+    ops.push(app.draw_rect(x + r, y, w - 2.0 * r, h, c))
+    ops.push(app.draw_rect(x, y + r, w, h - 2.0 * r, c))
+    ops.push(app.draw_rect(x + r / 2.0, y + r / 2.0, w - r, h - r, c))
+
+## The toolbar's buttons (back, forward, reload) as a canvas of `NAV_W` by `NAV_H`.
+pub NAV_W := 112.0
+pub NAV_H := 40.0
+
+pub fn nav(th Theme, can_back bool, can_forward bool) List[app.Op]
+    [
+        app.draw_rect(0.0, 0.0, NAV_W, NAV_H, th.bar),
+        text(14.0, 9.0, "‹", if can_back then th.active_text else th.text, false, 20.0),
+        text(44.0, 9.0, "›", if can_forward then th.active_text else th.text, false, 20.0),
+        text(74.0, 11.0, "⟳", th.active_text, false, 16.0),
+    ]
+
+## Which button a click at `x` on the toolbar canvas hit: `back`, `forward`, `reload` or "".
+pub fn nav_hit(x float) str
+    if x < 34.0
+        return "back"
+    if x < 64.0
+        return "forward"
+    if x < 100.0
+        return "reload"
+    ""
+
+## The status line below the page, `width` wide and `STATUS_H` high.
+pub STATUS_H := 26.0
+
+pub fn status(th Theme, line str, width float) List[app.Op]
+    [
+        app.draw_rect(0.0, 0.0, width.max(1.0), STATUS_H, th.bar),
+        text(12.0, 6.0, line, th.text, false, 12.0),
+    ]
 
 ## The strip's height without a menu, a menu row's height and the menu's width.
 pub BAR_H := 36.0
@@ -134,9 +172,9 @@ pub fn draw(
     for k in 0..n
         x0 := tab_x(k, n, width)
         shown := k == cur
-        ops.push(app.draw_rect(x0, 6.0, w, BAR_H - 6.0, if shown then th.active else th.tab))
         if shown
-            ops.push(app.draw_rect(x0, 6.0, w, 2.0, th.accent))
+            round(mut ops, x0, 4.0, w, BAR_H - 6.0, 8.0, th.active)
+            ops.push(app.draw_rect(x0 + w / 2.0 - 10.0, BAR_H - 5.0, 20.0, 3.0, th.accent))
         title := if items[k].title == "" then "New tab" else items[k].title
         ops.push(app.Op.Clip(x: x0 + 10.0, y: 6.0, w: w - CLOSE_W - 18.0, h: BAR_H - 6.0))
         ops.push(text(
@@ -159,7 +197,7 @@ pub fn draw(
     px := tab_x(n, n, width)
     ops.push(text(px + 9.0, 8.0, "+", th.text, false, 18.0))
     if menu.len() > 0
-        ops.push(app.draw_rect(menu_x, BAR_H, MENU_W, menu.len().to_float() * ROW_H + 8.0, th.menu))
+        round(mut ops, menu_x, BAR_H, MENU_W, menu.len().to_float() * ROW_H + 8.0, 6.0, th.menu)
         for r in 0..menu.len()
             ops.push(text(
                 menu_x + 14.0,

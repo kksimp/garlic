@@ -2150,7 +2150,7 @@ fn Garlic.strip(self) app.Node
         "tabs",
         0.0,
         tabstrip.height(rows.len()),
-        tabstrip.draw(tabstrip.dark(), items, cur, strip_w, rows, menu_x),
+        tabstrip.draw(tabstrip.clove(), items, cur, strip_w, rows, menu_x),
     )
 
 impl app.App for Garlic
@@ -2168,6 +2168,12 @@ impl app.App for Garlic
             "click" =>
                 if ev.id == "tabs"
                     strip_click(ev)
+                elif ev.id == "nav"
+                    match tabstrip.nav_hit(ev.x)
+                        "back" => g.b.go_back()
+                        "forward" => g.b.go_forward()
+                        "reload" => g.b.reload()
+                        _ => menu_tab = -1
                 else
                     menu_tab = -1
                     g.click(ev.x, ev.y)
@@ -2222,8 +2228,12 @@ impl app.App for Garlic
 
     fn view(self) app.Node
         bar := app.row([
-            app.button("back", "Back"),
-            app.button("reload", "Reload"),
+            app.canvas(
+                "nav",
+                tabstrip.NAV_W,
+                tabstrip.NAV_H,
+                tabstrip.nav(tabstrip.clove(), true, true),
+            ),
             app.field("url", url_text, "Enter a web address"),
         ])
         ## A canvas of 0 by 0 fills the window; the host reports its size.
@@ -2237,7 +2247,12 @@ impl app.App for Garlic
                 app.button("agent_deny", "Deny"),
             ]))
         rows.push(app.canvas("page", 0.0, 0.0, [to_app(op, g) for op in g.display()]))
-        rows.push(app.label(g.status()))
+        rows.push(app.canvas(
+            "status",
+            0.0,
+            tabstrip.STATUS_H,
+            tabstrip.status(tabstrip.clove(), g.status(), strip_w),
+        ))
         app.column(rows)
 
     fn title(self) str
@@ -2903,11 +2918,11 @@ fn clicked(x float, y float) app.Event
     top := outlines[0].split("\n")
     assert_eq(top[0], "column")
     assert(top[1].starts_with("  canvas #tabs"))
-    assert(outlines[0].contains("\n  row\n    [Back] #back"))
+    assert(outlines[0].contains("\n  row\n    canvas #nav"))
     assert(outlines[0].contains("#url"))
     assert(outlines[0].contains("\n  canvas #page"))
     assert(outlines[0].contains("str 0.0,32.0 \"# Garlic\" mono 13.0 dcdcaa"))
-    assert(top[top.len() - 1].starts_with("  \""))
+    assert(outlines[0].contains("\n  canvas #status"))
     link := a.g.b.pg.boxes[a.g.b.pg.links[0]]
     shown := app.script(mut a, [clicked(
         link.col.to_float() * 8.0 + 1.0,
@@ -2917,7 +2932,11 @@ fn clicked(x float, y float) app.Event
     assert(a.url_text.ends_with("second.html"))
     assert(shown[0].contains("<{a.url_text}> #url"))
     assert_eq(a.title(), "Second page - Garlic")
-    app.script(mut a, [app.press("back")])
+    mut back := app.event("click")
+    back.id = "nav"
+    back.x = 20.0
+    back.y = 20.0
+    app.script(mut a, [back])
     assert_eq(a.g.b.pg.title, "Garlic test page")
 
 @test fn the_address_field_opens_urls_and_cmd_l_focuses_it()
