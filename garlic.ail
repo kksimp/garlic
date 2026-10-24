@@ -65,6 +65,9 @@ struct Browser
     height int
     back List[str]
     message str
+    ## The page's console lines and requests since it loaded (the last `LOG_KEEP` of each).
+    console_log List[str]
+    net_log List[str]
     prompt Prompt
     last_find str
     ## Whether the page model lists only the viewport's nodes (`--viewport`).
@@ -152,6 +155,11 @@ MAX_HOPS := 10
 
 ## Replies to a page's `fetch` and XMLHttpRequest asks, per load.
 MAX_REPLIES := 32
+
+## How many console lines and requests the page model keeps, and how many
+## one-second rounds `wait` lets the page's timers run.
+LOG_KEEP := 20
+MAX_WAIT_ROUNDS := 10
 
 ## `fetch_with`, also telling where redirects ended. Every hop sends the
 ## cookies the jar holds for it and stores the ones it sets, so a login that
@@ -532,6 +540,8 @@ struct Loaded
     doc html.Doc
     ## The page's engine, when scripts ran and are still listening.
     js jsdom.Session?
+    ## What the scripts logged and requested while the page loaded.
+    out jsdom.Outcome
 
 ## Fetches and parses `target`, then runs its scripts (unless `--no-js`),
 ## which change the tree or send the browser on to another page.
@@ -557,7 +567,12 @@ fn load_doc(
         at = got.url
         mut d := html.parse(got.text)
         if env.args().contains("--no-js")
-            next := refresh_target(d, at, false) else return Loaded(url: at, doc: d, js: none)
+            next := refresh_target(d, at, false) else return Loaded(
+                url: at,
+                doc: d,
+                js: none,
+                out: quiet(),
+            )
             at = next
             m = "GET"
             b = ""
@@ -581,6 +596,7 @@ fn load_doc(
             cookies: [],
             asks: [],
             sockets: [],
+            net: [],
         )
         if d.all("script").len() > 0
             ran := jsdom.start(
@@ -606,7 +622,7 @@ fn load_doc(
             # without scripts (HTML §4.12.2).
             next = refresh_target(d, at, true) else ""
             if next == ""
-                return Loaded(url: at, doc: d, js: session)
+                return Loaded(url: at, doc: d, js: session, out: out)
             m = "GET"
             b = ""
         else
@@ -614,7 +630,7 @@ fn load_doc(
             b = out.body
         at = next
     last := fetch_got(at, m, b, via, true, false, mut cj, mut cache)
-    Loaded(url: last.url, doc: html.parse(last.text), js: none)
+    Loaded(url: last.url, doc: html.parse(last.text), js: none, out: quiet())
 
 ## What page scripts asked the browser for, answered against the live engine
 ## `live`; the scripts never run again. `fetch` and XMLHttpRequest requests
@@ -641,6 +657,7 @@ fn serve_page(
         mut more := quiet()
         if asks.len() > 0
             ask := asks.remove_at(0)
+            out.net.push("{ask.method} {ask.url}")
             more = live.reply(mut d, ask.id, script_reply(ask, at, mut cj), 1000.0)
         elif ops.len() > 0
             op := ops.remove_at(0)
@@ -659,6 +676,7 @@ fn serve_page(
             out.method = more.method
             out.body = more.body
         out.console.extend(more.console)
+        out.net.extend(more.net)
         out.cookies.extend(more.cookies)
         out.changes += more.changes
         asks.extend(more.asks)
@@ -678,6 +696,7 @@ fn quiet() jsdom.Outcome
         cookies: [],
         asks: [],
         sockets: [],
+        net: [],
     )
 
 ## One WebSocket operation of the page: connects (as a page does: with its
@@ -799,6 +818,8 @@ fn Browser.empty(url str, width int, height int) Browser
         height,
         back: [],
         message: "",
+        console_log: [],
+        net_log: [],
         prompt: Status,
         last_find: "",
         viewport_only: false,
@@ -892,8 +913,47 @@ fn Browser.pump(mut self)
     mut s := js else return
     out := serve_page(mut s, mut doc, quiet(), url, mut cj, mut socks)
     js = s
+    record(out)
     if not js_went(out)
         relayout()
+
+## Remembers what the page logged and requested, for the page model.
+fn Browser.record(mut self, out jsdom.Outcome)
+    console_log.extend(out.console)
+    net_log.extend(out.net)
+    if console_log.len() > LOG_KEEP
+        console_log = console_log[console_log.len() - LOG_KEEP..]
+    if net_log.len() > LOG_KEEP
+        net_log = net_log[net_log.len() - LOG_KEEP..]
+
+## Lets the page's timers, requests and sockets run for one second of its
+## clock. True when something happened (a change, a request or a log line).
+fn Browser.settle(mut self) bool
+    mut s := js else return false
+    mut out := serve_page(mut s, mut doc, s.idle(mut doc, 1000.0), url, mut cj, mut socks)
+    js = s
+    record(out)
+    if not js_went(out)
+        relayout()
+    out.changes > 0 or out.net.len() > 0 or out.console.len() > 0 or out.sockets.len() > 0
+
+## `wait:idle` runs the page until it has nothing more to do (at most
+## `MAX_WAIT_ROUNDS` seconds of its clock); `wait:text=T` runs it until `T`
+## is on the page.
+fn Browser.wait(mut self, arg str)
+    want := if arg.starts_with("text=") then arg.slice(5, arg.chars().len()) else ""
+    for _ in 0..MAX_WAIT_ROUNDS
+        if want != "" and pg.text().to_lower().contains(want.to_lower())
+            message = "found `{want}`"
+            return
+        if not settle()
+            break
+    if want == ""
+        message = "idle"
+    elif pg.text().to_lower().contains(want.to_lower())
+        message = "found `{want}`"
+    else
+        message = "`{want}` did not appear"
 
 ## Fetches the current page again, asking the server about any kept copy.
 fn Browser.reload(mut self)
@@ -910,6 +970,9 @@ fn Browser.load(mut self, target str, method str, body str)
     if not env.args().contains("--noisy")
         hush.apply(mut doc)
     js = loaded.js
+    console_log = []
+    net_log = []
+    record(loaded.out)
     sheet = linked_sheets(doc, url, mut cj, mut cache)
     pg = page.layout_with(doc, url, width, sheet)
     stamp += 1
@@ -1103,6 +1166,7 @@ fn Browser.js_click(mut self, id int) bool
     mut s := js else return false
     out := serve_page(mut s, mut doc, s.click(mut doc, id, 1000.0), url, mut cj, mut socks)
     js = s
+    record(out)
     if js_went(out)
         return true
     if s.prevented
@@ -1146,6 +1210,7 @@ fn Browser.type_into(mut self, id int, text str)
             mut socks,
         )
         js = s
+        record(out)
         if not js_went(out)
             relayout()
         return
@@ -1230,6 +1295,7 @@ fn Browser.submit(mut self, id int)
         mut s := js else return
         out := serve_page(mut s, mut doc, s.submit(mut doc, id, 1000.0), url, mut cj, mut socks)
         js = s
+        record(out)
         if not js_went(out)
             relayout()
         return
@@ -1315,6 +1381,7 @@ fn Browser.act(mut self, name str, arg str) bool
         "check" => check(id)
         "select" => choose(id, rest)
         "fill" => fill(arg)
+        "wait" => wait(arg)
         "open" => go(arg)
         "back" => go_back()
         "forward" => go_forward()
@@ -1323,7 +1390,7 @@ fn Browser.act(mut self, name str, arg str) bool
         "scroll" => scroll_to(arg.to_int() else 0)
         "reload" => reload()
         _ =>
-            message = "unknown action `{name}`: try follow, click, type, submit, check, select, fill, open, back, forward, find, scroll or reload"
+            message = "unknown action `{name}`: try follow, click, type, submit, check, select, fill, wait, open, back, forward, find, scroll or reload"
             return false
     if prompt != Status
         prompt = Status
@@ -1367,9 +1434,16 @@ fn Browser.model(self) str
     with_message(pg.to_json(scroll, view(), viewport_only))
 
 fn Browser.with_message(self, j str) str
-    if message == ""
+    mut extra := ""
+    if message != ""
+        extra = ",\"message\":{page.quote(message)}"
+    if console_log.len() > 0
+        extra = "{extra},\"console\":[{[page.quote(l) for l in console_log].join(",")}]"
+    if net_log.len() > 0
+        extra = "{extra},\"network\":[{[page.quote(l) for l in net_log].join(",")}]"
+    if extra == ""
         return j
-    j.replace(",\"nodes\":[", ",\"message\":{page.quote(message)},\"nodes\":[")
+    j.replace(",\"nodes\":[", "{extra},\"nodes\":[")
 
 ## The page model as a diff from the last one sent on this page: the nodes
 ## that are new or changed (`visible` included), and the ids `removed`.
@@ -1411,6 +1485,11 @@ fn Browser.act_from(mut self, j Json)
     for key in ["url", "text"]
         if t := j.str(key)
             arg = if j.num("id") != none then "{arg}={t}" else t
+    if name == "wait"
+        arg = if j.str("text") != none and not j.flag(
+            "idle",
+            false,
+        ) then "text={j.str("text") else ""}" else "idle"
     if name == "fill"
         if f := j.get("fields")
             arg = f.to_text()
@@ -1527,7 +1606,7 @@ fn Browser.tool(mut self, mut g Guard, name str, a Json) str
         _ => "unknown tool `{name}`: open, observe, act, find, extract, screenshot or log"
 
 ## The tool list, with `<` and `>` for the braces of the JSON.
-TOOLS_SRC := """[<"name":"open","description":"Open a URL; answers with the page model.","inputSchema":<"type":"object","properties":<"url":<"type":"string">>,"required":["url"]>>,<"name":"observe","description":"The page model: nodes with ids, roles, names and boxes.","inputSchema":<"type":"object","properties":<>>>,<"name":"act","description":"Do one action: follow, click, type, submit, check, select, back, forward, scroll, reload. Give link, id or row (a number) and text where needed.","inputSchema":<"type":"object","properties":<"do":<"type":"string">,"link":<"type":"integer">,"id":<"type":"integer">,"row":<"type":"integer">,"text":<"type":"string">>,"required":["do"]>>,<"name":"find","description":"Scroll to text on the page.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"extract","description":"The page as plain text.","inputSchema":<"type":"object","properties":<>>>,<"name":"forms","description":"The page's forms as a schema: each field's label, type, name, required, value and options, and the submit buttons. Fill one with act do=fill and fields, an object of label to value; it then submits.","inputSchema":<"type":"object","properties":<>>>,<"name":"tables","description":"The page's tables as JSON: caption, header and rows of cell text.","inputSchema":<"type":"object","properties":<>>>,<"name":"reader","description":"The main content only (navigation, footers and forms dropped) with title and a token count.","inputSchema":<"type":"object","properties":<>>>,<"name":"fields","description":"Values found by label: text is a comma-separated list of labels; each answers its value or null.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"at","description":"The box under a point of the page model: x is the column, y the row.","inputSchema":<"type":"object","properties":<"x":<"type":"integer">,"y":<"type":"integer">>,"required":["x","y"]>>,<"name":"where","description":"The boxes whose role is the text or whose name contains it, with their positions.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"watch","description":"Tell me when the page changes: url (else the live tab), contains (text to wait for), every (seconds).","inputSchema":<"type":"object","properties":<"url":<"type":"string">,"contains":<"type":"string">,"every":<"type":"integer">>>>,<"name":"unwatch","description":"Stop watch id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"watches","description":"The watches in force.","inputSchema":<"type":"object","properties":<>>>,<"name":"events","description":"What the watches saw change since the last call.","inputSchema":<"type":"object","properties":<>>>,<"name":"schedule","description":"Run one tool later: tool, arguments, in (seconds). It follows the same site and confirm rules.","inputSchema":<"type":"object","properties":<"tool":<"type":"string">,"arguments":<"type":"object">,"in":<"type":"integer">>,"required":["tool","in"]>>,<"name":"schedules","description":"The jobs waiting to run.","inputSchema":<"type":"object","properties":<>>>,<"name":"unschedule","description":"Cancel job id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"log","description":"What this session did, one line per call.","inputSchema":<"type":"object","properties":<>>>,<"name":"screen","description":"Ask about what is drawn: x,y (what is there), x,y,w,h (a region), role, color or text (find). budget limits tokens.","inputSchema":<"type":"object","properties":<"x":<"type":"number">,"y":<"type":"number">,"w":<"type":"number">,"h":<"type":"number">,"role":<"type":"string">,"color":<"type":"string">,"text":<"type":"string">,"budget":<"type":"integer">>>>,<"name":"screenshot","description":"The pixel layout as drawing operations.","inputSchema":<"type":"object","properties":<>>>]"""
+TOOLS_SRC := """[<"name":"open","description":"Open a URL; answers with the page model.","inputSchema":<"type":"object","properties":<"url":<"type":"string">>,"required":["url"]>>,<"name":"observe","description":"The page model: nodes with ids, roles, names and boxes.","inputSchema":<"type":"object","properties":<>>>,<"name":"act","description":"Do one action: follow, click, type, submit, check, select, fill, wait (idle:true, or text to wait for), back, forward, scroll, reload. Give link, id or row (a number) and text where needed.","inputSchema":<"type":"object","properties":<"do":<"type":"string">,"link":<"type":"integer">,"id":<"type":"integer">,"row":<"type":"integer">,"text":<"type":"string">>,"required":["do"]>>,<"name":"find","description":"Scroll to text on the page.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"extract","description":"The page as plain text.","inputSchema":<"type":"object","properties":<>>>,<"name":"forms","description":"The page's forms as a schema: each field's label, type, name, required, value and options, and the submit buttons. Fill one with act do=fill and fields, an object of label to value; it then submits.","inputSchema":<"type":"object","properties":<>>>,<"name":"tables","description":"The page's tables as JSON: caption, header and rows of cell text.","inputSchema":<"type":"object","properties":<>>>,<"name":"reader","description":"The main content only (navigation, footers and forms dropped) with title and a token count.","inputSchema":<"type":"object","properties":<>>>,<"name":"fields","description":"Values found by label: text is a comma-separated list of labels; each answers its value or null.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"at","description":"The box under a point of the page model: x is the column, y the row.","inputSchema":<"type":"object","properties":<"x":<"type":"integer">,"y":<"type":"integer">>,"required":["x","y"]>>,<"name":"where","description":"The boxes whose role is the text or whose name contains it, with their positions.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"watch","description":"Tell me when the page changes: url (else the live tab), contains (text to wait for), every (seconds).","inputSchema":<"type":"object","properties":<"url":<"type":"string">,"contains":<"type":"string">,"every":<"type":"integer">>>>,<"name":"unwatch","description":"Stop watch id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"watches","description":"The watches in force.","inputSchema":<"type":"object","properties":<>>>,<"name":"events","description":"What the watches saw change since the last call.","inputSchema":<"type":"object","properties":<>>>,<"name":"schedule","description":"Run one tool later: tool, arguments, in (seconds). It follows the same site and confirm rules.","inputSchema":<"type":"object","properties":<"tool":<"type":"string">,"arguments":<"type":"object">,"in":<"type":"integer">>,"required":["tool","in"]>>,<"name":"schedules","description":"The jobs waiting to run.","inputSchema":<"type":"object","properties":<>>>,<"name":"unschedule","description":"Cancel job id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"log","description":"What this session did, one line per call.","inputSchema":<"type":"object","properties":<>>>,<"name":"screen","description":"Ask about what is drawn: x,y (what is there), x,y,w,h (a region), role, color or text (find). budget limits tokens.","inputSchema":<"type":"object","properties":<"x":<"type":"number">,"y":<"type":"number">,"w":<"type":"number">,"h":<"type":"number">,"role":<"type":"string">,"color":<"type":"string">,"text":<"type":"string">,"budget":<"type":"integer">>>>,<"name":"screenshot","description":"The pixel layout as drawing operations.","inputSchema":<"type":"object","properties":<>>>]"""
 
 fn tools_json() str
     TOOLS_SRC.replace("<", "\{").replace(">", "}")
@@ -3710,6 +3789,20 @@ fn flat(s gfx.Scene) List[str]
     b.act("click", "{node_with(b, "button", "id", "go")}")
     assert_eq(b.pg.title, "Events test")
     assert(b.pg.text().contains("submit stopped for leek"))
+
+@test fn wait_runs_the_pages_timers_and_the_model_lists_its_console()
+    mut b := Browser.new("{testdata()}/wait.html", 80, 30)
+    assert(b.pg.text().contains("starting"))
+    assert(b.model().contains("\"console\":[\"loaded\"]"))
+    assert(b.act("wait", "text=all done"))
+    assert(b.pg.text().contains("all done"))
+    assert_eq(b.message, "found `all done`")
+    assert(b.model().contains("\"console\":[\"loaded\",\"half\"]"))
+    assert(b.act("wait", "idle"))
+    assert_eq(b.message, "idle")
+    mut c := Browser.new("{testdata()}/wait.html", 80, 30)
+    c.act("wait", "text=never shown")
+    assert_eq(c.message, "`never shown` did not appear")
 
 @test fn an_uncancelled_script_form_still_submits()
     mut b := Browser.new("{testdata()}/script.html", 80, 30)

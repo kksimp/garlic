@@ -23,6 +23,8 @@ pub struct Outcome
     pub asks List[Ask]
     ## What WebSockets asked for since the last call, in order.
     pub sockets List[SockOp]
+    ## The `fetch` and XMLHttpRequest requests the browser made for the page, as `METHOD url`.
+    pub net List[str]
 
 ## A request from `fetch` or XMLHttpRequest, numbered `id`: `packed` is the
 ## content type, a newline and the body. The browser makes it and hands the
@@ -117,6 +119,7 @@ fn Session.collect(mut self, mut d html.Doc) Outcome
         cookies: [],
         asks: [],
         sockets: [],
+        net: [],
     )
     console = machine.console_out.len()
     out.changes = replay(mut d, machine.mutations[changes..])
@@ -141,6 +144,12 @@ fn Session.collect(mut self, mut d html.Doc) Outcome
 ## callbacks run, then timers and microtasks that became due.
 pub fn Session.reply(mut self, mut d html.Doc, id int, json str, budget_ms float) Outcome
     machine.net_deliver(id, json)
+    machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
+    collect(mut d)
+
+## Lets the page's timers and microtasks run for `budget_ms` of its own clock
+## (`wait:idle`), and replays what they changed.
+pub fn Session.idle(mut self, mut d html.Doc, budget_ms float) Outcome
     machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
     collect(mut d)
 
