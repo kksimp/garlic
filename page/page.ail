@@ -961,6 +961,54 @@ pub fn Page.to_json_budget(self, scroll int, height int, max_chars int) str
     omitted := nodes.len() - out.len()
     "\{{head_json(scroll, height)},\"omitted\":{omitted},\"nodes\":[{out.join(",")}]}"
 
+## The drawn box at column `x`, row `y` as its JSON object, or `null` (also
+## where the row has no text): the
+## innermost one, which is the box starting last and then the shortest. A box
+## covers from (row, col) up to (end_row - 1, end_col), as in `ail api` spans.
+pub fn Page.at_json(self, x int, y int) str
+    if y < 0 or y >= rows.len()
+        return "null"
+    mut drawn := 0
+    for r in rows[y]
+        drawn = drawn.max(r.col + r.text.chars().len())
+    if x < 0 or x >= drawn
+        return "null"
+    nodes := node_objects(0, rows.len())
+    mut best := -1
+    mut best_start := -1
+    mut best_len := 0
+    for k in 0..boxes.len()
+        b := boxes[k]
+        if b.row < 0
+            continue
+        at := y * 100000 + x
+        start := b.row * 100000 + b.col
+        last := (b.end_row - 1).max(b.row) * 100000 + b.end_col
+        if at < start or (at >= last and not (b.end_row - 1 > b.row and y < b.end_row - 1))
+            continue
+        len := last - start
+        if start > best_start or (start == best_start and len < best_len)
+            best = k
+            best_start = start
+            best_len = len
+    if best < 0
+        return "null"
+    nodes.get(boxes[best].id) else "null"
+
+## The boxes whose role is `q` or whose name contains it (ignoring case), as
+## `{"matches":[...]}`, in document order.
+pub fn Page.where_json(self, q str) str
+    nodes := node_objects(0, rows.len())
+    want := q.to_lower()
+    mut out := List[str]()
+    for b in boxes
+        if b.row < 0
+            continue
+        if b.role.to_lower() == want or (b.name != "" and b.name.to_lower().contains(want))
+            if text := nodes.get(b.id)
+                out.push(text)
+    "\{\"matches\":[{out.join(",")}]}"
+
 ## `s` as a JSON string.
 pub fn quote(s str) str
     mut out := List[str]()
