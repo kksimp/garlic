@@ -1,0 +1,241 @@
+## Three looks for Garlic's window, drawn on one canvas so they can be seen in
+## the real Mac window before the full design is built. Not part of Garlic.
+##
+##   tools/app-host/macos/run.sh --native tools/garlic/mock/variants.ail [1|2|3]
+##
+## Keys 1, 2 and 3 switch the look. 1 Clove: dark, rounded pill tabs. 2 Ivory:
+## light, tabs as underlined words. 3 Dock: dark, tabs down the left side.
+
+use std.app
+use std.env
+
+struct Look
+    name str
+    bg int
+    bar int
+    tab int
+    active int
+    text int
+    active_text int
+    accent int
+    field int
+    border int
+    page int
+    page_text int
+    page_quiet int
+    card int
+
+fn clove() Look
+    Look(
+        name: "Clove",
+        bg: 0x16141a,
+        bar: 0x1d1a23,
+        tab: 0x1d1a23,
+        active: 0x2e2a38,
+        text: 0x8f89a0,
+        active_text: 0xf3effa,
+        accent: 0xb48cff,
+        field: 0x27232f,
+        border: 0x35303f,
+        page: 0x1b1920,
+        page_text: 0xe8e4f0,
+        page_quiet: 0x8f89a0,
+        card: 0x25222d,
+    )
+
+fn ivory() Look
+    Look(
+        name: "Ivory",
+        bg: 0xf6f1e6,
+        bar: 0xf6f1e6,
+        tab: 0xf6f1e6,
+        active: 0xfffdf8,
+        text: 0x80786a,
+        active_text: 0x241f17,
+        accent: 0x2f8f5b,
+        field: 0xfffdf8,
+        border: 0xddd5c3,
+        page: 0xfffdf8,
+        page_text: 0x241f17,
+        page_quiet: 0x80786a,
+        card: 0xf1ebdc,
+    )
+
+fn dock() Look
+    Look(
+        name: "Dock",
+        bg: 0x12171c,
+        bar: 0x182027,
+        tab: 0x182027,
+        active: 0x24303a,
+        text: 0x8a9aa6,
+        active_text: 0xf1f6f9,
+        accent: 0xffb454,
+        field: 0x202a33,
+        border: 0x2c3944,
+        page: 0x161d23,
+        page_text: 0xe6edf1,
+        page_quiet: 0x8a9aa6,
+        card: 0x1f2931,
+    )
+
+fn rect(x float, y float, w float, h float, c int) app.Op
+    app.draw_rect(x, y, w, h, c)
+
+## A rectangle with its corners cut by `r` points in two steps.
+fn round(mut ops List[app.Op], x float, y float, w float, h float, r float, c int)
+    ops.push(rect(x + r, y, w - 2.0 * r, h, c))
+    ops.push(rect(x, y + r, w, h - 2.0 * r, c))
+    ops.push(rect(x + r / 2.0, y + r / 2.0, w - r, h - r, c))
+
+fn text(x float, y float, s str, size float, fg int, bold bool) app.Op
+    app.Op.Str(
+        x: x,
+        y: y,
+        text: s,
+        font: "sans",
+        size: size,
+        fg: fg,
+        bold: bold,
+        italic: false,
+        underline: false,
+    )
+
+TABS := [
+    "Garlic - a browser for people and agents",
+    "AIL language card",
+    "Weather in Lisbon",
+    "New tab",
+]
+
+## Back, forward and reload glyphs, then the address pill.
+fn toolbar(mut ops List[app.Op], l Look, x float, y float, w float)
+    ops.push(text(x + 14.0, y + 9.0, "‹", 20.0, l.text, false))
+    ops.push(text(x + 44.0, y + 9.0, "›", 20.0, l.text, false))
+    ops.push(text(x + 72.0, y + 11.0, "⟳", 16.0, l.text, false))
+    round(mut ops, x + 104.0, y + 6.0, w - 176.0, 28.0, 6.0, l.border)
+    round(mut ops, x + 105.0, y + 7.0, w - 178.0, 26.0, 5.0, l.field)
+    ops.push(text(x + 120.0, y + 13.0, "garlic.dev/start", 13.0, l.page_text, false))
+    ops.push(text(x + w - 56.0, y + 11.0, "☰", 16.0, l.text, false))
+
+## The page: a heading, a paragraph, a card and a link.
+fn page(mut ops List[app.Op], l Look, x float, y float, w float, h float)
+    ops.push(rect(x, y, w, h, l.page))
+    ops.push(text(x + 48.0, y + 40.0, "Welcome to Garlic", 30.0, l.page_text, true))
+    ops.push(text(
+        x + 48.0,
+        y + 88.0,
+        "A browser written in AIL. Your agent sees what you see.",
+        15.0,
+        l.page_quiet,
+        false,
+    ))
+    round(mut ops, x + 48.0, y + 132.0, 320.0, 120.0, 8.0, l.card)
+    ops.push(text(x + 68.0, y + 150.0, "Reading list", 16.0, l.page_text, true))
+    ops.push(text(x + 68.0, y + 182.0, "3 pages saved, 1 watch running", 13.0, l.page_quiet, false))
+    ops.push(text(x + 68.0, y + 210.0, "Open the list", 13.0, l.accent, true))
+    round(mut ops, x + 392.0, y + 132.0, 320.0, 120.0, 8.0, l.card)
+    ops.push(text(x + 412.0, y + 150.0, "Agent activity", 16.0, l.page_text, true))
+    ops.push(text(x + 412.0, y + 182.0, "Idle. Trusted sites: 2", 13.0, l.page_quiet, false))
+    ops.push(text(x + 412.0, y + 210.0, "Review the log", 13.0, l.accent, true))
+
+fn tab_title(k int) str
+    t := TABS[k]
+    if t.chars().len() > 26
+        return "{t.slice(0, 25)}…"
+    t
+
+fn top_tabs(mut ops List[app.Op], l Look, w float, pills bool)
+    ops.push(rect(0.0, 0.0, w, 44.0, l.bar))
+    tw := 208.0
+    for k in 0..TABS.len()
+        x := 10.0 + k.to_float() * (tw + 4.0)
+        shown := k == 0
+        if pills
+            if shown
+                round(mut ops, x, 7.0, tw, 32.0, 8.0, l.active)
+                ops.push(rect(x + tw / 2.0 - 10.0, 36.0, 20.0, 3.0, l.accent))
+        elif shown
+            ops.push(rect(x, 41.0, tw, 3.0, l.accent))
+        fg := if shown then l.active_text else l.text
+        ops.push(text(x + 14.0, 14.0, tab_title(k), 12.0, fg, shown))
+        ops.push(text(x + tw - 24.0, 12.0, "×", 16.0, fg, false))
+    ops.push(text(10.0 + TABS.len().to_float() * (tw + 4.0) + 6.0, 9.0, "+", 20.0, l.text, false))
+
+fn draw_clove(w float, h float) List[app.Op]
+    l := clove()
+    mut ops := [rect(0.0, 0.0, w, h, l.bg)]
+    top_tabs(mut ops, l, w, true)
+    ops.push(rect(0.0, 44.0, w, 40.0, l.bar))
+    toolbar(mut ops, l, 0.0, 44.0, w)
+    page(mut ops, l, 0.0, 84.0, w, h - 84.0)
+    ops
+
+fn draw_ivory(w float, h float) List[app.Op]
+    l := ivory()
+    mut ops := [rect(0.0, 0.0, w, h, l.bg)]
+    top_tabs(mut ops, l, w, false)
+    ops.push(rect(0.0, 44.0, w, 40.0, l.bar))
+    toolbar(mut ops, l, 0.0, 44.0, w)
+    ops.push(rect(0.0, 84.0, w, 1.0, l.border))
+    page(mut ops, l, 0.0, 85.0, w, h - 85.0)
+    ops
+
+fn draw_dock(w float, h float) List[app.Op]
+    l := dock()
+    mut ops := [rect(0.0, 0.0, w, h, l.bg)]
+    side := 236.0
+    ops.push(rect(0.0, 0.0, side, h, l.bar))
+    ops.push(text(18.0, 16.0, "Garlic", 17.0, l.accent, true))
+    for k in 0..TABS.len()
+        y := 56.0 + k.to_float() * 40.0
+        shown := k == 0
+        if shown
+            round(mut ops, 8.0, y, side - 16.0, 34.0, 8.0, l.active)
+            ops.push(rect(8.0, y + 8.0, 3.0, 18.0, l.accent))
+        fg := if shown then l.active_text else l.text
+        ops.push(text(24.0, y + 9.0, tab_title(k), 12.0, fg, shown))
+        ops.push(text(side - 30.0, y + 6.0, "×", 16.0, fg, false))
+    ops.push(text(24.0, h - 40.0, "+  New tab", 13.0, l.text, false))
+    ops.push(rect(side, 0.0, w - side, 44.0, l.bar))
+    toolbar(mut ops, l, side, 2.0, w - side)
+    page(mut ops, l, side, 44.0, w - side, h - 44.0)
+    ops
+
+fn draw_look(n int, w float, h float) List[app.Op]
+    if n == 2
+        return draw_ivory(w, h)
+    if n == 3
+        return draw_dock(w, h)
+    draw_clove(w, h)
+
+struct Mock
+    look int
+    w float
+    h float
+
+impl app.App for Mock
+    fn update(mut self, ev app.Event)
+        if ev.kind == "resize"
+            w = ev.dx
+            h = ev.dy
+        elif ev.kind == "key" and (ev.text == "1" or ev.text == "2" or ev.text == "3")
+            look = ev.text.to_int() else 1
+
+    fn view(self) app.Node
+        app.canvas("mock", 0.0, 0.0, draw_look(look, w, h))
+
+    fn title(self) str
+        "Garlic look {look}"
+
+fn main()
+    args := env.args()
+    n := if args.len() > 0 then (args[0].to_int() else 1) else 1
+    mut m := Mock(look: n, w: 1100.0, h: 680.0)
+    app.run(mut m) else err
+        print("no app host: {err}")
+
+@test fn each_look_draws_its_tabs_and_page()
+    for n in 1..4
+        ops := draw_look(n, 1100.0, 680.0)
+        assert(ops.len() > 30)

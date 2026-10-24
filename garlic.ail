@@ -14,6 +14,7 @@ use std.net.jar
 use std.compress
 use std.time
 use std.app
+use std.screen
 use html
 use page
 use css
@@ -23,6 +24,7 @@ use jsdom
 use images
 use attach
 use ws
+use look
 use tabstrip
 use svg
 
@@ -1424,6 +1426,18 @@ fn sends(name str) bool
 fn rpc_reply(id str, text str) str
     "\{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":\{\"content\":[\{\"type\":\"text\",\"text\":{page.quote(text)}}]}}"
 
+## The answer of the `screen` tool (std.screen.2, std.screen.4) over `sc`.
+fn look_answer(sc screen.Screen, a Json) str
+    budget := (a.num("budget") else 0.0).to_int()
+    x := a.num("x")
+    y := a.num("y")
+    if px := x
+        if py := y
+            if rw := a.num("w")
+                return sc.describe(px, py, rw, a.num("h") else 1.0, budget)
+            return sc.what_is_at(px, py)
+    sc.find(a.str("role") else "", a.str("color") else "", a.str("text") else "", budget)
+
 ## One tool call of the `--serve` server: the text it answers with. `g`
 ## refuses sites it doesn't permit, holds an action that sends data until
 ## it is repeated with `confirm`, and logs every call.
@@ -1449,7 +1463,7 @@ fn Browser.tool(mut self, mut g Guard, name str, a Json) str
         "extract" => pg.text()
         "at" => pg.at_json(a.int("x") else 0, a.int("y") else 0)
         "where" => pg.where_json(a.str("text") else "")
-        "screenshot" =>
+        "screenshot" | "screen" =>
             images.prefetch(
                 doc,
                 page.base_of(doc, url),
@@ -1460,6 +1474,8 @@ fn Browser.tool(mut self, mut g Guard, name str, a Json) str
                 mut bits,
             )
             s := gfx.layout_with(doc, url, 960.0, sheet, sizes)
+            if name == "screen"
+                return look_answer(look.of(s, 960.0, 640.0, 0.0), a)
             mut lines := ["canvas {s.bg.to_hex()} height {s.height.round()}"]
             for op in s.ops
                 lines.push(op_line(op))
@@ -1468,7 +1484,7 @@ fn Browser.tool(mut self, mut g Guard, name str, a Json) str
         _ => "unknown tool `{name}`: open, observe, act, find, extract, screenshot or log"
 
 ## The tool list, with `<` and `>` for the braces of the JSON.
-TOOLS_SRC := """[<"name":"open","description":"Open a URL; answers with the page model.","inputSchema":<"type":"object","properties":<"url":<"type":"string">>,"required":["url"]>>,<"name":"observe","description":"The page model: nodes with ids, roles, names and boxes.","inputSchema":<"type":"object","properties":<>>>,<"name":"act","description":"Do one action: follow, click, type, submit, check, select, back, forward, scroll, reload. Give link, id or row (a number) and text where needed.","inputSchema":<"type":"object","properties":<"do":<"type":"string">,"link":<"type":"integer">,"id":<"type":"integer">,"row":<"type":"integer">,"text":<"type":"string">>,"required":["do"]>>,<"name":"find","description":"Scroll to text on the page.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"extract","description":"The page as plain text.","inputSchema":<"type":"object","properties":<>>>,<"name":"at","description":"The box under a point of the page model: x is the column, y the row.","inputSchema":<"type":"object","properties":<"x":<"type":"integer">,"y":<"type":"integer">>,"required":["x","y"]>>,<"name":"where","description":"The boxes whose role is the text or whose name contains it, with their positions.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"watch","description":"Tell me when the page changes: url (else the live tab), contains (text to wait for), every (seconds).","inputSchema":<"type":"object","properties":<"url":<"type":"string">,"contains":<"type":"string">,"every":<"type":"integer">>>>,<"name":"unwatch","description":"Stop watch id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"watches","description":"The watches in force.","inputSchema":<"type":"object","properties":<>>>,<"name":"events","description":"What the watches saw change since the last call.","inputSchema":<"type":"object","properties":<>>>,<"name":"schedule","description":"Run one tool later: tool, arguments, in (seconds). It follows the same site and confirm rules.","inputSchema":<"type":"object","properties":<"tool":<"type":"string">,"arguments":<"type":"object">,"in":<"type":"integer">>,"required":["tool","in"]>>,<"name":"schedules","description":"The jobs waiting to run.","inputSchema":<"type":"object","properties":<>>>,<"name":"unschedule","description":"Cancel job id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"log","description":"What this session did, one line per call.","inputSchema":<"type":"object","properties":<>>>,<"name":"screenshot","description":"The pixel layout as drawing operations.","inputSchema":<"type":"object","properties":<>>>]"""
+TOOLS_SRC := """[<"name":"open","description":"Open a URL; answers with the page model.","inputSchema":<"type":"object","properties":<"url":<"type":"string">>,"required":["url"]>>,<"name":"observe","description":"The page model: nodes with ids, roles, names and boxes.","inputSchema":<"type":"object","properties":<>>>,<"name":"act","description":"Do one action: follow, click, type, submit, check, select, back, forward, scroll, reload. Give link, id or row (a number) and text where needed.","inputSchema":<"type":"object","properties":<"do":<"type":"string">,"link":<"type":"integer">,"id":<"type":"integer">,"row":<"type":"integer">,"text":<"type":"string">>,"required":["do"]>>,<"name":"find","description":"Scroll to text on the page.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"extract","description":"The page as plain text.","inputSchema":<"type":"object","properties":<>>>,<"name":"at","description":"The box under a point of the page model: x is the column, y the row.","inputSchema":<"type":"object","properties":<"x":<"type":"integer">,"y":<"type":"integer">>,"required":["x","y"]>>,<"name":"where","description":"The boxes whose role is the text or whose name contains it, with their positions.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"watch","description":"Tell me when the page changes: url (else the live tab), contains (text to wait for), every (seconds).","inputSchema":<"type":"object","properties":<"url":<"type":"string">,"contains":<"type":"string">,"every":<"type":"integer">>>>,<"name":"unwatch","description":"Stop watch id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"watches","description":"The watches in force.","inputSchema":<"type":"object","properties":<>>>,<"name":"events","description":"What the watches saw change since the last call.","inputSchema":<"type":"object","properties":<>>>,<"name":"schedule","description":"Run one tool later: tool, arguments, in (seconds). It follows the same site and confirm rules.","inputSchema":<"type":"object","properties":<"tool":<"type":"string">,"arguments":<"type":"object">,"in":<"type":"integer">>,"required":["tool","in"]>>,<"name":"schedules","description":"The jobs waiting to run.","inputSchema":<"type":"object","properties":<>>>,<"name":"unschedule","description":"Cancel job id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"log","description":"What this session did, one line per call.","inputSchema":<"type":"object","properties":<>>>,<"name":"screen","description":"Ask about what is drawn: x,y (what is there), x,y,w,h (a region), role, color or text (find). budget limits tokens.","inputSchema":<"type":"object","properties":<"x":<"type":"number">,"y":<"type":"number">,"w":<"type":"number">,"h":<"type":"number">,"role":<"type":"string">,"color":<"type":"string">,"text":<"type":"string">,"budget":<"type":"integer">>>>,<"name":"screenshot","description":"The pixel layout as drawing operations.","inputSchema":<"type":"object","properties":<>>>]"""
 
 fn tools_json() str
     TOOLS_SRC.replace("<", "\{").replace(">", "}")
@@ -2122,7 +2138,7 @@ fn Garlic.menu_pick(mut self, r int)
 
 ## A click on the tab strip.
 fn Garlic.strip_click(mut self, ev app.Event)
-    h := tabstrip.hit(ev.x, ev.y, tabs.len(), strip_w, menu_rows().len(), menu_x)
+    h := tabstrip.hit(ev.x, ev.y, tabs.len(), strip_w, theme().flat, menu_rows().len(), menu_x)
     if h.kind == "menu"
         menu_pick(h.k)
         return
@@ -2144,7 +2160,11 @@ fn Garlic.agent_line(self) str
         return ""
     "Agent attached at {where}: {calls} calls so far; {watches.len()} watches, {events.len()} unread changes"
 
-## The tab strip: a canvas of its own (see `tabs`).
+## The look: Safari-style dark.
+fn theme() tabstrip.Theme
+    tabstrip.safari()
+
+## The tab strip: a canvas of its own (see `tabstrip`).
 fn Garlic.strip(self) app.Node
     items := [item(k) for k in 0..tabs.len()]
     rows := menu_rows()
@@ -2152,7 +2172,7 @@ fn Garlic.strip(self) app.Node
         "tabs",
         0.0,
         tabstrip.height(rows.len()),
-        tabstrip.draw(tabstrip.dark(), items, cur, strip_w, rows, menu_x),
+        tabstrip.draw(theme(), items, cur, strip_w, rows, menu_x),
     )
 
 impl app.App for Garlic
@@ -2170,6 +2190,12 @@ impl app.App for Garlic
             "click" =>
                 if ev.id == "tabs"
                     strip_click(ev)
+                elif ev.id == "nav"
+                    match tabstrip.nav_hit(ev.x)
+                        "back" => g.b.go_back()
+                        "forward" => g.b.go_forward()
+                        "reload" => g.b.reload()
+                        _ => menu_tab = -1
                 else
                     menu_tab = -1
                     g.click(ev.x, ev.y)
@@ -2224,8 +2250,7 @@ impl app.App for Garlic
 
     fn view(self) app.Node
         bar := app.row([
-            app.button("back", "Back"),
-            app.button("reload", "Reload"),
+            app.canvas("nav", tabstrip.NAV_W, tabstrip.NAV_H, tabstrip.nav(theme(), true, true)),
             app.field("url", url_text, "Enter a web address"),
         ])
         ## A canvas of 0 by 0 fills the window; the host reports its size.
@@ -2239,7 +2264,12 @@ impl app.App for Garlic
                 app.button("agent_deny", "Deny"),
             ]))
         rows.push(app.canvas("page", 0.0, 0.0, [to_app(op, g) for op in g.display()]))
-        rows.push(app.label(g.status()))
+        rows.push(app.canvas(
+            "status",
+            0.0,
+            tabstrip.STATUS_H,
+            tabstrip.status(theme(), g.status(), strip_w),
+        ))
         app.column(rows)
 
     fn title(self) str
@@ -2915,11 +2945,11 @@ fn clicked(x float, y float) app.Event
     top := outlines[0].split("\n")
     assert_eq(top[0], "column")
     assert(top[1].starts_with("  canvas #tabs"))
-    assert(outlines[0].contains("\n  row\n    [Back] #back"))
+    assert(outlines[0].contains("\n  row\n    canvas #nav"))
     assert(outlines[0].contains("#url"))
     assert(outlines[0].contains("\n  canvas #page"))
     assert(outlines[0].contains("str 0.0,32.0 \"# Garlic\" mono 13.0 dcdcaa"))
-    assert(top[top.len() - 1].starts_with("  \""))
+    assert(outlines[0].contains("\n  canvas #status"))
     link := a.g.b.pg.boxes[a.g.b.pg.links[0]]
     shown := app.script(mut a, [clicked(
         link.col.to_float() * 8.0 + 1.0,
@@ -2929,7 +2959,11 @@ fn clicked(x float, y float) app.Event
     assert(a.url_text.ends_with("second.html"))
     assert(shown[0].contains("<{a.url_text}> #url"))
     assert_eq(a.title(), "Second page - Garlic")
-    app.script(mut a, [app.press("back")])
+    mut back := app.event("click")
+    back.id = "nav"
+    back.x = 20.0
+    back.y = 20.0
+    app.script(mut a, [back])
     assert_eq(a.g.b.pg.title, "Garlic test page")
 
 @test fn the_address_field_opens_urls_and_cmd_l_focuses_it()
@@ -3301,6 +3335,16 @@ fn bench(args List[str])
             draw.Op.Text(_, _, _, _, _, _, _) => 0
             draw.Op.Str(_, _, _, _, _, _, _, _, _) => 0
     assert_eq(got, [[37.0, 29.0], [74.0, 58.0]])
+
+@test fn the_screen_model_names_links_and_colours()
+    d := html.parse("<p><a href=\"/pay\">Pay now</a></p><button>Go</button>")
+    scene := gfx.layout_with(d, "https://shop.example/", 400.0, css.parse("", 0), {})
+    sc := look.of(scene, 400.0, 300.0, 0.0)
+    found := sc.find("link", "", "pay", 0)
+    assert(found.contains("link 'Pay now', blue"))
+    assert(found.contains("links to https://shop.example/pay"))
+    assert(sc.find("control", "", "", 0).contains("'Go'"))
+    assert_eq(sc.find("link", "", "nothing here", 0), "nothing")
 
 @test fn back_and_forward_show_kept_pages_without_a_fetch()
     mut b := Browser.new("{testdata()}/index.html", 60, 12)
@@ -3866,13 +3910,13 @@ fn flat(s gfx.Scene) List[str]
     a.new_tab()
     mut ev := app.event("click")
     ev.id = "tabs"
-    ev.x = tabstrip.tab_x(1, 3, a.strip_w) + 20.0
+    ev.x = tabstrip.tab_x(1, 3, a.strip_w, true) + 20.0
     ev.y = 20.0
     ev.text = "other"
     a.update(ev)
     assert_eq(a.tabs.len(), 2)
     ev.text = "right"
-    ev.x = tabstrip.tab_x(0, 2, a.strip_w) + 20.0
+    ev.x = tabstrip.tab_x(0, 2, a.strip_w, true) + 20.0
     a.update(ev)
     assert_eq(a.menu_tab, 0)
     ev.text = "left"
