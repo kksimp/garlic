@@ -1,0 +1,231 @@
+## extract: structured data out of a page (Garlic AI-first item 5): tables as
+## JSON or CSV, the main content ("reader mode") with its token count, and
+## values found by their labels. Pure functions of the parsed document.
+
+use html
+use page
+
+## Elements whose content is page furniture, not the page.
+NOISE := {
+    "nav",
+    "header",
+    "footer",
+    "aside",
+    "form",
+    "script",
+    "style",
+    "noscript",
+    "template",
+    "svg",
+    "button",
+    "select",
+}
+
+## Elements read as one block of text each.
+BLOCKS := {
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "p",
+    "li",
+    "pre",
+    "blockquote",
+    "dt",
+    "dd",
+    "figcaption",
+}
+
+fn clean(d html.Doc, id int) str
+    html.collapse(d.visible_text(id))
+
+fn is_el(d html.Doc, id int, tag str) bool
+    n := d.nodes[id]
+    n.kind == html.Kind.Element and n.tag == tag
+
+## The table `tr` belongs to (not an outer one).
+fn own_table(d html.Doc, tr int) int
+    d.enclosing(d.nodes[tr].parent, "table") else -1
+
+fn cells(d html.Doc, tr int) List[int]
+    [c for c in d.nodes[tr].children if is_el(d, c, "td") or is_el(d, c, "th")]
+
+## The rows of table `t`, each a list of cell nodes.
+fn rows_of(d html.Doc, t int) List[List[int]]
+    mut out := List[List[int]]()
+    for tr in d.all("tr")
+        if own_table(d, tr) == t
+            out.push(cells(d, tr))
+    out
+
+fn all_headers(d html.Doc, row List[int]) bool
+    if row.len() == 0
+        return false
+    for c in row
+        if not is_el(d, c, "th")
+            return false
+    true
+
+## The text of each cell of `row`.
+fn texts(d html.Doc, row List[int]) List[str]
+    [clean(d, c) for c in row]
+
+fn jlist(items List[str]) str
+    "[{[page.quote(s) for s in items].join(",")}]"
+
+## Every table as `{"tables":[{"id","caption","header","rows"}]}`; the header is
+## the first row when it is all `th`, else empty.
+pub fn tables_json(d html.Doc) str
+    mut out := List[str]()
+    for t in d.all("table")
+        mut rows := rows_of(d, t)
+        mut header := List[str]()
+        if rows.len() > 0 and all_headers(d, rows[0])
+            header = texts(d, rows[0])
+            rows.remove_at(0)
+        mut caption := ""
+        for c in d.nodes[t].children
+            if is_el(d, c, "caption")
+                caption = clean(d, c)
+        body := [jlist(texts(d, r)) for r in rows]
+        out.push("\{\"id\":{t},\"caption\":{page.quote(caption)},\"header\":{jlist(header)},\"rows\":[{body.join(",")}]}")
+    "\{\"tables\":[{out.join(",")}]}"
+
+fn csv_cell(s str) str
+    if s.contains(",") or s.contains("\"") or s.contains("\n")
+        return "\"{s.replace("\"", "\"\"")}\""
+    s
+
+## Table number `k` (0-based, in document order) as CSV, header first; "" if there is none.
+pub fn table_csv(d html.Doc, k int) str
+    tables := d.all("table")
+    if k < 0 or k >= tables.len()
+        return ""
+    mut lines := List[str]()
+    for r in rows_of(d, tables[k])
+        lines.push([csv_cell(s) for s in texts(d, r)].join(","))
+    lines.join("\n")
+
+## The text of the blocks under `id` in order, noise left out.
+fn blocks(d html.Doc, id int, mut out List[str])
+    n := d.nodes[id]
+    if n.kind != html.Kind.Element and n.kind != html.Kind.Document
+        return
+    if NOISE.contains(n.tag)
+        return
+    if BLOCKS.contains(n.tag)
+        s := clean(d, id)
+        if s != ""
+            out.push(s)
+        return
+    for c in n.children
+        blocks(d, c, mut out)
+
+## How much reading `id` holds: its block text, less its links.
+fn score(d html.Doc, id int) int
+    mut out := List[str]()
+    blocks(d, id, mut out)
+    mut total := 0
+    for s in out
+        total += s.chars().len()
+    mut links := 0
+    for a in d.all("a")
+        if d.within(a, id)
+            links += clean(d, a).chars().len()
+    total - 2 * links
+
+## The node holding the main content: `main` or `article` when they have
+## text, else the element with the best score.
+fn main_node(d html.Doc) int
+    mut best := d.first("body") else 0
+    mut best_score := score(d, best)
+    for tag in ["main", "article", "section", "div"]
+        for c in d.all(tag)
+            if NOISE.contains(d.nodes[c].tag)
+                continue
+            s := score(d, c) + (if tag == "main" or tag == "article" then 40 else 0)
+            if s > best_score
+                best = c
+                best_score = s
+    best
+
+## `{"title","text","tokens"}`: the main content as paragraphs separated by
+## blank lines, and a token estimate (a token is about 4 characters).
+pub fn reader_json(d html.Doc) str
+    mut out := List[str]()
+    blocks(d, main_node(d), mut out)
+    text := out.join("\n\n")
+    tokens := (text.chars().len() + 3) / 4
+    "\{\"title\":{page.quote(d.title())},\"text\":{page.quote(text)},\"tokens\":{tokens}}"
+
+## The element after `id` among its parent's elements, or -1.
+fn next_element(d html.Doc, id int) int
+    siblings := d.nodes[d.nodes[id].parent].children
+    mut seen := false
+    for c in siblings
+        if seen and d.nodes[c].kind == html.Kind.Element
+            return c
+        if c == id
+            seen = true
+    -1
+
+## The value shown for `label`: the element after a `dt`/`th`/`td`/`label`/`span`/`strong`/`b`
+## whose text is the label (with or without a colon), or the text after "Label:" in one element.
+fn value_for(d html.Doc, label str) str?
+    want := label.to_lower()
+    for tag in ["dt", "th", "td", "label", "span", "strong", "b", "div", "p", "li"]
+        for e in d.all(tag)
+            s := clean(d, e)
+            low := s.to_lower()
+            if low == want or low == "{want}:"
+                nxt := next_element(d, e)
+                if nxt >= 0
+                    v := clean(d, nxt)
+                    if v != ""
+                        return v
+            elif low.starts_with("{want}:") and s.chars().len() > want.chars().len() + 1
+                v := s.slice(want.chars().len() + 1, s.chars().len()).trim()
+                if v != ""
+                    return v
+    none
+
+## `{"fields":{"label":value or null}}` for the comma-separated `labels`.
+pub fn fields_json(d html.Doc, labels str) str
+    mut out := List[str]()
+    for raw in labels.split(",")
+        label := raw.trim()
+        if label == ""
+            continue
+        v := value_for(d, label) else
+            out.push("{page.quote(label)}:null")
+            continue
+        out.push("{page.quote(label)}:{page.quote(v)}")
+    "\{\"fields\":\{{out.join(",")}}}"
+
+@test fn tables_become_header_and_rows_and_csv()
+    d := html.parse("<table><caption>Prices</caption><tr><th>Item<th>Cost<tr><td>Tea<td>1,50<tr><td>Say \"hi\"<td>2</table>")
+    t := tables_json(d)
+    assert(t.contains("\"caption\":\"Prices\""))
+    assert(t.contains("\"header\":[\"Item\",\"Cost\"]"))
+    assert(t.contains("\"rows\":[[\"Tea\",\"1,50\"],[\"Say \\\"hi\\\"\",\"2\"]]"))
+    assert_eq(table_csv(d, 0), "Item,Cost\nTea,\"1,50\"\n\"Say \"\"hi\"\"\",2")
+    assert_eq(table_csv(d, 3), "")
+
+@test fn reader_mode_keeps_the_article_and_drops_the_furniture()
+    d := html.parse("<title>T</title><nav><a href=/>Home</a><a href=/a>About</a></nav><div id=c><h1>Head</h1><p>First paragraph of the story.</p><p>Second paragraph, a bit longer than the first.</p></div><footer><p>Copyright</p></footer>")
+    r := reader_json(d)
+    assert(r.contains("\"title\":\"T\""))
+    assert(r.contains("Head\\n\\nFirst paragraph of the story.\\n\\nSecond paragraph"))
+    assert(not r.contains("Copyright"))
+    assert(not r.contains("About"))
+    assert(r.contains("\"tokens\":"))
+
+@test fn fields_are_found_by_label_in_lists_tables_and_prose()
+    d := html.parse("<dl><dt>Price<dd>$9</dl><table><tr><th>Stock<td>12</table><p>Author: Ann Lee</p>")
+    f := fields_json(d, "price, stock,author,missing")
+    assert_eq(
+        f,
+        "\{\"fields\":\{\"price\":\"$9\",\"stock\":\"12\",\"author\":\"Ann Lee\",\"missing\":null}}",
+    )

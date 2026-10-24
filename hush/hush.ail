@@ -1,0 +1,126 @@
+## hush: cookie banners, ads and trackers hidden by default (Garlic AI-first
+## item 6), which cuts the tokens and the noise an agent reads. The lists are
+## plain AIL below; `--noisy` turns it off. An element is hidden by giving it
+## the `hidden` attribute, which both layouts already honour, and a
+## `data-garlic-quiet` marker so the page model can say what it hid.
+
+use html
+
+## Words in an element's `id` or `class` that mark a consent banner.
+BANNER_WORDS := [
+    "cookie-banner",
+    "cookie-consent",
+    "cookie-notice",
+    "cookie-law",
+    "cookie-bar",
+    "cookiebanner",
+    "cookieconsent",
+    "cookienotice",
+    "consent-banner",
+    "consent-manager",
+    "gdpr",
+    "onetrust",
+    "ot-sdk",
+    "cc-window",
+    "cc-banner",
+    "truste",
+    "didomi",
+    "usercentrics",
+    "sp_message",
+    "qc-cmp",
+]
+
+## Words in an element's `id` or `class` that mark an advertisement.
+AD_WORDS := [
+    "adsbygoogle",
+    "ad-slot",
+    "ad-container",
+    "ad-banner",
+    "ad-wrapper",
+    "advertisement",
+    "google-ad",
+    "dfp-ad",
+    "sponsored-content",
+    "taboola",
+    "outbrain",
+]
+
+## Hosts whose frames and images are trackers.
+TRACKERS := [
+    "doubleclick.net",
+    "google-analytics.com",
+    "googletagmanager.com",
+    "googlesyndication.com",
+    "facebook.net",
+    "connect.facebook.com",
+    "hotjar.com",
+    "scorecardresearch.com",
+    "quantserve.com",
+    "adnxs.com",
+    "criteo.com",
+]
+
+## Elements never hidden even if a class says so (pages put state classes on them).
+KEEP := {"html", "body", "main", "article", "head"}
+
+fn has_word(s str, words List[str]) bool
+    low := s.to_lower()
+    for w in words
+        if low.contains(w)
+            return true
+    false
+
+fn tracker_src(src str) bool
+    for host in TRACKERS
+        if src.contains(host)
+            return true
+    false
+
+## Whether element `id` is a banner, an ad or a tracker.
+pub fn is_noise(d html.Doc, id int) bool
+    n := d.nodes[id]
+    if n.kind != html.Kind.Element or KEEP.contains(n.tag)
+        return false
+    marks := "{d.attr(id, "id") else ""} {d.attr(id, "class") else ""}"
+    if has_word(marks, BANNER_WORDS) or has_word(marks, AD_WORDS)
+        return true
+    if n.tag == "iframe" or n.tag == "img"
+        if tracker_src(d.attr(id, "src") else "")
+            return true
+    if n.tag == "img" and d.attr(id, "width") == "1" and d.attr(id, "height") == "1"
+        return true
+    label := (d.attr(id, "aria-label") else "").to_lower()
+    if d.attr(id, "role") == "dialog" or d.attr(id, "role") == "alertdialog"
+        return label.contains("cookie") or label.contains("consent") or label.contains("privacy")
+    false
+
+## Hides every banner, ad and tracker of `d` (not those inside one already
+## hidden) and says how many it hid.
+pub fn apply(mut d html.Doc) int
+    mut hid := 0
+    mut skip := Set[int]()
+    for i in 0..d.nodes.len()
+        if d.nodes[i].parent >= 0 and skip.contains(d.nodes[i].parent)
+            skip.add(i)
+            continue
+        if d.attr(i, "data-garlic-quiet") != none
+            skip.add(i)
+            continue
+        if is_noise(d, i)
+            d.nodes[i].attrs.push(html.Attr(name: "hidden", value: ""))
+            d.nodes[i].attrs.push(html.Attr(name: "data-garlic-quiet", value: ""))
+            skip.add(i)
+            hid += 1
+    hid
+
+@test fn banners_ads_and_trackers_are_hidden_and_the_rest_stays()
+    mut d := html.parse("<body class=cookie-consent-open><div id=cookie-banner>We use cookies <a href=/x>more</a></div><p>Story</p><div class=\"ad-slot top\"><p>Buy</p></div><img src=https://x.doubleclick.net/p.gif><img width=1 height=1 src=/t.gif><div role=dialog aria-label=\"Cookie settings\">s</div><img src=/pic.png></body>")
+    assert_eq(apply(mut d), 5)
+    assert(d.attr(d.first("body")?, "hidden") == none)
+    assert(d.attr(d.first("p")?, "hidden") == none)
+    assert_eq(d.text(d.first("p")?), "Story")
+    assert_eq(apply(mut d), 0)
+
+@test fn a_page_about_gdpr_keeps_its_article()
+    mut d := html.parse("<article class=gdpr-guide><p>Text</p></article>")
+    assert_eq(apply(mut d), 0)

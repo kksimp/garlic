@@ -15,7 +15,7 @@ pub struct Step
     pub arg str
 
 ## What the control is called: its label, else aria-label, placeholder, name.
-fn field_label(d html.Doc, id int) str
+pub fn field_label(d html.Doc, id int) str
     for pick in [
         page.label_of(d, id),
         d.attr(id, "aria-label") else "",
