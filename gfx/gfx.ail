@@ -29,6 +29,8 @@ pub struct Hit
     pub href str
     ## The form control's node for a click that uses it, else -1.
     pub node int
+    ## The link's node (the `a` element) for a link's rectangle, else -1.
+    pub anchor int
 
 ## A laid-out page: its drawing operations, links and size.
 pub struct Scene
@@ -355,6 +357,8 @@ struct St
     align str
     lh float
     href str
+    ## The node of the link this text is in, or -1.
+    node int
     upper bool
     nowrap bool
     ## A link's `aria-label` or `title`: what its icon-only content says.
@@ -475,6 +479,7 @@ fn text_style(tag str, cs Map[str, str], parent St) St
         "a" =>
             if h := cs.get("href")
                 st.href = h
+                st.node = (cs.get("node") else "-1").to_int() else -1
             st.alt = cs.get("alt-label") else ""
         "u" | "ins" => st.underline = true
         "s" | "del" | "strike" => st.underline = st.underline
@@ -900,6 +905,7 @@ fn Ctx.with_attrs(mut self, id int, tag str, cs Map[str, str]) Map[str, str]
     if tag == "a"
         if h := d.attr(id, "href")
             out["href"] = page.resolve(url, h)
+        out["node"] = "{id}"
         out["alt-label"] = d.attr(id, "aria-label") else (d.attr(id, "title") else "")
     out
 
@@ -1118,17 +1124,33 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
                     underline: a.st.underline,
                 ))
                 if a.st.href != ""
-                    hits.push(Hit(x: cx, y: top, w: run_w, h: a.h, href: a.st.href, node: -1))
+                    hits.push(Hit(
+                        x: cx,
+                        y: top,
+                        w: run_w,
+                        h: a.h,
+                        href: a.st.href,
+                        node: -1,
+                        anchor: a.st.node,
+                    ))
             cx += run_w
             k = j
             continue
         elif a.kind == IMAGE
             ops.push(draw.Op.Pic(x: cx, y: y + asc - a.h, w: a.w, h: a.h, src: a.src))
             if a.st.href != ""
-                hits.push(Hit(x: cx, y: y + asc - a.h, w: a.w, h: a.h, href: a.st.href, node: -1))
+                hits.push(Hit(
+                    x: cx,
+                    y: y + asc - a.h,
+                    w: a.w,
+                    h: a.h,
+                    href: a.st.href,
+                    node: -1,
+                    anchor: a.st.node,
+                ))
         elif a.kind == CONTROL
             cy := y + asc - a.h * 0.8
-            hits.push(Hit(x: cx, y: cy, w: a.w, h: a.h, href: "", node: a.node))
+            hits.push(Hit(x: cx, y: cy, w: a.w, h: a.h, href: "", node: a.node, anchor: -1))
             ops.push(draw.Op.Rect(x: cx, y: cy, w: a.w, h: a.h, color: a.edge))
             ops.push(draw.Op.Rect(
                 x: cx + 1.0,
@@ -1306,7 +1328,15 @@ fn Ctx.inline(mut self, id int, parent St, avail float)
                 fx := if side == "right" then col_x + col_w - a.w else col_x
                 ops.push(draw.Op.Pic(x: fx, y: y, w: a.w, h: a.h, src: a.src))
                 if st.href != ""
-                    hits.push(Hit(x: fx, y: y, w: a.w, h: a.h, href: st.href, node: -1))
+                    hits.push(Hit(
+                        x: fx,
+                        y: y,
+                        w: a.w,
+                        h: a.h,
+                        href: st.href,
+                        node: -1,
+                        anchor: st.node,
+                    ))
                 floats.push(Float(
                     x: if side == "right" then fx - 8.0 else fx,
                     y: y,
@@ -1416,7 +1446,15 @@ fn Ctx.lower(mut self, o0 int, h0 int, dy float)
         ops[k] = lowered(ops[k], dy)
     for k in h0..hits.len()
         h := hits[k]
-        hits[k] = Hit(x: h.x, y: h.y + dy, w: h.w, h: h.h, href: h.href, node: h.node)
+        hits[k] = Hit(
+            x: h.x,
+            y: h.y + dy,
+            w: h.w,
+            h: h.h,
+            href: h.href,
+            node: h.node,
+            anchor: h.anchor,
+        )
 
 ## Lays out the absolutely positioned children of `id` against the
 ## positioned ancestor's box, out of the flow.
@@ -1761,6 +1799,7 @@ fn Ctx.row(
                         h: hits[h].h,
                         href: hits[h].href,
                         node: hits[h].node,
+                        anchor: hits[h].anchor,
                     )
     y = y0 + tall
     pend = 0.0
@@ -2009,6 +2048,7 @@ pub fn layout_measured(
         align: "left",
         lh: 1.3,
         href: "",
+        node: -1,
         upper: false,
         nowrap: false,
         alt: "",

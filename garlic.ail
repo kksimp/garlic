@@ -1719,6 +1719,8 @@ struct Gui
     fresh Set[str]
     ## Text widths the host measured, by `gfx.probe_key` (std.app.13).
     meas Map[str, float]
+    ## Whether the node numbers an agent uses are drawn over the page (Cmd-I).
+    ids bool
 
 fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
     mut g := Gui(
@@ -1741,6 +1743,7 @@ fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
         sent: {},
         fresh: {},
         meas: {},
+        ids: false,
     )
     g.resize(w, h, cell_w, cell_h)
     g
@@ -1954,8 +1957,50 @@ fn Gui.find_text(mut self, needle str)
 ## What the page area shows, as drawing operations.
 fn Gui.display(self) List[draw.Op]
     if pixel
-        return draw.shift(self.marked(), scene.bg, area_w, area_h, top)
-    draw.display_list(b.pg, b.scroll, rows, cols, b.focus, cell_w, cell_h)
+        mut ops := self.marked()
+        if ids
+            ops.extend(id_marks())
+        return draw.shift(ops, scene.bg, area_w, area_h, top)
+    mut ops := draw.display_list(b.pg, b.scroll, rows, cols, b.focus, cell_w, cell_h)
+    if ids
+        ops.extend(id_marks())
+    ops
+
+## One node number as a yellow tag with its digits, its top left corner at (x, y).
+fn id_tag(x float, y float, id int) List[draw.Op]
+    label := "{id}"
+    w := label.chars().len().to_float() * 7.0 + 6.0
+    [draw.Op.Rect(x: x, y: y, w: w, h: 14.0, color: 0xffdd33), draw.Op.Str(
+        x: x + 3.0,
+        y: y + 1.0,
+        text: label,
+        font: "mono",
+        size: 11.0,
+        fg: 0x000000,
+        bold: true,
+        italic: false,
+        underline: false,
+    )]
+
+## The node number of every link and control on the page, as the page model and
+## the agent's actions name them (`Cmd-I` shows them to the person watching).
+fn Gui.id_marks(self) List[draw.Op]
+    mut out := List[draw.Op]()
+    if pixel
+        for h in scene.hits
+            id := if h.node >= 0 then h.node else h.anchor
+            if id >= 0
+                out.extend(id_tag(h.x, h.y - 2.0, id))
+        return out
+    for t in b.pg.targets
+        bx := b.pg.boxes[t]
+        if bx.row >= b.scroll and bx.row < b.scroll + rows
+            out.extend(id_tag(
+                bx.col.to_float() * cell_w,
+                (bx.row - b.scroll).to_float() * cell_h,
+                bx.id,
+            ))
+    out
 
 ## The native window as a `std.app` app (docs/design/garlic-browser.md,
 ## "Native window"): an address bar with back and reload above the page, and
@@ -2342,6 +2387,8 @@ impl app.App for Garlic
                     g.b.go_back()
                 elif ev.meta and ev.text == "]"
                     g.b.go_forward()
+                elif ev.meta and ev.text == "i"
+                    g.ids = not g.ids
                 elif ev.meta and ev.text == "f"
                     g.b.prompt = Find("")
                 elif ev.meta and ev.text == "t"
@@ -3711,6 +3758,25 @@ fn flat(s gfx.Scene) List[str]
     assert(found.contains("\"role\":\"link\""))
     assert_eq(b.pg.where_json("no such thing here"), "\{\"matches\":[]}")
     assert(b.pg.where_json("LINK").contains("\"role\":\"link\""))
+
+@test fn the_id_overlay_tags_links_and_controls_with_their_node_numbers()
+    b := Browser.new("{testdata()}/form.html", 80, 30)
+    mut g := Gui.new(b, 640.0, 400.0, 8.0, 16.0)
+    plain := g.display().len()
+    g.ids = true
+    assert(g.display().len() > plain)
+    q := node_with(b, "input", "id", "q")
+    assert(g.id_marks().len() >= 2 * b.pg.targets.len())
+    mut p := Gui.new(Browser.new("{testdata()}/index.html", 60, 12), 640.0, 400.0, 8.0, 16.0)
+    p.pixel = true
+    p.refresh()
+    link := p.b.pg.boxes[p.b.pg.links[0]]
+    mut seen := false
+    for h in p.scene.hits
+        if h.anchor == link.id
+            seen = true
+    assert(seen)
+    assert(q >= 0)
 
 @test fn tabs_keep_their_own_pages_and_switch_back()
     b := Browser.new("{testdata()}/index.html", 60, 12)
