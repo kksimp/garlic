@@ -2120,7 +2120,7 @@ fn Garlic.menu_pick(mut self, r int)
 
 ## A click on the tab strip.
 fn Garlic.strip_click(mut self, ev app.Event)
-    h := tabstrip.hit(ev.x, ev.y, tabs.len(), strip_w, menu_rows().len(), menu_x)
+    h := tabstrip.hit(ev.x, ev.y, tabs.len(), strip_w, theme().flat, menu_rows().len(), menu_x)
     if h.kind == "menu"
         menu_pick(h.k)
         return
@@ -2142,7 +2142,11 @@ fn Garlic.agent_line(self) str
         return ""
     "Agent attached at {where}: {calls} calls so far; {watches.len()} watches, {events.len()} unread changes"
 
-## The tab strip: a canvas of its own (see `tabs`).
+## The look: Safari-style dark.
+fn theme() tabstrip.Theme
+    tabstrip.safari()
+
+## The tab strip: a canvas of its own (see `tabstrip`).
 fn Garlic.strip(self) app.Node
     items := [item(k) for k in 0..tabs.len()]
     rows := menu_rows()
@@ -2150,7 +2154,7 @@ fn Garlic.strip(self) app.Node
         "tabs",
         0.0,
         tabstrip.height(rows.len()),
-        tabstrip.draw(tabstrip.clove(), items, cur, strip_w, rows, menu_x),
+        tabstrip.draw(theme(), items, cur, strip_w, rows, menu_x),
     )
 
 impl app.App for Garlic
@@ -2228,12 +2232,7 @@ impl app.App for Garlic
 
     fn view(self) app.Node
         bar := app.row([
-            app.canvas(
-                "nav",
-                tabstrip.NAV_W,
-                tabstrip.NAV_H,
-                tabstrip.nav(tabstrip.clove(), true, true),
-            ),
+            app.canvas("nav", tabstrip.NAV_W, tabstrip.NAV_H, tabstrip.nav(theme(), true, true)),
             app.field("url", url_text, "Enter a web address"),
         ])
         ## A canvas of 0 by 0 fills the window; the host reports its size.
@@ -2251,7 +2250,7 @@ impl app.App for Garlic
             "status",
             0.0,
             tabstrip.STATUS_H,
-            tabstrip.status(tabstrip.clove(), g.status(), strip_w),
+            tabstrip.status(theme(), g.status(), strip_w),
         ))
         app.column(rows)
 
@@ -3860,13 +3859,13 @@ fn flat(s gfx.Scene) List[str]
     a.new_tab()
     mut ev := app.event("click")
     ev.id = "tabs"
-    ev.x = tabstrip.tab_x(1, 3, a.strip_w) + 20.0
+    ev.x = tabstrip.tab_x(1, 3, a.strip_w, true) + 20.0
     ev.y = 20.0
     ev.text = "other"
     a.update(ev)
     assert_eq(a.tabs.len(), 2)
     ev.text = "right"
-    ev.x = tabstrip.tab_x(0, 2, a.strip_w) + 20.0
+    ev.x = tabstrip.tab_x(0, 2, a.strip_w, true) + 20.0
     a.update(ev)
     assert_eq(a.menu_tab, 0)
     ev.text = "left"
