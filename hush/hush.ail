@@ -103,6 +103,9 @@ pub fn apply(mut d html.Doc) int
         if d.nodes[i].parent >= 0 and skip.contains(d.nodes[i].parent)
             skip.add(i)
             continue
+        if d.attr(i, "data-garlic-quiet") != none
+            skip.add(i)
+            continue
         if is_noise(d, i)
             d.nodes[i].attrs.push(html.Attr(name: "hidden", value: ""))
             d.nodes[i].attrs.push(html.Attr(name: "data-garlic-quiet", value: ""))
