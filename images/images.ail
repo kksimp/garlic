@@ -74,7 +74,7 @@ fn load(at str, base net.Options, from str, cj jar.Jar) List[int]?
         if r.status >= 400 or r.data.len() > MAX_BYTES
             return none
         return [v.to_int() for v in r.data.to_list()]
-    raw := fs.read_bytes(at.strip_prefix("file://") else at) else return none
+    raw := fs.read_bytes(page.file_path(at)) else return none
     if raw.len() > MAX_BYTES
         return none
     [v.to_int() for v in raw.to_list()]
