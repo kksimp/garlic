@@ -1,0 +1,157 @@
+## forms: the page's forms as a schema an agent can fill (Garlic AI-first
+## item 4). `schema` lists each form's fields (label, type, name, required,
+## value, options); `plan` turns `{"label": value, ...}` into the steps that
+## fill them, which `Browser` then runs with its own `type`, `check`,
+## `select` and `submit`, so the actions are the ones `--session` already has.
+
+use html
+use page
+
+## One thing to do to a control: `kind` is `type`, `check`, `select` or
+## `submit`, `id` the node, `arg` the text or option.
+pub struct Step
+    pub kind str
+    pub id int
+    pub arg str
+
+## What the control is called: its label, else aria-label, placeholder, name.
+fn field_label(d html.Doc, id int) str
+    for pick in [
+        page.label_of(d, id),
+        d.attr(id, "aria-label") else "",
+        d.attr(id, "placeholder") else "",
+        d.attr(id, "name") else "",
+    ]
+        if pick != ""
+            return pick
+    ""
+
+## `input` types that are not fields to fill.
+fn is_button(d html.Doc, id int) bool
+    n := d.nodes[id]
+    if n.tag == "button"
+        return (d.attr(id, "type") else "submit").to_lower() == "submit"
+    if n.tag == "input"
+        kind := page.input_type(d, id)
+        return kind == "submit" or kind == "image"
+    false
+
+fn is_field(d html.Doc, id int) bool
+    n := d.nodes[id]
+    if n.tag == "select" or n.tag == "textarea"
+        return true
+    if n.tag == "input"
+        kind := page.input_type(d, id)
+        return kind != "hidden"
+            and kind != "submit"
+            and kind != "image"
+            and kind != "button"
+            and kind != "reset"
+    false
+
+fn kind_of(d html.Doc, id int) str
+    n := d.nodes[id]
+    if n.tag == "input"
+        return page.input_type(d, id)
+    n.tag
+
+fn field_json(d html.Doc, id int) str
+    mut parts := [
+        "\"id\":{id}",
+        "\"label\":{page.quote(field_label(d, id))}",
+        "\"type\":{page.quote(kind_of(d, id))}",
+        "\"name\":{page.quote(d.attr(id, "name") else "")}",
+        "\"required\":{d.attr(id, "required") != none}",
+    ]
+    kind := kind_of(d, id)
+    if kind == "checkbox" or kind == "radio"
+        parts.push("\"checked\":{d.attr(id, "checked") != none}")
+        parts.push("\"value\":{page.quote(d.attr(id, "value") else "on")}")
+    else
+        parts.push("\"value\":{page.quote(page.control_value(d, id))}")
+    if kind == "select"
+        mut opts := List[str]()
+        for o in d.all("option")
+            if d.within(o, id)
+                text := html.collapse(d.visible_text(o))
+                v := d.attr(o, "value") else text
+                opts.push("\{\"text\":{page.quote(text)},\"value\":{page.quote(v)},\"selected\":{d.attr(o, "selected") != none}}")
+        parts.push("\"options\":[{opts.join(",")}]")
+    "\{{parts.join(",")}}"
+
+## Every form of the page as `{"forms":[{"id","action","method","fields","submit"}]}`.
+pub fn schema(d html.Doc) str
+    mut forms := List[str]()
+    for f in d.all("form")
+        mut fields := List[str]()
+        mut subs := List[str]()
+        for i in 0..d.nodes.len()
+            if d.nodes[i].kind != html.Kind.Element or not d.within(i, f) or i == f
+                continue
+            if is_field(d, i)
+                fields.push(field_json(d, i))
+            elif is_button(d, i)
+                label := d.attr(i, "value") else (html.collapse(d.visible_text(i)))
+                subs.push("\{\"id\":{i},\"label\":{page.quote(if label == "" then "Submit" else label)}}")
+        forms.push("\{\"id\":{f},\"action\":{page.quote(d.attr(f, "action") else "")},\"method\":{page.quote((d.attr(f, "method") else "get").to_lower())},\"fields\":[{fields.join(",")}],\"submit\":[{subs.join(",")}]}")
+    "\{\"forms\":[{forms.join(",")}]}"
+
+## The field whose label is `want` (ignoring case), else the first whose label contains it.
+fn find_field(d html.Doc, want str) int?
+    w := want.to_lower()
+    mut partial := -1
+    for i in 0..d.nodes.len()
+        if d.nodes[i].kind != html.Kind.Element or not is_field(d, i)
+            continue
+        label := field_label(d, i).to_lower()
+        if label == w
+            return i
+        if partial < 0 and label != "" and label.contains(w)
+            partial = i
+    if partial >= 0
+        return partial
+    none
+
+## The steps that set each `label: value` of `spec` and then submit the form of the
+## last field; `missing` gets the labels no field matched.
+pub fn plan(d html.Doc, spec List[(str, str)], mut missing List[str]) List[Step]
+    mut steps := List[Step]()
+    mut last := -1
+    for pair in spec
+        id := find_field(d, pair.0) else
+            missing.push(pair.0)
+            continue
+        last = id
+        match kind_of(d, id)
+            "checkbox" =>
+                want := pair.1 == "true" or pair.1 == "on" or pair.1 == "yes"
+                if want != (d.attr(id, "checked") != none)
+                    steps.push(Step(kind: "check", id: id, arg: ""))
+            "radio" => steps.push(Step(kind: "check", id: id, arg: ""))
+            "select" => steps.push(Step(kind: "select", id: id, arg: pair.1))
+            _ => steps.push(Step(kind: "type", id: id, arg: pair.1))
+    if last >= 0 and missing.len() == 0
+        steps.push(Step(kind: "submit", id: last, arg: ""))
+    steps
+
+@test fn the_schema_lists_labelled_fields_options_and_buttons()
+    d := html.parse("<form action=/go method=POST><label for=n>Name</label><input id=n name=who required><label>Mail <input name=m type=email value=a@b.c></label><select name=c><option value=1>One<option value=2 selected>Two</select><input type=checkbox name=t><input type=submit value=Send></form>")
+    s := schema(d)
+    assert(s.contains("\"method\":\"post\""))
+    assert(s.contains("\"label\":\"Name\",\"type\":\"text\",\"name\":\"who\",\"required\":true"))
+    assert(s.contains("\"label\":\"Mail\",\"type\":\"email\""))
+    assert(s.contains("\"value\":\"a@b.c\""))
+    assert(s.contains("\{\"text\":\"Two\",\"value\":\"2\",\"selected\":true}"))
+    assert(s.contains("\"submit\":[\{\"id\":"))
+    assert(s.contains("\"label\":\"Send\""))
+
+@test fn a_plan_types_selects_checks_and_submits_by_label()
+    d := html.parse("<form><label for=n>Name</label><input id=n name=who><select aria-label=Color name=c><option>red<option>blue</select><input type=checkbox name=t placeholder=Agree></form>")
+    mut missing := List[str]()
+    steps := plan(d, [("name", "Ann"), ("color", "blue"), ("agree", "true")], mut missing)
+    assert_eq(missing.len(), 0)
+    assert_eq([s.kind for s in steps], ["type", "select", "check", "submit"])
+    assert_eq(steps[0].arg, "Ann")
+    mut gone := List[str]()
+    plan(d, [("nothing", "x")], mut gone)
+    assert_eq(gone, ["nothing"])

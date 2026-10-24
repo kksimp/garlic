@@ -445,7 +445,7 @@ pub fn control_value(d html.Doc, id int) str
 
 ## The text of the `label` for control `id`: `<label for=ID>`, else a
 ## label around it.
-fn label_of(d html.Doc, id int) str
+pub fn label_of(d html.Doc, id int) str
     if key := d.attr(id, "id")
         for l in d.all("label")
             if d.attr(l, "for") == key
