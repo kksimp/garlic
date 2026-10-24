@@ -25,6 +25,7 @@ use images
 use attach
 use ws
 use look
+use forms
 use tabstrip
 use svg
 
@@ -208,7 +209,7 @@ fn fetch_got(
         if method == "GET" and w.status == 200
             keep_cached(url, w, now, mut cache)
         return Got(url: w.url, text: w.text, ok: true)
-    file := (url.strip_prefix("file://") else url).split("?")[0].split("#")[0]
+    file := page.file_path(url).split("?")[0].split("#")[0]
     data := fs.read_bytes(file) else err
         return Got(url, error_page(url, "{err}"), false)
     Got(url, decode(data, ""), true)
@@ -1309,6 +1310,7 @@ fn Browser.act(mut self, name str, arg str) bool
         "submit" => submit(id)
         "check" => check(id)
         "select" => choose(id, rest)
+        "fill" => fill(arg)
         "open" => go(arg)
         "back" => go_back()
         "forward" => go_forward()
@@ -1317,11 +1319,41 @@ fn Browser.act(mut self, name str, arg str) bool
         "scroll" => scroll_to(arg.to_int() else 0)
         "reload" => reload()
         _ =>
-            message = "unknown action `{name}`: try follow, click, type, submit, check, select, open, back, forward, find, scroll or reload"
+            message = "unknown action `{name}`: try follow, click, type, submit, check, select, fill, open, back, forward, find, scroll or reload"
             return false
     if prompt != Status
         prompt = Status
     true
+
+## `fill:{"label": value, ...}`: sets each field named by its label (see the
+## `forms` schema) and submits the form of the last one. A label no field
+## matches stops it before anything is typed.
+fn Browser.fill(mut self, spec str)
+    j := parse_json(spec) else
+        message = "fill needs a JSON object of label: value"
+        return
+    members := j.as_obj() else
+        message = "fill needs a JSON object of label: value"
+        return
+    mut pairs := List[(str, str)]()
+    for m in members
+        v := match m.value
+            Str(t) => t
+            Bool(b) => "{b}"
+            Num(n) => if n == n.floor() then "{n.to_int()}" else "{n}"
+            Null | Arr(_) | Obj(_) => ""
+        pairs.push((m.key, v))
+    mut missing := List[str]()
+    steps := forms.plan(doc, pairs, mut missing)
+    if missing.len() > 0
+        message = "no field is labelled: {missing.join(", ")}; see the forms schema"
+        return
+    for st in steps
+        match st.kind
+            "type" => type_into(st.id, st.arg)
+            "check" => check(st.id)
+            "select" => choose(st.id, st.arg)
+            _ => submit(st.id)
 
 ## The page model, within the token budget if one is set, with the last
 ## action's message.
@@ -1375,6 +1407,9 @@ fn Browser.act_from(mut self, j Json)
     for key in ["url", "text"]
         if t := j.str(key)
             arg = if j.num("id") != none then "{arg}={t}" else t
+    if name == "fill"
+        if f := j.get("fields")
+            arg = f.to_text()
     act(name, arg)
 
 ## `--session`: reads one JSON action per line on stdin and answers each
@@ -1420,7 +1455,7 @@ fn Guard.permits(self, url str) bool
 
 ## Whether `do` sends data: it needs `"confirm":true` to run.
 fn sends(name str) bool
-    name == "submit"
+    name == "submit" or name == "fill"
 
 ## The answer to a `tools/call` request `id` whose result is `text`.
 fn rpc_reply(id str, text str) str
@@ -1461,6 +1496,7 @@ fn Browser.tool(mut self, mut g Guard, name str, a Json) str
             act("find", a.str("text") else "")
             answer()
         "extract" => pg.text()
+        "forms" => forms.schema(doc)
         "at" => pg.at_json(a.int("x") else 0, a.int("y") else 0)
         "where" => pg.where_json(a.str("text") else "")
         "screenshot" | "screen" =>
@@ -1484,7 +1520,7 @@ fn Browser.tool(mut self, mut g Guard, name str, a Json) str
         _ => "unknown tool `{name}`: open, observe, act, find, extract, screenshot or log"
 
 ## The tool list, with `<` and `>` for the braces of the JSON.
-TOOLS_SRC := """[<"name":"open","description":"Open a URL; answers with the page model.","inputSchema":<"type":"object","properties":<"url":<"type":"string">>,"required":["url"]>>,<"name":"observe","description":"The page model: nodes with ids, roles, names and boxes.","inputSchema":<"type":"object","properties":<>>>,<"name":"act","description":"Do one action: follow, click, type, submit, check, select, back, forward, scroll, reload. Give link, id or row (a number) and text where needed.","inputSchema":<"type":"object","properties":<"do":<"type":"string">,"link":<"type":"integer">,"id":<"type":"integer">,"row":<"type":"integer">,"text":<"type":"string">>,"required":["do"]>>,<"name":"find","description":"Scroll to text on the page.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"extract","description":"The page as plain text.","inputSchema":<"type":"object","properties":<>>>,<"name":"at","description":"The box under a point of the page model: x is the column, y the row.","inputSchema":<"type":"object","properties":<"x":<"type":"integer">,"y":<"type":"integer">>,"required":["x","y"]>>,<"name":"where","description":"The boxes whose role is the text or whose name contains it, with their positions.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"watch","description":"Tell me when the page changes: url (else the live tab), contains (text to wait for), every (seconds).","inputSchema":<"type":"object","properties":<"url":<"type":"string">,"contains":<"type":"string">,"every":<"type":"integer">>>>,<"name":"unwatch","description":"Stop watch id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"watches","description":"The watches in force.","inputSchema":<"type":"object","properties":<>>>,<"name":"events","description":"What the watches saw change since the last call.","inputSchema":<"type":"object","properties":<>>>,<"name":"schedule","description":"Run one tool later: tool, arguments, in (seconds). It follows the same site and confirm rules.","inputSchema":<"type":"object","properties":<"tool":<"type":"string">,"arguments":<"type":"object">,"in":<"type":"integer">>,"required":["tool","in"]>>,<"name":"schedules","description":"The jobs waiting to run.","inputSchema":<"type":"object","properties":<>>>,<"name":"unschedule","description":"Cancel job id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"log","description":"What this session did, one line per call.","inputSchema":<"type":"object","properties":<>>>,<"name":"screen","description":"Ask about what is drawn: x,y (what is there), x,y,w,h (a region), role, color or text (find). budget limits tokens.","inputSchema":<"type":"object","properties":<"x":<"type":"number">,"y":<"type":"number">,"w":<"type":"number">,"h":<"type":"number">,"role":<"type":"string">,"color":<"type":"string">,"text":<"type":"string">,"budget":<"type":"integer">>>>,<"name":"screenshot","description":"The pixel layout as drawing operations.","inputSchema":<"type":"object","properties":<>>>]"""
+TOOLS_SRC := """[<"name":"open","description":"Open a URL; answers with the page model.","inputSchema":<"type":"object","properties":<"url":<"type":"string">>,"required":["url"]>>,<"name":"observe","description":"The page model: nodes with ids, roles, names and boxes.","inputSchema":<"type":"object","properties":<>>>,<"name":"act","description":"Do one action: follow, click, type, submit, check, select, back, forward, scroll, reload. Give link, id or row (a number) and text where needed.","inputSchema":<"type":"object","properties":<"do":<"type":"string">,"link":<"type":"integer">,"id":<"type":"integer">,"row":<"type":"integer">,"text":<"type":"string">>,"required":["do"]>>,<"name":"find","description":"Scroll to text on the page.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"extract","description":"The page as plain text.","inputSchema":<"type":"object","properties":<>>>,<"name":"forms","description":"The page's forms as a schema: each field's label, type, name, required, value and options, and the submit buttons. Fill one with act do=fill and fields, an object of label to value; it then submits.","inputSchema":<"type":"object","properties":<>>>,<"name":"at","description":"The box under a point of the page model: x is the column, y the row.","inputSchema":<"type":"object","properties":<"x":<"type":"integer">,"y":<"type":"integer">>,"required":["x","y"]>>,<"name":"where","description":"The boxes whose role is the text or whose name contains it, with their positions.","inputSchema":<"type":"object","properties":<"text":<"type":"string">>,"required":["text"]>>,<"name":"watch","description":"Tell me when the page changes: url (else the live tab), contains (text to wait for), every (seconds).","inputSchema":<"type":"object","properties":<"url":<"type":"string">,"contains":<"type":"string">,"every":<"type":"integer">>>>,<"name":"unwatch","description":"Stop watch id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"watches","description":"The watches in force.","inputSchema":<"type":"object","properties":<>>>,<"name":"events","description":"What the watches saw change since the last call.","inputSchema":<"type":"object","properties":<>>>,<"name":"schedule","description":"Run one tool later: tool, arguments, in (seconds). It follows the same site and confirm rules.","inputSchema":<"type":"object","properties":<"tool":<"type":"string">,"arguments":<"type":"object">,"in":<"type":"integer">>,"required":["tool","in"]>>,<"name":"schedules","description":"The jobs waiting to run.","inputSchema":<"type":"object","properties":<>>>,<"name":"unschedule","description":"Cancel job id.","inputSchema":<"type":"object","properties":<"id":<"type":"integer">>,"required":["id"]>>,<"name":"log","description":"What this session did, one line per call.","inputSchema":<"type":"object","properties":<>>>,<"name":"screen","description":"Ask about what is drawn: x,y (what is there), x,y,w,h (a region), role, color or text (find). budget limits tokens.","inputSchema":<"type":"object","properties":<"x":<"type":"number">,"y":<"type":"number">,"w":<"type":"number">,"h":<"type":"number">,"role":<"type":"string">,"color":<"type":"string">,"text":<"type":"string">,"budget":<"type":"integer">>>>,<"name":"screenshot","description":"The pixel layout as drawing operations.","inputSchema":<"type":"object","properties":<>>>]"""
 
 fn tools_json() str
     TOOLS_SRC.replace("<", "\{").replace(">", "}")
@@ -2508,6 +2544,8 @@ fn main() !
         b.session()
     elif args.contains("--print")
         print(b.pg.text())
+    elif args.contains("--forms")
+        print(forms.schema(b.doc))
     elif args.contains("--at")
         xy := (flag(args, "--at") else "0,0").split(",")
         print(b.pg.at_json(
@@ -3034,6 +3072,20 @@ fn node_with(b Browser, tag str, attr str, value str) int
     assert(b.url.ends_with("/result.html?q=garlic+bread&src=garlic&exact=on&sort=old&lang=fr&note=hi&go=Search"))
     b.act("back", "")
     assert_eq(b.pg.title, "Search form")
+
+@test fn forms_are_listed_as_a_schema_and_filled_by_label()
+    mut b := Browser.new("{testdata()}/form.html", 80, 30)
+    schema := forms.schema(b.doc)
+    assert(schema.contains("\"label\":\"Query\",\"type\":\"text\",\"name\":\"q\""))
+    assert(schema.contains("\"label\":\"Exact\",\"type\":\"checkbox\""))
+    assert(schema.contains("\{\"text\":\"French\",\"value\":\"fr\",\"selected\":false}"))
+    assert(schema.contains("\"label\":\"Search\""))
+    b.act("fill", "\{\"missing\": 1}")
+    assert(b.message.contains("no field is labelled: missing"))
+    assert_eq(b.pg.title, "Search form")
+    assert(b.act("fill", "\{\"query\": \"garlic bread\", \"exact\": true, \"lang\": \"French\"}"))
+    assert_eq(b.pg.title, "Results")
+    assert(b.url.ends_with("/result.html?q=garlic+bread&src=garlic&exact=on&sort=new&lang=fr&note=hi"))
 
 @test fn enter_in_a_field_types_then_submits()
     mut b := Browser.new("{testdata()}/form.html", 80, 30)
@@ -3600,6 +3652,14 @@ fn flat(s gfx.Scene) List[str]
     assert_eq(page.referrer("http://a.com/x", "https://b.com/z"), "http://a.com")
     assert_eq(page.referrer("file:///tmp/p.html", "https://b.com/"), "")
     assert_eq(page.referrer("", "https://b.com/"), "")
+
+@test fn a_file_url_names_a_path_also_on_a_windows_drive()
+    assert_eq(page.file_path("file:///tmp/p.html"), "/tmp/p.html")
+    assert_eq(page.file_path("file:///C:/Users/a/p.html"), "C:/Users/a/p.html")
+    assert_eq(page.file_path("file://D:/x.html"), "D:/x.html")
+    assert_eq(page.file_path("/tmp/p.html"), "/tmp/p.html")
+    assert_eq(page.file_path("file:///tmp/a:b.html"), "/tmp/a:b.html")
+    assert_eq(page.resolve("file:///C:/site/a.html", "b.png"), "file:///C:/site/b.png")
 
 @test fn base_href_changes_where_relative_links_start()
     d := html.parse("<base href=/other/><a href=x.html>x</a><img src=p.png>")

@@ -445,7 +445,7 @@ pub fn control_value(d html.Doc, id int) str
 
 ## The text of the `label` for control `id`: `<label for=ID>`, else a
 ## label around it.
-fn label_of(d html.Doc, id int) str
+pub fn label_of(d html.Doc, id int) str
     if key := d.attr(id, "id")
         for l in d.all("label")
             if d.attr(l, "for") == key
@@ -1036,6 +1036,15 @@ pub fn scheme(u str) str
             return ""
         out.push(c.to_lower())
     ""
+
+## The file a `file://` URL names: the path after `file://`, and for a Windows
+## drive (`file:///C:/dir/f.html`) the path without the slash before `C:`.
+pub fn file_path(url str) str
+    p := url.strip_prefix("file://") else url
+    chars := p.chars()
+    if chars.len() >= 3 and chars[0] == '/' and chars[2] == ':' and (chars[1].is_alpha())
+        return chars[1..].join("")
+    p
 
 ## `rel` resolved against `base` (RFC 3986 5.2): absolute URLs as they are,
 ## `//host`, `/path`, `?query`, `#fragment` and relative paths merged with
