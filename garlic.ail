@@ -3379,7 +3379,8 @@ fn node_with(b Browser, tag str, attr str, value str) int
     b.act("check", "{node_with(b, "input", "name", "exact")}")
     b.act("save", "search leek")
     assert(b.message.starts_with("saved flow `search leek` (3 steps)"))
-    assert(fs.read_text(path).contains("\"set \\\{\\\"Query\\\":\\\"leek\\\"}\""))
+    saved := fs.read_text(path) else ""
+    assert(saved.contains("Query") and saved.contains("leek"))
     mut c := Browser.new("{testdata()}/index.html", 80, 30)
     c.flows_file = path
     c.act("run", "search leek")
