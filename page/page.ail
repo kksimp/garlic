@@ -1037,6 +1037,15 @@ pub fn scheme(u str) str
         out.push(c.to_lower())
     ""
 
+## The file a `file://` URL names: the path after `file://`, and for a Windows
+## drive (`file:///C:/dir/f.html`) the path without the slash before `C:`.
+pub fn file_path(url str) str
+    p := url.strip_prefix("file://") else url
+    chars := p.chars()
+    if chars.len() >= 3 and chars[0] == '/' and chars[2] == ':' and (chars[1].is_alpha())
+        return chars[1..].join("")
+    p
+
 ## `rel` resolved against `base` (RFC 3986 5.2): absolute URLs as they are,
 ## `//host`, `/path`, `?query`, `#fragment` and relative paths merged with
 ## dot segments removed. A `base` without a scheme is a file path.

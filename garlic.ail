@@ -208,7 +208,7 @@ fn fetch_got(
         if method == "GET" and w.status == 200
             keep_cached(url, w, now, mut cache)
         return Got(url: w.url, text: w.text, ok: true)
-    file := (url.strip_prefix("file://") else url).split("?")[0].split("#")[0]
+    file := page.file_path(url).split("?")[0].split("#")[0]
     data := fs.read_bytes(file) else err
         return Got(url, error_page(url, "{err}"), false)
     Got(url, decode(data, ""), true)
@@ -3600,6 +3600,14 @@ fn flat(s gfx.Scene) List[str]
     assert_eq(page.referrer("http://a.com/x", "https://b.com/z"), "http://a.com")
     assert_eq(page.referrer("file:///tmp/p.html", "https://b.com/"), "")
     assert_eq(page.referrer("", "https://b.com/"), "")
+
+@test fn a_file_url_names_a_path_also_on_a_windows_drive()
+    assert_eq(page.file_path("file:///tmp/p.html"), "/tmp/p.html")
+    assert_eq(page.file_path("file:///C:/Users/a/p.html"), "C:/Users/a/p.html")
+    assert_eq(page.file_path("file://D:/x.html"), "D:/x.html")
+    assert_eq(page.file_path("/tmp/p.html"), "/tmp/p.html")
+    assert_eq(page.file_path("file:///tmp/a:b.html"), "/tmp/a:b.html")
+    assert_eq(page.resolve("file:///C:/site/a.html", "b.png"), "file:///C:/site/b.png")
 
 @test fn base_href_changes_where_relative_links_start()
     d := html.parse("<base href=/other/><a href=x.html>x</a><img src=p.png>")
