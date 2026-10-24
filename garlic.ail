@@ -27,6 +27,7 @@ use ws
 use look
 use forms
 use extract
+use hush
 use tabstrip
 use svg
 
@@ -906,6 +907,8 @@ fn Browser.load(mut self, target str, method str, body str)
     refer = ""
     url = loaded.url
     doc = loaded.doc
+    if not env.args().contains("--noisy")
+        hush.apply(mut doc)
     js = loaded.js
     sheet = linked_sheets(doc, url, mut cj, mut cache)
     pg = page.layout_with(doc, url, width, sheet)
