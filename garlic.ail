@@ -4128,7 +4128,7 @@ fn flat(s gfx.Scene) List[str]
 
 ## A path as it can sit inside a JSON string: Windows backslashes become
 ## slashes, which every Garlic file open accepts.
-fn json_path(p str) str
+fn fwd_slashes(p str) str
     p.replace("\\", "/")
 
 @test fn serve_answers_mcp_requests()
@@ -4144,7 +4144,7 @@ fn json_path(p str) str
     )
     call := b.rpc(
         mut g,
-        "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{json_path(testdata())}/form.html\"}}}",
+        "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{fwd_slashes(testdata())}/form.html\"}}}",
     )
     assert(call.contains("\"content\""))
     assert(call.contains("textbox"))
@@ -4161,7 +4161,7 @@ fn json_path(p str) str
     mut open := Guard(allow: ["*"], log: [], fixed: [], ok_once: false)
     b.rpc(
         mut open,
-        "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{json_path(testdata())}/form.html\"}}}",
+        "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{fwd_slashes(testdata())}/form.html\"}}}",
     )
     held := b.rpc(
         mut open,
