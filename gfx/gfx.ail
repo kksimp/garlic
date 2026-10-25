@@ -50,12 +50,13 @@ pub struct Probe
     pub text str
     pub size float
     pub bold bool
+    pub italic bool
     ## The host font family: `sans`, `mono` or `serif`.
     pub font str
 
 ## The key of a run in the measured table.
-pub fn probe_key(text str, size float, bold bool, font str) str
-    "{size}|{bold}|{font}|{text}"
+pub fn probe_key(text str, size float, bold bool, italic bool, font str) str
+    "{size}|{bold}|{italic}|{font}|{text}"
 
 ## Advance widths of ASCII 32 to 126 in a 1000-unit em.
 WIDTHS := [
@@ -942,20 +943,20 @@ fn Ctx.add_text(mut self, raw str, st St)
 
 ## The width of a run: the host's measure when there is one, else the
 ## estimate, which is then noted so the host can be asked.
-fn Ctx.tw(mut self, text str, size float, bold bool, font str) float
-    key := probe_key(text, size, bold, font)
+fn Ctx.tw(mut self, text str, size float, bold bool, italic bool, font str) float
+    key := probe_key(text, size, bold, italic, font)
     if w := meas.get(key)
         return w
     if text != "" and not probed.contains(key)
         probed.add(key)
-        probes.push(Probe(text, size, bold, font))
+        probes.push(Probe(text, size, bold, italic, font))
     text_width(text, size, bold, font == "mono")
 
 fn Ctx.word_atom(mut self, text str, st St) Atom
     Atom(
         kind: WORD,
         text,
-        w: tw(text, st.size, st.bold, font_of(st)),
+        w: tw(text, st.size, st.bold, st.italic, font_of(st)),
         h: st.size * st.lh,
         size: st.size,
         st,
@@ -969,7 +970,7 @@ fn Ctx.space_atom(mut self, st St) Atom
     Atom(
         kind: SPACE,
         text: " ",
-        w: tw(" ", st.size, st.bold, font_of(st)),
+        w: tw(" ", st.size, st.bold, st.italic, font_of(st)),
         h: st.size * st.lh,
         size: st.size,
         st,
@@ -1128,7 +1129,7 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
         cx = x + fmax(w - total, 0.0)
     if marker != ""
         first := line[0]
-        mw := tw(marker, first.size, false, "sans")
+        mw := tw(marker, first.size, false, false, "sans")
         ops.push(draw.Op.Str(
             x: marker_x - mw,
             y: y + asc - ((first.h - first.size) / 2.0 + first.size * 0.9) + 0.0,
@@ -1275,7 +1276,7 @@ fn Ctx.control_atom(mut self, id int, st St) Atom?
     if tag == "button" or kind == "submit" or kind == "button" or kind == "reset"
         label = if tag
             == "button" then d.visible_text(id).trim() else (d.attr(id, "value") else "Submit")
-        w = tw(label, st.size, false, "sans") + 20.0
+        w = tw(label, st.size, false, false, "sans") + 20.0
         fill = 0xefefef
     elif tag == "input" and (kind == "checkbox" or kind == "radio")
         label = if d.attr(id, "checked") != none then "x" else ""
@@ -1287,7 +1288,7 @@ fn Ctx.control_atom(mut self, id int, st St) Atom?
             if d.within(o, id) and (label == "" or (not chosen and d.attr(o, "selected") != none))
                 label = d.text(o).trim()
                 chosen = d.attr(o, "selected") != none
-        w = fmax(tw(label, st.size, false, "sans") + 30.0, 80.0)
+        w = fmax(tw(label, st.size, false, false, "sans") + 30.0, 80.0)
     else
         label = d.attr(id, "value") else ""
         if label == "" and tag == "textarea"
@@ -1593,7 +1594,7 @@ fn Ctx.max_content(mut self, id int, st St) float
 ## The width of the text in `id` on one line, for shrink-to-fit items.
 fn Ctx.intrinsic(mut self, id int, st St) float
     text := d.visible_text(id).trim()
-    tw(html.collapse(text), st.size, st.bold, font_of(st))
+    tw(html.collapse(text), st.size, st.bold, st.italic, font_of(st))
 
 ## Lays out block `id` inside a column from `x`, `w` wide, with the
 ## parent's text style `parent`.
