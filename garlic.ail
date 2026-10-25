@@ -2048,10 +2048,10 @@ fn Gui.wanted(self) List[app.Measure]
     for p in scene.probes
         if out.len() == MEASURE_RUNS
             break
-        if not meas.contains(gfx.probe_key(p.text, p.size, p.bold, p.mono))
+        if not meas.contains(gfx.probe_key(p.text, p.size, p.bold, p.font))
             out.push(app.Measure(
                 text: p.text,
-                font: if p.mono then "mono" else "sans",
+                font: p.font,
                 size: p.size,
                 bold: p.bold,
                 italic: false,
@@ -2062,7 +2062,7 @@ fn Gui.wanted(self) List[app.Measure]
 fn Gui.learn(mut self, runs List[app.Measure], widths List[float])
     for k in 0..runs.len()
         r := runs[k]
-        meas[gfx.probe_key(r.text, r.size, r.bold, r.font == "mono")] = widths[k]
+        meas[gfx.probe_key(r.text, r.size, r.bold, r.font)] = widths[k]
     scene_stamp = -1
     refresh()
 
@@ -3546,6 +3546,28 @@ fn node_with(b Browser, tag str, attr str, value str) int
     assert(doc.contains("stroke='#e0a800'"))
     assert(doc.contains("go</text>"))
     assert_eq(xml_esc("a<b&\"c"), "a&lt;b&amp;&quot;c")
+
+@test fn font_families_pick_serif_sans_or_mono_for_the_host()
+    fonts := [
+        probe_font("font-family: Georgia, 'Times New Roman', serif"),
+        probe_font("font-family: Arial, serif"),
+        probe_font("font-family: system-ui, sans-serif"),
+        probe_font("font-family: 'SF Mono', monospace"),
+        probe_font(""),
+    ]
+    assert_eq(fonts, ["serif", "sans", "sans", "mono", "sans"])
+
+fn probe_font(style str) str
+    s := gfx.layout(
+        html.parse("<p style=\"{style}\">zq</p>"),
+        "file:///t.html",
+        400.0,
+        css.parse("", 0),
+    )
+    for p in s.probes
+        if p.text == "zq"
+            return p.font
+    "none"
 
 @test fn urlencode_escapes_utf8()
     assert_eq(urlencode("a b~é€/"), "a+b%7E%C3%A9%E2%82%AC%2F")
