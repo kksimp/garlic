@@ -2736,6 +2736,13 @@ VALUE_FLAGS := {
     "--pixel-width",
 }
 
+## The command-line target: words (`"ddg ail language"`) search like the
+## address field; URLs, existing files and anything else stay as given.
+fn cli_target(t str) str
+    if t != "" and page.scheme(t) == "" and not fs.exists(t) and is_query(t) and not t.starts_with("/")
+        return search_url(t)
+    t
+
 fn target_of(args List[str]) str
     mut k := 0
     while k < args.len()
@@ -2820,7 +2827,7 @@ fn main() !
         mut srv := Browser.empty("about:blank", width, height)
         srv.serve((flag(args, "--allow") else "*").split(","))
         return
-    mut b := Browser.new(target_of(args), width, height)
+    mut b := Browser.new(cli_target(target_of(args)), width, height)
     b.viewport_only = args.contains("--viewport")
     b.diff = args.contains("--diff")
     b.budget = (flag(args, "--budget") else "0").to_int() else 0
@@ -3453,6 +3460,12 @@ fn node_with(b Browser, tag str, attr str, value str) int
     assert_eq(address("b rust lang"), "https://www.bing.com/search?q=rust+lang")
     assert_eq(address("brave cats"), "https://search.brave.com/search?q=cats")
     assert_eq(address("projects.voltare.us/x"), "https://projects.voltare.us/x")
+
+@test fn the_command_line_searches_for_words_but_keeps_files_and_urls()
+    assert_eq(cli_target("b ail language"), "https://www.bing.com/search?q=ail+language")
+    assert_eq(cli_target("https://example.com/a b"), "https://example.com/a b")
+    assert_eq(cli_target("{testdata()}/index.html"), "{testdata()}/index.html")
+    assert_eq(cli_target("missing.html"), "missing.html")
 
 @test fn urlencode_escapes_utf8()
     assert_eq(urlencode("a b~é€/"), "a+b%7E%C3%A9%E2%82%AC%2F")
