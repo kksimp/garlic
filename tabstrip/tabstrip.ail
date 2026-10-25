@@ -59,16 +59,36 @@ pub fn safari() Theme
         sep: 0x1c1c1e,
     )
 
-## A rectangle with round corners of radius `r`, one point-high band at a time.
-pub fn round(mut ops List[app.Op], x float, y float, w float, h float, r float, c int)
+## One channel (bits `sh` up) of the colour `t` of the way from `a` to `b`.
+fn mix_ch(a int, b int, sh int, t float) int
+    ca := a.shr(sh).bit_and(255).to_float()
+    cb := b.shr(sh).bit_and(255).to_float()
+    (ca + (cb - ca) * t).round().to_int()
+
+## The colour `t` of the way from `a` to `b` (0 to 1).
+fn mix(a int, b int, t float) int
+    mix_ch(a, b, 16, t).shl(16).bit_or(mix_ch(a, b, 8, t).shl(8)).bit_or(mix_ch(a, b, 0, t))
+
+## A rectangle with round corners of radius `r` over a flat background `bg`,
+## one point-high band at a time. Each band's end pixels are blended with `bg`
+## by how much of the pixel the corner covers, so the edge looks smooth.
+pub fn round(mut ops List[app.Op], x float, y float, w float, h float, r float, c int, bg int)
     rr := r.min(h / 2.0).min(w / 2.0)
     n := rr.ceil().to_int()
     ops.push(app.draw_rect(x, y + rr, w, h - 2.0 * rr, c))
     for i in 0..n
         d := rr - i.to_float() - 0.5
         inset := rr - (rr * rr - d * d).max(0.0).sqrt()
-        ops.push(app.draw_rect(x + inset, y + i.to_float(), w - 2.0 * inset, 1.0, c))
-        ops.push(app.draw_rect(x + inset, y + h - i.to_float() - 1.0, w - 2.0 * inset, 1.0, c))
+        left := x + inset
+        right := x + w - inset
+        first := left.ceil()
+        last := right.floor()
+        for yy in [y + i.to_float(), y + h - i.to_float() - 1.0]
+            ops.push(app.draw_rect(first, yy, (last - first).max(0.0), 1.0, c))
+            if first > left
+                ops.push(app.draw_rect(first - 1.0, yy, 1.0, 1.0, mix(bg, c, first - left)))
+            if right > last
+                ops.push(app.draw_rect(last, yy, 1.0, 1.0, mix(bg, c, right - last)))
 
 ## The toolbar's buttons (back, forward, reload) as a canvas of `NAV_W` by `NAV_H`.
 pub NAV_W := 112.0
@@ -210,7 +230,7 @@ pub fn draw(
             ops.push(app.draw_rect(x0, 0.0, w, BAR_H, if shown then th.active else th.tab))
             ops.push(app.draw_rect(x0 + w - 1.0, 0.0, 1.0, BAR_H, th.sep))
         elif shown
-            round(mut ops, x0, 4.0, w, BAR_H - 6.0, 8.0, th.active)
+            round(mut ops, x0, 4.0, w, BAR_H - 6.0, 8.0, th.active, th.bar)
             ops.push(app.draw_rect(x0 + w / 2.0 - 10.0, BAR_H - 5.0, 20.0, 3.0, th.accent))
         title := if items[k].title == "" then "New tab" else items[k].title
         ops.push(app.Op.Clip(x: x0 + 10.0, y: 6.0, w: w - CLOSE_W - 18.0, h: BAR_H - 6.0))
@@ -234,7 +254,7 @@ pub fn draw(
     px := tab_x(n, n, width, th.flat)
     ops.push(text(px + 9.0, 8.0, "+", th.text, false, 18.0))
     if menu.len() > 0
-        round(mut ops, menu_x, BAR_H, MENU_W, menu.len().to_float() * ROW_H + 8.0, 6.0, th.menu)
+        round(mut ops, menu_x, BAR_H, MENU_W, menu.len().to_float() * ROW_H + 8.0, 6.0, th.menu, th.bar)
         for r in 0..menu.len()
             ops.push(text(
                 menu_x + 14.0,
