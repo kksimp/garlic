@@ -2492,7 +2492,7 @@ impl app.App for Garlic
             "resize" =>
                 if ev.id == "tabs"
                     strip_w = ev.dx
-                else
+                elif ev.id == "page" or ev.id == ""
                     g.resize(ev.dx, ev.dy, ev.cell_w, ev.cell_h)
             "click" =>
                 if ev.id == "tabs"
@@ -3258,6 +3258,14 @@ fn clicked(x float, y float) app.Event
     e.x = x
     e.y = y
     e
+
+@test fn resizes_of_the_other_canvases_leave_the_page_layout_alone()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut a := Garlic.new(b, 960.0, 600.0, 8.0, 16.0)
+    mut e := resized(112.0, 40.0)
+    e.id = "nav"
+    app.script(mut a, [resized(480.0, 96.0), e])
+    assert_eq((a.g.b.width, a.g.b.height), (60, 7))
 
 @test fn the_app_shows_the_page_and_follows_links_by_click()
     b := Browser.new("{testdata()}/index.html", 60, 12)
