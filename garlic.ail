@@ -2048,13 +2048,13 @@ fn Gui.wanted(self) List[app.Measure]
     for p in scene.probes
         if out.len() == MEASURE_RUNS
             break
-        if not meas.contains(gfx.probe_key(p.text, p.size, p.bold, p.font))
+        if not meas.contains(gfx.probe_key(p.text, p.size, p.bold, p.italic, p.font))
             out.push(app.Measure(
                 text: p.text,
                 font: p.font,
                 size: p.size,
                 bold: p.bold,
-                italic: false,
+                italic: p.italic,
             ))
     out
 
@@ -2062,7 +2062,7 @@ fn Gui.wanted(self) List[app.Measure]
 fn Gui.learn(mut self, runs List[app.Measure], widths List[float])
     for k in 0..runs.len()
         r := runs[k]
-        meas[gfx.probe_key(r.text, r.size, r.bold, r.font)] = widths[k]
+        meas[gfx.probe_key(r.text, r.size, r.bold, r.italic, r.font)] = widths[k]
     scene_stamp = -1
     refresh()
 
