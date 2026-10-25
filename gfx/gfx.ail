@@ -1050,8 +1050,7 @@ fn font_of(st St) str
         return "mono"
     if st.serif then "serif" else "sans"
 
-## Whether the first family in a lower-cased `font-family` list that names a
-## known face or generic is a serif one (`Georgia, serif`, not `Arial, serif`).
+## Faces and generics that decide a `font-family` list.
 SANS_FACES := [
     "sans-serif",
     "system-ui",
@@ -1077,6 +1076,8 @@ SERIF_FACES := [
     "baskerville",
 ]
 
+## Whether the first family in a lower-cased `font-family` list that names a
+## known face or generic is a serif one (`Georgia, serif`, not `Arial, serif`).
 fn first_family_is_serif(low str) bool
     for part in low.split(",")
         name := part.replace("'", "").replace("\"", "").trim()
