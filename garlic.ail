@@ -2739,7 +2739,11 @@ VALUE_FLAGS := {
 ## The command-line target: words (`"ddg ail language"`) search like the
 ## address field; URLs, existing files and anything else stay as given.
 fn cli_target(t str) str
-    if t != "" and page.scheme(t) == "" and not fs.exists(t) and is_query(t) and not t.starts_with("/")
+    if t != ""
+        and page.scheme(t) == ""
+        and not fs.exists(t)
+        and is_query(t)
+        and not t.starts_with("/")
         return search_url(t)
     t
 
