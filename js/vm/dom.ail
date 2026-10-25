@@ -749,7 +749,7 @@ fn Vm.accessor_named(mut self, target ref JsObject, name str, native str)
 # ------------------------------------------------------------ dispatch
 
 ## One `{brand, version}` entry of `navigator.userAgentData.brands`.
-fn hint_brand(brand str, version str) Value
+fn Vm.hint_brand(mut self, brand str, version str) Value
     b := plain()
     b.props["brand"] = data(Str(brand))
     b.props["version"] = data(Str(version))
