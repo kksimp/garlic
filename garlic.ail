@@ -2494,7 +2494,7 @@ fn Garlic.agent_line(self) str
 
 ## The look: Safari-style dark.
 fn theme() tabstrip.Theme
-    tabstrip.safari()
+    tabstrip.chrome()
 
 ## The tab strip: a canvas of its own (see `tabstrip`).
 fn Garlic.strip(self) app.Node

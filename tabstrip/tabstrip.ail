@@ -26,6 +26,10 @@ pub struct Theme
     ## Flat tabs share the strip evenly and are told apart by `sep` lines (as Safari does); otherwise pills.
     pub flat bool
     pub sep int
+    ## The strip's own background (the toolbar and status line use `bar`).
+    pub strip int
+    ## Chrome-style tabs: rounded on top, the shown one joined to the toolbar below.
+    pub chrome bool
 
 ## Clove: dark, violet accent, pill tabs (the look Kaleb chose, 2026-10-24).
 pub fn clove() Theme
@@ -41,6 +45,8 @@ pub fn clove() Theme
         menu_hot: 0x35303f,
         flat: false,
         sep: 0x35303f,
+        strip: 0x1d1a23,
+        chrome: false,
     )
 
 ## Safari-style dark: neutral grays, a blue accent, flat tabs.
@@ -57,6 +63,26 @@ pub fn safari() Theme
         menu_hot: 0x0a84ff,
         flat: true,
         sep: 0x1c1c1e,
+        strip: 0x2b2b2d,
+        chrome: false,
+    )
+
+## Modern dark browser look: a darker strip, rounded tabs and a lighter toolbar the shown tab joins.
+pub fn chrome() Theme
+    Theme(
+        bar: 0x35363a,
+        tab: 0x202124,
+        active: 0x35363a,
+        text: 0x9aa0a6,
+        active_text: 0xe8eaed,
+        accent: 0x8ab4f8,
+        menu: 0x3c4043,
+        menu_text: 0xe8eaed,
+        menu_hot: 0x4a4d51,
+        flat: false,
+        sep: 0x5f6368,
+        strip: 0x202124,
+        chrome: true,
     )
 
 ## One channel (bits `sh` up) of the colour `t` of the way from `a` to `b`.
@@ -72,10 +98,10 @@ fn mix(a int, b int, t float) int
 ## A rectangle with round corners of radius `r` over a flat background `bg`,
 ## one point-high band at a time. Each band's end pixels are blended with `bg`
 ## by how much of the pixel the corner covers, so the edge looks smooth.
-pub fn round(mut ops List[app.Op], x float, y float, w float, h float, r float, c int, bg int)
+pub fn round(mut ops List[app.Op], x float, y float, w float, h float, r float, c int, bg int, square_bottom bool)
     rr := r.min(h / 2.0).min(w / 2.0)
     n := rr.ceil().to_int()
-    ops.push(app.draw_rect(x, y + rr, w, h - 2.0 * rr, c))
+    ops.push(app.draw_rect(x, y + rr, w, h - (if square_bottom then rr else 2.0 * rr), c))
     for i in 0..n
         d := rr - i.to_float() - 0.5
         inset := rr - (rr * rr - d * d).max(0.0).sqrt()
@@ -83,7 +109,10 @@ pub fn round(mut ops List[app.Op], x float, y float, w float, h float, r float, 
         right := x + w - inset
         first := left.ceil()
         last := right.floor()
-        for yy in [y + i.to_float(), y + h - i.to_float() - 1.0]
+        mut rows := [y + i.to_float()]
+        if not square_bottom
+            rows.push(y + h - i.to_float() - 1.0)
+        for yy in rows
             ops.push(app.draw_rect(first, yy, (last - first).max(0.0), 1.0, c))
             if first > left
                 ops.push(app.draw_rect(first - 1.0, yy, 1.0, 1.0, mix(bg, c, first - left)))
@@ -222,7 +251,7 @@ pub fn draw(
 ) List[app.Op]
     n := items.len()
     w := tab_w(n, width, th.flat)
-    mut ops := [app.draw_rect(0.0, 0.0, width.max(1.0), height(menu.len()), th.bar)]
+    mut ops := [app.draw_rect(0.0, 0.0, width.max(1.0), height(menu.len()), th.strip)]
     for k in 0..n
         x0 := tab_x(k, n, width, th.flat)
         shown := k == cur
@@ -230,8 +259,13 @@ pub fn draw(
             ops.push(app.draw_rect(x0, 0.0, w, BAR_H, if shown then th.active else th.tab))
             ops.push(app.draw_rect(x0 + w - 1.0, 0.0, 1.0, BAR_H, th.sep))
         elif shown
-            round(mut ops, x0, 4.0, w, BAR_H - 6.0, 8.0, th.active, th.bar)
-            ops.push(app.draw_rect(x0 + w / 2.0 - 10.0, BAR_H - 5.0, 20.0, 3.0, th.accent))
+            if th.chrome
+                round(mut ops, x0, 5.0, w, BAR_H - 5.0, 9.0, th.active, th.strip, true)
+            else
+                round(mut ops, x0, 4.0, w, BAR_H - 6.0, 8.0, th.active, th.strip, false)
+                ops.push(app.draw_rect(x0 + w / 2.0 - 10.0, BAR_H - 5.0, 20.0, 3.0, th.accent))
+        elif th.chrome and k + 1 < n and k + 1 != cur
+            ops.push(app.draw_rect(x0 + w + GAP / 2.0, 11.0, 1.0, 16.0, th.sep))
         title := if items[k].title == "" then "New tab" else items[k].title
         ops.push(app.Op.Clip(x: x0 + 10.0, y: 6.0, w: w - CLOSE_W - 18.0, h: BAR_H - 6.0))
         ops.push(text(
@@ -254,7 +288,7 @@ pub fn draw(
     px := tab_x(n, n, width, th.flat)
     ops.push(text(px + 9.0, 8.0, "+", th.text, false, 18.0))
     if menu.len() > 0
-        round(mut ops, menu_x, BAR_H, MENU_W, menu.len().to_float() * ROW_H + 8.0, 6.0, th.menu, th.bar)
+        round(mut ops, menu_x, BAR_H, MENU_W, menu.len().to_float() * ROW_H + 8.0, 6.0, th.menu, th.strip, false)
         for r in 0..menu.len()
             ops.push(text(
                 menu_x + 14.0,
