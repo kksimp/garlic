@@ -3829,7 +3829,7 @@ fn bench(args List[str])
     assert(dot)
 
 @test fn pictures_without_sizes_take_their_own_from_the_fetched_header()
-    dir := testdata().replace("garlic/testdata", "pdf/image/testdata")
+    dir := "{env.cwd()}/vendor/image/testdata"
     d := html.parse("<img src=gray8.png><img src=jpeg420.jpg height=58><img src=missing.png>")
     mut sizes := Map[str, List[int]]()
     mut bits := Map[str, images.Bitmap]()
@@ -3881,7 +3881,7 @@ fn bench(args List[str])
     assert_eq(b.message, "no page to go forward to")
 
 @test fn decoded_pictures_go_to_the_host_once()
-    dir := testdata().replace("garlic/testdata", "pdf/image/testdata")
+    dir := "{env.cwd()}/vendor/image/testdata"
     mut a := Garlic.new(Browser.new("file://{dir}/missing.html", 100, 32), 400.0, 300.0, 8.0, 16.0)
     a.g.pixel = true
     a.g.b.doc = html.parse("<img src=gray8.png>")
