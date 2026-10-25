@@ -3791,19 +3791,14 @@ fn bench(args List[str])
             _ => out = out
     out
 
+## Compares a native Garlic with the interpreter's layout. A native build of
+## Garlic takes minutes, far past the test runner's 30 s per test, so the test
+## only runs when the gate has built one and names it in `GARLIC_NATIVE_EXE`
+## (`./ail build tools/garlic/garlic.ail -o EXE`).
 @test fn the_native_build_draws_the_same_pixels_as_the_interpreter()
-    root := testdata().replace("/tools/garlic/testdata", "")
-    exe := "{env.cwd()}/garlic-native-test"
-    built := proc.run(
-        "{root}/ail",
-        ["build", "{root}/tools/garlic/garlic.ail", "-o", exe],
-        none,
-        600000,
-    )?
-    assert(built.ok())
+    exe := env.get("GARLIC_NATIVE_EXE") else return
     html_file := "{testdata()}/voltare-full.html"
-    native := proc.run(exe, [html_file, "--pixels-dump"], none, 60000)?
-    fs.remove(exe) else return
+    native := proc.run(exe, [html_file, "--pixels-dump"], none, 25000)?
     b := Browser.new(html_file, 100, 32)
     mut want := List[str]()
     s := gfx.layout(b.doc, b.url, 960.0, b.sheet)
