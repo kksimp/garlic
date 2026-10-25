@@ -2010,6 +2010,8 @@ SEARCH_ENGINES := [
     ("ddg", "https://html.duckduckgo.com/html/?q="),
     ("b", "https://www.bing.com/search?q="),
     ("brave", "https://search.brave.com/search?q="),
+    ("sp", "https://www.startpage.com/do/search?q="),
+    ("y", "https://search.yahoo.com/search?p="),
     ("g", "https://www.google.com/search?q="),
 ]
 
@@ -3452,6 +3454,8 @@ fn node_with(b Browser, tag str, attr str, value str) int
     assert_eq(address("rust lang"), "https://html.duckduckgo.com/html/?q=rust+lang")
     assert_eq(address("b rust lang"), "https://www.bing.com/search?q=rust+lang")
     assert_eq(address("brave cats"), "https://search.brave.com/search?q=cats")
+    assert_eq(address("sp cats"), "https://www.startpage.com/do/search?q=cats")
+    assert_eq(address("y cats"), "https://search.yahoo.com/search?p=cats")
     assert_eq(address("projects.voltare.us/x"), "https://projects.voltare.us/x")
 
 @test fn urlencode_escapes_utf8()
