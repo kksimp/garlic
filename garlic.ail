@@ -2009,7 +2009,7 @@ fn address(text str) str
 SEARCH_ENGINES := [
     ("ddg", "https://html.duckduckgo.com/html/?q="),
     ("b", "https://www.bing.com/search?q="),
-    ("brave", "https://search.brave.com/search?q="),
+    ("y", "https://search.yahoo.com/search?p="),
     ("g", "https://www.google.com/search?q="),
 ]
 
@@ -2020,7 +2020,7 @@ fn is_query(t str) bool
         return true
     not t.contains(".") and not t.starts_with("localhost")
 
-## The results URL for a typed query: `ddg|b|brave|g words` picks an engine.
+## The results URL for a typed query: `ddg|b|y|g words` picks an engine.
 fn search_url(t str) str
     for e in SEARCH_ENGINES
         rest := t.strip_prefix("{e.0} ") else continue
@@ -2736,6 +2736,17 @@ VALUE_FLAGS := {
     "--pixel-width",
 }
 
+## The command-line target: words (`"ddg ail language"`) search like the
+## address field; URLs, existing files and anything else stay as given.
+fn cli_target(t str) str
+    if t != ""
+        and page.scheme(t) == ""
+        and not fs.exists(t)
+        and is_query(t)
+        and not t.starts_with("/")
+        return search_url(t)
+    t
+
 fn target_of(args List[str]) str
     mut k := 0
     while k < args.len()
@@ -2820,7 +2831,7 @@ fn main() !
         mut srv := Browser.empty("about:blank", width, height)
         srv.serve((flag(args, "--allow") else "*").split(","))
         return
-    mut b := Browser.new(target_of(args), width, height)
+    mut b := Browser.new(cli_target(target_of(args)), width, height)
     b.viewport_only = args.contains("--viewport")
     b.diff = args.contains("--diff")
     b.budget = (flag(args, "--budget") else "0").to_int() else 0
@@ -3451,8 +3462,14 @@ fn node_with(b Browser, tag str, attr str, value str) int
 @test fn the_address_field_searches_for_words()
     assert_eq(address("rust lang"), "https://html.duckduckgo.com/html/?q=rust+lang")
     assert_eq(address("b rust lang"), "https://www.bing.com/search?q=rust+lang")
-    assert_eq(address("brave cats"), "https://search.brave.com/search?q=cats")
+    assert_eq(address("y cats"), "https://search.yahoo.com/search?p=cats")
     assert_eq(address("projects.voltare.us/x"), "https://projects.voltare.us/x")
+
+@test fn the_command_line_searches_for_words_but_keeps_files_and_urls()
+    assert_eq(cli_target("b ail language"), "https://www.bing.com/search?q=ail+language")
+    assert_eq(cli_target("https://example.com/a b"), "https://example.com/a b")
+    assert_eq(cli_target("{testdata()}/index.html"), "{testdata()}/index.html")
+    assert_eq(cli_target("missing.html"), "missing.html")
 
 @test fn urlencode_escapes_utf8()
     assert_eq(urlencode("a b~é€/"), "a+b%7E%C3%A9%E2%82%AC%2F")
@@ -3522,7 +3539,7 @@ fn node_with(b Browser, tag str, attr str, value str) int
     assert_eq(b.answer().split("\"id\":").len(), 1)
 
 @test fn budgets_keep_the_viewport_then_key_nodes()
-    pg := Browser.new("/dev/null", 60, 4).pg
+    pg := Browser.empty("", 60, 4).pg
     assert(pg.to_json_budget(0, 4, 400).contains("\"omitted\":0"))
     ## A fixed URL, so the budget doesn't depend on where the checkout is.
     index := fs.read_text("{testdata()}/index.html") else ""
@@ -4121,6 +4138,11 @@ fn flat(s gfx.Scene) List[str]
     )
     assert(flat(s).contains("below@0,84"))
 
+## A path as it can sit inside a JSON string: Windows backslashes become
+## slashes, which every Garlic file open accepts.
+fn fwd_slashes(p str) str
+    p.replace("\\", "/")
+
 @test fn serve_answers_mcp_requests()
     mut b := Browser.empty("about:blank", 80, 24)
     mut g := Guard(allow: ["*"], log: [], fixed: [], ok_once: false)
@@ -4134,7 +4156,7 @@ fn flat(s gfx.Scene) List[str]
     )
     call := b.rpc(
         mut g,
-        "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{testdata()}/form.html\"}}}",
+        "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{fwd_slashes(testdata())}/form.html\"}}}",
     )
     assert(call.contains("\"content\""))
     assert(call.contains("textbox"))
@@ -4151,7 +4173,7 @@ fn flat(s gfx.Scene) List[str]
     mut open := Guard(allow: ["*"], log: [], fixed: [], ok_once: false)
     b.rpc(
         mut open,
-        "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{testdata()}/form.html\"}}}",
+        "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{fwd_slashes(testdata())}/form.html\"}}}",
     )
     held := b.rpc(
         mut open,
