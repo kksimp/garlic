@@ -2913,7 +2913,11 @@ fn main() !
                 spec.chars().len(),
             ))
     if args.contains("--marks")
-        write_marks(mut b, flag(args, "--marks") else "marks.svg", (flag(args, "--pixel-width") else "960").to_float() else 960.0)?
+        write_marks(
+            mut b,
+            flag(args, "--marks") else "marks.svg",
+            (flag(args, "--pixel-width") else "960").to_float() else 960.0,
+        )?
     elif args.contains("--pixels-dump")
         pixels_dump(mut b, (flag(args, "--pixel-width") else "960").to_float() else 960.0)
     elif args.contains("--session")
@@ -3537,11 +3541,16 @@ fn node_with(b Browser, tag str, attr str, value str) int
     assert_eq(cli_target("missing.html"), "missing.html")
 
 @test fn marks_box_and_number_every_link_and_control()
-    s := gfx.layout(html.parse("<p><a href=/x>go</a></p><input name=q>"), "file:///t.html", 400.0, css.parse("", 0))
-    svg := marks_svg(s, 400.0)
-    assert(svg.starts_with("<svg "))
-    assert(svg.contains("stroke='#e0a800'"))
-    assert(svg.contains("go</text>"))
+    s := gfx.layout(
+        html.parse("<p><a href=/x>go</a></p><input name=q>"),
+        "file:///t.html",
+        400.0,
+        css.parse("", 0),
+    )
+    doc := marks_svg(s, 400.0)
+    assert(doc.starts_with("<svg "))
+    assert(doc.contains("stroke='#e0a800'"))
+    assert(doc.contains("go</text>"))
     assert_eq(xml_esc("a<b&\"c"), "a&lt;b&amp;&quot;c")
 
 @test fn urlencode_escapes_utf8()
