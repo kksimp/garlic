@@ -581,7 +581,11 @@ pub fn Vm.dom_setup(mut self)
         parts := kv.split("=")
         nav_proto.props[parts[0]] = data(if parts[1] == "" and parts[0] == "doNotTrack" then Null else Str(parts[1]))
     # User-Agent Client Hints: the same brands as the `sec-ch-ua` header.
-    brands := array([hint_brand("Chromium", "141"), hint_brand("Not?A_Brand", "8"), hint_brand("Garlic", "0")])
+    brands := array([
+        hint_brand("Chromium", "141"),
+        hint_brand("Not?A_Brand", "8"),
+        hint_brand("Garlic", "0"),
+    ])
     uad := plain()
     uad.props["brands"] = data(brands)
     uad.props["mobile"] = data(Bool(false))
