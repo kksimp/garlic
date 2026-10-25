@@ -2717,11 +2717,12 @@ fn flag(args List[str], name str) str?
     if at + 1 < args.len() then args[at + 1] else none
 
 fn usage()
-    print("usage: ail run tools/garlic/garlic.ail [--width N] [--height N] [--follow N | --find TEXT | --do ACTION:ARG]... [--viewport] [--budget TOKENS] [--diff] [--no-js] [--console] [--print | --json | --links | --session | --pixels-dump [--pixel-width N] | --keys] URL|FILE (options may come before or after it)")
+    print("usage: ail run tools/garlic/garlic.ail [--width N] [--height N] [--follow N | --find TEXT | --do ACTION:ARG]... [--viewport] [--budget TOKENS] [--diff] [--no-js] [--console] [--print | --json | --links | --session | --pixels-dump [--pixel-width N] | --marks FILE.svg [--pixel-width N] | --keys] URL|FILE (options may come before or after it)")
 
 ## Flags that take a value, so the address is the first argument that is
 ## neither a flag nor a value.
 VALUE_FLAGS := {
+    "--marks",
     "--csv",
     "--extract",
     "--at",
@@ -2813,6 +2814,68 @@ fn pixels_dump(mut b Browser, width float)
             == 0 then "failed" else (if b.bits.contains(at) then "decoded" else "too big to decode")
         print("image {at} {dims[0]}x{dims[1]} {state}")
 
+## Text for an XML attribute or element.
+fn xml_esc(t str) str
+    t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+
+## `--marks FILE.svg`: the pixel layout as an SVG with every link and control
+## boxed and tagged with the node number the page model and actions use (a
+## set-of-marks picture). Images are drawn as labelled placeholders.
+fn write_marks(mut b Browser, path str, width float) !
+    images.prefetch(
+        b.doc,
+        page.base_of(b.doc, b.url),
+        b.url,
+        b.cj,
+        image_options(),
+        mut b.sizes,
+        mut b.bits,
+    )
+    s := gfx.layout_with(b.doc, b.url, width, b.sheet, b.sizes)
+    fs.write_text(path, marks_svg(s, width))?
+    print("wrote {path}: {s.hits.len()} boxes")
+
+fn marks_svg(s gfx.Scene, width float) str
+    mut out := List[str]()
+    out.push("<svg xmlns='http://www.w3.org/2000/svg' width='{width.round()}' height='{s.height.round()}'>")
+    out.push("<rect width='100%' height='100%' fill='#{s.bg.to_hex().pad_left(6, '0')}'/>")
+    for op in s.ops
+        match op
+            Rect(
+                x,
+                y,
+                w,
+                h,
+                c,
+            ) => out.push("<rect x='{x.round()}' y='{y.round()}' width='{w.round()}' height='{h.round()}' fill='#{c.to_hex().pad_left(6, '0')}'/>")
+            Str(
+                x,
+                y,
+                t,
+                _,
+                size,
+                fg,
+                _,
+                _,
+                _,
+            ) => out.push("<text x='{x.round()}' y='{(y + size).round()}' font-size='{size.round()}' fill='#{fg.to_hex().pad_left(6, '0')}'>{xml_esc(t)}</text>")
+            Pic(
+                x,
+                y,
+                w,
+                h,
+                _,
+            ) => out.push("<rect x='{x.round()}' y='{y.round()}' width='{w.round()}' height='{h.round()}' fill='none' stroke='#888' stroke-dasharray='4'/>")
+            Text(_, _, _, _, _, _, _) => out = out
+    for h in s.hits
+        id := if h.node >= 0 then h.node else h.anchor
+        if id >= 0
+            out.push("<rect x='{h.x.round()}' y='{h.y.round()}' width='{h.w.round()}' height='{h.h.round()}' fill='none' stroke='#e0a800' stroke-width='2'/>")
+            out.push("<rect x='{h.x.round()}' y='{(h.y - 14.0).round()}' width='{"{id}".chars().len() * 8 + 6}' height='14' fill='#ffdd33'/>")
+            out.push("<text x='{(h.x + 3.0).round()}' y='{(h.y - 3.0).round()}' font-size='11' font-weight='bold' fill='#000'>{id}</text>")
+    out.push("</svg>")
+    out.join("\n")
+
 fn main() !
     args := env.args()
     if args.len() > 0 and args[0] == "--bench"
@@ -2849,7 +2912,9 @@ fn main() !
                 (at + 1).min(spec.chars().len()),
                 spec.chars().len(),
             ))
-    if args.contains("--pixels-dump")
+    if args.contains("--marks")
+        write_marks(mut b, flag(args, "--marks") else "marks.svg", (flag(args, "--pixel-width") else "960").to_float() else 960.0)?
+    elif args.contains("--pixels-dump")
         pixels_dump(mut b, (flag(args, "--pixel-width") else "960").to_float() else 960.0)
     elif args.contains("--session")
         b.session()
@@ -3470,6 +3535,14 @@ fn node_with(b Browser, tag str, attr str, value str) int
     assert_eq(cli_target("https://example.com/a b"), "https://example.com/a b")
     assert_eq(cli_target("{testdata()}/index.html"), "{testdata()}/index.html")
     assert_eq(cli_target("missing.html"), "missing.html")
+
+@test fn marks_box_and_number_every_link_and_control()
+    s := gfx.layout(html.parse("<p><a href=/x>go</a></p><input name=q>"), "file:///t.html", 400.0, css.parse("", 0))
+    svg := marks_svg(s, 400.0)
+    assert(svg.starts_with("<svg "))
+    assert(svg.contains("stroke='#e0a800'"))
+    assert(svg.contains("go</text>"))
+    assert_eq(xml_esc("a<b&\"c"), "a&lt;b&amp;&quot;c")
 
 @test fn urlencode_escapes_utf8()
     assert_eq(urlencode("a b~é€/"), "a+b%7E%C3%A9%E2%82%AC%2F")
