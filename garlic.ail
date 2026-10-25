@@ -3157,15 +3157,9 @@ fn lay(src str, width int) page.Page
     assert_eq(page.resolve("https://a.org", "p"), "https://a.org/p")
     assert_eq(page.resolve("site/index.html", "b.html"), "site/b.html")
 
-## `tools/garlic/testdata`, from the repository root or `bootstrap/`.
+## `tools/garlic/testdata`, from the repository root (the gate's directory).
 fn testdata() str
-    if fs.exists("tools/garlic/testdata")
-        return "{env.cwd()}/tools/garlic/testdata"
-    # From `bootstrap/` (the selftest's directory): the parent, without `..`,
-    # so page addresses compare equal after URL resolution.
-    cwd := env.cwd()
-    up := cwd.rfind("/") else 0
-    "{cwd.slice(0, up)}/tools/garlic/testdata"
+    "{env.cwd()}/tools/garlic/testdata"
 
 @test fn browser_follows_links_and_goes_back()
     dir := testdata()
