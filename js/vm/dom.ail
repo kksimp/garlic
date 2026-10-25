@@ -741,9 +741,10 @@ fn Vm.accessor_named(mut self, target ref JsObject, name str, native str)
 
 # ------------------------------------------------------------ dispatch
 
-## The user agent Garlic's scripts see: a desktop Chrome's, as pages test
-## for features by browser.
-USER_AGENT := "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+## The user agent Garlic's scripts see: the same honest string as its HTTP
+## `user-agent` header (`options()` in garlic.ail), so pages and servers see
+## one identity and nothing pretends to be another browser.
+USER_AGENT := "Garlic/0.1 (AIL; text)"
 
 ## Trusted Types (W3C): policies whose rules turn strings into "trusted"
 ## strings; Garlic keeps them as plain strings.

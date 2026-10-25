@@ -120,7 +120,7 @@ MAX_KEPT := 16
 ## The headers Garlic sends: who it is, and that it wants HTML.
 fn options() net.Options
     mut o := net.options()
-    o.headers["user-agent"] = "Garlic/0.1 (AIL; text)"
+    o.headers["user-agent"] = "Garlic/0.1 (AIL; text)" # keep equal to USER_AGENT in js/vm/dom.ail
     o.headers["accept"] = "text/html,application/xhtml+xml;q=0.9,text/plain;q=0.8,*/*;q=0.5"
     o.headers["accept-language"] = "en"
     o.headers["accept-encoding"] = "gzip, deflate"
