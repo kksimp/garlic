@@ -1,28 +1,32 @@
 # Garlic: a web browser written in AIL
 
-`tools/garlic/garlic.ail` is a text-mode web browser written in AIL. The
+License: AGPL-3.0 (see `LICENSE`). Moved from kksimp/ail (`tools/garlic`) with its history.
+
+Needs the AIL toolchain: clone [kksimp/ail](https://github.com/kksimp/ail) next to this repo at the commit in `.ail-version`. Commands below use `../ail/ail`; `tools/check.sh` runs check, fmt and the tests against that pin. Builds and tests run on a dev machine, not in a container.
+
+`garlic.ail` is a text-mode web browser written in AIL. The
 design, scope and roadmap are in
-[docs/design/garlic-browser.md](../../docs/design/garlic-browser.md).
+[docs/design/garlic-browser.md](https://github.com/kksimp/ail/blob/main/docs/design/garlic-browser.md).
 
 ```sh
-tools/app-host/macos/run.sh --native tools/garlic/garlic.ail URL   # in a window, compiled
-./ail run tools/garlic/garlic.ail --print URL|FILE         # the page as text
-./ail run tools/garlic/garlic.ail --json URL|FILE          # the page model for agents
-./ail run tools/garlic/garlic.ail --links URL|FILE         # the numbered links
-./ail run tools/garlic/garlic.ail --follow 3 --print URL   # follow link 3 first (repeatable)
-./ail run tools/garlic/garlic.ail --find TEXT --json URL   # scroll to TEXT first
-./ail run tools/garlic/garlic.ail --do click:12 --json URL # an agent action first: follow:N, click:ID, type:ID=TEXT, submit:ID, check:ID, select:ID=OPT, open:URL, back, forward, find:TEXT, scroll:ROW, reload
-./ail run tools/garlic/garlic.ail --session URL            # JSON actions on stdin, one page model per line out
-./ail run tools/garlic/garlic.ail --viewport --json URL    # only the nodes in the viewport
-./ail run tools/garlic/garlic.ail --budget 500 --json URL  # at most about 500 tokens: viewport, then headings, links and controls
-./ail run tools/garlic/garlic.ail --diff --session URL     # after the first model, only what changed
-./ail run tools/garlic/garlic.ail --keys                   # the keys
-./ail test tools/garlic/garlic.ail                         # the headless tests
+../ail/tools/app-host/macos/run.sh --native garlic.ail URL   # in a window, compiled
+../ail/ail run garlic.ail --print URL|FILE         # the page as text
+../ail/ail run garlic.ail --json URL|FILE          # the page model for agents
+../ail/ail run garlic.ail --links URL|FILE         # the numbered links
+../ail/ail run garlic.ail --follow 3 --print URL   # follow link 3 first (repeatable)
+../ail/ail run garlic.ail --find TEXT --json URL   # scroll to TEXT first
+../ail/ail run garlic.ail --do click:12 --json URL # an agent action first: follow:N, click:ID, type:ID=TEXT, submit:ID, check:ID, select:ID=OPT, open:URL, back, forward, find:TEXT, scroll:ROW, reload
+../ail/ail run garlic.ail --session URL            # JSON actions on stdin, one page model per line out
+../ail/ail run garlic.ail --viewport --json URL    # only the nodes in the viewport
+../ail/ail run garlic.ail --budget 500 --json URL  # at most about 500 tokens: viewport, then headings, links and controls
+../ail/ail run garlic.ail --diff --session URL     # after the first model, only what changed
+../ail/ail run garlic.ail --keys                   # the keys
+../ail/ail test garlic.ail                         # the headless tests
 ```
 
 `--width N` and `--height N` set the size (100 by 32 by default).
 
-Native macOS window (needs the SwiftUI host, ADR 0838): `tools/app-host/macos/run.sh --native tools/garlic/garlic.ail URL` (or without `--native` to interpret); the pixel layout is the default, `--cells` selects the text grid.
+Native macOS window (needs the SwiftUI host, ADR 0838): `../ail/tools/app-host/macos/run.sh --native garlic.ail URL` (or without `--native` to interpret); the pixel layout is the default, `--cells` selects the text grid.
 
 | Module | Does |
 |---|---|
@@ -31,7 +35,7 @@ Native macOS window (needs the SwiftUI host, ADR 0838): `tools/app-host/macos/ru
 | `page/` | text-cell layout, link numbering, boxes with roles, names and positions, the page model JSON, URL resolution (RFC 3986) |
 | `draw/` | the display list and colors both windows share |
 | `gfx/` | pixel layout: box model, proportional text, flex, grid, tables, images; `--app --pixels` |
-| `--bench FILE [ROUNDS]` | page-load phases in milliseconds on a saved page: `ail build tools/garlic/garlic.ail -o garlic && ./garlic --bench FILE [ROUNDS]` |
+| `--bench FILE [ROUNDS]` | page-load phases in milliseconds on a saved page: `ail build garlic.ail -o garlic && ./garlic --bench FILE [ROUNDS]` |
 | `garlic.ail` | fetching, history, find, the `std.app` window and the command line |
 
 ## Pixel mode: forms, tabs, find
@@ -41,10 +45,10 @@ Native macOS window (needs the SwiftUI host, ADR 0838): `tools/app-host/macos/ru
 - Find: Cmd-F or `/`, type, Enter scrolls to the match and highlights it; `n` finds the next.
 - `garlic --pixels-dump URL` prints the canvas, ops and image decode status.
 
-Network behaviour (cookies on redirects, the final address, gzip, sheets with cookie and Referer) is checked against a scripted site with `tools/garlic/netcheck/check.sh` (`GARLIC=path` runs it against a native build).
+Network behaviour (cookies on redirects, the final address, gzip, sheets with cookie and Referer) is checked against a scripted site with `netcheck/check.sh` (`GARLIC=path` runs it against a native build).
 ## Agents: `garlic --serve`
 
-An MCP server on stdio (JSON-RPC, one message per line). Tools: `open`, `observe`, `act`, `find`, `extract`, `screen` (what is drawn, as items an agent can ask about by point, region, role, colour or text, within a token budget; `std.screen`, ADR 0878), `screenshot` (the pixel layout as drawing operations). Same page model and actions as `--session`. `ail build tools/garlic/garlic.ail` builds natively; the dumps match the interpreter's and run about 5x faster.
+An MCP server on stdio (JSON-RPC, one message per line). Tools: `open`, `observe`, `act`, `find`, `extract`, `screen` (what is drawn, as items an agent can ask about by point, region, role, colour or text, within a token budget; `std.screen`, ADR 0878), `screenshot` (the pixel layout as drawing operations). Same page model and actions as `--session`. `ail build garlic.ail` builds natively; the dumps match the interpreter's and run about 5x faster.
 
 Trust rules in `--serve`: `--allow host,host` limits the sites an agent may open or use (default `*`); an `act` that sends data (`submit`) is held until repeated with `"confirm":true`; the `log` tool returns what the session did.
 
@@ -58,7 +62,7 @@ In the window, an attached agent's request to use a site it may not, or to send 
 
 ## Quiet pages, extraction and forms for agents
 
-- Cookie banners, ads and trackers are hidden by default (`tools/garlic/hush`, lists in AIL); `--noisy` shows them.
+- Cookie banners, ads and trackers are hidden by default (`hush`, lists in AIL); `--noisy` shows them.
 - `--tables` (JSON), `--csv N` (table N as CSV), `--reader` (main content, title and token count) and `--extract "Price,Stock"` (values by label) read structure out of a page; the MCP tools are `tables`, `reader` and `fields`.
 - `--forms` lists the forms as a schema; the action `fill:{"Label": value}` fills by label and submits.
 - `--at X,Y` and `--where TEXT|ROLE` ground a point or a word in the page model.

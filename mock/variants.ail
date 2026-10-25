@@ -1,7 +1,7 @@
 ## Three looks for Garlic's window, drawn on one canvas so they can be seen in
 ## the real Mac window before the full design is built. Not part of Garlic.
 ##
-##   tools/app-host/macos/run.sh --native tools/garlic/mock/variants.ail [1|2|3]
+##   ../ail/tools/app-host/macos/run.sh --native mock/variants.ail [1|2|3]
 ##
 ## Keys 1, 2 and 3 switch the look. 1 Clove: dark, rounded pill tabs. 2 Ivory:
 ## light, tabs as underlined words. 3 Dock: dark, tabs down the left side.

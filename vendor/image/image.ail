@@ -1,0 +1,336 @@
+## Grey bitmaps and the image decoders a scanned page needs: raw samples,
+## CCITT Group 3 and 4 fax (ITU-T T.4, T.6) and baseline JPEG (ITU-T T.81),
+## written from the standards (ADR 0512). Shared by the PDF reader's OCR,
+## the browser and the editor; it moves beside `std.ui` as `std.ui.image`.
+##
+## Pixels are `int`s 0 (black) to 255 (white), row by row.
+
+pub struct Gray
+    pub width int
+    pub height int
+    pub px List[int]
+
+pub error enum ImageError
+    Bad(why str) "bad image data: {why}"
+    Unsupported(what str) "image format not supported yet: {what}"
+
+pub fn Gray.new(width int, height int, value int) Gray
+    Gray(width: width, height: height, px: [value for _ in 0..width * height])
+
+pub fn Gray.at(self, x int, y int) int
+    px[y * width + x]
+
+## Inverts every pixel, for a `/Decode [1 0]` image.
+pub fn Gray.inverted(self) Gray
+    Gray(width: width, height: height, px: [255 - p for p in px])
+
+## The grey value of samples: `comps` 1 (grey), 3 (RGB) or 4 (CMYK), each
+## `bpc` bits, rows padded to a byte.
+pub fn from_samples(data List[int], w int, h int, bpc int, comps int) Gray ! ImageError
+    if bpc != 1 and bpc != 2 and bpc != 4 and bpc != 8 and bpc != 16
+        return Unsupported(what: "{bpc} bits per component")
+    row := (w * comps * bpc + 7) / 8
+    if data.len() < row * h
+        return Bad(why: "{data.len()} bytes for a {w}x{h} image needing {row * h}")
+    if bpc == 8 and comps == 1
+        return Gray(width: w, height: h, px: data[..w * h])
+    maxv := 1.shl(bpc) - 1
+    mut px := List[int]()
+    for y in 0..h
+        base := y * row
+        for x in 0..w
+            mut v := List[int]()
+            for c in 0..comps
+                v.push(sample(data, base, (x * comps + c) * bpc, bpc) * 255 / maxv)
+            px.push(grey_of(v))
+    Gray(width: w, height: h, px: px)
+
+fn grey_of(v List[int]) int
+    if v.len() == 3
+        return (v[0] * 299 + v[1] * 587 + v[2] * 114) / 1000
+    if v.len() == 4
+        return (255 - (v[0] * 299 + v[1] * 587 + v[2] * 114) / 1000 - v[3]).max(0)
+    v[0]
+
+## Samples through a palette of `base` components each (8.6.6.3).
+pub fn from_indexed(
+    data List[int],
+    w int,
+    h int,
+    bpc int,
+    palette List[int],
+    base int,
+) Gray ! ImageError
+    idx := from_samples(data, w, h, bpc, 1)?
+    maxv := 1.shl(bpc) - 1
+    mut px := List[int]()
+    for p in idx.px
+        i := (p * maxv + 127) / 255 * base
+        if i + base > palette.len()
+            px.push(0)
+        elif base == 3
+            px.push((palette[i] * 299 + palette[i + 1] * 587 + palette[i + 2] * 114) / 1000)
+        else
+            px.push(palette[i])
+    Gray(width: w, height: h, px: px)
+
+fn sample(data List[int], base int, bit int, bpc int) int
+    if bpc == 8
+        return data[base + bit / 8]
+    if bpc == 16
+        return data[base + bit / 8]
+    b := data[base + bit / 8]
+    b.shr(8 - bpc - bit % 8).bit_and(1.shl(bpc) - 1)
+
+# ---- CCITT fax (T.4, T.6) ----
+
+## White run codes as `bits=run`, terminating then make-up (T.4 tables 2, 3).
+WHITE_CODES := """
+    00110101=0 000111=1 0111=2 1000=3 1011=4 1100=5 1110=6 1111=7 10011=8 10100=9 00111=10 01000=11
+    001000=12 000011=13 110100=14 110101=15 101010=16 101011=17 0100111=18 0001100=19 0001000=20
+    0010111=21 0000011=22 0000100=23 0101000=24 0101011=25 0010011=26 0100100=27 0011000=28
+    00000010=29 00000011=30 00011010=31 00011011=32 00010010=33 00010011=34 00010100=35 00010101=36
+    00010110=37 00010111=38 00101000=39 00101001=40 00101010=41 00101011=42 00101100=43 00101101=44
+    00000100=45 00000101=46 00001010=47 00001011=48 01010010=49 01010011=50 01010100=51 01010101=52
+    00100100=53 00100101=54 01011000=55 01011001=56 01011010=57 01011011=58 01001010=59 01001011=60
+    00110010=61 00110011=62 00110100=63 11011=64 10010=128 010111=192 0110111=256 00110110=320
+    00110111=384 01100100=448 01100101=512 01101000=576 01100111=640 011001100=704 011001101=768
+    011010010=832 011010011=896 011010100=960 011010101=1024 011010110=1088 011010111=1152
+    011011000=1216 011011001=1280 011011010=1344 011011011=1408 010011000=1472 010011001=1536
+    010011010=1600 011000=1664 010011011=1728
+    """
+
+## Black run codes (T.4 tables 2, 3).
+BLACK_CODES := """
+    0000110111=0 010=1 11=2 10=3 011=4 0011=5 0010=6 00011=7 000101=8 000100=9 0000100=10
+    0000101=11 0000111=12 00000100=13 00000111=14 000011000=15 0000010111=16 0000011000=17
+    0000001000=18 00001100111=19 00001101000=20 00001101100=21 00000110111=22 00000101000=23
+    00000010111=24 00000011000=25 000011001010=26 000011001011=27 000011001100=28 000011001101=29
+    000001101000=30 000001101001=31 000001101010=32 000001101011=33 000011010010=34 000011010011=35
+    000011010100=36 000011010101=37 000011010110=38 000011010111=39 000001101100=40 000001101101=41
+    000011011010=42 000011011011=43 000001010100=44 000001010101=45 000001010110=46 000001010111=47
+    000001100100=48 000001100101=49 000001010010=50 000001010011=51 000000100100=52 000000110111=53
+    000000111000=54 000000100111=55 000000101000=56 000001011000=57 000001011001=58 000000101011=59
+    000000101100=60 000001011010=61 000001100110=62 000001100111=63 0000001111=64 000011001000=128
+    000011001001=192 000001011011=256 000000110011=320 000000110100=384 000000110101=448
+    0000001101100=512 0000001101101=576 0000001001010=640 0000001001011=704 0000001001100=768
+    0000001001101=832 0000001110010=896 0000001110011=960 0000001110100=1024 0000001110101=1088
+    0000001110110=1152 0000001110111=1216 0000001010010=1280 0000001010011=1344 0000001010100=1408
+    0000001010101=1472 0000001011010=1536 0000001011011=1600 0000001100100=1664 0000001100101=1728
+    """
+
+## Make-up codes both colours share (T.4 table 3, extended).
+EXT_CODES := """
+    00000001000=1792 00000001100=1856 00000001101=1920 000000010010=1984 000000010011=2048
+    000000010100=2112 000000010101=2176 000000010110=2240 000000010111=2304 000000011100=2368
+    000000011101=2432 000000011110=2496 000000011111=2560
+    """
+
+## Mode codes (T.4 table 4): pass, horizontal, and vertical -3..3.
+MODE_CODES := "0001=0 001=1 1=5 011=6 000011=7 0000011=8 010=4 000010=3 0000010=2"
+
+## 13-bit lookahead tables: entry `run * 32 + length`, 0 for no code.
+WHITE_LUT := code_table("{WHITE_CODES} {EXT_CODES} 000000000001=4095", 13)
+BLACK_LUT := code_table("{BLACK_CODES} {EXT_CODES} 000000000001=4095", 13)
+MODE_LUT := code_table(MODE_CODES, 7)
+
+fn code_table(codes str, bits int) List[int]
+    mut t := [0 for _ in 0..1.shl(bits)]
+    for w in codes.replace("\n", " ").split(" ")
+        if w == ""
+            continue
+        parts := w.split("=")
+        code := parts[0]
+        run := parts[1].to_int() else 0
+        n := code.chars().len()
+        mut v := 0
+        for c in code.chars()
+            v = v * 2 + (if c == '1' then 1 else 0)
+        first := v.shl(bits - n)
+        for k in 0..1.shl(bits - n)
+            t[first + k] = run * 32 + n
+    t
+
+struct FaxBits
+    data List[int]
+    pos int
+
+## The next `n` bits (at most 16), zeros past the end.
+fn FaxBits.peek(self, n int) int
+    i := pos / 8
+    a := if i < data.len() then data[i] else 0
+    b := if i + 1 < data.len() then data[i + 1] else 0
+    c := if i + 2 < data.len() then data[i + 2] else 0
+    (a * 65536 + b * 256 + c).shr(24 - n - pos % 8).bit_and(1.shl(n) - 1)
+
+fn FaxBits.done(self) bool
+    pos >= data.len() * 8
+
+fn FaxBits.code(mut self, table List[int], bits int) int ! ImageError
+    e := table[peek(bits)]
+    if e == 0
+        return Bad(why: "no fax code at bit {pos}")
+    pos += e % 32
+    e / 32
+
+## A run of one colour: make-up codes, then a terminating code.
+fn FaxBits.run(mut self, black bool) int ! ImageError
+    mut total := 0
+    while true
+        v := code(if black then BLACK_LUT else WHITE_LUT, 13)?
+        if v == 4095
+            return Bad(why: "end of line inside a run")
+        total += v
+        if v < 64
+            return total
+
+## Skips an end-of-line code (eleven 0s and a 1) if one is next.
+fn FaxBits.eol(mut self) bool
+    if peek(12) == 1
+        pos += 12
+        return true
+    false
+
+## Decodes CCITT fax data (8.4 CCITTFaxDecode): `k` < 0 is Group 4, 0 is
+## one-dimensional Group 3, > 0 mixed. Changing elements are kept per row,
+## so the work is per colour change, not per pixel.
+pub fn ccitt(data List[int], cols int, rows int, k int, align bool, black1 bool) Gray ! ImageError
+    changes := ccitt_rows(data, cols, rows, k, align)?
+    black := if black1 then 255 else 0
+    white := 255 - black
+    mut px := List[int]()
+    for cur in changes
+        mut color := white
+        mut x := 0
+        for c in cur
+            if c > x
+                px.extend([color for _ in x..c])
+                x = c
+            color = if color == white then black else white
+        if x < cols
+            px.extend([color for _ in x..cols])
+    Gray(width: cols, height: changes.len(), px: px)
+
+## Each row's changing elements: where the colour flips, starting white,
+## so `[a, b, c, d]` is white up to `a`, black from `a` to `b`, and so on.
+## OCR takes its runs from these directly, never touching pixels.
+pub fn ccitt_rows(
+    data List[int],
+    cols int,
+    rows int,
+    k int,
+    align bool,
+) List[List[int]] ! ImageError
+    mut b := FaxBits(data: data, pos: 0)
+    mut refl := [cols, cols]
+    mut out := List[List[int]]()
+    while rows <= 0 or out.len() < rows
+        if b.done()
+            break
+        if align and k >= 0
+            b.pos = (b.pos + 7) / 8 * 8
+        mut two_d := k < 0
+        if k >= 0
+            mut eols := 0
+            while b.eol()
+                eols += 1
+            if eols >= 2 and out.len() > 0
+                break
+            if k > 0
+                two_d = b.peek(1) == 0
+                b.pos += 1
+        if b.done()
+            break
+        cur := if two_d then row_2d(mut b, refl, cols)? else row_1d(mut b, cols)?
+        if cur.len() == 1 and cur[0] < 0
+            break
+        out.push([c.min(cols) for c in cur])
+        refl = cur
+        refl.push(cols)
+        refl.push(cols)
+        if align and k < 0
+            b.pos = (b.pos + 7) / 8 * 8
+    out
+
+fn row_1d(mut b FaxBits, cols int) List[int] ! ImageError
+    mut cur := List[int]()
+    mut a := 0
+    mut black := false
+    while a < cols
+        a = (a + b.run(black)?).min(cols)
+        cur.push(a)
+        black = not black
+    cur
+
+## One two-dimensional row against the reference row's changing elements
+## (T.4 4.2.1.3). `[-1]` means the end-of-block code came instead.
+fn row_2d(mut b FaxBits, refl List[int], cols int) List[int] ! ImageError
+    mut cur := List[int]()
+    mut a0 := -1
+    mut color := 0
+    mut j := 0
+    while a0 < cols
+        if b.peek(12) == 1
+            return [-1]
+        mode := b.code(MODE_LUT, 7)?
+        j = (j - 2).max(0)
+        while j < refl.len() - 2 and (refl[j] <= a0 or j % 2 != color)
+            j += 1
+        b1 := refl[j]
+        b2 := refl[(j + 1).min(refl.len() - 1)]
+        if mode == 0
+            a0 = b2
+        elif mode == 1
+            start := a0.max(0)
+            r1 := b.run(color == 1)?
+            r2 := b.run(color == 0)?
+            a1 := (start + r1).min(cols)
+            a2 := (a1 + r2).min(cols)
+            cur.push(a1)
+            cur.push(a2)
+            a0 = a2
+        else
+            a1 := b1 + mode - 5
+            if a1 < 0 or a1 > cols
+                return Bad(why: "vertical code off the row")
+            cur.push(a1)
+            a0 = a1
+            color = 1 - color
+    cur
+
+## A PGM (P5) file of the image, for looking at what a decoder produced.
+pub fn Gray.pgm(self) List[int]
+    mut out := [c.code() for c in "P5\n{width} {height}\n255\n".chars()]
+    out.extend(px)
+    out
+
+@test fn fax_tables_are_prefix_free()
+    for t in ["{WHITE_CODES} {EXT_CODES}", "{BLACK_CODES} {EXT_CODES}", MODE_CODES]
+        codes := [w.split("=")[0] for w in t.replace("\n", " ").split(" ") if w != ""]
+        for a in codes
+            for b in codes
+                if a != b
+                    assert(not b.starts_with(a))
+
+@test fn decodes_a_group_4_row() !
+    # 16 pixels, 4 white, 8 black, 4 white, under an all-white reference
+    # row: horizontal mode (001) with white 4 (1011) and black 8 (000101),
+    # then vertical 0 (1) to the row's end.
+    mut data := List[int]()
+    mut v := 0
+    mut n := 0
+    for c in "001101100010110000000".chars()
+        v = v * 2 + (if c == '1' then 1 else 0)
+        n += 1
+        if n == 8
+            data.push(v)
+            v = 0
+            n = 0
+    g := ccitt(data, 16, 1, -1, false, false)?
+    assert_eq(g.px, [255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255])
+
+@test fn reads_samples() !
+    g := from_samples([0b10100000, 0b01000000], 3, 2, 1, 1)?
+    assert_eq(g.px, [255, 0, 255, 0, 255, 0])
+    rgb := from_samples([255, 0, 0, 0, 0, 255], 2, 1, 8, 3)?
+    assert_eq(rgb.px, [76, 29])

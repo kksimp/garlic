@@ -1,7 +1,7 @@
-## Serves tools/garlic/testdata over HTTP on the address given as the first
+## Serves testdata over HTTP on the address given as the first
 ## argument, for the test that points Garlic at it (http.serve.2).
 use std.env
 use std.net.http
 
 fn main() !
-    http.serve_dir(env.args()[0], "tools/garlic/testdata")?
+    http.serve_dir(env.args()[0], "testdata")?

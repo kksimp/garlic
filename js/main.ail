@@ -1,13 +1,13 @@
 # Garlic's JavaScript engine, run on its own (docs/design/garlic-js.md):
-#   ail run tools/garlic/js --tokens FILE...      one token per line: LINE:COL KIND TEXT
-#   ail run tools/garlic/js --ast [--loc] FILE... the syntax tree as ESTree JSON, one line
-#   ail run tools/garlic/js --check FILE...       "ok", or the SyntaxError
-#   ail run tools/garlic/js --test DIR            each DIR/NAME.js against NAME.ast or NAME.err
-#   ail run tools/garlic/js --test262 DIR [--bless]  the packed test262 parser tests (suite.ail)
-#   ail run tools/garlic/js --run [--max-steps N] FILE...  run scripts; console.log to stdout
-#   ail run tools/garlic/js --test-run DIR        each DIR/NAME.js's output against NAME.out
-#   ail run tools/garlic/js --page FILE.html      load a page: its console, then the body's HTML
-#   ail run tools/garlic/js --test-page DIR       each DIR/NAME.html's output against NAME.out
+#   ail run js --tokens FILE...      one token per line: LINE:COL KIND TEXT
+#   ail run js --ast [--loc] FILE... the syntax tree as ESTree JSON, one line
+#   ail run js --check FILE...       "ok", or the SyntaxError
+#   ail run js --test DIR            each DIR/NAME.js against NAME.ast or NAME.err
+#   ail run js --test262 DIR [--bless]  the packed test262 parser tests (suite.ail)
+#   ail run js --run [--max-steps N] FILE...  run scripts; console.log to stdout
+#   ail run js --test-run DIR        each DIR/NAME.js's output against NAME.out
+#   ail run js --page FILE.html      load a page: its console, then the body's HTML
+#   ail run js --test-page DIR       each DIR/NAME.html's output against NAME.out
 # With several files, each output starts with a line `== PATH`. Exit 1 on
 # any SyntaxError (or failed test).
 use syntax
@@ -65,7 +65,7 @@ fn main() !
         io.exit(1)
 
 fn usage()
-    io.eprint("usage: ail run tools/garlic/js (--tokens | --ast [--loc] | --check | --run [--max-steps N]) FILE... | --test DIR | --test262 DIR | --test-run DIR | --page FILE | --test-page DIR")
+    io.eprint("usage: ail run js (--tokens | --ast [--loc] | --check | --run [--max-steps N]) FILE... | --test DIR | --test262 DIR | --test-run DIR | --page FILE | --test-page DIR")
     io.exit(2)
 
 ## One file's output for `mode`.

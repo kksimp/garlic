@@ -2717,7 +2717,7 @@ fn flag(args List[str], name str) str?
     if at + 1 < args.len() then args[at + 1] else none
 
 fn usage()
-    print("usage: ail run tools/garlic/garlic.ail [--width N] [--height N] [--follow N | --find TEXT | --do ACTION:ARG]... [--viewport] [--budget TOKENS] [--diff] [--no-js] [--console] [--print | --json | --links | --session | --pixels-dump [--pixel-width N] | --marks FILE.svg [--pixel-width N] | --keys] URL|FILE (options may come before or after it)")
+    print("usage: ail run garlic.ail [--width N] [--height N] [--follow N | --find TEXT | --do ACTION:ARG]... [--viewport] [--budget TOKENS] [--diff] [--no-js] [--console] [--print | --json | --links | --session | --pixels-dump [--pixel-width N] | --marks FILE.svg [--pixel-width N] | --keys] URL|FILE (options may come before or after it)")
 
 ## Flags that take a value, so the address is the first argument that is
 ## neither a flag nor a value.
@@ -3157,9 +3157,9 @@ fn lay(src str, width int) page.Page
     assert_eq(page.resolve("https://a.org", "p"), "https://a.org/p")
     assert_eq(page.resolve("site/index.html", "b.html"), "site/b.html")
 
-## `tools/garlic/testdata`, from the repository root (the gate's directory).
+## `testdata`, from the repository root (the gate's directory).
 fn testdata() str
-    "{env.cwd()}/tools/garlic/testdata"
+    "{env.cwd()}/testdata"
 
 @test fn browser_follows_links_and_goes_back()
     dir := testdata()
@@ -3762,7 +3762,7 @@ fn pixels(src str, width float) gfx.Scene
     assert(not g.b.reading())
 
 # Page-load phases of Garlic on a saved page, in milliseconds:
-#   ail build tools/garlic/garlic.ail -o garlic && ./garlic --bench FILE [ROUNDS]
+#   ail build garlic.ail -o garlic && ./garlic --bench FILE [ROUNDS]
 # Each phase runs ROUNDS times (default 5); the lowest time is printed.
 
 fn bench_run(phase int, src str, d html.Doc, sheet css.Sheet) int
@@ -3909,7 +3909,7 @@ fn bench(args List[str])
 ## Compares a native Garlic with the interpreter's layout. A native build of
 ## Garlic takes minutes, far past the test runner's 30 s per test, so the test
 ## only runs when the gate has built one and names it in `GARLIC_NATIVE_EXE`
-## (`./ail build tools/garlic/garlic.ail -o EXE`).
+## (`../ail/ail build garlic.ail -o EXE`).
 @test fn the_native_build_draws_the_same_pixels_as_the_interpreter()
     exe := env.get("GARLIC_NATIVE_EXE") else return
     html_file := "{testdata()}/voltare-full.html"

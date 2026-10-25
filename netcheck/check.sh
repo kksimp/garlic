@@ -2,12 +2,12 @@
 # Garlic's network behaviour against a scripted site (server.py): cookies set
 # on a redirect, the final address after redirects, a gzip page, a POST
 # answered by 303, a sheet that carries the cookie and a Referer, and a
-# redirect loop. Run from anywhere: tools/garlic/netcheck/check.sh
+# redirect loop. Run from anywhere: netcheck/check.sh
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 tmp=$(mktemp -d)
 trap 'kill "$srv" 2>/dev/null || true; rm -rf "$tmp"' EXIT
-python3 tools/garlic/netcheck/server.py > "$tmp/port" &
+python3 netcheck/server.py > "$tmp/port" &
 srv=$!
 while [ ! -s "$tmp/port" ]; do sleep 0.1; done
 site="http://127.0.0.1:$(head -1 "$tmp/port")"
@@ -16,8 +16,8 @@ expect() { # name needle output
   if [[ "$3" == *"$2"* ]]; then echo "ok $1"; else echo "FAIL $1: wanted $2 in: ${3:0:300}"; fail=1; fi
 }
 # GARLIC=path/to/native/garlic runs the checks against a native build.
-garlic() { if [ -n "${GARLIC:-}" ]; then "$GARLIC" --json "$@" 2>&1; else ./ail run tools/garlic/garlic.ail --json "$@" 2>&1; fi; }
-plain() { if [ -n "${GARLIC:-}" ]; then "$GARLIC" "$@" 2>&1; else ./ail run tools/garlic/garlic.ail "$@" 2>&1; fi; }
+garlic() { if [ -n "${GARLIC:-}" ]; then "$GARLIC" --json "$@" 2>&1; else ./ail run garlic.ail --json "$@" 2>&1; fi; }
+plain() { if [ -n "${GARLIC:-}" ]; then "$GARLIC" "$@" 2>&1; else ./ail run garlic.ail "$@" 2>&1; fi; }
 out=$(garlic "$site/login")
 expect "a cookie set on a redirect is sent on the next hop" '"title":"home sid=abc"' "$out"
 expect "the address is where redirects ended" "\"url\":\"$site/dir/home\"" "$out"

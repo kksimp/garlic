@@ -1,4 +1,4 @@
-"""A scripted site for tools/garlic/netcheck/check.sh: redirects that set
+"""A scripted site for netcheck/check.sh: redirects that set
 cookies, gzip, a sheet that needs the cookie, and a POST answered by 303."""
 import base64, gzip, hashlib, struct, sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer

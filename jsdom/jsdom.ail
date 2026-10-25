@@ -1,5 +1,5 @@
 ## jsdom: runs a page's scripts with Garlic's JavaScript engine
-## (tools/garlic/js, docs/design/garlic-js.md) and replays every change
+## (js, docs/design/garlic-js.md) and replays every change
 ## they make to the tree into Garlic's `html.Doc`, so the page model shows
 ## what the scripts did.
 use html
