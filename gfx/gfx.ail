@@ -1052,12 +1052,37 @@ fn font_of(st St) str
 
 ## Whether the first family in a lower-cased `font-family` list that names a
 ## known face or generic is a serif one (`Georgia, serif`, not `Arial, serif`).
+SANS_FACES := [
+    "sans-serif",
+    "system-ui",
+    "-apple-system",
+    "arial",
+    "helvetica",
+    "verdana",
+    "tahoma",
+    "roboto",
+    "segoe ui",
+    "inter",
+]
+
+SERIF_FACES := [
+    "serif",
+    "georgia",
+    "times",
+    "times new roman",
+    "garamond",
+    "palatino",
+    "cambria",
+    "book antiqua",
+    "baskerville",
+]
+
 fn first_family_is_serif(low str) bool
     for part in low.split(",")
         name := part.replace("'", "").replace("\"", "").trim()
-        if name == "sans-serif" or name == "system-ui" or name == "arial" or name == "helvetica" or name == "verdana" or name == "tahoma" or name == "roboto" or name == "-apple-system" or name == "segoe ui" or name == "inter"
+        if SANS_FACES.contains(name)
             return false
-        if name == "serif" or name == "georgia" or name == "times" or name == "times new roman" or name == "garamond" or name == "palatino" or name == "cambria" or name == "book antiqua" or name == "baskerville"
+        if SERIF_FACES.contains(name)
             return true
     false
 
@@ -1102,7 +1127,7 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
         cx = x + fmax(w - total, 0.0)
     if marker != ""
         first := line[0]
-        mw := tw(marker, first.size, false, false)
+        mw := tw(marker, first.size, false, "sans")
         ops.push(draw.Op.Str(
             x: marker_x - mw,
             y: y + asc - ((first.h - first.size) / 2.0 + first.size * 0.9) + 0.0,
@@ -1249,7 +1274,7 @@ fn Ctx.control_atom(mut self, id int, st St) Atom?
     if tag == "button" or kind == "submit" or kind == "button" or kind == "reset"
         label = if tag
             == "button" then d.visible_text(id).trim() else (d.attr(id, "value") else "Submit")
-        w = tw(label, st.size, false, false) + 20.0
+        w = tw(label, st.size, false, "sans") + 20.0
         fill = 0xefefef
     elif tag == "input" and (kind == "checkbox" or kind == "radio")
         label = if d.attr(id, "checked") != none then "x" else ""
@@ -1261,7 +1286,7 @@ fn Ctx.control_atom(mut self, id int, st St) Atom?
             if d.within(o, id) and (label == "" or (not chosen and d.attr(o, "selected") != none))
                 label = d.text(o).trim()
                 chosen = d.attr(o, "selected") != none
-        w = fmax(tw(label, st.size, false, false) + 30.0, 80.0)
+        w = fmax(tw(label, st.size, false, "sans") + 30.0, 80.0)
     else
         label = d.attr(id, "value") else ""
         if label == "" and tag == "textarea"
