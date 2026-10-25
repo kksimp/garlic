@@ -2000,7 +2000,32 @@ fn address(text str) str
     t := text.trim()
     if t == "" or page.scheme(t) != "" or t.starts_with("/") or fs.exists(t)
         return t
+    if is_query(t)
+        return search_url(t)
     "https://{t}"
+
+## The search engines the address field knows: prefix word, results URL.
+## DuckDuckGo's HTML endpoint is the default because it needs no script.
+SEARCH_ENGINES := [
+    ("ddg", "https://html.duckduckgo.com/html/?q="),
+    ("b", "https://www.bing.com/search?q="),
+    ("brave", "https://search.brave.com/search?q="),
+    ("g", "https://www.google.com/search?q="),
+]
+
+## Text with a space, or with no dot (and not `localhost`), is a search; a
+## known engine prefix (`b rust`) always is.
+fn is_query(t str) bool
+    if t.contains(" ")
+        return true
+    not t.contains(".") and not t.starts_with("localhost")
+
+## The results URL for a typed query: `ddg|b|brave|g words` picks an engine.
+fn search_url(t str) str
+    for e in SEARCH_ENGINES
+        rest := t.strip_prefix("{e.0} ") else continue
+        return "{e.1}{urlencode(rest.trim())}"
+    "{SEARCH_ENGINES[0].1}{urlencode(t)}"
 
 ## The URL field was submitted: opens it.
 fn Gui.open(mut self, text str)
@@ -3414,6 +3439,12 @@ fn node_with(b Browser, tag str, attr str, value str) int
         ),
         "who=a+b%26c",
     )
+
+@test fn the_address_field_searches_for_words()
+    assert_eq(address("rust lang"), "https://html.duckduckgo.com/html/?q=rust+lang")
+    assert_eq(address("b rust lang"), "https://www.bing.com/search?q=rust+lang")
+    assert_eq(address("brave cats"), "https://search.brave.com/search?q=cats")
+    assert_eq(address("projects.voltare.us/x"), "https://projects.voltare.us/x")
 
 @test fn urlencode_escapes_utf8()
     assert_eq(urlencode("a b~é€/"), "a+b%7E%C3%A9%E2%82%AC%2F")
