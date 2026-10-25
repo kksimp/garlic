@@ -98,7 +98,17 @@ fn mix(a int, b int, t float) int
 ## A rectangle with round corners of radius `r` over a flat background `bg`,
 ## one point-high band at a time. Each band's end pixels are blended with `bg`
 ## by how much of the pixel the corner covers, so the edge looks smooth.
-pub fn round(mut ops List[app.Op], x float, y float, w float, h float, r float, c int, bg int, square_bottom bool)
+pub fn round(
+    mut ops List[app.Op],
+    x float,
+    y float,
+    w float,
+    h float,
+    r float,
+    c int,
+    bg int,
+    square_bottom bool,
+)
     rr := r.min(h / 2.0).min(w / 2.0)
     n := rr.ceil().to_int()
     ops.push(app.draw_rect(x, y + rr, w, h - (if square_bottom then rr else 2.0 * rr), c))
@@ -198,11 +208,49 @@ pub fn menu_rows(k int, n int, closed int) List[str]
         rows.push("Reopen closed tab")
     rows
 
-## The height the canvas needs: the bar, plus the open menu below it.
+## The height the strip canvas needs: the bar. The tab menu is drawn over the
+## page instead (`menu_ops`), so opening it moves nothing.
 pub fn height(menu_rows_n int) float
-    if menu_rows_n == 0
-        return BAR_H
-    BAR_H + menu_rows_n.to_float() * ROW_H + 8.0
+    BAR_H
+
+## The menu's top edge on the page canvas.
+MENU_TOP := 2.0
+
+## The tab menu's rows at `menu_x`, as ops for the top of the page canvas over a page coloured `bg`.
+pub fn menu_ops(th Theme, menu List[str], menu_x float, bg int) List[app.Op]
+    mut ops := List[app.Op]()
+    if menu.len() == 0
+        return ops
+    round(
+        mut ops,
+        menu_x,
+        MENU_TOP,
+        MENU_W,
+        menu.len().to_float() * ROW_H + 8.0,
+        6.0,
+        th.menu,
+        bg,
+        false,
+    )
+    for r in 0..menu.len()
+        ops.push(text(
+            menu_x + 14.0,
+            MENU_TOP + 4.0 + r.to_float() * ROW_H + 6.0,
+            menu[r],
+            th.menu_text,
+            false,
+            12.0,
+        ))
+    ops
+
+## Which menu row a click at (x, y) on the page canvas landed on, or -1.
+pub fn menu_hit(x float, y float, menu_n int, menu_x float) int
+    if menu_n == 0 or x < menu_x or x >= menu_x + MENU_W
+        return -1
+    row := ((y - MENU_TOP - 4.0) / ROW_H).floor().to_int()
+    if row >= 0 and row < menu_n
+        return row
+    -1
 
 ## What a click at (x, y) landed on. `menu_n` rows are open at `menu_x`.
 pub fn hit(x float, y float, n int, width float, flat bool, menu_n int, menu_x float) Hit
@@ -251,7 +299,7 @@ pub fn draw(
 ) List[app.Op]
     n := items.len()
     w := tab_w(n, width, th.flat)
-    mut ops := [app.draw_rect(0.0, 0.0, width.max(1.0), height(menu.len()), th.strip)]
+    mut ops := [app.draw_rect(0.0, 0.0, width.max(1.0), BAR_H, th.strip)]
     for k in 0..n
         x0 := tab_x(k, n, width, th.flat)
         shown := k == cur
@@ -287,17 +335,6 @@ pub fn draw(
         ))
     px := tab_x(n, n, width, th.flat)
     ops.push(text(px + 9.0, 8.0, "+", th.text, false, 18.0))
-    if menu.len() > 0
-        round(mut ops, menu_x, BAR_H, MENU_W, menu.len().to_float() * ROW_H + 8.0, 6.0, th.menu, th.strip, false)
-        for r in 0..menu.len()
-            ops.push(text(
-                menu_x + 14.0,
-                BAR_H + 4.0 + r.to_float() * ROW_H + 6.0,
-                menu[r],
-                th.menu_text,
-                false,
-                12.0,
-            ))
     ops
 
 @test fn clicks_land_on_the_tab_its_x_and_the_plus()

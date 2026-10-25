@@ -2504,7 +2504,7 @@ fn Garlic.strip(self) app.Node
         "tabs",
         0.0,
         tabstrip.height(rows.len()),
-        tabstrip.draw(theme(), items, cur, strip_w, rows, menu_x),
+        tabstrip.draw(theme(), items, cur, strip_w, [], menu_x),
     )
 
 impl app.App for Garlic
@@ -2529,8 +2529,12 @@ impl app.App for Garlic
                         "reload" => g.b.reload()
                         _ => menu_tab = -1
                 else
-                    menu_tab = -1
-                    g.click(ev.x, ev.y)
+                    r := tabstrip.menu_hit(ev.x, ev.y, menu_rows().len(), menu_x)
+                    if r >= 0
+                        menu_pick(r)
+                    else
+                        menu_tab = -1
+                        g.click(ev.x, ev.y)
             "scroll" =>
                 if ev.id != "tabs"
                     g.scroll(ev.dy)
@@ -2597,7 +2601,9 @@ impl app.App for Garlic
                 app.button("agent_allow", "Allow"),
                 app.button("agent_deny", "Deny"),
             ]))
-        rows.push(app.canvas("page", 0.0, 0.0, [to_app(op, g) for op in g.display()]))
+        mut page_ops := [to_app(op, g) for op in g.display()]
+        page_ops.extend(tabstrip.menu_ops(theme(), menu_rows(), menu_x, g.scene.bg))
+        rows.push(app.canvas("page", 0.0, 0.0, page_ops))
         rows.push(app.canvas(
             "status",
             0.0,
