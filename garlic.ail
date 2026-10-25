@@ -2009,8 +2009,6 @@ fn address(text str) str
 SEARCH_ENGINES := [
     ("ddg", "https://html.duckduckgo.com/html/?q="),
     ("b", "https://www.bing.com/search?q="),
-    ("brave", "https://search.brave.com/search?q="),
-    ("sp", "https://www.startpage.com/do/search?q="),
     ("y", "https://search.yahoo.com/search?p="),
     ("g", "https://www.google.com/search?q="),
 ]
@@ -2022,7 +2020,7 @@ fn is_query(t str) bool
         return true
     not t.contains(".") and not t.starts_with("localhost")
 
-## The results URL for a typed query: `ddg|b|brave|g words` picks an engine.
+## The results URL for a typed query: `ddg|b|y|g words` picks an engine.
 fn search_url(t str) str
     for e in SEARCH_ENGINES
         rest := t.strip_prefix("{e.0} ") else continue
@@ -3453,8 +3451,6 @@ fn node_with(b Browser, tag str, attr str, value str) int
 @test fn the_address_field_searches_for_words()
     assert_eq(address("rust lang"), "https://html.duckduckgo.com/html/?q=rust+lang")
     assert_eq(address("b rust lang"), "https://www.bing.com/search?q=rust+lang")
-    assert_eq(address("brave cats"), "https://search.brave.com/search?q=cats")
-    assert_eq(address("sp cats"), "https://www.startpage.com/do/search?q=cats")
     assert_eq(address("y cats"), "https://search.yahoo.com/search?p=cats")
     assert_eq(address("projects.voltare.us/x"), "https://projects.voltare.us/x")
 
