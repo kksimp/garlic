@@ -3535,7 +3535,7 @@ fn node_with(b Browser, tag str, attr str, value str) int
     assert_eq(b.answer().split("\"id\":").len(), 1)
 
 @test fn budgets_keep_the_viewport_then_key_nodes()
-    pg := Browser.new("/dev/null", 60, 4).pg
+    pg := Browser.empty("", 60, 4).pg
     assert(pg.to_json_budget(0, 4, 400).contains("\"omitted\":0"))
     ## A fixed URL, so the budget doesn't depend on where the checkout is.
     index := fs.read_text("{testdata()}/index.html") else ""
@@ -4134,6 +4134,11 @@ fn flat(s gfx.Scene) List[str]
     )
     assert(flat(s).contains("below@0,84"))
 
+## A path as it can sit inside a JSON string: Windows backslashes become
+## slashes, which every Garlic file open accepts.
+fn fwd_slashes(p str) str
+    p.replace("\\", "/")
+
 @test fn serve_answers_mcp_requests()
     mut b := Browser.empty("about:blank", 80, 24)
     mut g := Guard(allow: ["*"], log: [], fixed: [], ok_once: false)
@@ -4147,7 +4152,7 @@ fn flat(s gfx.Scene) List[str]
     )
     call := b.rpc(
         mut g,
-        "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{testdata()}/form.html\"}}}",
+        "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{fwd_slashes(testdata())}/form.html\"}}}",
     )
     assert(call.contains("\"content\""))
     assert(call.contains("textbox"))
@@ -4164,7 +4169,7 @@ fn flat(s gfx.Scene) List[str]
     mut open := Guard(allow: ["*"], log: [], fixed: [], ok_once: false)
     b.rpc(
         mut open,
-        "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{testdata()}/form.html\"}}}",
+        "\{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":\{\"name\":\"open\",\"arguments\":\{\"url\":\"{fwd_slashes(testdata())}/form.html\"}}}",
     )
     held := b.rpc(
         mut open,
