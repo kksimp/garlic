@@ -4792,3 +4792,17 @@ fn fwd_slashes(p str) str
     ev.x = a.menu_x + 5.0
     a.update(ev)
     assert_eq((a.tabs.len(), a.menu_tab), (1, -1))
+
+@test fn font_keywords_inherit_oblique_and_the_font_shorthand()
+    assert(page.font_italic("oblique 10deg", false))
+    assert(page.font_italic(" Italic ", false))
+    assert(not page.font_italic("normal", true))
+    assert(page.font_italic("inherit", true))
+    assert(not page.font_italic("inherit", false))
+    assert(page.font_bold("700", false))
+    assert(not page.font_bold("500", true))
+    assert(page.font_bold("unset", true))
+    assert_eq(page.font_shorthand("italic bold 16px/1.5 Georgia", false, false), (true, true))
+    assert_eq(page.font_shorthand("700 14px Arial", true, false), (false, true))
+    assert_eq(page.font_shorthand("12px Arial", true, true), (false, false))
+    assert_eq(page.font_shorthand("italic", false, true), (false, true))

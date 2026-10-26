@@ -477,6 +477,49 @@ fn Flow.children(mut self, id int)
     for c in d.nodes[id].children
         node(c)
 
+## Whether `font-style: v` is italic: `italic` and `oblique` (with or without an angle); `inherit` and `unset`
+## keep `cur`, the parent's value; anything else is upright.
+pub fn font_italic(v str, cur bool) bool
+    t := v.trim().to_lower()
+    if t == "inherit" or t == "unset"
+        return cur
+    t == "italic" or t.starts_with("oblique")
+
+## Whether `font-weight: v` is bold: `bold`, `bolder` and 600 and up; `inherit` and `unset` keep `cur`.
+pub fn font_bold(v str, cur bool) bool
+    t := v.trim().to_lower()
+    if t == "inherit" or t == "unset"
+        return cur
+    if t == "bold" or t == "bolder"
+        return true
+    n := t.to_int() else return false
+    n >= 600
+
+## The italic and bold flags the `font` shorthand sets (`font: italic bold 16px/1.5 Georgia`): the words
+## before the size. `normal` clears them. A value with no size is dropped, as CSS drops it.
+pub fn font_shorthand(v str, italic bool, bold bool) (bool, bool)
+    t := v.trim().to_lower()
+    if t == "inherit" or t == "unset"
+        return (italic, bold)
+    mut i := false
+    mut b := false
+    mut sized := false
+    for w in t.split(" ")
+        if w == ""
+            continue
+        if w.contains("/") or w.ends_with("px") or w.ends_with("pt") or w.ends_with("em") or w.ends_with("%")
+            sized = true
+            break
+        if w == "italic" or w.starts_with("oblique")
+            i = true
+        elif w == "bold" or w == "bolder"
+            b = true
+        elif (w.to_int() else 0) >= 600
+            b = true
+    if not sized
+        return (italic, bold)
+    (i, b)
+
 fn Flow.element(mut self, id int)
     tag := d.nodes[id].tag
     if tag != "#document" and hidden(id, tag)
@@ -535,15 +578,14 @@ fn Flow.element(mut self, id int)
         "code" | "kbd" | "samp" | "tt" => style.code = true
         "pre" => pre += 1
         _ => style.bold = style.bold
+    if f := cs.get("font")
+        shorthand := font_shorthand(f, style.italic, style.bold)
+        style.italic = shorthand.0
+        style.bold = shorthand.1
     if w := cs.get("font-weight")
-        style.bold = w == "bold"
-            or w == "bolder"
-            or w == "600"
-            or w == "700"
-            or w == "800"
-            or w == "900"
+        style.bold = font_bold(w, style.bold)
     if fs := cs.get("font-style")
-        style.italic = fs == "italic" or fs == "oblique"
+        style.italic = font_italic(fs, style.italic)
     if tt := cs.get("text-transform")
         style.upper = tt == "uppercase"
     ws := cs.get("white-space") else ""
