@@ -3879,8 +3879,7 @@ fn len_starting(ts List[str], prefix str) int
         """
     ts := pixel_text(gfx.layout(html.parse(src), "file:///t.html", 600.0, css.parse("", 0)).ops)
     b := at_of(ts, "Search")
-    assert(b[0] > 300.0)
-    assert(b[0] < 400.0)
+    assert_eq("{ts} {b}", "")
 
 @test fn right_aligned_flex_menus_measure_their_items_and_do_not_overlap()
     src := """
