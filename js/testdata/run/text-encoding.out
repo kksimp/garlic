@@ -1,0 +1,12 @@
+utf-8 [object TextEncoder] 0
+true 14 104,195,169,108,108,111,32,226,130,172,240,159,152,128
+utf-8 false false héllo €😀 héllo €😀 héllo €😀 
+A 2
+"A�B"
+TypeError
+utf-8 windows-1252 utf-16le
+hi😀 hé
+RangeError
+{"read":5,"written":7} 97,98,226,130,172,99,100,0 {"read":2,"written":4}
+1
+TypeError

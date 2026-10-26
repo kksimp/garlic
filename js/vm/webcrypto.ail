@@ -1,0 +1,80 @@
+## `crypto` (Web Crypto API §10, WebCrypto Level 2): getRandomValues,
+## randomUUID, and `crypto.subtle.digest` for SHA-1 and SHA-256. Every other
+## SubtleCrypto method rejects with NotSupportedError. The random bytes come
+## from the interpreter's seeded generator (the one behind Math.random), so
+## a run repeats exactly and they are NOT cryptographically secure.
+
+fn Vm.random_byte(mut self) int ! Thrown
+    r := math_function("random", [])?
+    ((num_of(r) else 0.0) * 256.0).floor().to_int()
+
+fn Vm.rejected(mut self, name str, msg str) Value
+    p := new_promise()
+    reject_promise(p, dom_exception(name, msg).value)
+    Value.Obj(p)
+
+fn Vm.crypto_native(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    a0 := arg_at(args, 0)
+    if m == "crypto.getRandomValues"
+        o := obj_of(a0) else return type_error("Failed to execute 'getRandomValues' on 'Crypto': parameter 1 is not of type 'ArrayBufferView'.")
+        e := elem_of(o.class)
+        if not is_view(o) or e.kind == "f"
+            return dom_exception("TypeMismatchError", "The data argument must be an integer-type TypedArray")
+        n := view_len(o) * e.size
+        if n > 65536
+            return dom_exception("QuotaExceededError", "The ArrayBufferView's byte length ({n}) exceeds the number of bytes of entropy available via this API (65536)")
+        buf := obj_of(o.prim) else return a0
+        base := view_off(o)
+        for i in 0..n
+            buf.elems[base + i] = Value.Num(random_byte()?.to_float())
+        return a0
+    if m == "crypto.randomUUID"
+        mut bs := List[int]()
+        for _ in 0..16
+            bs.push(random_byte()?)
+        bs[6] = bs[6].bit_and(15) + 64
+        bs[8] = bs[8].bit_and(63) + 128
+        mut parts := List[str]()
+        for i in 0..16
+            parts.push(bs[i].to_hex().pad_left(2, '0'))
+            if i == 3 or i == 5 or i == 7 or i == 9
+                parts.push("-")
+        return Value.Str(parts.join(""))
+    if m == "SubtleCrypto.prototype.digest"
+        mut algo := a0
+        if is_obj(a0)
+            algo = get(a0, "name")?
+        name := to_string(algo)?.to_upper()
+        input := bytes_of(arg_at(args, 1)) else err
+            return rejected("TypeError", "Failed to execute 'digest' on 'SubtleCrypto': 2nd argument is not an ArrayBuffer or ArrayBufferView")
+        digest := match name
+            "SHA-256" => digest_sha256(input)
+            "SHA-1" => digest_sha1(input)
+            _ => List[int]()
+        if digest.len() == 0
+            return rejected("NotSupportedError", "Unrecognized name.")
+        buf := new_buffer(digest.len(), proto_of("ArrayBuffer"))?
+        for i in 0..digest.len()
+            buf.elems[i] = Value.Num(digest[i].to_float())
+        p := promise_resolve(Value.Obj(buf))
+        return Value.Obj(p)
+    if m.starts_with("SubtleCrypto.prototype.")
+        return rejected("NotSupportedError", "The operation is not supported.")
+    type_error("{m} is not supported yet")
+
+fn Vm.crypto_setup(mut self)
+    bin_ctor("Crypto", 0)
+    cp := obj_of(proto_of("Crypto")) else return
+    methods(cp, "bin.crypto", "getRandomValues:1 randomUUID:0")
+    bin_tag(cp, "Crypto")
+    bin_ctor("SubtleCrypto", 0)
+    sp := obj_of(proto_of("SubtleCrypto")) else return
+    methods(
+        sp,
+        "bin.SubtleCrypto.prototype",
+        "digest:2 encrypt:3 decrypt:3 sign:3 verify:4 generateKey:3 deriveKey:5 deriveBits:3 importKey:5 exportKey:2 wrapKey:4 unwrapKey:7",
+    )
+    bin_tag(sp, "SubtleCrypto")
+    c := object("Crypto", Value.Obj(cp))
+    c.props["subtle"] = hidden(Value.Obj(object("SubtleCrypto", Value.Obj(sp))))
+    global_obj.props["crypto"] = hidden(Value.Obj(c))

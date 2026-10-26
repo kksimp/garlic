@@ -166,6 +166,31 @@ fn Vm.show_object(self, mut st Inspector, o ref JsObject, depth int) str
         if o.elems.len() > 100
             more := o.elems.len() - 100
             output.push("... {more} more item{if more > 1 then "s" else ""}")
+    elif is_view(o)
+        is_array_kind = true
+        open = "{cname}({view_len(o)}) ["
+        close = "]"
+        items := view_values(o)
+        mut shown := 0
+        for x in items
+            if shown == 100
+                break
+            output.push(show(mut st, x, depth + 1, true))
+            shown += 1
+        if items.len() > 100
+            more := items.len() - 100
+            output.push("... {more} more item{if more > 1 then "s" else ""}")
+    elif o.class == "ArrayBuffer"
+        open = "ArrayBuffer \{"
+        mut hex := List[str]()
+        for x in o.elems
+            if hex.len() == 50
+                break
+            hex.push((num_of(x) else 0.0).to_int().to_hex().pad_left(2, '0'))
+        more := o.elems.len() - hex.len()
+        tail := if more > 0 then " ... {more} more byte{if more > 1 then "s" else ""}" else ""
+        output.push("[Uint8Contents]: <{hex.join(" ")}{tail}>")
+        output.push("byteLength: {o.elems.len()}")
     elif o.class == "Map"
         open = "Map({o.elems.len() / 2}) \{"
         mut i := 0

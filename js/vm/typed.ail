@@ -1,0 +1,502 @@
+## ArrayBuffer (ECMA-262 §25.1), typed arrays (§23.2) and DataView (§25.3).
+## An ArrayBuffer is an object whose `elems` hold its bytes as numbers. A
+## typed array or DataView keeps its buffer in `prim`, and its byte offset
+## and element count in two hidden properties, so views share the bytes of
+## one buffer. Not supported: resizable or detached buffers, SharedArrayBuffer,
+## BigInt64Array and BigUint64Array (the engine has no BigInt).
+use syntax
+
+VIEW_OFF := "\u{0}#off"
+VIEW_LEN := "\u{0}#len"
+MAX_BYTES := 268435456
+
+fn byte_at(buf ref JsObject, i int) int
+    (num_of(buf.elems[i]) else 0.0).to_int()
+
+fn prop_int(o ref JsObject, key str) int
+    p := o.props.get(key) else return 0
+    (num_of(p.value) else 0.0).to_int()
+
+pub fn view_off(o ref JsObject) int
+    prop_int(o, VIEW_OFF)
+
+pub fn view_len(o ref JsObject) int
+    prop_int(o, VIEW_LEN)
+
+fn read_at(buf ref JsObject, at int, e Elem, little bool) Value
+    mut bs := List[int]()
+    for k in 0..e.size
+        bs.push(byte_at(buf, at + k))
+    if not little
+        bs.reverse()
+    Value.Num(decode_number(bs, e))
+
+fn write_at(buf ref JsObject, at int, e Elem, x float, little bool)
+    mut bs := encode_number(x, e)
+    if not little
+        bs.reverse()
+    for k in 0..e.size
+        buf.elems[at + k] = Value.Num(bs[k].to_float())
+
+## The element `key` of a typed array, as `own` gives it (§10.4.5.1).
+pub fn view_own(o ref JsObject, key str) Prop?
+    i := index_of_key(key) else return none
+    if i >= view_len(o)
+        return none
+    buf := obj_of(o.prim) else return none
+    e := elem_of(o.class)
+    data(read_at(buf, view_off(o) + i * e.size, e, true))
+
+## The index keys of a typed array, for `own_keys`; none for any other object.
+pub fn view_keys(o ref JsObject) List[str]
+    mut out := List[str]()
+    if is_view(o)
+        for i in 0..view_len(o)
+            out.push("{i}")
+    out
+
+pub fn view_values(o ref JsObject) List[Value]
+    mut out := List[Value]()
+    buf := obj_of(o.prim) else return out
+    e := elem_of(o.class)
+    base := view_off(o)
+    for i in 0..view_len(o)
+        out.push(read_at(buf, base + i * e.size, e, true))
+    out
+
+## An element write (§10.4.5.5): out-of-range indexes are ignored.
+pub fn Vm.view_set(mut self, o ref JsObject, key str, v Value) ! Thrown
+    x := to_number(v)?
+    i := index_of_key(key) else return
+    if i >= view_len(o)
+        return
+    buf := obj_of(o.prim) else return
+    e := elem_of(o.class)
+    write_at(buf, view_off(o) + i * e.size, e, x, true)
+
+fn Vm.store_values(mut self, o ref JsObject, items List[Value]) ! Thrown
+    n := items.len().min(view_len(o))
+    for i in 0..n
+        view_set(o, "{i}", items[i])?
+
+fn Vm.to_index(mut self, v Value) int ! Thrown
+    if v == Undef
+        return 0
+    n := trunc(to_number(v)?)
+    if is_nan(n)
+        return 0
+    if n < 0.0 or n > 9007199254740991.0
+        return range_error("Invalid typed array length: {syntax.number_to_string(n)}")
+    n.to_int()
+
+fn Vm.proto_from(mut self, new_target Value, name str) Value ! Thrown
+    p := get(new_target, "prototype")?
+    if is_obj(p)
+        return p
+    proto_of(name)
+
+fn Vm.new_buffer(mut self, n int, proto Value) ref JsObject ! Thrown
+    if n > MAX_BYTES
+        return range_error("Array buffer allocation failed")
+    b := object("ArrayBuffer", proto)
+    for _ in 0..n
+        b.elems.push(Value.Num(0.0))
+    b
+
+fn Vm.make_view(mut self, class str, buf ref JsObject, off int, len int, proto Value) ref JsObject
+    o := object(class, proto)
+    o.prim = Value.Obj(buf)
+    o.props[VIEW_OFF] = hidden(Value.Num(off.to_float()))
+    o.props[VIEW_LEN] = hidden(Value.Num(len.to_float()))
+    o
+
+## A new Uint8Array holding `bs`.
+pub fn Vm.new_bytes_array(mut self, bs List[int]) Value ! Thrown
+    buf := new_buffer(bs.len(), proto_of("ArrayBuffer"))?
+    for i in 0..bs.len()
+        buf.elems[i] = Value.Num(bs[i].to_float())
+    Value.Obj(make_view("Uint8Array", buf, 0, bs.len(), proto_of("Uint8Array")))
+
+fn Vm.view_from_values(mut self, class str, proto Value, items List[Value]) Value ! Thrown
+    e := elem_of(class)
+    buf := new_buffer(items.len() * e.size, proto_of("ArrayBuffer"))?
+    v := make_view(class, buf, 0, items.len(), proto)
+    store_values(v, items)?
+    Value.Obj(v)
+
+fn Vm.this_view(mut self, v Value) ref JsObject ! Thrown
+    o := obj_of(v) else return type_error("this is not a typed array.")
+    if not is_view(o)
+        return type_error("this is not a typed array.")
+    o
+
+fn Vm.this_kind(mut self, v Value, class str) ref JsObject ! Thrown
+    o := obj_of(v) else return type_error("Receiver is not a {class}")
+    if o.class != class
+        return type_error("Receiver is not a {class}")
+    o
+
+## The bytes an ArrayBuffer or a view covers (BufferSource).
+pub fn Vm.bytes_of(mut self, v Value) List[int] ! Thrown
+    o := obj_of(v) else return type_error("The provided value is not of type '(ArrayBuffer or ArrayBufferView)'")
+    mut out := List[int]()
+    if o.class == "ArrayBuffer"
+        for x in o.elems
+            out.push((num_of(x) else 0.0).to_int())
+        return out
+    if is_view(o) or o.class == "DataView"
+        buf := obj_of(o.prim) else return out
+        size := if o.class == "DataView" then 1 else elem_of(o.class).size
+        base := view_off(o)
+        for i in 0..(view_len(o) * size)
+            out.push(byte_at(buf, base + i))
+        return out
+    type_error("The provided value is not of type '(ArrayBuffer or ArrayBufferView)'")
+
+fn msort(xs List[float]) List[float]
+    if xs.len() < 2
+        return xs
+    mid := xs.len() / 2
+    a := msort(xs[0..mid])
+    b := msort(xs[mid..])
+    mut out := List[float]()
+    mut i := 0
+    mut j := 0
+    while i < a.len() and j < b.len()
+        if b[j] < a[i]
+            out.push(b[j])
+            j += 1
+        else
+            out.push(a[i])
+            i += 1
+    while i < a.len()
+        out.push(a[i])
+        i += 1
+    while j < b.len()
+        out.push(b[j])
+        j += 1
+    out
+
+## The default typed array sort (§23.2.3.29): numeric, NaN last.
+fn num_sort(items List[Value]) List[Value]
+    mut xs := List[float]()
+    mut nans := 0
+    for v in items
+        x := num_of(v) else 0.0
+        if x != x
+            nans += 1
+        else
+            xs.push(x)
+    mut out := List[Value]()
+    for x in msort(xs)
+        out.push(Value.Num(x))
+    for _ in 0..nans
+        out.push(Value.Num(nan()))
+    out
+
+## `new Int8Array(...)` and the other element types (§23.2.5.1).
+fn Vm.view_new(mut self, class str, args List[Value], new_target Value) Value ! Thrown
+    e := elem_of(class)
+    proto := proto_from(new_target, class)?
+    a0 := arg_at(args, 0)
+    if src := obj_of(a0)
+        if src.class == "ArrayBuffer"
+            off := to_index(arg_at(args, 1))?
+            if off % e.size != 0
+                return range_error("start offset of {class} should be a multiple of {e.size}")
+            blen := src.elems.len()
+            mut len := 0
+            if arg_at(args, 2) == Undef
+                if blen % e.size != 0
+                    return range_error("byte length of {class} should be a multiple of {e.size}")
+                if off > blen
+                    return range_error("Start offset {off} is outside the bounds of the buffer")
+                len = (blen - off) / e.size
+            else
+                len = to_index(arg_at(args, 2))?
+                if off + len * e.size > blen
+                    return range_error("Invalid typed array length: {len}")
+            return Value.Obj(make_view(class, src, off, len, proto))
+        mut items := List[Value]()
+        if is_view(src)
+            items = view_values(src)
+        elif get(a0, ITERATOR)? != Undef or get(a0, "length")? != Undef
+            items = iterate(a0)?
+        return view_from_values(class, proto, items)
+    n := to_index(a0)?
+    buf := new_buffer(n * e.size, proto_of("ArrayBuffer"))?
+    Value.Obj(make_view(class, buf, 0, n, proto))
+
+fn Vm.bin_new(mut self, name str, args List[Value], new_target Value) Value ! Thrown
+    if new_target == Undef
+        return type_error("Constructor {name} requires 'new'")
+    if elem_of(name).size > 0
+        return view_new(name, args, new_target)
+    match name
+        "ArrayBuffer" =>
+            n := to_index(arg_at(args, 0))?
+            Value.Obj(new_buffer(n, proto_from(new_target, name)?)?)
+        "DataView" =>
+            buf := obj_of(arg_at(args, 0)) else return type_error("First argument to DataView constructor must be an ArrayBuffer")
+            if buf.class != "ArrayBuffer"
+                return type_error("First argument to DataView constructor must be an ArrayBuffer")
+            off := to_index(arg_at(args, 1))?
+            blen := buf.elems.len()
+            if off > blen
+                return range_error("Start offset {off} is outside the bounds of the buffer")
+            mut len := blen - off
+            if arg_at(args, 2) != Undef
+                len = to_index(arg_at(args, 2))?
+                if off + len > blen
+                    return range_error("Invalid DataView length {len}")
+            Value.Obj(make_view("DataView", buf, off, len, proto_from(new_target, name)?))
+        "TextEncoder" | "TextDecoder" => encoding_new(name, args, new_target)
+        _ => type_error("Illegal constructor")
+
+## The natives named `bin.NAME`: one dispatch from `native`.
+pub fn Vm.bin_native(
+    mut self,
+    m str,
+    this_val Value,
+    args List[Value],
+    new_target Value,
+) Value ! Thrown
+    if t := m.strip_prefix("new.")
+        return bin_new(t, args, new_target)
+    if t := m.strip_prefix("TypedArray.prototype.")
+        return typed_method(t, this_val, args)
+    if t := m.strip_prefix("TypedArray.get.")
+        return typed_getter(t, this_val)
+    if t := m.strip_prefix("DataView.")
+        return dataview_native(t, this_val, args)
+    if t := m.strip_prefix("ArrayBuffer.")
+        return buffer_native(t, this_val, args)
+    if m.starts_with("TextEncoder.") or m.starts_with("TextDecoder.")
+        return encoding_native(m, this_val, args)
+    if m.starts_with("crypto.") or m.starts_with("SubtleCrypto.")
+        return crypto_native(m, this_val, args)
+    if m == "TypedArray.from" or m == "TypedArray.of"
+        cname := to_string(get(this_val, "name")?)?
+        if elem_of(cname).size == 0
+            return type_error("{describe(this_val)} is not a constructor")
+        mut items := List[Value]()
+        a0 := arg_at(args, 0)
+        if m == "TypedArray.of"
+            items = args
+        else
+            if is_obj(a0)
+                if src := obj_of(a0)
+                    if is_view(src)
+                        items = view_values(src)
+                    else
+                        items = iterate(a0)?
+            else
+                items = iterate(a0)?
+            f := arg_at(args, 1)
+            if f != Undef
+                if not is_callable(f)
+                    return type_error("{describe(f)} is not a function")
+                mut mapped := List[Value]()
+                for i in 0..items.len()
+                    mapped.push(call(f, arg_at(args, 2), [items[i], Value.Num(i.to_float())])?)
+                items = mapped
+        return view_from_values(cname, proto_of(cname), items)
+    type_error("bin.{m} is not supported yet")
+
+fn Vm.buffer_native(mut self, t str, this_val Value, args List[Value]) Value ! Thrown
+    if t == "isView"
+        if o := obj_of(arg_at(args, 0))
+            return Value.Bool(is_view(o) or o.class == "DataView")
+        return Value.Bool(false)
+    o := this_kind(this_val, "ArrayBuffer")?
+    match t
+        "get.byteLength" | "get.maxByteLength" => Value.Num(o.elems.len().to_float())
+        "get.resizable" => Value.Bool(false)
+        "prototype.slice" =>
+            len := o.elems.len()
+            start := relative(arg_at(args, 0), len, 0)?
+            end := relative(arg_at(args, 1), len, len)?
+            n := if end > start then end - start else 0
+            out := new_buffer(n, proto_of("ArrayBuffer"))?
+            for i in 0..n
+                out.elems[i] = o.elems[start + i]
+            Value.Obj(out)
+        _ => type_error("ArrayBuffer.{t} is not supported yet")
+
+fn Vm.typed_getter(mut self, t str, this_val Value) Value ! Thrown
+    if t == "tag"
+        if o := obj_of(this_val)
+            if is_view(o)
+                return Value.Str(o.class)
+        return Undef
+    o := this_view(this_val)?
+    match t
+        "buffer" => o.prim
+        "length" => Value.Num(view_len(o).to_float())
+        "byteLength" => Value.Num((view_len(o) * elem_of(o.class).size).to_float())
+        "byteOffset" => Value.Num(view_off(o).to_float())
+        _ => Undef
+
+fn Vm.typed_method(mut self, t str, this_val Value, args List[Value]) Value ! Thrown
+    o := this_view(this_val)?
+    a0 := arg_at(args, 0)
+    a1 := arg_at(args, 1)
+    match t
+        "join" | "indexOf" | "lastIndexOf" | "includes" | "find" | "findIndex" | "findLast" | "findLastIndex" | "forEach" | "some" | "every" | "reduce" | "reduceRight" | "at" | "keys" | "values" | "entries" =>
+            array_method(t, this_val, args)
+        "toString" | "toLocaleString" => array_method("join", this_val, [])
+        "slice" | "map" | "filter" | "toReversed" | "with" =>
+            arr := obj_of(array_method(t, this_val, args)?) else return type_error("Invalid typed array result")
+            view_from_values(o.class, o.proto, arr.elems)
+        "toSorted" =>
+            if a0 != Undef and not is_callable(a0)
+                return type_error("The comparison function must be either a function or undefined")
+            if a0 == Undef
+                return view_from_values(o.class, o.proto, num_sort(view_values(o)))
+            arr := obj_of(array_method(t, this_val, args)?) else return type_error("Invalid typed array result")
+            view_from_values(o.class, o.proto, arr.elems)
+        "fill" | "reverse" | "copyWithin" =>
+            tmp := obj_of(array(view_values(o))) else return Undef
+            mut args2 := List[Value]()
+            if t == "fill"
+                args2.push(Value.Num(to_number(a0)?))
+                if args.len() > 1
+                    args2.extend(args[1..])
+            else
+                args2 = args
+            array_method(t, Value.Obj(tmp), args2)?
+            store_values(o, tmp.elems)?
+            this_val
+        "sort" =>
+            if a0 != Undef and not is_callable(a0)
+                return type_error("The comparison function must be either a function or undefined")
+            if a0 == Undef
+                store_values(o, num_sort(view_values(o)))?
+                return this_val
+            tmp := obj_of(array(view_values(o))) else return Undef
+            array_method("sort", Value.Obj(tmp), args)?
+            store_values(o, tmp.elems)?
+            this_val
+        "set" =>
+            off := to_index(a1)?
+            items := set_source(a0)?
+            if off + items.len() > view_len(o)
+                return range_error("offset is out of bounds")
+            for i in 0..items.len()
+                view_set(o, "{off + i}", items[i])?
+            Undef
+        "subarray" =>
+            len := view_len(o)
+            start := relative(a0, len, 0)?
+            end := relative(a1, len, len)?
+            n := if end > start then end - start else 0
+            buf := obj_of(o.prim) else return Undef
+            Value.Obj(make_view(o.class, buf, view_off(o) + start * elem_of(o.class).size, n, o.proto))
+        _ => type_error("%TypedArray%.prototype.{t} is not supported yet")
+
+fn Vm.set_source(mut self, v Value) List[Value] ! Thrown
+    if src := obj_of(v)
+        if is_view(src)
+            return view_values(src)
+    elements_of(v)
+
+fn Vm.dataview_native(mut self, t str, this_val Value, args List[Value]) Value ! Thrown
+    o := this_kind(this_val, "DataView")?
+    if t == "get.buffer"
+        return o.prim
+    if t == "get.byteLength"
+        return Value.Num(view_len(o).to_float())
+    if t == "get.byteOffset"
+        return Value.Num(view_off(o).to_float())
+    name := t.strip_prefix("prototype.") else return type_error("DataView.{t} is not supported yet")
+    typ := name.slice(3, name.chars().len())
+    e := elem_of("{typ}Array")
+    if e.size == 0
+        return type_error("DataView.prototype.{name} is not supported yet")
+    idx := to_index(arg_at(args, 0))?
+    if idx + e.size > view_len(o)
+        return range_error("Offset is outside the bounds of the DataView")
+    buf := obj_of(o.prim) else return Undef
+    at := view_off(o) + idx
+    if name.starts_with("get")
+        return read_at(buf, at, e, truthy(arg_at(args, 1)))
+    x := to_number(arg_at(args, 1))?
+    write_at(buf, at, e, x, truthy(arg_at(args, 2)))
+    Undef
+
+# ----------------------------------------------------------------- setup
+
+## A constructor `name` whose native is `bin.new.NAME`, with its prototype.
+fn Vm.bin_ctor(mut self, name str, length int) ref JsObject
+    proto := object("Object", proto_of("Object"))
+    protos[name] = Value.Obj(proto)
+    c := obj_of(native_fn("bin.new.{name}", name, length)) else return proto
+    c.props["prototype"] = Prop(
+        value: Value.Obj(proto),
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+    )
+    proto.props["constructor"] = hidden(Value.Obj(c))
+    ctors[name] = Value.Obj(c)
+    global_obj.props[name] = hidden(Value.Obj(c))
+    c
+
+fn Vm.bin_tag(mut self, p ref JsObject, name str)
+    p.props[well_known("toStringTag")] = Prop(
+        value: Value.Str(name),
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+    )
+
+pub fn Vm.bin_setup(mut self)
+    ab := bin_ctor("ArrayBuffer", 1)
+    ab_proto := obj_of(proto_of("ArrayBuffer")) else return
+    methods(ab, "bin.ArrayBuffer", "isView:1")
+    methods(ab_proto, "bin.ArrayBuffer.prototype", "slice:2")
+    getter(ab_proto, "byteLength", "bin.ArrayBuffer.get.byteLength")
+    getter(ab_proto, "maxByteLength", "bin.ArrayBuffer.get.maxByteLength")
+    getter(ab_proto, "resizable", "bin.ArrayBuffer.get.resizable")
+    bin_tag(ab_proto, "ArrayBuffer")
+
+    ta := bin_ctor("TypedArray", 0)
+    global_obj.props.remove("TypedArray")
+    ta_proto := obj_of(proto_of("TypedArray")) else return
+    methods(ta, "bin.TypedArray", "from:1 of:0")
+    methods(
+        ta_proto,
+        "bin.TypedArray.prototype",
+        "at:1 set:1 subarray:2 slice:2 fill:1 map:1 filter:1 forEach:1 reduce:1 reduceRight:1 join:1 indexOf:1 lastIndexOf:1 includes:1 find:1 findIndex:1 findLast:1 findLastIndex:1 every:1 some:1 reverse:0 sort:1 keys:0 values:0 entries:0 copyWithin:2 toReversed:0 toSorted:1 with:2 toString:0 toLocaleString:0",
+    )
+    for name in ["buffer", "byteLength", "byteOffset", "length"]
+        getter(ta_proto, name, "bin.TypedArray.get.{name}")
+    getter(ta_proto, well_known("toStringTag"), "bin.TypedArray.get.tag")
+    ta_proto.props[ITERATOR] = hidden(native_fn("bin.TypedArray.prototype.values", "values", 0))
+    for name in typed_names()
+        c := bin_ctor(name, 3)
+        p := obj_of(proto_of(name)) else continue
+        p.proto = Value.Obj(ta_proto)
+        c.proto = Value.Obj(ta)
+        size := Value.Num(elem_of(name).size.to_float())
+        constant(c, "BYTES_PER_ELEMENT", size)
+        constant(p, "BYTES_PER_ELEMENT", size)
+
+    bin_ctor("DataView", 1)
+    dv_proto := obj_of(proto_of("DataView")) else return
+    methods(
+        dv_proto,
+        "bin.DataView.prototype",
+        "getInt8:1 getUint8:1 getInt16:1 getUint16:1 getInt32:1 getUint32:1 getFloat32:1 getFloat64:1 setInt8:2 setUint8:2 setInt16:2 setUint16:2 setInt32:2 setUint32:2 setFloat32:2 setFloat64:2",
+    )
+    for name in ["buffer", "byteLength", "byteOffset"]
+        getter(dv_proto, name, "bin.DataView.get.{name}")
+    bin_tag(dv_proto, "DataView")
+    encoding_setup()
+    crypto_setup()

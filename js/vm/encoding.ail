@@ -1,0 +1,127 @@
+## TextEncoder and TextDecoder (Encoding Standard §8.2, §8.3): UTF-8 both
+## ways, plus UTF-16LE and Latin-1 for decoding. A decoder keeps its
+## encoding name and flags in hidden properties. `stream` is ignored: each
+## `decode` call is a whole input.
+
+ENC_NAME := "\u{0}#enc"
+ENC_FATAL := "\u{0}#fatal"
+ENC_BOM := "\u{0}#bom"
+
+fn label_encoding(label str) str
+    l := label.trim().to_lower()
+    match l
+        "utf-8" | "utf8" | "unicode-1-1-utf-8" => "utf-8"
+        "utf-16le" | "utf-16" | "ucs-2" | "unicode" => "utf-16le"
+        "latin1" | "iso-8859-1" | "ascii" | "us-ascii" | "windows-1252" | "l1" => "windows-1252"
+        _ => ""
+
+fn Vm.opt_flag(mut self, opts Value, key str) bool ! Thrown
+    if is_obj(opts)
+        return truthy(get(opts, key)?)
+    false
+
+fn Vm.encoding_new(mut self, name str, args List[Value], new_target Value) Value ! Thrown
+    o := object(name, proto_from(new_target, name)?)
+    if name == "TextDecoder"
+        a0 := arg_at(args, 0)
+        label := if a0 == Undef then "utf-8" else to_string(a0)?
+        enc := label_encoding(label)
+        if enc == ""
+            return range_error("The encoding label provided ('{label}') is invalid.")
+        opts := arg_at(args, 1)
+        o.props[ENC_NAME] = hidden(Value.Str(enc))
+        o.props[ENC_FATAL] = hidden(Value.Bool(opt_flag(opts, "fatal")?))
+        o.props[ENC_BOM] = hidden(Value.Bool(opt_flag(opts, "ignoreBOM")?))
+    Value.Obj(o)
+
+fn hidden_flag(o ref JsObject, key str) bool
+    p := o.props.get(key) else return false
+    truthy(p.value)
+
+fn Vm.decode_bytes(mut self, enc str, bs List[int], fatal bool, ignore_bom bool) Value ! Thrown
+    if enc == "utf-16le"
+        mut us := List[int]()
+        mut i := 0
+        while i + 1 < bs.len()
+            us.push(bs[i] + bs[i + 1] * 256)
+            i += 2
+        if us.len() > 0 and us[0] == 0xFEFF and not ignore_bom
+            us = us[1..]
+        return Value.Str(from_units(us))
+    if enc == "windows-1252"
+        mut cs := List[char]()
+        for b in bs
+            cs.push(char.from_code(b) else '\u{fffd}')
+        return Value.Str(cs.join(""))
+    mut start := 0
+    if bs.len() >= 3 and bs[0] == 239 and bs[1] == 187 and bs[2] == 191 and not ignore_bom
+        start = 3
+    raw := bytes.from_list([b.to_u8() for b in bs[start..]])
+    if fatal
+        s := raw.to_str() else return type_error("The encoded data was not valid for encoding utf-8")
+        return Value.Str(s)
+    Value.Str(raw.text())
+
+fn Vm.encoding_native(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    a0 := arg_at(args, 0)
+    if m.starts_with("TextEncoder.")
+        if m == "TextEncoder.get.encoding"
+            return Value.Str("utf-8")
+        this_kind(this_val, "TextEncoder")?
+        if m == "TextEncoder.prototype.encode"
+            s := if a0 == Undef then "" else to_string(a0)?
+            bs := s.to_bytes()
+            mut out := List[int]()
+            for i in 0..bs.len()
+                out.push(bs[i].to_int())
+            return new_bytes_array(out)
+        if m == "TextEncoder.prototype.encodeInto"
+            s := to_string(a0)?
+            d := obj_of(arg_at(args, 1)) else return type_error("The \"dest\" argument must be an instance of Uint8Array.")
+            if d.class != "Uint8Array"
+                return type_error("The \"dest\" argument must be an instance of Uint8Array.")
+            buf := obj_of(d.prim) else return Undef
+            base := view_off(d)
+            cap := view_len(d)
+            mut read := 0
+            mut written := 0
+            for c in s.chars()
+                cb := "{c}".to_bytes()
+                if written + cb.len() > cap
+                    break
+                for k in 0..cb.len()
+                    buf.elems[base + written + k] = Value.Num(cb[k].to_int().to_float())
+                written += cb.len()
+                read += if c.code() >= 0x10000 then 2 else 1
+            r := plain()
+            r.props["read"] = data(Value.Num(read.to_float()))
+            r.props["written"] = data(Value.Num(written.to_float()))
+            return Value.Obj(r)
+        return type_error("{m} is not supported yet")
+    d := this_kind(this_val, "TextDecoder")?
+    enc := (str_of((d.props.get(ENC_NAME) else hidden(Value.Str("utf-8"))).value) else "utf-8")
+    if m == "TextDecoder.get.encoding"
+        return Value.Str(enc)
+    if m == "TextDecoder.get.fatal"
+        return Value.Bool(hidden_flag(d, ENC_FATAL))
+    if m == "TextDecoder.get.ignoreBOM"
+        return Value.Bool(hidden_flag(d, ENC_BOM))
+    if m == "TextDecoder.prototype.decode"
+        if a0 == Undef
+            return Value.Str("")
+        bs := bytes_of(a0)?
+        return decode_bytes(enc, bs, hidden_flag(d, ENC_FATAL), hidden_flag(d, ENC_BOM))
+    type_error("{m} is not supported yet")
+
+fn Vm.encoding_setup(mut self)
+    bin_ctor("TextEncoder", 0)
+    te := obj_of(proto_of("TextEncoder")) else return
+    methods(te, "bin.TextEncoder.prototype", "encode:0 encodeInto:2")
+    getter(te, "encoding", "bin.TextEncoder.get.encoding")
+    bin_tag(te, "TextEncoder")
+    bin_ctor("TextDecoder", 0)
+    td := obj_of(proto_of("TextDecoder")) else return
+    methods(td, "bin.TextDecoder.prototype", "decode:0")
+    for name in ["encoding", "fatal", "ignoreBOM"]
+        getter(td, name, "bin.TextDecoder.get.{name}")
+    bin_tag(td, "TextDecoder")

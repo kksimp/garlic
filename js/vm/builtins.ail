@@ -295,6 +295,7 @@ fn Vm.setup(mut self)
     )
     getter(set_proto, "size", "Set.prototype.size")
     weak_setup()
+    bin_setup()
     reflect_setup()
     map_ctor.props["length"] = hidden(Num(0.0))
     set_ctor.props["length"] = hidden(Num(0.0))
@@ -365,7 +366,7 @@ pub fn native_is_ctor(name str) bool
     match name
         "Object" | "Function" | "Array" | "String" | "Number" | "Boolean" | "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" | "AggregateError" | "Map" | "Set" | "Proxy" | "proxy" | "WeakMap" | "WeakSet" | "WeakRef" | "FinalizationRegistry" | "IntersectionObserver" | "ResizeObserver" | "RegExp" | "Date" | "Promise" | "dom.Event" | "dom.MutationObserver" | "dom.illegal" | "dom.URL" | "dom.URLSearchParams" | "dom.Image" | "dom.abort.new.AbortController" =>
             true
-        _ => false
+        _ => name.starts_with("bin.new.")
 
 ## Run the native function `name`. `new_target` is Undef for a plain call.
 pub fn Vm.native(
@@ -401,6 +402,8 @@ pub fn Vm.native(
         return async_from_sync_native(m, this_val, args)
     if m := name.strip_prefix("dom.")
         return dom_native(m, this_val, args, new_target)
+    if m := name.strip_prefix("bin.")
+        return bin_native(m, this_val, args, new_target)
     if m := name.strip_prefix("Array.prototype.")
         return array_method(m, this_val, args)
     if m := name.strip_prefix("String.prototype.")
