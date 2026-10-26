@@ -497,7 +497,7 @@ pub fn font_bold(v str, cur bool) bool
 
 ## The italic and bold flags the `font` shorthand sets (`font: italic bold 16px/1.5 Georgia`): the words
 ## before the size. `normal` clears them. A value with no size is dropped, as CSS drops it.
-pub fn font_shorthand(v str, italic bool, bold bool) (bool, bool)
+pub fn font_shorthand(v str, italic bool, bold bool)(bool, bool)
     t := v.trim().to_lower()
     if t == "inherit" or t == "unset"
         return (italic, bold)
@@ -507,7 +507,11 @@ pub fn font_shorthand(v str, italic bool, bold bool) (bool, bool)
     for w in t.split(" ")
         if w == ""
             continue
-        if w.contains("/") or w.ends_with("px") or w.ends_with("pt") or w.ends_with("em") or w.ends_with("%")
+        if w.contains("/")
+            or w.ends_with("px")
+            or w.ends_with("pt")
+            or w.ends_with("em")
+            or w.ends_with("%")
             sized = true
             break
         if w == "italic" or w.starts_with("oblique")

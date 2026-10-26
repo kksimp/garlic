@@ -136,6 +136,8 @@ USED := {
     "grid-template-columns",
     "grid-template",
     "grid-template-areas",
+    "column-count",
+    "columns",
     "grid-area",
     "list-style",
     "list-style-type",
