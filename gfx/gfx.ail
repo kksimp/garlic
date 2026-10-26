@@ -1841,12 +1841,30 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
         if bg := bx.bg
             canvas = bg
 
+## The `list-style-type` or `list-style` in `cs` as `none` or its first
+## token, or "" when neither is set.
+fn list_kind(cs Map[str, str]) str
+    if t := cs.get("list-style-type")
+        return t.trim()
+    if v := cs.get("list-style")
+        parts := tokens(v)
+        if parts.contains("none")
+            return "none"
+        if parts.len() > 0
+            return parts[0]
+    ""
+
 ## Sets the marker of list item `id` whose content starts at `x`.
 fn Ctx.li_marker(mut self, id int, st St, x float)
     parent := d.nodes[id].parent
     ptag := d.nodes[parent].tag
-    cs := css.cascade(d, parent, sheet)
-    kind := (cs.get("list-style-type") else (cs.get("list-style") else "")).trim()
+    ## `list-style` inherits: the item's own value, then its list's, then
+    ## the nearest ancestor's (`none` may be one token of the shorthand).
+    mut kind := ""
+    mut e := id
+    while e > 0 and kind == ""
+        kind = list_kind(self.element_style(e))
+        e = d.nodes[e].parent
     if kind == "none"
         return
     marker_x = x - 6.0
