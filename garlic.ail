@@ -3951,7 +3951,7 @@ fn len_starting(ts List[str], prefix str) int
 
 @test fn a_shrink_wrapped_float_keeps_its_right_padding_on_one_line()
     src := """
-        <body style="margin: 0"><ul style="list-style: none; margin: 0; padding: 0; float: left"><li style="float: left; padding: 0 10px; background: #aaa">Your browser</li></ul></body>
+        <body style="margin: 0"><ul style="list-style: none; margin: 0; padding: 0; float: left"><li style="float: left; padding: 0 10px">Your browser</li></ul></body>
         """
     ts := pixel_text(gfx.layout(html.parse(src), "file:///t.html", 800.0, css.parse("", 0)).ops)
     assert_eq(at_of(ts, "browser")[1], at_of(ts, "Your")[1])

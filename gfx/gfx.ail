@@ -921,6 +921,9 @@ struct Ctx
     page_w float
     col_x float
     col_w float
+    ## The right edge of the shrink-wrapped floats placed while measuring, so
+    ## their padding and border count even when nothing is drawn there.
+    reach float
 
 CONTROLS := {"button", "input", "select", "textarea"}
 FLOW_FLEX := {"flex", "inline-flex"}
@@ -1548,6 +1551,8 @@ fn Ctx.place_float(mut self, id int, st St, x float, w float, right bool)
     y0 := y
     p0 := pend
     pend = 0.0
+    if wide < SHRINK_W
+        reach = fmax(reach, fx + wide)
     self.block(id, st, fx, wide)
     h := y + pend - y0
     y = y0
@@ -1656,8 +1661,11 @@ fn Ctx.max_content(mut self, id int, st St) float
     m0 := marker
     saved := atoms
     atoms = []
+    saved_reach := reach
+    reach = 0.0
     self.block(id, st, 0.0, 2.0 * SHRINK_W)
-    mut extent := 0.0
+    mut extent := reach
+    reach = saved_reach
     for k in o0..ops.len()
         match ops[k]
             Rect(x, _, w, _, _) => extent = if x + w < SHRINK_W then fmax(extent, x + w) else extent
@@ -2444,6 +2452,7 @@ pub fn layout_measured(
         pend: 0.0,
         marker: "",
         marker_x: 0.0,
+        reach: 0.0,
         canvas: 0xffffff,
         styles: {},
         scopes: {},
