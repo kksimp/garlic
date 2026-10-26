@@ -409,5 +409,5 @@ pub fn Vm.big_setup(mut self)
     c := bin_ctor("BigInt", 1)
     p := obj_of(proto_of("BigInt")) else return
     methods(c, "bin.BigInt", "asIntN:2 asUintN:2")
-    methods(p, "bin.BigInt.prototype", "toString:0 valueOf:0 toLocaleString:0")
+    methods(p, "bin.BigInt", "toString:0 valueOf:0 toLocaleString:0")
     bin_tag(p, "BigInt")

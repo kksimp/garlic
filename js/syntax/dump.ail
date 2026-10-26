@@ -345,7 +345,14 @@ fn Dump.template(self, quasis List[Quasi], exprs List[Expr], p Pos) str
 fn Dump.expr(self, e Expr) str
     match e
         Num(v, p) => literal(number_json(v), p)
-        Str(v, p) => literal(quote(v), p)
+        Str(v, p) =>
+            if v.starts_with("\u{0}n")
+                # A BigInt literal, as acorn writes it: no number, plus its digits.
+                return node("Literal", p, [
+                    field("value", "null"),
+                    field("bigint", quote(v.slice(2, v.chars().len()))),
+                ])
+            literal(quote(v), p)
         Template(quasis, es, p) => template(quasis, es, p)
         Tagged(tag, quasis, es, p) => node("TaggedTemplateExpression", p, [
             field("tag", expr(tag)),
