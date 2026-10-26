@@ -59,19 +59,30 @@ fn main() !
             # `--url URL` loads it at that address and lists every request
             # and cookie too.
             mut url := ""
-            if args.len() > 1 and args[0] == "--url"
-                url = args[1]
-                args.remove_at(0)
+            mut files := Map[str, str]()
+            mut trace := false
+            while args.len() > 0 and args[0].starts_with("--")
+                if args[0] == "--url" and args.len() > 1
+                    url = args[1]
+                    args.remove_at(0)
+                elif args[0] == "--map" and args.len() > 1
+                    files = map_files(args[1])?
+                    args.remove_at(0)
+                elif args[0] == "--trace"
+                    trace = true
+                else
+                    usage()
                 args.remove_at(0)
             for path in args
-                print(run_page_at(fs.read_text(path)?, max_steps, url).join("\n"))
+                html := fs.read_text(path)?
+                print(run_page_with(html, max_steps, url, files, trace).join("\n"))
         "--test-page" => failed = not test_pages(args[0])?
         _ => usage()
     if failed
         io.exit(1)
 
 fn usage()
-    io.eprint("usage: ail run js (--tokens | --ast [--loc] | --check | --run [--max-steps N]) FILE... | --test DIR | --test262 DIR | --test-run DIR | --page FILE | --test-page DIR")
+    io.eprint("usage: ail run js (--tokens | --ast [--loc] | --check | --run [--max-steps N]) FILE... | --test DIR | --test262 DIR | --test-run DIR | --page [--url URL] [--map MAP] [--trace] FILE | --test-page DIR")
     io.exit(2)
 
 ## One file's output for `mode`.
@@ -264,7 +275,7 @@ PAGE_URL := "https://example.test/dir/page.html"
 ## Load a page and run its scripts, then a second of virtual time: what the
 ## console printed, the body's HTML, and what the page asked the browser for.
 fn run_page_at(html str, max_steps int, url str) List[str]
-    run_page_with(html, max_steps, url, {})
+    run_page_with(html, max_steps, url, {}, false)
 
 ## Answer the page's `import()` requests from `files` (a missing file fails
 ## to load, as a 404 does), letting the page run on after each answer.
@@ -287,8 +298,15 @@ fn serve_page_modules(mut machine vm.Vm, files Map[str, str])
 
 ## `run_page_at` with the files beside the page (modules and scripts) by
 ## address.
-fn run_page_with(html str, max_steps int, url str, files Map[str, str]) List[str]
+fn run_page_with(
+    html str,
+    max_steps int,
+    url str,
+    files Map[str, str],
+    trace bool,
+) List[str]
     mut machine := vm.new_vm()
+    machine.trace = trace
     machine.step_limit = max_steps
     machine.external_scripts = files
     machine.dom_setup()
@@ -310,6 +328,23 @@ fn run_page_with(html str, max_steps int, url str, files Map[str, str]) List[str
             lines.push("== cookie {k}={machine.cookies[k]}")
     lines
 
+## Files by address, from a map file of `URL PATH` lines (blank lines and
+## `#` lines are skipped), so a captured site loads offline.
+fn map_files(map_path str) !Map[str, str]
+    mut files := Map[str, str]()
+    dir := path.dir(map_path)
+    for line in fs.read_text(map_path)?.lines()
+        t := line.trim()
+        if t == "" or t.starts_with("#")
+            continue
+        parts := t.split(" ")
+        if parts.len() < 2
+            continue
+        file := t.slice(parts[0].chars().len(), t.chars().len()).trim()
+        local := if file.starts_with("/") then file else path.join(dir, file)
+        files[parts[0]] = fs.read_text(local)?
+    files
+
 ## The scripts and modules in `dir`, at the addresses a page there sees.
 fn page_files(dir str) !Map[str, str]
     mut files := Map[str, str]()
@@ -327,7 +362,8 @@ fn test_pages(dir str) !bool
             continue
         file := path.join(dir, name)
         stem := name.slice(0, name.chars().len() - 5)
-        actual := run_page_with(fs.read_text(file)?, 10000000, "", page_files(dir)?)
+        html := fs.read_text(file)?
+        actual := run_page_with(html, 10000000, "", page_files(dir)?, false)
             .join("\n")
             .trim()
         expected := fs.read_text(path.join(dir, "{stem}.out"))?.trim()

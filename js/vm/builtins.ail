@@ -28,6 +28,9 @@ pub fn new_vm() Vm
         ctors: {},
         console_out: [],
         echo: false,
+        trace: false,
+        cur_url: "",
+        cur_pos: syntax.Pos(line: 0, col: 0, offset: 0),
         step_count: 0,
         step_limit: 0,
         next_id: 1,
@@ -571,7 +574,7 @@ pub fn Vm.native(
                     o.props["cause"] = hidden(get(opts, "cause")?)
             stack_name := to_string(get(Obj(o), "name")?)?
             msg := to_string(get(Obj(o), "message")?)?
-            o.props["stack"] = hidden(Str(if msg == "" then "{stack_name}\n    at <anonymous>" else "{stack_name}: {msg}\n    at <anonymous>"))
+            o.props["stack"] = hidden(Str(if msg == "" then "{stack_name}\n    at {at_text()}" else "{stack_name}: {msg}\n    at {at_text()}"))
             Obj(o)
         "Error.prototype.toString" =>
             if not is_obj(this_val)

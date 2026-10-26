@@ -88,6 +88,7 @@ pub fn start(
     max_steps int,
 )(Session, Outcome)
     mut machine := vm.new_vm()
+    machine.trace = true
     machine.step_limit = max_steps
     machine.clock_ms = now_ms
     machine.cookies = cookies

@@ -173,7 +173,7 @@ fn Dump.module_item(self, item ModItem, p Pos) str
 
 ## The operand of `export default`: an unparenthesized anonymous function
 ## or class is a declaration in ESTree.
-fn Dump.default_value(self, value Expr?) str
+@allow("expr.match.3") fn Dump.default_value(self, value Expr?) str
     if v := value
         match v
             Function(f) => return function("FunctionDeclaration", f)

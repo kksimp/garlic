@@ -247,6 +247,7 @@ fn Vm.run_script_node(mut self, s int, mode str)
         return
     if src := attr_of(s, "src")
         if source := external_scripts.get(resolve_url(src))
+            cur_url = resolve_url(src)
             run_script_text(source)
         else
             host_requests.push(HostRequest(
@@ -257,6 +258,7 @@ fn Vm.run_script_node(mut self, s int, mode str)
                 text: "",
             ))
     else
+        cur_url = location_href
         run_script_text(text_content(s))
 
 ## `id` and its descendants with the tag, in document order.

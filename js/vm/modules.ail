@@ -659,6 +659,7 @@ fn Vm.run_finish(mut self, id int, r ref EvalRun, ok bool, v Value)
     reject_promise(r.promise, v)
 
 fn Vm.mod_exec(mut self, m ref ModRec) bool ! Thrown
+    cur_url = m.url
     for s in m.body
         exec(s, m.env)?
     true
@@ -679,6 +680,7 @@ fn Vm.mod_tla(mut self, m ref ModRec) Value ! Thrown
         pos: syntax.Pos(line: 1, col: 1, offset: 0),
         text: "",
     )
+    cur_url = m.url
     fv := make_function(fun, m.env, Undef, "normal")
     fobj := obj_of(fv) else return Undef
     start_resumable(fobj, fun, m.env, [])

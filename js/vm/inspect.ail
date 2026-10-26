@@ -126,7 +126,7 @@ fn Vm.show_object(self, mut st Inspector, o ref JsObject, depth int) str
     cname := ctor else ""
     is_fn := o.call != none
     if o.class == "Error"
-        return "[{error_text(Obj(o))}]"
+        return "[{error_text(Obj(o))}{error_where(Obj(o))}]"
     empty := o.props.len() == 0 and o.elems.len() == 0
     if depth > 2
         and not is_fn

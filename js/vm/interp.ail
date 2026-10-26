@@ -12,6 +12,11 @@ pub struct Vm
     ## What `console.log` wrote, one entry per call, when `echo` is off.
     pub console_out List[str]
     pub echo bool
+    ## Name errors' positions ("url:line:col" in `stack`), for diagnosis.
+    pub trace bool
+    ## The script or module running, and its latest statement (when `trace`).
+    pub cur_url str
+    pub cur_pos syntax.Pos
     pub step_count int
     ## 0 for no limit.
     pub step_limit int
@@ -102,11 +107,17 @@ pub fn Vm.tick(mut self) ! Thrown
 
 # ---------------------------------------------------------------- errors
 
+## Where an error is made: "url:line:col" when tracing, else "<anonymous>".
+pub fn Vm.at_text(self) str
+    if trace and cur_pos.line > 0
+        return "{cur_url}:{cur_pos.line}:{cur_pos.col}"
+    "<anonymous>"
+
 ## A new error object of a built-in kind ("TypeError", ...).
 pub fn Vm.make_error(mut self, kind str, msg str) Value
     o := object("Error", proto_of(kind))
     o.props["message"] = hidden(Str(msg))
-    o.props["stack"] = hidden(Str("{kind}: {msg}\n    at <anonymous>"))
+    o.props["stack"] = hidden(Str("{kind}: {msg}\n    at {at_text()}"))
     Obj(o)
 
 pub fn Vm.throw_error(mut self, kind str, msg str) Thrown
@@ -129,7 +140,20 @@ pub fn Vm.thrown(self, v Value) Thrown
 pub fn Vm.uncaught_text(self, err Thrown) str
     if err.limit
         return err.text
-    "Uncaught {error_text(err.value)}"
+    "Uncaught {error_text(err.value)}{error_where(err.value)}"
+
+## " (at url:line:col)" for an error made while tracing.
+pub fn Vm.error_where(self, v Value) str
+    if not trace
+        return ""
+    o := obj_of(v) else return ""
+    if o.class != "Error"
+        return ""
+    stack := plain_string(o, "stack") else return ""
+    parts := stack.split("\n    at ")
+    if parts.len() < 2 or parts[1] == "<anonymous>"
+        return ""
+    " (at {parts[1]})"
 
 ## "TypeError: x is not a function" for an error, the value otherwise; reads
 ## data properties only, so it can't run code.
@@ -534,6 +558,8 @@ fn loop_action(f Flow, labels List[str]) str
 ## A statement with the labels in front of it (§14.13).
 fn Vm.exec_in(mut self, s syntax.Stmt, env ref Env, labels List[str]) Flow ! Thrown
     tick()?
+    if trace
+        cur_pos = stmt_pos(s)
     match s
         Exp(e, _) =>
             eval(e, env)?
