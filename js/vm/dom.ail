@@ -1517,7 +1517,10 @@ fn Vm.insert_checked(mut self, parent int, child int, before int) ! Thrown
         for c in dom[child].children
             dom_insert_before(parent, c, before)
         return
-    dom_insert_before(parent, child, before)
+    ## Inserting a node before itself leaves it in place (DOM 4.2.3: the
+    ## reference child becomes its next sibling).
+    anchor := if before == child then next_sibling(child) else before
+    dom_insert_before(parent, child, anchor)
 
 fn Vm.clone(mut self, id int, deep bool) int
     n := dom[id]
