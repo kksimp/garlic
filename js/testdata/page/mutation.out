@@ -30,6 +30,7 @@ t("style",()=>{a.style.color="red";a.style.backgroundColor="blue";a.style.cssTex
 t("style.display",()=>{a.style.display="none";const r=a.style.display;a.style.removeProperty("display");return r+"|"+a.getAttribute("style")});
 t("dataset",()=>{a.dataset.fooBar="1";return a.getAttribute("data-foo-bar")+a.dataset.fooBar});
 t("insertAdjacent",()=>{a.insertAdjacentHTML("beforeend","<i>x</i>");a.insertAdjacentHTML("afterbegin","<b>y</b>");return a.innerHTML});
+t("insertAdjacentOrder",()=>{const d=document.createElement("div");d.innerHTML="<p>m</p>";d.firstChild.insertAdjacentHTML("afterend","<i>1</i><i>2</i>");d.insertAdjacentHTML("afterbegin","<b>x</b><b>y</b>");return d.innerHTML});
 t("outerHTML",()=>{const p=a.querySelector("i");p.outerHTML="<u>q</u>";return a.innerHTML});
 t("replaceChildren",()=>{const l=document.getElementById("l");l.replaceChildren(document.createElement("li"),"txt");return l.innerHTML});
 t("template",()=>{const tp=document.createElement("template");tp.innerHTML="<li>t</li>";document.getElementById("l").append(tp.content.cloneNode(true));return document.getElementById("l").innerHTML});
@@ -48,4 +49,3 @@ t("remove",()=>{a.remove();return document.getElementById("a")});
 t("CSSStyleDeclaration",()=>{const e=document.body;e.style.setProperty("--k","1");return e.style.getPropertyValue("--k")+e.style.length});
 t("getComputedStyle",()=>getComputedStyle(document.body).display);
 </script>
-
