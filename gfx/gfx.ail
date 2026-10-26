@@ -1718,7 +1718,7 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
     mut set_w := bx.width
     if m := bx.max_width
         if set_w == none
-            if m < inner_w
+            if m < inner_w and w < SHRINK_W
                 set_w = m
         elif m < (set_w else 0.0)
             set_w = m
