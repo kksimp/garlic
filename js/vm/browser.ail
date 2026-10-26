@@ -189,7 +189,8 @@ fn Vm.browser_native(mut self, m str, this_val Value, args List[Value]) Value? !
             return Null
         return if m == "frame.contentWindow" then frame_window(id) else node_value(0)
     if m.starts_with("cssom.")
-        return if m == "cssom.getPropertyValue" or m == "cssom.getPropertyPriority" then Str("") else Undef
+        return if m == "cssom.getPropertyValue"
+            or m == "cssom.getPropertyPriority" then Str("") else Undef
     if m == "storage.queryUsageAndQuota" or m == "storage.requestQuota"
         return Undef
     if m == "chrome.loadTimes" or m == "chrome.csi"
