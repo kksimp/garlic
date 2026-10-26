@@ -63,7 +63,7 @@ pub struct ModRec
     env ref Env
     ns Value
     nsmap Map[str, Resolution]
-    error Value
+    failure Value
     ## The promise of a top-level `await` module still running.
     wait Value
 
@@ -169,18 +169,18 @@ fn Vm.mod_create(mut self, key str, url str, kind str, source str?) ref ModRec
         env: new_env(none, true),
         ns: Undef,
         nsmap: {},
-        error: Undef,
+        failure: Undef,
         wait: Undef,
     )
     if source == none
         m.status = "errored"
-        m.error = make_error("TypeError", "Failed to fetch dynamically imported module: {url}")
+        m.failure = make_error("TypeError", "Failed to fetch dynamically imported module: {url}")
         return m
     text := source else ""
     if kind == "json"
         v := json_parse(text, Undef) else err
             m.status = "errored"
-            m.error = err.value
+            m.failure = err.value
             return m
         m.locals.push(ExportEntry(exported: "default", local: "default"))
         m.env.vars["default"] = Binding(value: v, mutable: false, ready: true)
@@ -188,7 +188,7 @@ fn Vm.mod_create(mut self, key str, url str, kind str, source str?) ref ModRec
         return m
     prog := syntax.parse_module(text) else err
         m.status = "errored"
-        m.error = make_error("SyntaxError", err.msg)
+        m.failure = make_error("SyntaxError", err.msg)
         return m
     m.has_tla = prog.has_tla
     mut body := List[syntax.Stmt]()
@@ -594,7 +594,7 @@ fn Vm.run_step(mut self, id int, ok bool, v Value)
             done.status = "evaluated"
         else
             done.status = "errored"
-            done.error = v
+            done.failure = v
             run_finish(id, r, false, v)
             return
     while r.idx < r.order.len()
@@ -602,7 +602,7 @@ fn Vm.run_step(mut self, id int, ok bool, v Value)
         r.idx += 1
         m := modules.mods.get(key) else continue
         if m.status == "errored"
-            run_finish(id, r, false, m.error)
+            run_finish(id, r, false, m.failure)
             return
         if m.status == "evaluating"
             # Running in another graph's turn (or a cycle): wait for it if
@@ -618,7 +618,7 @@ fn Vm.run_step(mut self, id int, ok bool, v Value)
         if m.has_tla
             started := mod_tla(m) else err
                 m.status = "errored"
-                m.error = err.value
+                m.failure = err.value
                 run_finish(id, r, false, err.value)
                 return
             w := obj_of(started) else continue
@@ -630,7 +630,7 @@ fn Vm.run_step(mut self, id int, ok bool, v Value)
             ran
         else err
             m.status = "errored"
-            m.error = err.value
+            m.failure = err.value
             if err.limit
                 stopped = true
             run_finish(id, r, false, err.value)
