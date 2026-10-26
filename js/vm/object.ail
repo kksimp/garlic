@@ -68,7 +68,7 @@ pub fn Vm.own(self, o ref JsObject, key str) Prop?
     if o.class == "String"
         s := match o.prim
             Str(t) => t
-            Undef | Null | Bool | Num | Obj => ""
+            Undef | Null | Bool | Num | Big | Sym | Obj => ""
         if key == "length"
             return hidden(Num(unit_len(s).to_float()))
         if i := index_of_key(key)
@@ -100,7 +100,7 @@ pub fn Vm.get_from(mut self, start ref JsObject, key str, receiver Value) Value 
             return p.value
         match o.proto
             Obj(next) => o = next
-            Undef | Null | Bool | Num | Str => return Undef
+            Undef | Null | Bool | Num | Str | Big | Sym => return Undef
     Undef
 
 ## The property `key` of any value (§7.3.2 GetV): primitives look in their
@@ -108,11 +108,9 @@ pub fn Vm.get_from(mut self, start ref JsObject, key str, receiver Value) Value 
 pub fn Vm.get(mut self, base Value, key str) Value ! Thrown
     match base
         Obj(o) => get_from(o, key, base)
+        Big(_) => proto_get("BigInt", key, base)
+        Sym(_) => proto_get("Symbol", key, base)
         Str(s) =>
-            if is_symbol(s)
-                return proto_get("Symbol", key, base)
-            if is_bigint(s)
-                return proto_get("BigInt", key, base)
             if key == "length"
                 return Num(unit_len(s).to_float())
             if i := index_of_key(key)
@@ -130,7 +128,7 @@ pub fn Vm.get(mut self, base Value, key str) Value ! Thrown
 fn Vm.proto_get(mut self, name str, key str, receiver Value) Value ! Thrown
     match proto_of(name)
         Obj(p) => get_from(p, key, receiver)
-        Undef | Null | Bool | Num | Str => Undef
+        Undef | Null | Bool | Num | Str | Big | Sym => Undef
 
 ## [[Set]] (§10.1.9): a setter on the chain, else an own data property.
 pub fn Vm.put(mut self, base Value, key str, v Value) ! Thrown
@@ -139,7 +137,7 @@ pub fn Vm.put(mut self, base Value, key str, v Value) ! Thrown
         Undef | Null =>
             what := if base == Undef then "undefined" else "null"
             return type_error("Cannot set properties of {what} (setting '{key}')")
-        Bool | Num | Str => return
+        Bool | Num | Str | Big | Sym => return
 
 pub fn Vm.put_obj(mut self, target ref JsObject, key str, v Value, receiver Value) ! Thrown
     # A setter or a read-only property on the prototype chain wins.
@@ -157,7 +155,7 @@ pub fn Vm.put_obj(mut self, target ref JsObject, key str, v Value, receiver Valu
             break
         match o.proto
             Obj(next) => o = next
-            Undef | Null | Bool | Num | Str => break
+            Undef | Null | Bool | Num | Str | Big | Sym => break
     set_own(target, key, v)?
 
 ## Write an own data property, keeping its attributes if it exists.
@@ -220,7 +218,7 @@ pub fn Vm.has_property(self, start ref JsObject, key str) bool
             return true
         match o.proto
             Obj(next) => o = next
-            Undef | Null | Bool | Num | Str => return false
+            Undef | Null | Bool | Num | Str | Big | Sym => return false
     false
 
 ## `delete o[key]` (§10.1.10).
@@ -252,7 +250,7 @@ pub fn Vm.own_keys(self, o ref JsObject) List[str]
     if o.class == "String"
         s := match o.prim
             Str(t) => t
-            Undef | Null | Bool | Num | Obj => ""
+            Undef | Null | Bool | Num | Big | Sym | Obj => ""
         for i in 0..unit_len(s)
             out.push("{i}")
     mut indexes := List[int]()
@@ -292,7 +290,7 @@ pub fn Vm.for_in_keys(self, start ref JsObject) List[str]
                         out.push(k)
         match o.proto
             Obj(next) => o = next
-            Undef | Null | Bool | Num | Str => return out
+            Undef | Null | Bool | Num | Str | Big | Sym => return out
     out
 
 ## The elements of an iterable value, for spread, `for-of` and array
@@ -305,6 +303,7 @@ pub fn Vm.iterate(mut self, v Value) List[Value] ! Thrown
             for c in s.chars()
                 out.push(Str("{c}"))
             out
+        Big | Sym => type_error("{describe(v)} is not iterable")
         Obj(o) =>
             if is_array_like(o)
                 return o.elems
@@ -336,6 +335,8 @@ pub fn Vm.describe(self, v Value) str
         Bool(b) => if b then "true" else "false"
         Num(n) => syntax.number_to_string(n)
         Str(s) => "\"{s}\""
+        Big(b) => "{b.to_text()}n"
+        Sym(k) => symbol_text(k)
         Obj(o) =>
             if o.call != none
                 "function"

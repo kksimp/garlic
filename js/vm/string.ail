@@ -8,6 +8,7 @@ fn Vm.this_string(mut self, v Value, m str) str ! Thrown
         Str(s) => s
         Undef | Null => return type_error("String.prototype.{m} called on null or undefined")
         Bool | Num | Obj => to_string(v)
+        Big | Sym => to_string(v)
 
 ## Where `needle` first occurs in `hay` at or after `from`, in code units.
 fn find_units(hay List[int], needle List[int], from int) int?
@@ -286,7 +287,7 @@ fn Vm.this_number(mut self, v Value, m str) float ! Thrown
                 if n := num_of(o.prim)
                     return n
             return type_error("Number.prototype.{m} requires that 'this' be a Number")
-        Undef | Null | Bool | Str => return type_error("Number.prototype.{m} requires that 'this' be a Number")
+        Undef | Null | Bool | Str | Big | Sym => return type_error("Number.prototype.{m} requires that 'this' be a Number")
 
 fn Vm.number_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
     x := this_number(this_val, m)?

@@ -140,7 +140,7 @@ fn Vm.constructor(mut self, name str, length int) ref JsObject
     existing := protos.get(name) else Null
     proto := match existing
         Obj(p) => p
-        Undef | Null | Bool | Num | Str =>
+        Undef | Null | Bool | Num | Str | Big | Sym =>
             p := object("Object", proto_of("Object"))
             protos[name] = Obj(p)
             p
@@ -497,9 +497,8 @@ pub fn Vm.native(
         "Array.from" => array_from(args)
         "String" =>
             if new_target == Undef
-                if sym := str_of(a0)
-                    if is_symbol(sym)
-                        return Value.Str(symbol_text(sym))
+                if sym := sym_of(a0)
+                    return Value.Str(symbol_text(sym))
             s := if args.len() == 0 then "" else to_string(a0)?
             if new_target == Undef
                 return Value.Str(s)
@@ -536,16 +535,16 @@ pub fn Vm.native(
         "Number.isSafeInteger" =>
             n := match a0
                 Num(x) => x
-                Undef | Null | Bool | Str | Obj => return Value.Bool(false)
+                Undef | Null | Bool | Str | Big | Sym | Obj => return Value.Bool(false)
             Value.Bool(is_integral(a0) and n.abs() <= 9007199254740991.0)
         "Number.isFinite" =>
             match a0
                 Num(x) => Value.Bool(is_finite(x))
-                Undef | Null | Bool | Str | Obj => Value.Bool(false)
+                Undef | Null | Bool | Str | Big | Sym | Obj => Value.Bool(false)
         "Number.isNaN" =>
             match a0
                 Num(x) => Value.Bool(is_nan(x))
-                Undef | Null | Bool | Str | Obj => Value.Bool(false)
+                Undef | Null | Bool | Str | Big | Sym | Obj => Value.Bool(false)
         "Boolean" =>
             if new_target == Undef
                 return Value.Bool(truthy(a0))
@@ -666,12 +665,12 @@ fn Vm.this_bool(mut self, v Value) bool ! Thrown
                 if b := bool_of(o.prim)
                     return b
             return type_error("Boolean.prototype.valueOf requires that 'this' be a Boolean")
-        Undef | Null | Num | Str => return type_error("Boolean.prototype.valueOf requires that 'this' be a Boolean")
+        Undef | Null | Num | Str | Big | Sym => return type_error("Boolean.prototype.valueOf requires that 'this' be a Boolean")
 
 fn bool_of(v Value) bool?
     match v
         Bool(b) => b
-        Undef | Null | Num | Str | Obj => none
+        Undef | Null | Num | Str | Big | Sym | Obj => none
 
 pub fn is_array(v Value) bool
     if o := obj_of(v)
@@ -681,7 +680,7 @@ pub fn is_array(v Value) bool
 fn is_integral(v Value) bool
     match v
         Num(x) => is_finite(x) and x.floor() == x
-        Undef | Null | Bool | Str | Obj => false
+        Undef | Null | Bool | Str | Big | Sym | Obj => false
 
 ## `new Function("a", "b", "return a + b")` (§20.2.1.1.1).
 fn Vm.function_constructor(mut self, args List[Value]) Value ! Thrown
@@ -746,7 +745,7 @@ pub fn Vm.is_direct_eval(self, callee syntax.Expr, f Value) bool
             match c
                 Native(n) => n == "global.eval"
                 Closure | Bound => false
-        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await =>
+        Num | Str | Big | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await =>
             false
 
 pub fn Vm.direct_eval(mut self, code Value, env ref Env) Value ! Thrown
@@ -833,7 +832,7 @@ fn Vm.object_function(mut self, m str, args List[Value]) Value ! Thrown
             p := to_object(arg_at(args, 1))?
             define_properties(o, p)?
             a0
-        "getOwnPropertySymbols" => array([Value.Str(k) for k in own_symbols(to_object(a0)?)])
+        "getOwnPropertySymbols" => array([Value.Sym(k) for k in own_symbols(to_object(a0)?)])
         "getOwnPropertyNames" =>
             o := to_object(a0)?
             mut keys := own_keys(o)
@@ -912,7 +911,7 @@ fn Vm.object_function(mut self, m str, args List[Value]) Value ! Thrown
 pub fn num_of(v Value) float?
     match v
         Num(x) => x
-        Undef | Null | Bool | Str | Obj => none
+        Undef | Null | Bool | Str | Big | Sym | Obj => none
 
 ## A property descriptor object (§6.2.6.4 FromPropertyDescriptor).
 fn Vm.descriptor(mut self, p Prop) Value
@@ -1007,7 +1006,9 @@ fn Vm.object_proto_method(mut self, m str, this_val Value, args List[Value]) Val
                 Null => "Null"
                 Bool => "Boolean"
                 Num => "Number"
-                Str(s) => if is_symbol(s) then "Symbol" else (if is_bigint(s) then "BigInt" else "String")
+                Str => "String"
+                Big => "BigInt"
+                Sym => "Symbol"
                 Obj(o) =>
                     if o.call != none
                         "Function"

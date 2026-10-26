@@ -1,29 +1,23 @@
-## BigInt (ECMA-262 §6.1.6.2, §21.2): arbitrary-precision integers. A BigInt
-## value is a string "\u{0}nDIGITS" (see `BIGINT` in value.ail), so it needs no
-## new kind of value; arithmetic is `std.bigint`'s, with the shifts and
-## bitwise operators built on top of it by two's complement.
+## BigInt (ECMA-262 §6.1.6.2, §21.2): arbitrary-precision integers, held in
+## `Value.Big`; arithmetic is `std.bigint`'s, with the shifts and bitwise
+## operators built on top of it by two's complement.
 use syntax
 use std.bigint
 
 fn is_big_val(v Value) bool
     match v
-        Str(s) => is_bigint(s)
-        Undef | Null | Bool | Num | Obj => false
+        Big => true
+        Undef | Null | Bool | Num | Str | Sym | Obj => false
 
 ## The engine's BigInt value for `b`.
 pub fn big_value(b bigint.BigInt) Value
-    Value.Str("{BIGINT}{b.to_text()}")
+    Value.Big(b)
 
 ## The number a BigInt value holds; zero for any other value.
 pub fn big_of(v Value) bigint.BigInt
     match v
-        Str(s) =>
-            if is_bigint(s)
-                b := bigint.parse(s.slice(2, s.chars().len())) else err
-                    return bigint.from_int(0)
-                return b
-            bigint.from_int(0)
-        Undef | Null | Bool | Num | Obj => bigint.from_int(0)
+        Big(b) => b
+        Undef | Null | Bool | Num | Str | Sym | Obj => bigint.from_int(0)
 
 fn big_one() bigint.BigInt
     bigint.from_int(1)
@@ -108,11 +102,10 @@ fn cmp_big_other(x bigint.BigInt, o Value) int?
         Bool(b) => cmp_big_num(x, if b then 1.0 else 0.0)
         Null => cmp_big_num(x, 0.0)
         Str(s) =>
-            if is_symbol(s)
-                return none
             y := parse_big_string(s) else return none
             x.cmp(y)
-        Undef | Obj => none
+        Undef | Sym | Obj => none
+        Big(y) => x.cmp(y)
 
 fn big_compare(a Value, b Value) int?
     if is_big_val(a) and is_big_val(b)
@@ -292,11 +285,9 @@ pub fn Vm.to_bigint(mut self, v Value) Value ! Thrown
     p := to_primitive(v, "number")?
     match p
         Bool(b) => big_value(bigint.from_int(if b then 1 else 0))
+        Big => p
+        Sym => type_error("Cannot convert a Symbol value to a bigint")
         Str(s) =>
-            if is_bigint(s)
-                return p
-            if is_symbol(s)
-                return type_error("Cannot convert a Symbol value to a bigint")
             y := parse_big_string(s) else return syntax_error("Cannot convert {s} to a BigInt")
             big_value(y)
         Undef => type_error("Cannot convert undefined to a BigInt")
@@ -314,7 +305,7 @@ pub fn Vm.big_function(mut self, args List[Value], new_target Value) Value ! Thr
             if n != n or not is_finite(n) or n != n.floor()
                 return range_error("The number {syntax.number_to_string(n)} cannot be converted to a BigInt because it is not an integer")
             big_value(float_to_big(n))
-        Undef | Null | Bool | Str | Obj => to_bigint(p)
+        Undef | Null | Bool | Str | Big | Sym | Obj => to_bigint(p)
 
 fn Vm.this_big(mut self, v Value, m str) Value ! Thrown
     if is_big_val(v)

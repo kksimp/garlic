@@ -219,7 +219,7 @@ fn Vm.json_stringify(mut self, v Value, replacer Value, space Value) Value ! Thr
     gap := match sp
         Num(n) => " ".repeat(int_of(n).min(10).max(0))
         Str(s) => if s.chars().len() > 10 then s.slice(0, 10) else s
-        Undef | Null | Bool | Obj => ""
+        Undef | Null | Bool | Big | Sym | Obj => ""
     mut st := Stringifier(
         replacer: if is_callable(replacer) then replacer else Undef,
         allow: allow,
@@ -257,7 +257,9 @@ fn Vm.serialize(mut self, mut st Stringifier, holder Value, key str, start Value
     match v
         Null => "null"
         Bool(b) => if b then "true" else "false"
-        Str(s) => if is_symbol(s) then OMIT else syntax.quote(s)
+        Str(s) => syntax.quote(s)
+        Sym => OMIT
+        Big => OMIT
         Num(n) => if is_finite(n) then syntax.number_to_string(n) else "null"
         Undef => OMIT
         Obj(o) =>
@@ -306,4 +308,4 @@ fn Vm.allow_key(mut self, item Value) str ! Thrown
         Str(s) => s
         Num(n) => syntax.number_to_string(n)
         Obj(o) => if o.class == "String" or o.class == "Number" then to_string(item)? else ""
-        Undef | Null | Bool => ""
+        Undef | Null | Bool | Big | Sym => ""

@@ -1,0 +1,11 @@
+string string bigint symbol
+true false false false 3 5
+25 18
+s b 2
+1 2 1 3
+false false -1 2
+Symbol(x) x Symbol(x) true k Symbol(Symbol.iterator)
+3 true true true
+string ok
+TypeError
+TypeError

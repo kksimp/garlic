@@ -1,5 +1,5 @@
-## Symbols (ECMA-262 §20.4) and iterators (§27.1): symbols are strings with
-## the SYMBOL prefix (value.ail); an iterator over a known list of values is
+## Symbols (ECMA-262 §20.4) and iterators (§27.1): a `Value.Sym` carries a key
+## with the SYMBOL prefix (value.ail); an iterator over a known list of values is
 ## an "Iterator" object holding the values in `elems` and its place in `prim`.
 
 pub fn well_known(name str) str
@@ -39,7 +39,7 @@ fn Vm.symbol_setup(mut self)
         "split",
         "unscopables",
     ]
-        constant(c, name, Str(well_known(name)))
+        constant(c, name, Sym(well_known(name)))
     methods(proto, "Symbol.prototype", "toString:0 valueOf:0")
     getter(proto, "description", "Symbol.prototype.description")
 
@@ -73,13 +73,11 @@ pub fn Vm.symbol_native(
                 return type_error("Symbol is not a constructor")
             next_id += 1
             if a0 == Undef
-                return Value.Str("{SYMBOL}{next_id}u:")
-            Value.Str("{SYMBOL}{next_id}:{to_string(a0)?}")
-        "Symbol.for" => Value.Str("{SYMBOL}r:{to_string(a0)?}")
+                return Value.Sym("{SYMBOL}{next_id}u:")
+            Value.Sym("{SYMBOL}{next_id}:{to_string(a0)?}")
+        "Symbol.for" => Value.Sym("{SYMBOL}r:{to_string(a0)?}")
         "Symbol.keyFor" =>
-            s := str_of(a0) else return type_error("{describe(a0)} is not a symbol")
-            if not is_symbol(s)
-                return type_error("{describe(a0)} is not a symbol")
+            s := sym_of(a0) else return type_error("{describe(a0)} is not a symbol")
             if key := s.strip_prefix("{SYMBOL}r:")
                 return Value.Str(key)
             Undef
@@ -91,15 +89,19 @@ pub fn Vm.symbol_native(
                     if d := symbol_description(s)
                         return Value.Str(d)
                     Undef
-                _ => Value.Str(s)
+                _ => Value.Sym(s)
+
+pub fn sym_of(v Value) str?
+    match v
+        Sym(k) => k
+        Undef | Null | Bool | Num | Str | Big | Obj => none
 
 fn Vm.this_symbol(mut self, v Value) str ! Thrown
-    if s := str_of(v)
-        if is_symbol(s)
-            return s
+    if s := sym_of(v)
+        return s
     if o := obj_of(v)
-        if s := str_of(o.prim)
-            if o.class == "Symbol" and is_symbol(s)
+        if o.class == "Symbol"
+            if s := sym_of(o.prim)
                 return s
     return type_error("Symbol.prototype.toString requires that 'this' be a Symbol")
 

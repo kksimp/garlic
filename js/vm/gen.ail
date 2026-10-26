@@ -667,7 +667,7 @@ fn Compiler.expr(mut self, e syntax.Expr) ! Thrown
             for x in exprs
                 expr(x)?
             emit(Concat([q.cooked else "" for q in quasis]), 1 - exprs.len())
-        Num | Str | Regex | Bool | Null | Ident | This | Super | NewTarget | PrivName | Function | Arrow =>
+        Num | Str | Big | Regex | Bool | Null | Ident | This | Super | NewTarget | PrivName | Function | Arrow =>
             emit(Eval(e), 1)
         Tagged | ClassExpr | Update | Spread | Chain | Import => return unsupported("This expression")
 
@@ -675,13 +675,13 @@ fn prop_name(prop syntax.Expr) str
     match prop
         Ident(name, _) => name
         PrivName(name, _) => "{PRIVATE}{name}"
-        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | Paren | Yield | Await =>
+        Num | Str | Big | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | Paren | Yield | Await =>
             ""
 
 fn spread_arg(e syntax.Expr) syntax.Expr?
     match e
         Spread(arg, _) => arg
-        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Chain | PrivName | Paren | Yield | Await =>
+        Num | Str | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Chain | PrivName | Paren | Yield | Await =>
             none
 
 ## [this, f] for a call: `a.b()` calls `b` with `a`.
@@ -698,7 +698,7 @@ fn Compiler.callee_and_this(mut self, callee syntax.Expr) ! Thrown
             else
                 emit(GetProp(prop_name(prop)), 0)
         Paren(inner, _) => callee_and_this(inner)?
-        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
+        Num | Str | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
             emit(Push(Undef), 1)
             expr(callee)?
 
@@ -736,7 +736,7 @@ fn Compiler.assign(mut self, op str, target syntax.Pat, value syntax.Expr) ! Thr
                     expr(value)?
                     emit(Binary(binop), -1)
                     emit(PutProp(key), -1)
-                Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Paren | Yield | Await =>
+                Num | Str | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Paren | Yield | Await =>
                     emit(Eval(t), 1)
                     expr(value)?
                     emit(Binary(binop), -1)
