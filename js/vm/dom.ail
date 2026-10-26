@@ -1462,16 +1462,15 @@ fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
             else
                 dom_append(holder, need_node(a1, m)?)
             items := dom[holder].children
+            ## One anchor for the whole fragment, so its nodes keep their order.
+            first := if dom[id].children.len() > 0 then dom[id].children[0] else -1
+            after := next_sibling(id)
             for c in items
                 match pos
                     "beforebegin" => insert_checked(dom[id].parent, c, id)?
-                    "afterbegin" => insert_checked(
-                        id,
-                        c,
-                        if dom[id].children.len() > 0 then dom[id].children[0] else -1,
-                    )?
+                    "afterbegin" => insert_checked(id, c, first)?
                     "beforeend" => insert_checked(id, c, -1)?
-                    _ => insert_checked(dom[id].parent, c, next_sibling(id))?
+                    _ => insert_checked(dom[id].parent, c, after)?
             if m == "insertAdjacentElement"
                 return a1
             Undef

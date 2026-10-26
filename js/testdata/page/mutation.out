@@ -3,6 +3,7 @@ style color: red; background-color: blue; margin: 1px;
 style.display none|color: red; background-color: blue; margin: 1px;
 dataset 11
 insertAdjacent <b>y</b><p>one</p><p>two</p><i>x</i>
+insertAdjacentOrder <b>x</b><b>y</b><p>m</p><i>1</i><i>2</i>
 outerHTML <b>y</b><p>one</p><p>two</p><u>q</u>
 replaceChildren <li></li>txt
 template <li></li>txt<li>t</li>
