@@ -1980,7 +1980,8 @@ fn shifted(op draw.Op, dy float) draw.Op
 fn Ctx.flex(mut self, id int, st St, cs Map[str, str], x float, w float, min_h float)
     items := self.items(id)
     gap := length(cs.get("gap") else (cs.get("column-gap") else "0"), st.size, w) else 0.0
-    justify := if w >= SHRINK_W then "flex-start" else (cs.get("justify-content") else "flex-start").trim()
+    justify := if w
+        >= SHRINK_W then "flex-start" else (cs.get("justify-content") else "flex-start").trim()
     wrap := (cs.get("flex-wrap") else "nowrap").trim() == "wrap"
     mut sizes := List[float]()
     mut grows := List[float]()
