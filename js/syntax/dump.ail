@@ -178,7 +178,10 @@ fn Dump.name_node(self, name str, is_str bool, p Pos) str
 fn Dump.import_spec(self, x ImportSpec) str
     match x.kind
         "default" => node("ImportDefaultSpecifier", x.pos, [field("local", ident(x.local, x.pos))])
-        "namespace" => node("ImportNamespaceSpecifier", x.pos, [field("local", ident(x.local, x.pos))])
+        "namespace" => node("ImportNamespaceSpecifier", x.pos, [field("local", ident(
+            x.local,
+            x.pos,
+        ))])
         _ => node("ImportSpecifier", x.pos, [
             field("imported", name_node(x.imported, x.imported_str, x.pos)),
             field("local", ident(x.local, x.pos)),

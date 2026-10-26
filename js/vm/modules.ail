@@ -133,14 +133,7 @@ fn mod_key(url str, kind str) str
 
 ## Make the records of module `key` and of everything it imports. A URL
 ## whose source the engine doesn't have yet goes to `missing`.
-fn Vm.mod_load(
-    mut self,
-    key str,
-    url str,
-    kind str,
-    mut seen Set[str],
-    mut missing List[str],
-)
+fn Vm.mod_load(mut self, key str, url str, kind str, mut seen Set[str], mut missing List[str])
     if not seen.add(key)
         return
     if modules.mods.get(key) == none
@@ -214,7 +207,13 @@ fn Vm.add_req(mut self, m ref ModRec, spec str, attrs List[syntax.ImportAttr]) i
 
 ## File one import or export declaration in the record, and put what stays
 ## executable in `body`.
-fn Vm.mod_item(mut self, m ref ModRec, item syntax.ModItem, p syntax.Pos, mut body List[syntax.Stmt])
+fn Vm.mod_item(
+    mut self,
+    m ref ModRec,
+    item syntax.ModItem,
+    p syntax.Pos,
+    mut body List[syntax.Stmt],
+)
     match item
         ImportDecl(specs, source, attrs) =>
             ri := add_req(m, source, attrs)
@@ -224,7 +223,11 @@ fn Vm.mod_item(mut self, m ref ModRec, item syntax.ModItem, p syntax.Pos, mut bo
             if src := source
                 ri := add_req(m, src, attrs)
                 for sp in specs
-                    m.indirect.push(IndirectEntry(exported: sp.exported, req: ri, imported: sp.local))
+                    m.indirect.push(IndirectEntry(
+                        exported: sp.exported,
+                        req: ri,
+                        imported: sp.local,
+                    ))
             elif d := decl
                 body.push(d)
                 for n in declared_names(d)
@@ -504,7 +507,13 @@ pub fn Vm.module_own(self, o ref JsObject, key str) Prop?
 ## The promise settles with its namespace once it and its imports ran.
 pub fn Vm.mod_start(mut self, url str, kind str, report bool) ref JsObject
     promise := new_promise()
-    job := ImportJob(key: mod_key(url, kind), url: url, kind: kind, promise: promise, report: report)
+    job := ImportJob(
+        key: mod_key(url, kind),
+        url: url,
+        kind: kind,
+        promise: promise,
+        report: report,
+    )
     if not mod_try_job(job)
         modules.jobs.push(job)
     promise
@@ -700,10 +709,19 @@ pub fn Vm.import_expr(mut self, arg syntax.Expr?, opts syntax.Expr?, env ref Env
         base = str_of(lookup("import.url", env)?) else location_href
     url := specifier_url(spec, base)
     if url == ""
-        reject_promise(promise, make_error("TypeError", "Failed to resolve module specifier \"{spec}\". Relative references must start with either \"/\", \"./\", or \"../\"."))
+        reject_promise(promise, make_error(
+            "TypeError",
+            "Failed to resolve module specifier \"{spec}\". Relative references must start with either \"/\", \"./\", or \"../\".",
+        ))
         return Obj(promise)
     job_kind := if kind == "json" then "json" else ""
-    job := ImportJob(key: mod_key(url, job_kind), url: url, kind: job_kind, promise: promise, report: false)
+    job := ImportJob(
+        key: mod_key(url, job_kind),
+        url: url,
+        kind: job_kind,
+        promise: promise,
+        report: false,
+    )
     # The module loads and runs in a later job, never inside this call.
     modules.jobs.push(job)
     microtasks.push(closure_native("Module.kick", Undef, [], 0))
@@ -715,7 +733,11 @@ pub fn Vm.module_native(mut self, m str, this_val Value, args List[Value]) Value
             key := str_of(this_val) else ""
             name := str_of(arg_at(args, 0)) else ""
             local := str_of(arg_at(args, 1)) else name
-            v := read_ref(Resolution(kind: "found", key: key, name: name)) else return reference_error("Cannot access '{local}' before initialization")
+            v := read_ref(Resolution(
+                kind: "found",
+                key: key,
+                name: name,
+            )) else return reference_error("Cannot access '{local}' before initialization")
             v
         "set" => return type_error("Assignment to constant variable.")
         "kick" =>

@@ -327,7 +327,9 @@ fn test_pages(dir str) !bool
             continue
         file := path.join(dir, name)
         stem := name.slice(0, name.chars().len() - 5)
-        actual := run_page_with(fs.read_text(file)?, 10000000, "", page_files(dir)?).join("\n").trim()
+        actual := run_page_with(fs.read_text(file)?, 10000000, "", page_files(dir)?)
+            .join("\n")
+            .trim()
         expected := fs.read_text(path.join(dir, "{stem}.out"))?.trim()
         if actual == expected
             passed += 1
