@@ -1007,7 +1007,7 @@ fn Vm.object_proto_method(mut self, m str, this_val Value, args List[Value]) Val
                 Null => "Null"
                 Bool => "Boolean"
                 Num => "Number"
-                Str => "String"
+                Str(s) => if is_symbol(s) then "Symbol" else (if is_bigint(s) then "BigInt" else "String")
                 Obj(o) =>
                     if o.call != none
                         "Function"
