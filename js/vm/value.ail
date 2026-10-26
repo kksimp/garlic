@@ -160,7 +160,9 @@ pub fn is_symbol(s str) bool
 
 ## A BigInt is a string "\u{0}nDIGITS" (DIGITS in decimal, with a leading
 ## `-` if negative, canonical), like a symbol: no new kind of value, and no
-## script can write such a string by accident. See bigint.ail.
+## script can write such a string by accident. Known flaw, shared with
+## symbols: a script can write one on purpose ("\u0000n5" acts as 5n), so
+## a real Value variant should replace both. See bigint.ail.
 pub BIGINT := "\u{0}n"
 
 pub fn is_bigint(s str) bool
