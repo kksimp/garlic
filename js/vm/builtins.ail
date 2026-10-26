@@ -607,7 +607,11 @@ pub fn Vm.native(
             args,
             new_target,
         )
-        "IntersectionObserver" | "ResizeObserver" | "PerformanceObserver" => observer_stub_new(name, args, new_target)
+        "IntersectionObserver" | "ResizeObserver" | "PerformanceObserver" => observer_stub_new(
+            name,
+            args,
+            new_target,
+        )
         "RegExp" =>
             src := if a0 == Undef then "(?:)" else to_string(a0)?
             flags := if arg_at(args, 1) == Undef then "" else to_string(arg_at(args, 1))?
