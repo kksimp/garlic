@@ -98,6 +98,8 @@ fn Vm.show(self, mut st Inspector, v Value, depth int, nested bool) str
         Str(s) =>
             if is_symbol(s)
                 return symbol_text(s)
+            if is_bigint(s)
+                return "{s.slice(2, s.chars().len())}n"
             if nested then quote_js(s) else s
         Obj(o) => show_object(mut st, o, depth)
 

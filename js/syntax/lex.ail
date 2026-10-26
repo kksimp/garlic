@@ -7,6 +7,8 @@
 ## Source text is a list of Unicode scalar values, not UTF-16 code units: a
 ## lone surrogate written as an escape becomes U+FFFD (docs/design/garlic-js.md).
 
+use std.bigint
+
 ## A SyntaxError: what is wrong and where, 1-based.
 pub error struct JsError "SyntaxError: {msg} ({line}:{col})"
     pub msg str
@@ -374,6 +376,8 @@ fn Lexer.hex(mut self, n int, at_escape int, msg str) int ! JsError
 fn Lexer.number(mut self, start int, line_no int, col int, nl bool) Token ! JsError
     mut value := 0.0
     mut octal := false
+    mut radix_lit := 10
+    mut real := false
     c := cur()
     n := at(pos + 1)
     if c == '0' and (n == 'x' or n == 'X' or n == 'o' or n == 'O' or n == 'b' or n == 'B')
@@ -382,6 +386,7 @@ fn Lexer.number(mut self, start int, line_no int, col int, nl bool) Token ! JsEr
             'o' => 8
             _ => 2
         pos += 2
+        radix_lit = radix
         value = radix_digits(radix, start)?
     elif c == '0' and at(pos + 1).is_digit() and not legacy_decimal()
         # Annex B: `0` then octal digits is octal.
@@ -398,9 +403,11 @@ fn Lexer.number(mut self, start int, line_no int, col int, nl bool) Token ! JsEr
         mut exp := ""
         if cur() == '.'
             pos += 1
+            real = true
             if cur().is_digit()
                 frac = digits(start)?
         if cur() == 'e' or cur() == 'E'
+            real = true
             mut sign := ""
             mut k := pos + 1
             if at(k) == '+' or at(k) == '-'
@@ -416,13 +423,38 @@ fn Lexer.number(mut self, start int, line_no int, col int, nl bool) Token ! JsEr
             frac = "0"
         value = "{int_part}.{frac}{exp}".to_float() else 0.0
     if cur() == 'n'
-        return fail("BigInt literals are not supported yet", start)
+        return bigint_literal(start, line_no, col, nl, radix_lit, real or octal)?
     if id_start(cur()) or cur().is_digit() or cur() == '\\'
         return fail("Invalid or unexpected token", pos)
     mut t := token(Num, src[start..pos].join(""), start, line_no, col, nl)
     t.num = value
     t.octal = octal
     t
+
+## `123n`, `0xFFn` (§12.9.3 BigInt literals) as a string token holding the
+## value in the engine's BigInt form, "\u{0}n" and decimal digits.
+fn Lexer.bigint_literal(
+    mut self,
+    start int,
+    line_no int,
+    col int,
+    nl bool,
+    radix int,
+    bad bool,
+) Token ! JsError
+    if bad
+        return fail("Invalid or unexpected token", start)
+    mut body := src[start..pos].join("").replace("_", "")
+    if radix != 10
+        body = body.slice(2, body.chars().len())
+    mut v := bigint.from_int(0)
+    r := bigint.from_int(radix)
+    for ch in body.chars()
+        v = v.mul(r).add(bigint.from_int(digit_value(ch)))
+    pos += 1
+    if id_start(cur()) or cur().is_digit() or cur() == '\\'
+        return fail("Invalid or unexpected token", pos)
+    token(Str, "\u{0}n{v.to_text()}", start, line_no, col, nl)
 
 ## A `0` and digits that include an 8 or a 9 (Annex B NonOctalDecimalIntegerLiteral).
 fn Lexer.legacy_decimal(self) bool
