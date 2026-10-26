@@ -1,0 +1,12 @@
+main: start
+true
+a: start
+a: end
+a true
+3 data
+0
+throws: run
+caught boom
+true boom
+b: sees a hello b
+fromB

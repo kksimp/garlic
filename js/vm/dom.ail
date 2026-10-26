@@ -203,6 +203,12 @@ fn Vm.after_insert(mut self, id int)
         if started_scripts.contains(s)
             continue
         started_scripts.add(s)
+        mode := script_mode(s)
+        if mode == "skip"
+            continue
+        if mode == "module"
+            run_script_node(s, mode)
+            continue
         if src := attr_of(s, "src")
             host_requests.push(HostRequest(
                 kind: "fetch-script",
@@ -213,6 +219,47 @@ fn Vm.after_insert(mut self, id int)
             ))
         else
             run_script_text(text_content(s))
+
+## What a script element is (HTML §4.12.1.1): "classic", "module", or "skip"
+## for data blocks, other languages, and `nomodule` scripts (which a browser
+## with modules does not run).
+fn Vm.script_mode(self, s int) str
+    kind := (attr_of(s, "type") else "").to_lower().trim()
+    if kind == "module"
+        return "module"
+    if attr_of(s, "nomodule") != none
+        return "skip"
+    if kind == ""
+        or kind == "text/javascript"
+        or kind == "application/javascript"
+        or kind == "text/ecmascript"
+        or kind == "application/ecmascript"
+        return "classic"
+    "skip"
+
+## Run script element `s` of the given mode now.
+fn Vm.run_script_node(mut self, s int, mode str)
+    if mode == "module"
+        if src := attr_of(s, "src")
+            run_module_script(resolve_url(src))
+        else
+            run_inline_module(text_content(s))
+        return
+    if src := attr_of(s, "src")
+        if source := external_scripts.get(resolve_url(src))
+            cur_url = resolve_url(src)
+            run_script_text(source)
+        else
+            host_requests.push(HostRequest(
+                kind: "fetch-script",
+                url: resolve_url(src),
+                method: "GET",
+                node: s,
+                text: "",
+            ))
+    else
+        cur_url = location_href
+        run_script_text(text_content(s))
 
 ## `id` and its descendants with the tag, in document order.
 pub fn Vm.descendants_by_tag(self, id int, tag str) List[int]
@@ -411,6 +458,7 @@ pub fn Vm.dom_setup(mut self)
         "images",
         "links",
         "scripts",
+        "styleSheets",
         "readyState",
         "URL",
         "documentURI",
@@ -735,6 +783,8 @@ pub fn Vm.dom_setup(mut self)
     performance.props["memory"] = data(Obj(memory))
     global_obj.props["performance"] = hidden(Obj(performance))
     host_interfaces()
+    cssom_interfaces()
+    selection_setup()
 
 fn Vm.accessor(mut self, target ref JsObject, name str)
     accessor_named(target, name, name)
@@ -1092,6 +1142,7 @@ fn Vm.dom_get(mut self, p str, this_val Value) Value ! Thrown
         "forms" => node_list(descendants_by_tag(0, "form"))
         "images" => node_list(descendants_by_tag(0, "img"))
         "scripts" => node_list(descendants_by_tag(0, "script"))
+        "styleSheets" => node_list([])
         "links" => node_list([e for e in descendants_by_tag(0, "a") if attr_of(e, "href") != none])
         "readyState" => Value.Str(ready_state)
         "URL" | "documentURI" => Value.Str(location_href)
@@ -2558,34 +2609,30 @@ pub fn Vm.load_page(mut self, url str, budget_ms float)
     page_start_ms = clock_ms
     recording = true
     ready_state = "loading"
+    # Module scripts and external `defer` scripts wait until parsing ends and
+    # then run in document order (HTML §4.12.1.1, "the end" of §13.2.6).
+    mut deferred := List[int]()
     for s in descendants_by_tag(0, "script")
         if stopped
             return
         if started_scripts.contains(s)
             continue
         started_scripts.add(s)
-        kind := (attr_of(s, "type") else "").to_lower()
-        if kind != ""
-            and kind != "text/javascript"
-            and kind != "application/javascript"
-            and kind != "module"
+        mode := script_mode(s)
+        if mode == "skip"
             continue
-        if src := attr_of(s, "src")
-            if source := external_scripts.get(resolve_url(src))
-                run_script_text(source)
-            else
-                host_requests.push(HostRequest(
-                    kind: "fetch-script",
-                    url: resolve_url(src),
-                    method: "GET",
-                    node: s,
-                    text: "",
-                ))
-        else
-            run_script_text(text_content(s))
+        if mode == "module" or (attr_of(s, "src") != none and attr_of(s, "defer") != none)
+            deferred.push(s)
+            continue
+        run_script_node(s, mode)
     run_microtasks()
     ready_state = "interactive"
     fire(0, "readystatechange", false)
+    for s in deferred
+        if stopped
+            return
+        run_script_node(s, script_mode(s))
+        run_microtasks()
     fire(0, "DOMContentLoaded", true)
     run_microtasks()
     ready_state = "complete"

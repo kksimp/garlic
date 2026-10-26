@@ -1,0 +1,19 @@
+classic start
+true
+classic end
+dyn evaluated
+classic got dyn value 42
+== body
+<p id="p">dyn value</p>
+<script>
+console.log("classic start");
+const pending = import("./mod-dyn.js");
+console.log(pending instanceof Promise);
+pending.then((m) => {
+  console.log("classic got", m.default, m.answer);
+  document.getElementById("p").textContent = m.default;
+});
+console.log("classic end");
+</script>
+
+

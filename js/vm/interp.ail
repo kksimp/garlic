@@ -12,6 +12,11 @@ pub struct Vm
     ## What `console.log` wrote, one entry per call, when `echo` is off.
     pub console_out List[str]
     pub echo bool
+    ## Name errors' positions ("url:line:col" in `stack`), for diagnosis.
+    pub trace bool
+    ## The script or module running, and its latest statement (when `trace`).
+    pub cur_url str
+    pub cur_pos syntax.Pos
     pub step_count int
     ## 0 for no limit.
     pub step_limit int
@@ -72,6 +77,8 @@ pub struct Vm
     pub running Set[int]
     ## Requests waiting for each async generator, by frame id.
     pub agen_queues Map[int, List[AgenRequest]]
+    ## Module records and the loads in flight (modules.ail).
+    pub modules ref ModState
 
 ## How a statement ended (§6.2.4 Completion Records); a throw is the `Thrown` error.
 pub enum Flow
@@ -100,11 +107,17 @@ pub fn Vm.tick(mut self) ! Thrown
 
 # ---------------------------------------------------------------- errors
 
+## Where an error is made: "url:line:col" when tracing, else "<anonymous>".
+pub fn Vm.at_text(self) str
+    if trace and cur_pos.line > 0
+        return "{cur_url}:{cur_pos.line}:{cur_pos.col}"
+    "<anonymous>"
+
 ## A new error object of a built-in kind ("TypeError", ...).
 pub fn Vm.make_error(mut self, kind str, msg str) Value
     o := object("Error", proto_of(kind))
     o.props["message"] = hidden(Str(msg))
-    o.props["stack"] = hidden(Str("{kind}: {msg}\n    at <anonymous>"))
+    o.props["stack"] = hidden(Str("{kind}: {msg}\n    at {at_text()}"))
     Obj(o)
 
 pub fn Vm.throw_error(mut self, kind str, msg str) Thrown
@@ -127,7 +140,20 @@ pub fn Vm.thrown(self, v Value) Thrown
 pub fn Vm.uncaught_text(self, err Thrown) str
     if err.limit
         return err.text
-    "Uncaught {error_text(err.value)}"
+    "Uncaught {error_text(err.value)}{error_where(err.value)}"
+
+## " (at url:line:col)" for an error made while tracing.
+pub fn Vm.error_where(self, v Value) str
+    if not trace
+        return ""
+    o := obj_of(v) else return ""
+    if o.class != "Error"
+        return ""
+    stack := plain_string(o, "stack") else return ""
+    parts := stack.split("\n    at ")
+    if parts.len() < 2 or parts[1] == "<anonymous>"
+        return ""
+    " (at {parts[1]})"
 
 ## "TypeError: x is not a function" for an error, the value otherwise; reads
 ## data properties only, so it can't run code.
@@ -427,11 +453,11 @@ fn Vm.hoist_stmt(mut self, s syntax.Stmt, env ref Env, top bool)
                 hoist_stmt(n, env, false)
         Block(b, _) => hoist_vars(b, env, false)
         For(init, _, _, b, _) =>
+            hoist_stmt(b, env, false)
             if i := init
                 match i
                     InitDecl(d) => hoist_stmt(syntax.Stmt.Var(d), env, false)
                     InitExpr => return
-            hoist_stmt(b, env, false)
         ForIn(left, _, b, _, _, _) =>
             if d := left_decl(left)
                 hoist_stmt(syntax.Stmt.Var(d), env, false)
@@ -449,7 +475,7 @@ fn Vm.hoist_stmt(mut self, s syntax.Stmt, env ref Env, top bool)
                 hoist_vars(c.body, env, false)
         Labeled(_, b, _) => hoist_stmt(b, env, top)
         With(_, b, _) => hoist_stmt(b, env, false)
-        Exp | ClassDecl | Return | Empty | Break | Continue | Throw | Debugger => return
+        Exp | ClassDecl | Return | Empty | Break | Continue | Throw | Debugger | Module => return
 
 ## Declare a block's `let`, `const`, `class` and functions (§14.2.3
 ## BlockDeclarationInstantiation): bindings in the dead zone, functions made.
@@ -479,7 +505,7 @@ fn Vm.declare_lexical(mut self, s syntax.Stmt, env ref Env) ! Thrown
             else
                 init_binding(env, name, fv, true)
         Labeled(_, b, _) => declare_lexical(b, env)?
-        Exp | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | With | Debugger => return
+        Exp | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | With | Debugger | Module => return
 
 # ------------------------------------------------------------- statements
 
@@ -504,7 +530,7 @@ fn needs_scope(body List[syntax.Stmt]) bool
                 if d.kind != "var"
                     return true
             FuncDecl | ClassDecl | Labeled => return true
-            Exp | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | With | Debugger =>
+            Exp | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | With | Debugger | Module =>
                 continue
     false
 
@@ -532,6 +558,8 @@ fn loop_action(f Flow, labels List[str]) str
 ## A statement with the labels in front of it (§14.13).
 fn Vm.exec_in(mut self, s syntax.Stmt, env ref Env, labels List[str]) Flow ! Thrown
     tick()?
+    if trace
+        cur_pos = stmt_pos(s)
     match s
         Exp(e, _) =>
             eval(e, env)?
@@ -573,7 +601,7 @@ fn Vm.exec_in(mut self, s syntax.Stmt, env ref Env, labels List[str]) Flow ! Thr
                     return f
             Normal
         Empty => Normal
-        Debugger => Normal
+        Debugger | Module => Normal
         For(init, test, update, body, _) => for_loop(init, test, update, body, env, labels)
         ForIn(left, right, body, of, _, _) => for_in(left, right, body, of, env, labels)
         While(test, body, _) =>
@@ -902,7 +930,7 @@ fn Vm.assign_to(mut self, target syntax.Expr, v Value, env ref Env) ! Thrown
             base := member_base(object, env)?
             key := member_key(prop, computed, env)?
             put(base, key, v)?
-        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
+        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
             return syntax_error("Invalid left-hand side in assignment")
 
 pub fn Vm.syntax_error(mut self, msg str) Thrown
@@ -932,7 +960,7 @@ fn is_anonymous_fn(e syntax.Expr) bool
         Function(f) => f.name == none
         Arrow => true
         ClassExpr(c) => c.name == none
-        Paren | Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Array | Object | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Yield | Await =>
+        Paren | Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Yield | Await =>
             false
 
 fn set_fn_name(v Value, name str)
@@ -1075,6 +1103,7 @@ pub fn Vm.eval(mut self, e syntax.Expr, env ref Env) Value ! Thrown
         Spread => return syntax_error("Unexpected token '...'")
         PrivName(name, _) => Value.Str("{PRIVATE}{name}")
         Yield | Await => return syntax_error("yield and await run only in compiled code")
+        Import(arg, opts, _) => import_expr(arg, opts, env)
 
 ## The object a member expression reads from; `super.x` reads from the
 ## home object's prototype (§13.3.7.1).
@@ -1089,7 +1118,7 @@ fn Vm.member_key(mut self, prop syntax.Expr, computed bool, env ref Env) str ! T
     match prop
         Ident(name, _) => name
         PrivName(name, _) => "{PRIVATE}{name}"
-        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | Paren | Yield | Await =>
+        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | Paren | Yield | Await =>
             to_key(eval(prop, env)?)
 
 ## `super[key]` with the current `this` as the receiver.
@@ -1127,7 +1156,7 @@ fn Vm.callee_of(mut self, callee syntax.Expr, env ref Env) Callee ! Thrown
             if syntax.expr_kind(inner) == "Member"
                 return callee_of(inner, env)
             Callee(f: eval(inner, env)?, this_val: Undef)
-        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
+        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
             Callee(f: eval(callee, env)?, this_val: Undef)
 
 ## Call, naming the callee in the error when it isn't a function.
@@ -1169,7 +1198,7 @@ pub fn expr_text(e syntax.Expr) str
         Str(value, _) => "\"{value}\""
         Num(value, _) => syntax.number_to_string(value)
         Object(props, _) => if props.len() == 0 then "\{}" else "(intermediate value)"
-        Template | Tagged | Regex | Bool | Null | NewTarget | Array | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | New | Seq | Spread | Yield | Await =>
+        Template | Tagged | Regex | Bool | Null | NewTarget | Import | Array | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | New | Seq | Spread | Yield | Await =>
             "(intermediate value)"
 
 fn Vm.unary(mut self, op str, operand syntax.Expr, env ref Env) Value ! Thrown
@@ -1193,7 +1222,7 @@ fn ident_name(e syntax.Expr) str?
     match e
         Ident(name, _) => name
         Paren(inner, _) => ident_name(inner)
-        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Yield | Await =>
+        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Yield | Await =>
             none
 
 ## `delete` (§13.5.1.2).
@@ -1213,7 +1242,7 @@ fn Vm.delete_expr(mut self, operand syntax.Expr, env ref Env) bool ! Thrown
             chain_shorted = false
             r
         Ident => false
-        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | PrivName | Yield | Await =>
+        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | PrivName | Yield | Await =>
             eval(operand, env)?
             true
 
@@ -1869,7 +1898,7 @@ fn left_decl(left syntax.ForLeft) syntax.VarDecl?
 fn spread_of(e syntax.Expr) syntax.Expr?
     match e
         Spread(operand, _) => operand
-        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Chain | PrivName | Paren | Yield | Await =>
+        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Chain | PrivName | Paren | Yield | Await =>
             none
 
 fn bound_target(c Callable) Value?
@@ -1892,5 +1921,5 @@ fn Vm.member_ref(mut self, t syntax.Expr, env ref Env) MemberRef? ! Thrown
         Member(object, prop, computed, _, _) =>
             base := member_base(object, env)?
             MemberRef(f: base, key: member_key(prop, computed, env)?)
-        Paren | Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
+        Paren | Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
             none

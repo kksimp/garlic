@@ -19,6 +19,10 @@ pub struct Outcome
     pub changes int
     ## What scripts assigned to `document.cookie`, in order.
     pub cookies List[str]
+    ## Module sources the page wants (static imports it could not find, and
+    ## `import()` targets), by the address the engine uses; answer each with
+    ## `Session.module`.
+    pub mods List[str]
     ## `fetch` and XMLHttpRequest requests that had no reply yet.
     pub asks List[Ask]
     ## What WebSockets asked for since the last call, in order.
@@ -84,6 +88,7 @@ pub fn start(
     max_steps int,
 )(Session, Outcome)
     mut machine := vm.new_vm()
+    machine.trace = true
     machine.step_limit = max_steps
     machine.clock_ms = now_ms
     machine.cookies = cookies
@@ -115,6 +120,7 @@ fn Session.collect(mut self, mut d html.Doc) Outcome
         body: "",
         console: machine.console_out[console..],
         missing: [],
+        mods: [],
         changes: 0,
         cookies: [],
         asks: [],
@@ -131,6 +137,8 @@ fn Session.collect(mut self, mut d html.Doc) Outcome
             out.body = r.text
         if r.kind == "fetch-script"
             out.missing.push(r.url)
+        if r.kind == "fetch-module"
+            out.mods.push(r.url)
         if r.kind == "fetch"
             out.asks.push(Ask(id: r.node, method: r.method, url: r.url, packed: r.text))
         if r.kind == "ws"
@@ -146,6 +154,19 @@ pub fn Session.reply(mut self, mut d html.Doc, id int, json str, budget_ms float
     machine.net_deliver(id, json)
     machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
     collect(mut d)
+
+## The browser's answer for module `url` (see `Outcome.mods`): its source
+## `text`, or `ok` false when it could not be fetched. The imports waiting
+## for it go on, then timers and microtasks that became due.
+pub fn Session.module(mut self, mut d html.Doc, url str, text str, ok bool, budget_ms float) Outcome
+    machine.module_arrived(url, text, ok)
+    machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
+    collect(mut d)
+
+## The modules a module's source imports statically, as engine addresses
+## resolved against `base`, for the browser to fetch before the page runs.
+pub fn module_deps(source str, base str) List[str]
+    vm.module_dep_urls(source, base)
 
 ## Lets the page's timers and microtasks run for `budget_ms` of its own clock
 ## (`wait:idle`), and replays what they changed.

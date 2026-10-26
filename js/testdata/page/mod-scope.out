@@ -1,0 +1,26 @@
+number true
+undefined undefined undefined
+undefined null
+number 3
+ReferenceError: undeclaredInModule is not defined
+undefined
+== body
+
+<script type="module">
+var moduleVar = 1;
+let moduleLet = 2;
+function moduleFn() { return 3; }
+console.log(typeof window.moduleVar, typeof window.moduleLet, typeof window.moduleFn);
+console.log(this, document.currentScript);
+console.log(typeof moduleFn(), moduleVar + moduleLet);
+try { undeclaredInModule = 1; } catch (e) { console.log(e.name + ": " + e.message); }
+</script>
+<script type="module">
+console.log(typeof moduleVar);
+</script>
+<script>
+var classicVar = 1;
+console.log(typeof window.classicVar, this === window);
+</script>
+
+

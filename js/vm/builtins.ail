@@ -28,6 +28,9 @@ pub fn new_vm() Vm
         ctors: {},
         console_out: [],
         echo: false,
+        trace: false,
+        cur_url: "",
+        cur_pos: syntax.Pos(line: 0, col: 0, offset: 0),
         step_count: 0,
         step_limit: 0,
         next_id: 1,
@@ -68,6 +71,7 @@ pub fn new_vm() Vm
         mo_hold: false,
         mo_held: [],
         template_frags: {},
+        modules: new_mod_state(),
     )
     vm.setup()
     vm
@@ -364,7 +368,7 @@ fn Vm.setup(mut self)
 ## Natives that `new` may call.
 pub fn native_is_ctor(name str) bool
     match name
-        "Object" | "Function" | "Array" | "String" | "Number" | "Boolean" | "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" | "AggregateError" | "Map" | "Set" | "Proxy" | "proxy" | "WeakMap" | "WeakSet" | "WeakRef" | "FinalizationRegistry" | "IntersectionObserver" | "ResizeObserver" | "RegExp" | "Date" | "Promise" | "dom.Event" | "dom.MutationObserver" | "dom.illegal" | "dom.URL" | "dom.URLSearchParams" | "dom.Image" | "dom.abort.new.AbortController" =>
+        "Object" | "Function" | "Array" | "String" | "Number" | "Boolean" | "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" | "AggregateError" | "Map" | "Set" | "Proxy" | "proxy" | "WeakMap" | "WeakSet" | "WeakRef" | "FinalizationRegistry" | "IntersectionObserver" | "ResizeObserver" | "PerformanceObserver" | "RegExp" | "Date" | "Promise" | "dom.Event" | "dom.MutationObserver" | "dom.illegal" | "dom.URL" | "dom.URLSearchParams" | "dom.Image" | "dom.abort.new.AbortController" =>
             true
         _ => name.starts_with("bin.new.")
 
@@ -394,6 +398,8 @@ pub fn Vm.native(
         return generator_native(m, this_val, args)
     if name == "Async.resume"
         return async_native(name, this_val, args)
+    if m := name.strip_prefix("Module.")
+        return module_native(m, this_val, args)
     if m := name.strip_prefix("AsyncGenerator.prototype.")
         return async_generator_native(m, this_val, args)
     if name == "AsyncGen.resume"
@@ -420,7 +426,7 @@ pub fn Vm.native(
         return map_method(m, this_val, args)
     if m := name.strip_prefix("Set.prototype.")
         return set_method(m, this_val, args)
-    for w in ["IntersectionObserver", "ResizeObserver"]
+    for w in ["IntersectionObserver", "ResizeObserver", "PerformanceObserver"]
         if m := name.strip_prefix("{w}.prototype.")
             return if m == "takeRecords" then array([]) else Value.Undef
     for w in ["WeakMap", "WeakSet", "WeakRef", "FinalizationRegistry"]
@@ -568,7 +574,7 @@ pub fn Vm.native(
                     o.props["cause"] = hidden(get(opts, "cause")?)
             stack_name := to_string(get(Obj(o), "name")?)?
             msg := to_string(get(Obj(o), "message")?)?
-            o.props["stack"] = hidden(Str(if msg == "" then "{stack_name}\n    at <anonymous>" else "{stack_name}: {msg}\n    at <anonymous>"))
+            o.props["stack"] = hidden(Str(if msg == "" then "{stack_name}\n    at {at_text()}" else "{stack_name}: {msg}\n    at {at_text()}"))
             Obj(o)
         "Error.prototype.toString" =>
             if not is_obj(this_val)
@@ -601,7 +607,11 @@ pub fn Vm.native(
             args,
             new_target,
         )
-        "IntersectionObserver" | "ResizeObserver" => observer_stub_new(name, args, new_target)
+        "IntersectionObserver" | "ResizeObserver" | "PerformanceObserver" => observer_stub_new(
+            name,
+            args,
+            new_target,
+        )
         "RegExp" =>
             src := if a0 == Undef then "(?:)" else to_string(a0)?
             flags := if arg_at(args, 1) == Undef then "" else to_string(arg_at(args, 1))?
@@ -719,7 +729,7 @@ fn Vm.eval_program(mut self, prog syntax.Program) Value ! Thrown
     for s in prog.body
         match s
             Exp(e, _) => last = eval(e, global_env)?
-            Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger =>
+            Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger | Module =>
                 exec(s, global_env)?
     last
 
@@ -735,7 +745,7 @@ pub fn Vm.is_direct_eval(self, callee syntax.Expr, f Value) bool
             match c
                 Native(n) => n == "global.eval"
                 Closure | Bound => false
-        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await =>
+        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await =>
             false
 
 pub fn Vm.direct_eval(mut self, code Value, env ref Env) Value ! Thrown
@@ -755,7 +765,7 @@ pub fn Vm.direct_eval(mut self, code Value, env ref Env) Value ! Thrown
     for s in prog.body
         match s
             Exp(e, _) => last = eval(e, lex)?
-            Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger =>
+            Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger | Module =>
                 exec(s, lex)?
     last
 
@@ -764,7 +774,7 @@ fn Vm.run_program_value(mut self, prog syntax.Program) Value ! Thrown
     if prog.body.len() == 1
         match prog.body[0]
             Exp(e, _) => return eval(e, global_env)
-            Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger =>
+            Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger | Module =>
                 return Undef
     Undef
 

@@ -1,0 +1,4 @@
+tla-dep: before await
+tla-dep: after await
+tla-user: late value
+main: 10 late value

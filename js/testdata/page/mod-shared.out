@@ -1,0 +1,20 @@
+lib evaluated
+first 1
+second 1
+main module hello main https://example.test/dir/mod-main.js
+1
+2
+== body
+
+<script type="module">
+import { bump, counter } from "./mod-lib.js";
+bump();
+console.log("first", counter);
+</script>
+<script type="module">
+import { counter } from "./mod-lib.js";
+console.log("second", counter);
+</script>
+<script type="module" src="./mod-main.js"></script>
+
+

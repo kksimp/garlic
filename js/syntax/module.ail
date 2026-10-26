@@ -1,0 +1,29 @@
+## What a module asks of others: the module specifiers of its `import` and
+## `export ... from` declarations, in source order (§16.2.1.4
+## ModuleRequests). Dynamic `import()` calls are not here; they name their
+## module at run time.
+
+## The distinct specifiers `prog` requests.
+pub fn module_requests(prog Program) List[str]
+    mut out := List[str]()
+    for s in prog.body
+        match s
+            Module(item, _) =>
+                spec := request_of(item)
+                if spec != "" and not out.contains(spec)
+                    out.push(spec)
+            Exp | Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger =>
+                continue
+    out
+
+## The specifier an item names, or "" for a local export.
+fn request_of(item ModItem) str
+    match item
+        ImportDecl(_, source, _) => source
+        ExportNamed(_, _, source, _) => source else ""
+        ExportAll(_, _, source, _) => source
+        ExportDefault => ""
+
+## The specifiers the module source `source` requests.
+pub fn module_requests_of(source str) List[str] ! JsError
+    module_requests(parse_module(source)?)

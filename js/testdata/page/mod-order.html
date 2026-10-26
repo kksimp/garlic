@@ -1,0 +1,17 @@
+<!DOCTYPE html><html><head><title>Module order</title></head><body><div id="out"></div>
+<script>
+console.log("classic 1", document.readyState);
+document.addEventListener("DOMContentLoaded", () => console.log("DOMContentLoaded", document.readyState));
+document.addEventListener("readystatechange", () => console.log("readystatechange", document.readyState));
+window.addEventListener("load", () => console.log("load"));
+</script>
+<script type="module">
+import { greet, shout } from "./mod-lib.js";
+console.log("inline module", greet("page"), this === undefined, typeof import.meta.url);
+document.getElementById("out").textContent = shout("done");
+</script>
+<script type="module" src="./mod-main.js"></script>
+<script defer src="./mod-defer.js"></script>
+<script nomodule>console.log("nomodule must not run");</script>
+<script>console.log("classic 2", document.readyState);</script>
+</body></html>

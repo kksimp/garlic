@@ -3,6 +3,8 @@
 #   ail run js --ast [--loc] FILE... the syntax tree as ESTree JSON, one line
 #   ail run js --check FILE...       "ok", or the SyntaxError
 #   ail run js --test DIR            each DIR/NAME.js against NAME.ast or NAME.err
+# A file named NAME.mjs is an ES module (the Module goal); --run and --test-run
+# load what it imports from disk and run it as Node runs `node NAME.mjs`.
 #   ail run js --test262 DIR [--bless]  the packed test262 parser tests (suite.ail)
 #   ail run js --run [--max-steps N] FILE...  run scripts; console.log to stdout
 #   ail run js --test-run DIR        each DIR/NAME.js's output against NAME.out
@@ -33,7 +35,7 @@ fn main() !
             for path in args
                 if args.len() > 1
                     print("== {path}")
-                out := run(mode, fs.read_text(path)?, loc) else err
+                out := run(mode, fs.read_text(path)?, loc, path.ends_with(".mjs")) else err
                     print(err)
                     failed = true
                     continue
@@ -44,7 +46,11 @@ fn main() !
             for path in args
                 if args.len() > 1
                     print("== {path}")
-                out := run_script(fs.read_text(path)?, max_steps, true)
+                out := if path.ends_with(".mjs") then run_module_file(path, max_steps, true) else run_script(
+                    fs.read_text(path)?,
+                    max_steps,
+                    true,
+                )
                 if out.failed
                     io.eprint(out.message)
                     failed = true
@@ -53,29 +59,45 @@ fn main() !
             # `--url URL` loads it at that address and lists every request
             # and cookie too.
             mut url := ""
-            if args.len() > 1 and args[0] == "--url"
-                url = args[1]
-                args.remove_at(0)
+            mut files := Map[str, str]()
+            mut trace := false
+            while args.len() > 0 and args[0].starts_with("--")
+                if args[0] == "--url" and args.len() > 1
+                    url = args[1]
+                    args.remove_at(0)
+                elif args[0] == "--map" and args.len() > 1
+                    files = map_files(args[1])?
+                    args.remove_at(0)
+                elif args[0] == "--trace"
+                    trace = true
+                else
+                    usage()
                 args.remove_at(0)
             for path in args
-                print(run_page_at(fs.read_text(path)?, max_steps, url).join("\n"))
+                html := fs.read_text(path)?
+                print(run_page_with(html, max_steps, url, files, trace).join("\n"))
         "--test-page" => failed = not test_pages(args[0])?
         _ => usage()
     if failed
         io.exit(1)
 
 fn usage()
-    io.eprint("usage: ail run js (--tokens | --ast [--loc] | --check | --run [--max-steps N]) FILE... | --test DIR | --test262 DIR | --test-run DIR | --page FILE | --test-page DIR")
+    io.eprint("usage: ail run js (--tokens | --ast [--loc] | --check | --run [--max-steps N]) FILE... | --test DIR | --test262 DIR | --test-run DIR | --page [--url URL] [--map MAP] [--trace] FILE | --test-page DIR")
     io.exit(2)
 
 ## One file's output for `mode`.
-fn run(mode str, source str, loc bool) str ! syntax.JsError
+fn run(mode str, source str, loc bool, module bool) str ! syntax.JsError
     match mode
         "--tokens" => [syntax.token_line(t) for t in syntax.tokenize(source)?].join("\n")
-        "--ast" => syntax.program_json(syntax.parse(source)?, loc)
+        "--ast" => syntax.program_json(parse_goal(source, module)?, loc)
         _ =>
-            syntax.parse(source)?
+            parse_goal(source, module)?
             "ok"
+
+fn parse_goal(source str, module bool) syntax.Program ! syntax.JsError
+    if module
+        return syntax.parse_module(source)
+    syntax.parse(source)
 
 ## Run every `NAME.js` in `dir`: its tree must equal `NAME.ast`, or its
 ## SyntaxError `NAME.err`. Prints each mismatch; true if there were none.
@@ -83,12 +105,13 @@ fn test_dir(dir str) !bool
     mut passed := 0
     mut failures := 0
     for name in fs.list_dir(dir)?
-        if not name.ends_with(".js")
+        is_module := name.ends_with(".mjs")
+        if not name.ends_with(".js") and not is_module
             continue
         file := path.join(dir, name)
-        stem := name.slice(0, name.chars().len() - 3)
+        stem := name.slice(0, name.chars().len() - (if is_module then 4 else 3))
         source := fs.read_text(file)?
-        actual := run("--ast", source, false) else err
+        actual := run("--ast", source, false, is_module) else err
             "{err}"
         ast_path := path.join(dir, "{stem}.ast")
         err_path := path.join(dir, "{stem}.err")
@@ -135,17 +158,96 @@ fn run_script(source str, max_steps int, echo bool) RunResult
     machine.run_event_loop(1.0e300, 1000000)
     RunResult(lines: machine.console_out, failed: false, message: "")
 
+## `file` as a `file://` address: absolute, with `.` and `..` resolved.
+fn file_url(file str) str
+    mut p := file
+    if not p.starts_with("/")
+        p = "{env.cwd()}/{p}"
+    mut parts := List[str]()
+    for seg in p.split("/")
+        if seg == "" or seg == "."
+            continue
+        if seg == ".."
+            if parts.len() > 0
+                parts.pop()
+            continue
+        parts.push(seg)
+    "file:///{parts.join("/")}"
+
+## The disk path of a `file://` address.
+fn file_path_of(url str) str
+    rest := url.strip_prefix("file://") else url
+    rest.split("?")[0].split("#")[0]
+
+## Read `url` and what it imports, breadth first, into the machine's script
+## store. A file that can't be read is left out: the import then fails.
+fn preload_modules(mut machine vm.Vm, url str)
+    mut queue := [url]
+    mut i := 0
+    while i < queue.len() and i < 2000
+        u := queue[i]
+        i += 1
+        if machine.external_scripts.contains(u)
+            continue
+        file := file_path_of(u)
+        if not fs.exists(file)
+            continue
+        text := fs.read_text(file) else err
+            continue
+        machine.external_scripts[u] = text
+        for dep in vm.module_dep_urls(text, u)
+            if not queue.contains(dep)
+                queue.push(dep)
+
+## Run the pending event loop, answering `import()` requests for files not
+## read ahead, until the page has nothing more to ask.
+fn pump_modules(mut machine vm.Vm)
+    mut served := Set[str]()
+    for _ in 0..1000
+        machine.run_event_loop(1.0e300, 1000000)
+        mut again := false
+        asked := machine.host_requests
+        for r in asked
+            if r.kind != "fetch-module" or not served.add(r.url)
+                continue
+            again = true
+            file := file_path_of(r.url)
+            text := fs.read_text(file) else err
+                machine.module_arrived(r.url, "", false)
+                continue
+            machine.module_arrived(r.url, text, true)
+        if not again
+            break
+
+## Run the module file `file` and what it imports, as `node FILE.mjs` does:
+## console output, then timers and promise jobs until the program is idle.
+fn run_module_file(file str, max_steps int, echo bool) RunResult
+    url := file_url(file)
+    mut machine := vm.new_vm()
+    machine.echo = echo
+    machine.step_limit = max_steps
+    machine.location_href = url
+    preload_modules(mut machine, url)
+    done := machine.mod_start(url, "", true)
+    pump_modules(mut machine)
+    RunResult(lines: machine.console_out, failed: vm.promise_failed(done), message: "")
+
 ## Run every `NAME.js` in `dir` and compare what it printed with `NAME.out`
 ## (written by Node; an uncaught error is the last line). True if all match.
 fn test_runs(dir str) !bool
     mut passed := 0
     mut failures := 0
     for name in fs.list_dir(dir)?
-        if not name.ends_with(".js")
+        is_module := name.ends_with(".mjs")
+        if not name.ends_with(".js") and not is_module
             continue
         file := path.join(dir, name)
-        stem := name.slice(0, name.chars().len() - 3)
-        out := run_script(fs.read_text(file)?, 10000000, false)
+        stem := name.slice(0, name.chars().len() - (if is_module then 4 else 3))
+        out := if is_module then run_module_file(file, 10000000, false) else run_script(
+            fs.read_text(file)?,
+            10000000,
+            false,
+        )
         mut lines := out.lines
         if out.failed
             lines.push(out.message)
@@ -172,15 +274,39 @@ PAGE_URL := "https://example.test/dir/page.html"
 
 ## Load a page and run its scripts, then a second of virtual time: what the
 ## console printed, the body's HTML, and what the page asked the browser for.
-fn run_page(html str, max_steps int) List[str]
-    run_page_at(html, max_steps, "")
-
 fn run_page_at(html str, max_steps int, url str) List[str]
+    run_page_with(html, max_steps, url, {}, false)
+
+## Answer the page's `import()` requests from `files` (a missing file fails
+## to load, as a 404 does), letting the page run on after each answer.
+fn serve_page_modules(mut machine vm.Vm, files Map[str, str])
+    mut served := Set[str]()
+    for _ in 0..100
+        mut again := false
+        asked := machine.host_requests
+        for r in asked
+            if r.kind != "fetch-module" or not served.add(r.url)
+                continue
+            again = true
+            if text := files.get(r.url)
+                machine.module_arrived(r.url, text, true)
+            else
+                machine.module_arrived(r.url, "", false)
+        machine.run_event_loop(machine.clock_ms + 1000.0, 10000)
+        if not again
+            break
+
+## `run_page_at` with the files beside the page (modules and scripts) by
+## address.
+fn run_page_with(html str, max_steps int, url str, files Map[str, str], trace bool) List[str]
     mut machine := vm.new_vm()
+    machine.trace = trace
     machine.step_limit = max_steps
+    machine.external_scripts = files
     machine.dom_setup()
     machine.parse_into(0, html)
     machine.load_page(if url == "" then PAGE_URL else url, 1000.0)
+    serve_page_modules(mut machine, files)
     mut lines := machine.console_out
     bodies := machine.descendants_by_tag(0, "body")
     lines.push("== body")
@@ -196,6 +322,31 @@ fn run_page_at(html str, max_steps int, url str) List[str]
             lines.push("== cookie {k}={machine.cookies[k]}")
     lines
 
+## Files by address, from a map file of `URL PATH` lines (blank lines and
+## `#` lines are skipped), so a captured site loads offline.
+fn map_files(map_path str) !Map[str, str]
+    mut files := Map[str, str]()
+    dir := path.dir(map_path)
+    for line in fs.read_text(map_path)?.lines()
+        t := line.trim()
+        if t == "" or t.starts_with("#")
+            continue
+        parts := t.split(" ")
+        if parts.len() < 2
+            continue
+        file := t.slice(parts[0].chars().len(), t.chars().len()).trim()
+        local := if file.starts_with("/") then file else path.join(dir, file)
+        files[parts[0]] = fs.read_text(local)?
+    files
+
+## The scripts and modules in `dir`, at the addresses a page there sees.
+fn page_files(dir str) !Map[str, str]
+    mut files := Map[str, str]()
+    for name in fs.list_dir(dir)?
+        if name.ends_with(".js") or name.ends_with(".mjs") or name.ends_with(".json")
+            files["https://example.test/dir/{name}"] = fs.read_text(path.join(dir, name))?
+    files
+
 ## Run every `NAME.html` in `dir` against `NAME.out` (written by Chromium).
 fn test_pages(dir str) !bool
     mut passed := 0
@@ -205,7 +356,8 @@ fn test_pages(dir str) !bool
             continue
         file := path.join(dir, name)
         stem := name.slice(0, name.chars().len() - 5)
-        actual := run_page(fs.read_text(file)?, 10000000).join("\n").trim()
+        html := fs.read_text(file)?
+        actual := run_page_with(html, 10000000, "", page_files(dir)?, false).join("\n").trim()
         expected := fs.read_text(path.join(dir, "{stem}.out"))?.trim()
         if actual == expected
             passed += 1

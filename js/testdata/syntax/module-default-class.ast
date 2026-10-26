@@ -1,0 +1,1 @@
+{"type":"Program","body":[{"type":"ExportDefaultDeclaration","declaration":{"type":"ClassDeclaration","id":{"type":"Identifier","name":"A"},"superClass":{"type":"Identifier","name":"Object"},"body":{"type":"ClassBody","body":[]}}}],"sourceType":"module"}

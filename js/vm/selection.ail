@@ -1,0 +1,23 @@
+## `window.getSelection()` and `document.getSelection()` (Selection API §2).
+## Garlic has no text selection: the one Selection object is collapsed,
+## empty and has no ranges, as Chrome's is on a page nobody has touched.
+
+fn Vm.selection_setup(mut self)
+    proto := sub_interface("Selection", "Object")
+    methods(
+        proto,
+        "dom.selection",
+        "getRangeAt:1 removeAllRanges:0 addRange:1 collapse:2 empty:0 toString:0 containsNode:1 selectAllChildren:1 setBaseAndExtent:4 extend:2 collapseToStart:0 collapseToEnd:0 deleteFromDocument:0",
+    )
+    sel := object("Selection", Value.Obj(proto))
+    sel.props["anchorNode"] = data(Null)
+    sel.props["anchorOffset"] = data(Num(0.0))
+    sel.props["focusNode"] = data(Null)
+    sel.props["focusOffset"] = data(Num(0.0))
+    sel.props["isCollapsed"] = data(Bool(true))
+    sel.props["rangeCount"] = data(Num(0.0))
+    sel.props["type"] = data(Str("None"))
+    global_obj.props["{PRIVATE}selection"] = hidden(Obj(sel))
+    methods(global_obj, "dom.selection", "getSelection:0")
+    if doc := obj_of(proto_of("Document"))
+        methods(doc, "dom.selection", "getSelection:0")

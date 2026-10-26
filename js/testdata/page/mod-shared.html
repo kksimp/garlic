@@ -1,0 +1,12 @@
+<!DOCTYPE html><html><head><title>Shared module</title></head><body>
+<script type="module">
+import { bump, counter } from "./mod-lib.js";
+bump();
+console.log("first", counter);
+</script>
+<script type="module">
+import { counter } from "./mod-lib.js";
+console.log("second", counter);
+</script>
+<script type="module" src="./mod-main.js"></script>
+</body></html>

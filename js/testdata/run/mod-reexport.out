@@ -1,0 +1,7 @@
+a: start
+a: end
+Box,aDefault,aName,aNs,c,late,name
+a hello x a 0 a
+only1,only2 one two false
+SyntaxError: The requested module './star-both.mjs' contains conflicting star exports for name 'dup'
+SyntaxError: The requested module './a.mjs' does not provide an export named 'nope'

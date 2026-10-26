@@ -1,0 +1,23 @@
+## The CSSOM interfaces that pages patch or probe (rrweb wraps
+## `CSSStyleDeclaration.prototype.setProperty` and `CSSStyleSheet.prototype
+## .insertRule`). Garlic has no style sheets of its own, so the methods do
+## nothing; `document.styleSheets` is empty.
+
+## Installs the interface objects, with their methods.
+fn Vm.cssom_interfaces(mut self)
+    decl := sub_interface("CSSStyleDeclaration", "Object")
+    methods(
+        decl,
+        "dom.cssom",
+        "setProperty:3 removeProperty:1 getPropertyValue:1 getPropertyPriority:1 item:1",
+    )
+    sub_interface("StyleSheet", "Object")
+    sheet := sub_interface("CSSStyleSheet", "StyleSheet")
+    methods(sheet, "dom.cssom", "insertRule:2 deleteRule:1 replace:1 replaceSync:1")
+    sub_interface("CSSRule", "Object")
+    sub_interface("CSSStyleRule", "CSSRule")
+    sub_interface("CSSGroupingRule", "CSSRule")
+    sub_interface("CSSMediaRule", "CSSGroupingRule")
+    sub_interface("CSSSupportsRule", "CSSGroupingRule")
+    sub_interface("CSSRuleList", "Object")
+    sub_interface("MediaList", "Object")

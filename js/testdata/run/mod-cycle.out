@@ -1,0 +1,5 @@
+cyc-b: fa() = fa
+cyc-b: ReferenceError: Cannot access 'a' before initialization
+cyc-a: b = B getA() = A
+hello from a via b
+main done

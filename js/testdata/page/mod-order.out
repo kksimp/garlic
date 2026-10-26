@@ -1,0 +1,31 @@
+classic 1 loading
+classic 2 loading
+readystatechange interactive
+lib evaluated
+inline module hello page true string
+main module hello main https://example.test/dir/mod-main.js
+0
+1
+defer script interactive
+DOMContentLoaded interactive
+readystatechange complete
+load
+== body
+<div id="out">DONE!</div>
+<script>
+console.log("classic 1", document.readyState);
+document.addEventListener("DOMContentLoaded", () => console.log("DOMContentLoaded", document.readyState));
+document.addEventListener("readystatechange", () => console.log("readystatechange", document.readyState));
+window.addEventListener("load", () => console.log("load"));
+</script>
+<script type="module">
+import { greet, shout } from "./mod-lib.js";
+console.log("inline module", greet("page"), this === undefined, typeof import.meta.url);
+document.getElementById("out").textContent = shout("done");
+</script>
+<script type="module" src="./mod-main.js"></script>
+<script defer="" src="./mod-defer.js"></script>
+<script nomodule="">console.log("nomodule must not run");</script>
+<script>console.log("classic 2", document.readyState);</script>
+
+

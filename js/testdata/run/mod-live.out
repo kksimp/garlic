@@ -1,0 +1,6 @@
+0 0
+2 2
+TypeError: Assignment to constant variable.
+0 count:number,inc:function,reset:function
+first first first
+second second first

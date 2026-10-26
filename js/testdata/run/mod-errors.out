@@ -1,0 +1,3 @@
+throws: run
+Error,SyntaxError,SyntaxError
+true boom

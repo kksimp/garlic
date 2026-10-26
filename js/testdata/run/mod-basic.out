@@ -1,0 +1,8 @@
+a: start
+a: end
+b: sees a hello b
+main: a hello main 8 var a!
+function Box,default,late,name
+true undefined undefined undefined
+undefined number
+ReferenceError: undeclaredVariable is not defined

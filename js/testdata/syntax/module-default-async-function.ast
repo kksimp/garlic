@@ -1,0 +1,1 @@
+{"type":"Program","body":[{"type":"ExportDefaultDeclaration","declaration":{"type":"FunctionDeclaration","id":{"type":"Identifier","name":"named"},"params":[],"body":{"type":"BlockStatement","body":[]},"generator":false,"async":true}}],"sourceType":"module"}

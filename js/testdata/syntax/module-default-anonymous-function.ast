@@ -1,0 +1,1 @@
+{"type":"Program","body":[{"type":"ExportDefaultDeclaration","declaration":{"type":"FunctionDeclaration","id":null,"params":[],"body":{"type":"BlockStatement","body":[]},"generator":true,"async":false}}],"sourceType":"module"}
