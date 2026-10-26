@@ -275,6 +275,8 @@ pub fn Vm.bin_native(
         return buffer_native(t, this_val, args)
     if m.starts_with("TextEncoder.") or m.starts_with("TextDecoder.")
         return encoding_native(m, this_val, args)
+    if m.starts_with("customElements.")
+        return custom_native(m, this_val, args)
     if m.starts_with("crypto.") or m.starts_with("SubtleCrypto.")
         return crypto_native(m, this_val, args)
     if m == "TypedArray.from" or m == "TypedArray.of"
@@ -512,3 +514,4 @@ pub fn Vm.bin_setup(mut self)
     bin_tag(dv_proto, "DataView")
     encoding_setup()
     crypto_setup()
+    custom_setup()

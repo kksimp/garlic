@@ -1,0 +1,59 @@
+## `customElements` (HTML Standard §4.13.4): the registry only. `define`
+## records the constructor and settles `whenDefined`; elements already in
+## the page are not upgraded and their callbacks never run.
+
+CE_DEF := "\u{0}#ce:"
+CE_WAIT := "\u{0}#cw:"
+
+fn valid_element_name(name str) bool
+    cs := name.chars()
+    if cs.len() < 3 or not name.contains('-')
+        return false
+    if cs[0] < 'a' or cs[0] > 'z'
+        return false
+    for c in cs
+        ok := (c >= 'a' and c <= 'z') or c.is_digit() or c == '-' or c == '.' or c == '_'
+        if not ok
+            return false
+    match name
+        "annotation-xml" | "color-profile" | "font-face" | "font-face-src" | "font-face-uri" | "font-face-format" | "font-face-name" | "missing-glyph" => false
+        _ => true
+
+fn Vm.custom_native(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    reg := this_kind(this_val, "CustomElementRegistry")?
+    a0 := arg_at(args, 0)
+    name := to_string(a0)?
+    if m == "customElements.get"
+        p := reg.props.get("{CE_DEF}{name}") else return Undef
+        return p.value
+    if m == "customElements.upgrade"
+        return Undef
+    if not valid_element_name(name)
+        return dom_exception("SyntaxError", "\"{name}\" is not a valid custom element name")
+    if m == "customElements.whenDefined"
+        if d := reg.props.get("{CE_DEF}{name}")
+            return Value.Obj(promise_resolve(d.value))
+        if w := reg.props.get("{CE_WAIT}{name}")
+            return w.value
+        p := new_promise()
+        reg.props["{CE_WAIT}{name}"] = hidden(Value.Obj(p))
+        return Value.Obj(p)
+    if m == "customElements.define"
+        ctor := arg_at(args, 1)
+        if not is_constructor(ctor)
+            return type_error("Failed to execute 'define' on 'CustomElementRegistry': parameter 2 is not of type 'Function'.")
+        if reg.props.get("{CE_DEF}{name}") != none
+            return dom_exception("NotSupportedError", "Failed to execute 'define' on 'CustomElementRegistry': the name \"{name}\" has already been used with this registry")
+        reg.props["{CE_DEF}{name}"] = hidden(ctor)
+        if w := reg.props.get("{CE_WAIT}{name}")
+            if p := obj_of(w.value)
+                resolve_promise(p, ctor)
+        return Undef
+    type_error("{m} is not supported yet")
+
+fn Vm.custom_setup(mut self)
+    bin_ctor("CustomElementRegistry", 0)
+    proto := obj_of(proto_of("CustomElementRegistry")) else return
+    methods(proto, "bin.customElements", "define:2 get:1 whenDefined:1 upgrade:1")
+    bin_tag(proto, "CustomElementRegistry")
+    global_obj.props["customElements"] = hidden(Value.Obj(object("CustomElementRegistry", Value.Obj(proto))))
