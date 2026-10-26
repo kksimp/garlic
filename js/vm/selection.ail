@@ -9,7 +9,7 @@ fn Vm.selection_setup(mut self)
         "dom.selection",
         "getRangeAt:1 removeAllRanges:0 addRange:1 collapse:2 empty:0 toString:0 containsNode:1 selectAllChildren:1 setBaseAndExtent:4 extend:2 collapseToStart:0 collapseToEnd:0 deleteFromDocument:0",
     )
-    sel := object("Selection", proto)
+    sel := object("Selection", Value.Obj(proto))
     sel.props["anchorNode"] = data(Null)
     sel.props["anchorOffset"] = data(Num(0.0))
     sel.props["focusNode"] = data(Null)
