@@ -120,9 +120,12 @@ MAX_KEPT := 16
 ## The headers Garlic sends: who it is, and that it wants HTML.
 fn options() net.Options
     mut o := net.options()
-    o.headers["user-agent"] = "Garlic/0.1 (AIL; text)" # keep equal to USER_AGENT in js/vm/dom.ail
+    o.headers["sec-ch-ua"] = "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"8\", \"Garlic\";v=\"0\"" # brands as in userAgentData, js/vm/dom.ail
+    o.headers["sec-ch-ua-mobile"] = "?0"
+    o.headers["sec-ch-ua-platform"] = "\"macOS\""
+    o.headers["user-agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Garlic/0.1" # keep equal to USER_AGENT in js/vm/dom.ail
     o.headers["accept"] = "text/html,application/xhtml+xml;q=0.9,text/plain;q=0.8,*/*;q=0.5"
-    o.headers["accept-language"] = "en"
+    o.headers["accept-language"] = "en-US,en;q=0.9"
     o.headers["accept-encoding"] = "gzip, deflate"
     o
 
@@ -2675,12 +2678,16 @@ impl app.App for Garlic
         mut page_ops := [to_app(op, g) for op in g.display()]
         page_ops.extend(tabstrip.menu_ops(theme(), menu_rows(), menu_x, g.scene.bg))
         rows.push(app.canvas("page", 0.0, 0.0, page_ops))
-        rows.push(app.canvas(
-            "status",
-            0.0,
-            tabstrip.STATUS_H,
-            tabstrip.status(theme(), g.status(), strip_w),
-        ))
+        ## The address is already in the bar above, so a status row that
+        ## would only repeat it is left out; prompts and messages still show.
+        shown := g.status()
+        if shown != "" and shown != g.b.url
+            rows.push(app.canvas(
+                "status",
+                0.0,
+                tabstrip.STATUS_H,
+                tabstrip.status(theme(), shown, strip_w),
+            ))
         app.column(rows)
 
     fn title(self) str

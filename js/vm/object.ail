@@ -40,6 +40,8 @@ pub fn Vm.own(self, o ref JsObject, key str) Prop?
         return own(obj_of(o.prim) else o, key)
     if o.class == "Module"
         return module_own(o, key)
+    if is_view(o) and index_of_key(key) != none
+        return view_own(o, key)
     if is_array_like(o)
         if i := index_of_key(key)
             if i < o.elems.len()
@@ -162,6 +164,8 @@ pub fn Vm.set_own(mut self, o ref JsObject, key str, v Value) ! Thrown
         return
     if o.class == "CSSStyle"
         return style_write(o, key, v)
+    if is_view(o) and index_of_key(key) != none
+        return view_set(o, key, v)
     if o.class == "DataSet"
         id := int_of(num_of(o.prim) else -1.0)
         text := if is_nullish(v) then "null" else to_string(v)?
@@ -239,7 +243,7 @@ pub fn Vm.delete(mut self, o ref JsObject, key str) bool
 pub fn Vm.own_keys(self, o ref JsObject) List[str]
     if o.class == "Proxy"
         return own_keys(obj_of(o.prim) else o)
-    mut out := List[str]()
+    mut out := view_keys(o)
     if is_array_like(o)
         for i in 0..o.elems.len()
             out.push("{i}")

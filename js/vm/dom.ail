@@ -619,13 +619,24 @@ pub fn Vm.dom_setup(mut self)
         "product=Gecko",
         "productSub=20030107",
         "language=en-US",
-        "platform=Linux x86_64",
+        "platform=MacIntel",
         "vendor=Google Inc.",
         "vendorSub=",
         "doNotTrack=",
     ]
         parts := kv.split("=")
         nav_proto.props[parts[0]] = data(if parts[1] == "" and parts[0] == "doNotTrack" then Null else Str(parts[1]))
+    # User-Agent Client Hints: the same brands as the `sec-ch-ua` header.
+    brands := array([
+        hint_brand("Chromium", "141"),
+        hint_brand("Not?A_Brand", "8"),
+        hint_brand("Garlic", "0"),
+    ])
+    uad := plain()
+    uad.props["brands"] = data(brands)
+    uad.props["mobile"] = data(Bool(false))
+    uad.props["platform"] = data(Str("macOS"))
+    nav_proto.props["userAgentData"] = data(Obj(uad))
     nav_proto.props["languages"] = data(array([Value.Str("en-US"), Value.Str("en")]))
     for kv in ["cookieEnabled=1", "onLine=1", "webdriver=0", "pdfViewerEnabled=1"]
         parts := kv.split("=")
@@ -787,10 +798,19 @@ fn Vm.accessor_named(mut self, target ref JsObject, name str, native str)
 
 # ------------------------------------------------------------ dispatch
 
-## The user agent Garlic's scripts see: the same honest string as its HTTP
-## `user-agent` header (`options()` in garlic.ail), so pages and servers see
-## one identity and nothing pretends to be another browser.
-USER_AGENT := "Garlic/0.1 (AIL; text)"
+## One `{brand, version}` entry of `navigator.userAgentData.brands`.
+fn Vm.hint_brand(mut self, brand str, version str) Value
+    b := plain()
+    b.props["brand"] = data(Str(brand))
+    b.props["version"] = data(Str(version))
+    Value.Obj(b)
+
+## The user agent Garlic's scripts see: the same string as its HTTP
+## `user-agent` header (`options()` in garlic.ail). It follows the usual
+## compatibility form, standard engine tokens first and the browser's own
+## name last, so sites that parse them still serve it and logs still name it.
+## The Chromium major here is the one `sec-ch-ua` and `userAgentData` claim.
+USER_AGENT := "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Garlic/0.1"
 
 ## Trusted Types (W3C): policies whose rules turn strings into "trusted"
 ## strings; Garlic keeps them as plain strings.
