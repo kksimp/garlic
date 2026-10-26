@@ -1020,7 +1020,7 @@ fn Ctx.add_text(mut self, raw str, st St)
             if cur.len() > 0
                 atoms.push(self.word_atom(cur.join(""), st))
                 cur = []
-            atoms.push(self.word_atom(c.to_str(), st))
+            atoms.push(self.word_atom([c].join(""), st))
         else
             cur.push(c)
     if cur.len() > 0
