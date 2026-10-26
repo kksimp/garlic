@@ -1,0 +1,14 @@
+<!DOCTYPE html><html><head><title>Dynamic import</title></head><body><p id="p">waiting</p>
+<script type="module">
+console.log("module start");
+const m = await import("./mod-dyn.js");
+console.log("module got", m.default, Object.keys(m).join());
+document.getElementById("p").textContent = m.default;
+try {
+  await import("./mod-missing.js");
+} catch (e) {
+  console.log("missing:", e.name);
+}
+console.log("module end");
+</script>
+</body></html>

@@ -68,6 +68,7 @@ pub fn new_vm() Vm
         mo_hold: false,
         mo_held: [],
         template_frags: {},
+        modules: new_mod_state(),
     )
     vm.setup()
     vm
@@ -393,6 +394,8 @@ pub fn Vm.native(
         return generator_native(m, this_val, args)
     if name == "Async.resume"
         return async_native(name, this_val, args)
+    if m := name.strip_prefix("Module.")
+        return module_native(m, this_val, args)
     if m := name.strip_prefix("AsyncGenerator.prototype.")
         return async_generator_native(m, this_val, args)
     if name == "AsyncGen.resume"
@@ -714,7 +717,7 @@ fn Vm.eval_program(mut self, prog syntax.Program) Value ! Thrown
     for s in prog.body
         match s
             Exp(e, _) => last = eval(e, global_env)?
-            Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger =>
+            Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger | Module =>
                 exec(s, global_env)?
     last
 
@@ -730,7 +733,7 @@ pub fn Vm.is_direct_eval(self, callee syntax.Expr, f Value) bool
             match c
                 Native(n) => n == "global.eval"
                 Closure | Bound => false
-        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await =>
+        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await =>
             false
 
 pub fn Vm.direct_eval(mut self, code Value, env ref Env) Value ! Thrown
@@ -750,7 +753,7 @@ pub fn Vm.direct_eval(mut self, code Value, env ref Env) Value ! Thrown
     for s in prog.body
         match s
             Exp(e, _) => last = eval(e, lex)?
-            Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger =>
+            Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger | Module =>
                 exec(s, lex)?
     last
 
@@ -759,7 +762,7 @@ fn Vm.run_program_value(mut self, prog syntax.Program) Value ! Thrown
     if prog.body.len() == 1
         match prog.body[0]
             Exp(e, _) => return eval(e, global_env)
-            Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger =>
+            Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger | Module =>
                 return Undef
     Undef
 

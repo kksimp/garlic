@@ -1,0 +1,735 @@
+## ES modules (ECMA-262 §16.2, HTML §8.1.3): module records, linking,
+## evaluation, namespace objects, `import.meta` and `import()`.
+##
+## A module's `import`/`export` declarations are lifted into its record
+## (`imports`, `locals`, `indirect`, `stars`) and its exported declarations
+## are unwrapped, so what is left of its body is plain script code that the
+## tree-walker, or for top-level `await` the async-function machinery of
+## gen.ail, runs in the module's own scope. That scope is a function scope
+## whose `object` holds the module's imports as accessor properties: a read
+## goes to the exporting module's binding, so imports are live (§16.2.1.6.4
+## ResolveExport, §9.1.1.5 Module Environment Records). Namespace objects are
+## class "Module" objects that `own` (object.ail) reads live.
+##
+## Sources come from `external_scripts` by URL; a module the engine still
+## needs is asked of the browser (host request "fetch-module") and handed
+## back with `module_arrived`.
+use syntax
+
+## One `import`/`export ... from` request: the specifier as written, the URL
+## it means, and the key of the module record ("json:URL" for a JSON module).
+pub struct Req
+    spec str
+    url str
+    key str
+    kind str
+
+struct ImportEntry
+    req int
+    ## The exported name wanted: "default", "*" for a namespace, or a name.
+    imported str
+    local str
+
+struct ExportEntry
+    exported str
+    local str
+
+## `export {x as y} from`, `export * as y from`: `imported` is "*" for the
+## namespace.
+struct IndirectEntry
+    exported str
+    req int
+    imported str
+
+## Where an exported name lives: `kind` is "found", "missing" or
+## "ambiguous"; `name` is a binding in module `key`, or "*namespace*".
+pub struct Resolution
+    kind str
+    key str
+    name str
+
+pub struct ModRec
+    key str
+    url str
+    ## "new", "linking", "linked", "evaluating", "evaluated" or "errored".
+    status str
+    body List[syntax.Stmt]
+    has_tla bool
+    reqs List[Req]
+    imports List[ImportEntry]
+    locals List[ExportEntry]
+    indirect List[IndirectEntry]
+    stars List[int]
+    env ref Env
+    ns Value
+    nsmap Map[str, Resolution]
+    error Value
+    ## The promise of a top-level `await` module still running.
+    wait Value
+
+## A running evaluation of a module graph: the modules in the order to run
+## them (dependencies first), and the promise that settles at the end.
+pub struct EvalRun
+    order List[str]
+    idx int
+    promise ref JsObject
+    ns_key str
+    report bool
+    waiting bool
+
+pub struct ImportJob
+    key str
+    url str
+    kind str
+    promise ref JsObject
+    report bool
+
+pub struct ModState
+    mods Map[str, ref ModRec]
+    runs Map[int, ref EvalRun]
+    jobs List[ImportJob]
+    ## URLs asked of the browser, and those it could not fetch.
+    wanted Set[str]
+    failed Set[str]
+    seq int
+    inline_seq int
+
+pub fn new_mod_state() ref ModState
+    ref ModState(
+        mods: {},
+        runs: {},
+        jobs: [],
+        wanted: Set[str](),
+        failed: Set[str](),
+        seq: 0,
+        inline_seq: 0,
+    )
+
+## The URL a module specifier means from the module at `base`, or "" for a
+## bare name such as `lodash`, which needs an import map (HTML §8.1.3.3).
+pub fn specifier_url(spec str, base str) str
+    if spec.starts_with("/") or spec.starts_with("./") or spec.starts_with("../")
+        return resolve_against(base, spec)
+    if spec.contains("://") or spec.starts_with("data:") or spec.starts_with("blob:")
+        return spec
+    ""
+
+## The URLs the module `source` (at `base`) imports statically, for a browser
+## to fetch before the module runs. A source that doesn't parse has none.
+pub fn module_dep_urls(source str, base str) List[str]
+    mut out := List[str]()
+    specs := syntax.module_requests_of(source) else err
+        return out
+    for spec in specs
+        u := specifier_url(spec, base)
+        if u != "" and not out.contains(u)
+            out.push(u)
+    out
+
+fn mod_key(url str, kind str) str
+    if kind == "" then url else "{kind}:{url}"
+
+# ------------------------------------------------------------ loading
+
+## Make the records of module `key` and of everything it imports. A URL
+## whose source the engine doesn't have yet goes to `missing`.
+fn Vm.mod_load(
+    mut self,
+    key str,
+    url str,
+    kind str,
+    mut seen Set[str],
+    mut missing List[str],
+)
+    if not seen.add(key)
+        return
+    if modules.mods.get(key) == none
+        source := external_scripts.get(url)
+        if source == none and not modules.failed.contains(url)
+            missing.push(url)
+            return
+        modules.mods[key] = mod_create(key, url, kind, source)
+    m := modules.mods.get(key) else return
+    for r in m.reqs
+        if r.url != ""
+            mod_load(r.key, r.url, r.kind, mut seen, mut missing)
+
+fn Vm.mod_create(mut self, key str, url str, kind str, source str?) ref ModRec
+    m := ref ModRec(
+        key: key,
+        url: url,
+        status: "new",
+        body: [],
+        has_tla: false,
+        reqs: [],
+        imports: [],
+        locals: [],
+        indirect: [],
+        stars: [],
+        env: new_env(none, true),
+        ns: Undef,
+        nsmap: {},
+        error: Undef,
+        wait: Undef,
+    )
+    if source == none
+        m.status = "errored"
+        m.error = make_error("TypeError", "Failed to fetch dynamically imported module: {url}")
+        return m
+    text := source else ""
+    if kind == "json"
+        v := json_parse(text, Undef) else err
+            m.status = "errored"
+            m.error = err.value
+            return m
+        m.locals.push(ExportEntry(exported: "default", local: "default"))
+        m.env.vars["default"] = Binding(value: v, mutable: false, ready: true)
+        m.status = "evaluated"
+        return m
+    prog := syntax.parse_module(text) else err
+        m.status = "errored"
+        m.error = make_error("SyntaxError", err.msg)
+        return m
+    m.has_tla = prog.has_tla
+    mut body := List[syntax.Stmt]()
+    for s in prog.body
+        match s
+            Module(item, p) => mod_item(m, item, p, mut body)
+            Exp | Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger =>
+                body.push(s)
+    m.body = body
+    m
+
+fn Vm.add_req(mut self, m ref ModRec, spec str, attrs List[syntax.ImportAttr]) int
+    mut kind := ""
+    for a in attrs
+        if a.key == "type" and a.value == "json"
+            kind = "json"
+    for i in 0..m.reqs.len()
+        if m.reqs[i].spec == spec and m.reqs[i].kind == kind
+            return i
+    u := specifier_url(spec, m.url)
+    m.reqs.push(Req(spec: spec, url: u, key: mod_key(u, kind), kind: kind))
+    m.reqs.len() - 1
+
+## File one import or export declaration in the record, and put what stays
+## executable in `body`.
+fn Vm.mod_item(mut self, m ref ModRec, item syntax.ModItem, p syntax.Pos, mut body List[syntax.Stmt])
+    match item
+        ImportDecl(specs, source, attrs) =>
+            ri := add_req(m, source, attrs)
+            for sp in specs
+                m.imports.push(ImportEntry(req: ri, imported: sp.imported, local: sp.local))
+        ExportNamed(decl, specs, source, attrs) =>
+            if src := source
+                ri := add_req(m, src, attrs)
+                for sp in specs
+                    m.indirect.push(IndirectEntry(exported: sp.exported, req: ri, imported: sp.local))
+            elif d := decl
+                body.push(d)
+                for n in declared_names(d)
+                    m.locals.push(ExportEntry(exported: n, local: n))
+            else
+                for sp in specs
+                    mut from_import := false
+                    for e in m.imports
+                        if e.local == sp.local and not from_import
+                            from_import = true
+                            m.indirect.push(IndirectEntry(
+                                exported: sp.exported,
+                                req: e.req,
+                                imported: e.imported,
+                            ))
+                    if not from_import
+                        m.locals.push(ExportEntry(exported: sp.exported, local: sp.local))
+        ExportDefault(decl, value) =>
+            if d := decl
+                body.push(d)
+                for n in declared_names(d)
+                    m.locals.push(ExportEntry(exported: "default", local: n))
+            elif v := value
+                m.locals.push(ExportEntry(exported: "default", local: "default"))
+                body.push(default_decl(v, p))
+        ExportAll(exported, _, source, attrs) =>
+            ri := add_req(m, source, attrs)
+            if name := exported
+                m.indirect.push(IndirectEntry(exported: name, req: ri, imported: "*"))
+            else
+                m.stars.push(ri)
+
+## `export default expr` binds the value to `default`, a name no script can
+## write, so it is named "default" as §16.2.3.7 says.
+fn default_decl(v syntax.Expr, p syntax.Pos) syntax.Stmt
+    d := syntax.Declarator(target: syntax.Pat.PatId("default", p), init: v)
+    syntax.Stmt.Var(syntax.VarDecl(kind: "const", decls: [d], pos: p))
+
+fn declared_names(s syntax.Stmt) List[str]
+    mut out := List[str]()
+    match s
+        Var(d) =>
+            for x in d.decls
+                out.extend(pattern_names(x.target))
+        FuncDecl(f) =>
+            if n := f.name
+                out.push(n)
+        ClassDecl(c) =>
+            if n := c.name
+                out.push(n)
+        Exp | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger | Module =>
+            return out
+    out
+
+# ------------------------------------------------------------ linking
+
+## The graph under `key`, dependencies first (§16.2.1.5.2 DFS post-order).
+fn Vm.mod_order(self, key str) List[str]
+    mut out := List[str]()
+    mut seen := Set[str]()
+    mod_visit(key, mut seen, mut out)
+    out
+
+fn Vm.mod_visit(self, key str, mut seen Set[str], mut out List[str])
+    if not seen.add(key)
+        return
+    m := modules.mods.get(key) else return
+    for r in m.reqs
+        if r.url != ""
+            mod_visit(r.key, mut seen, mut out)
+    out.push(key)
+
+## Link the graph under `key` (§16.2.1.5.1): each module gets its scope,
+## then its imports are bound. A name nobody exports is a SyntaxError.
+fn Vm.mod_link(mut self, key str) bool ! Thrown
+    order := mod_order(key)
+    for k in order
+        m := modules.mods.get(k) else continue
+        if m.status == "new"
+            mod_instantiate(m)?
+    for k in order
+        m := modules.mods.get(k) else continue
+        if m.status == "linking"
+            mod_bind(m)?
+    for k in order
+        m := modules.mods.get(k) else continue
+        if m.status == "linking"
+            m.status = "linked"
+    true
+
+fn Vm.mod_instantiate(mut self, m ref ModRec) ! Thrown
+    env := new_env(global_env, true)
+    env.has_this = true
+    env.strict = true
+    env.object = Obj(object("Object", Null))
+    meta := object("Object", Null)
+    meta.props["url"] = data(Str(m.url))
+    if m.url.starts_with("file://")
+        path := m.url.slice(7, m.url.chars().len())
+        meta.props["filename"] = data(Str(path))
+        meta.props["dirname"] = data(Str(path.slice(0, last_slash_index(path).max(0))))
+    meta.props["resolve"] = data(closure_native("Module.resolve", Str(m.url), [], 1))
+    env.vars["import.meta"] = Binding(value: Obj(meta), mutable: false, ready: true)
+    env.vars["import.url"] = Binding(value: Str(m.url), mutable: false, ready: true)
+    m.env = env
+    hoist_vars(m.body, env, true)
+    declare_block(m.body, env)?
+    m.status = "linking"
+
+fn last_slash_index(s str) int
+    cs := s.chars()
+    mut i := cs.len() - 1
+    while i >= 0
+        if cs[i] == '/'
+            return i
+        i -= 1
+    -1
+
+fn Vm.mod_bind(mut self, m ref ModRec) ! Thrown
+    for r in m.reqs
+        if r.url == ""
+            return type_error("Failed to resolve module specifier \"{r.spec}\". Relative references must start with either \"/\", \"./\", or \"../\".")
+    imported := obj_of(m.env.object) else return
+    for e in m.imports
+        r := m.reqs[e.req]
+        if e.imported == "*"
+            init_binding(m.env, e.local, mod_namespace(r.key), false)
+            continue
+        mut seen := List[str]()
+        res := resolve_export(r.key, e.imported, mut seen)
+        if res.kind == "missing"
+            return syntax_error("The requested module '{r.spec}' does not provide an export named '{e.imported}'")
+        if res.kind == "ambiguous"
+            return syntax_error("The requested module '{r.spec}' contains conflicting star exports for name '{e.imported}'")
+        if res.name == "*namespace*"
+            mod_namespace(res.key)
+        getter := closure_native("Module.get", Str(res.key), [Str(res.name), Str(e.local)], 0)
+        setter := closure_native("Module.set", Undef, [], 1)
+        imported.props[e.local] = Prop(
+            value: Undef,
+            get: getter,
+            set: setter,
+            accessor: true,
+            enumerable: true,
+            writable: false,
+            configurable: false,
+        )
+    for e in m.indirect
+        if e.imported != "*"
+            r := m.reqs[e.req]
+            mut seen := List[str]()
+            res := resolve_export(r.key, e.imported, mut seen)
+            if res.kind == "missing"
+                return syntax_error("The requested module '{r.spec}' does not provide an export named '{e.imported}'")
+            if res.kind == "ambiguous"
+                return syntax_error("The requested module '{r.spec}' contains conflicting star exports for name '{e.imported}'")
+
+## ResolveExport (§16.2.1.6.3): the binding `name` of module `key` means.
+fn Vm.resolve_export(mut self, key str, name str, mut seen List[str]) Resolution
+    id := "{key}\u{0}{name}"
+    if seen.contains(id)
+        return Resolution(kind: "missing", key: "", name: "")
+    seen.push(id)
+    m := modules.mods.get(key) else return Resolution(kind: "missing", key: "", name: "")
+    for e in m.locals
+        if e.exported == name
+            return Resolution(kind: "found", key: key, name: e.local)
+    for e in m.indirect
+        if e.exported == name
+            dep := m.reqs[e.req].key
+            if e.imported == "*"
+                return Resolution(kind: "found", key: dep, name: "*namespace*")
+            return resolve_export(dep, e.imported, mut seen)
+    if name == "default"
+        return Resolution(kind: "missing", key: "", name: "")
+    mut star := Resolution(kind: "missing", key: "", name: "")
+    for ri in m.stars
+        dep := m.reqs[ri].key
+        r := resolve_export(dep, name, mut seen)
+        if r.kind == "ambiguous"
+            return r
+        if r.kind == "found"
+            if star.kind == "missing"
+                star = r
+            elif r.key != star.key or r.name != star.name
+                return Resolution(kind: "ambiguous", key: "", name: "")
+    star
+
+## GetExportedNames (§16.2.1.6.2).
+fn Vm.exported_names(mut self, key str, mut visited List[str]) List[str]
+    mut out := List[str]()
+    if visited.contains(key)
+        return out
+    visited.push(key)
+    m := modules.mods.get(key) else return out
+    for e in m.locals
+        out.push(e.exported)
+    for e in m.indirect
+        out.push(e.exported)
+    for ri in m.stars
+        for n in exported_names(m.reqs[ri].key, mut visited)
+            if n != "default" and not out.contains(n)
+                out.push(n)
+    out
+
+## The value of a resolved binding, none while it is in its dead zone.
+fn Vm.read_ref(self, r Resolution) Value?
+    m := modules.mods.get(r.key) else return none
+    if r.name == "*namespace*"
+        return m.ns
+    b := m.env.vars.get(r.name) else return none
+    if not b.ready
+        return none
+    b.value
+
+## The namespace object of module `key` (§10.4.6, §16.2.1.10): its exports
+## in code-point order, read live through `own`.
+fn Vm.mod_namespace(mut self, key str) Value
+    m := modules.mods.get(key) else return Undef
+    if m.ns != Undef
+        return m.ns
+    ns := object("Module", Null)
+    m.ns = Obj(ns)
+    ns.prim = Str(key)
+    mut visited := List[str]()
+    names := exported_names(key, mut visited)
+    for n in names.sorted()
+        mut seen := List[str]()
+        res := resolve_export(key, n, mut seen)
+        if res.kind == "found"
+            m.nsmap[n] = res
+            ns.props[n] = Prop(
+                value: Undef,
+                get: Undef,
+                set: Undef,
+                accessor: false,
+                enumerable: true,
+                writable: true,
+                configurable: false,
+            )
+            if res.name == "*namespace*"
+                mod_namespace(res.key)
+    ns.props[well_known("toStringTag")] = Prop(
+        value: Str("Module"),
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+    )
+    ns.extensible = false
+    ns.frozen = true
+    m.ns
+
+## An own property of a namespace object: its export's current value.
+pub fn Vm.module_own(self, o ref JsObject, key str) Prop?
+    p := o.props.get(key) else return none
+    key_text := str_of(o.prim) else return p
+    m := modules.mods.get(key_text) else return p
+    r := m.nsmap.get(key) else return p
+    v := read_ref(r) else Undef
+    Prop(
+        value: v,
+        get: Undef,
+        set: Undef,
+        accessor: false,
+        enumerable: true,
+        writable: true,
+        configurable: false,
+    )
+
+# ---------------------------------------------------------- evaluation
+
+## Load, link and run module `url`, as a page does for a module script
+## (HTML §4.12.1): errors are reported on the console when `report` is set.
+## The promise settles with its namespace once it and its imports ran.
+pub fn Vm.mod_start(mut self, url str, kind str, report bool) ref JsObject
+    promise := new_promise()
+    job := ImportJob(key: mod_key(url, kind), url: url, kind: kind, promise: promise, report: report)
+    if not mod_try_job(job)
+        modules.jobs.push(job)
+    promise
+
+## Whether the promise `p` was rejected.
+pub fn promise_failed(p ref JsObject) bool
+    state_of(p) == "rejected"
+
+## A page's `<script type=module src>`.
+pub fn Vm.run_module_script(mut self, url str)
+    mod_start(url, "", true)
+
+## A page's inline `<script type=module>`: a module of its own that resolves
+## imports against the page's address.
+pub fn Vm.run_inline_module(mut self, source str)
+    modules.inline_seq += 1
+    base := location_href.split("#")[0]
+    url := "{base}#module-{modules.inline_seq}"
+    external_scripts[url] = source
+    mod_start(url, "", true)
+
+## Go on with `job` as far as the sources at hand allow. False when it still
+## waits for the browser to fetch a module.
+fn Vm.mod_try_job(mut self, job ImportJob) bool
+    mut missing := List[str]()
+    mut seen := Set[str]()
+    mod_load(job.key, job.url, job.kind, mut seen, mut missing)
+    if missing.len() > 0
+        for u in missing
+            if modules.wanted.add(u)
+                host_requests.push(HostRequest(
+                    kind: "fetch-module",
+                    url: u,
+                    method: "GET",
+                    node: -1,
+                    text: "",
+                ))
+        return false
+    if linked := mod_link(job.key)
+        linked
+    else err
+        if job.report
+            job.promise.props["{PRIVATE}handled"] = hidden(Bool(true))
+            report_error(err)
+        reject_promise(job.promise, err.value)
+        return true
+    modules.seq += 1
+    run := ref EvalRun(
+        order: mod_order(job.key),
+        idx: 0,
+        promise: job.promise,
+        ns_key: job.key,
+        report: job.report,
+        waiting: false,
+    )
+    modules.runs[modules.seq] = run
+    run_step(modules.seq, true, Undef)
+    true
+
+## The browser fetched module source `text` for `url`, or failed (`ok` false).
+pub fn Vm.module_arrived(mut self, url str, text str, ok bool)
+    if ok
+        external_scripts[url] = text
+    else
+        modules.failed.add(url)
+    mod_kick()
+
+## Try again every import that waits for a module.
+fn Vm.mod_kick(mut self)
+    jobs := modules.jobs
+    modules.jobs = []
+    for job in jobs
+        if not mod_try_job(job)
+            modules.jobs.push(job)
+
+fn Vm.step_fn(mut self, id int, ok bool) Value
+    closure_native("Module.step", Num(id.to_float()), [Bool(ok)], 1)
+
+## Run the graph's modules in order until one awaits at its top level.
+fn Vm.run_step(mut self, id int, ok bool, v Value)
+    r := modules.runs.get(id) else return
+    if r.waiting
+        r.waiting = false
+        done := modules.mods.get(r.order[r.idx - 1]) else return
+        done.wait = Undef
+        if ok
+            done.status = "evaluated"
+        else
+            done.status = "errored"
+            done.error = v
+            run_finish(id, r, false, v)
+            return
+    while r.idx < r.order.len()
+        key := r.order[r.idx]
+        r.idx += 1
+        m := modules.mods.get(key) else continue
+        if m.status == "errored"
+            run_finish(id, r, false, m.error)
+            return
+        if m.status == "evaluating"
+            # Running in another graph's turn (or a cycle): wait for it if
+            # it awaits, else it is as done as it will be for now.
+            if w := obj_of(m.wait)
+                r.idx -= 1
+                promise_then(w, step_fn(id, true), step_fn(id, false), Undef)
+                return
+            continue
+        if m.status != "linked"
+            continue
+        m.status = "evaluating"
+        if m.has_tla
+            started := mod_tla(m) else err
+                m.status = "errored"
+                m.error = err.value
+                run_finish(id, r, false, err.value)
+                return
+            w := obj_of(started) else continue
+            m.wait = started
+            r.waiting = true
+            promise_then(w, step_fn(id, true), step_fn(id, false), Undef)
+            return
+        if ran := mod_exec(m)
+            ran
+        else err
+            m.status = "errored"
+            m.error = err.value
+            if err.limit
+                stopped = true
+            run_finish(id, r, false, err.value)
+            return
+        m.status = "evaluated"
+    run_finish(id, r, true, Undef)
+
+fn Vm.run_finish(mut self, id int, r ref EvalRun, ok bool, v Value)
+    modules.runs.remove(id)
+    if ok
+        ns := if r.ns_key == "" then Value.Undef else mod_namespace(r.ns_key)
+        resolve_promise(r.promise, ns)
+        return
+    if r.report
+        r.promise.props["{PRIVATE}handled"] = hidden(Bool(true))
+        report_error(thrown(v))
+    reject_promise(r.promise, v)
+
+fn Vm.mod_exec(mut self, m ref ModRec) bool ! Thrown
+    for s in m.body
+        exec(s, m.env)?
+    true
+
+## Start a module with top-level `await` as an async function body in its
+## own scope (§16.2.1.5.3.4); the promise it gives settles when it ends.
+fn Vm.mod_tla(mut self, m ref ModRec) Value ! Thrown
+    fun := syntax.Func(
+        name: none,
+        params: [],
+        rest: none,
+        body: m.body,
+        expr: none,
+        is_arrow: false,
+        is_async: true,
+        is_gen: false,
+        strict: true,
+        pos: syntax.Pos(line: 1, col: 1, offset: 0),
+        text: "",
+    )
+    fv := make_function(fun, m.env, Undef, "normal")
+    fobj := obj_of(fv) else return Undef
+    start_resumable(fobj, fun, m.env, [])
+
+# ------------------------------------------------- import() and import.meta
+
+## `import(spec, options)`, or `import.meta` when `arg` is none (§13.3.10,
+## §13.3.12.2).
+pub fn Vm.import_expr(mut self, arg syntax.Expr?, opts syntax.Expr?, env ref Env) Value ! Thrown
+    a := arg else return lookup("import.meta", env)
+    spec_value := eval(a, env)?
+    mut options := Value.Undef
+    if o := opts
+        options = eval(o, env)?
+    promise := new_promise()
+    spec := to_string(spec_value) else err
+        reject_promise(promise, err.value)
+        return Obj(promise)
+    mut kind := ""
+    if is_obj(options)
+        w := get(options, "with")?
+        if is_obj(w)
+            t := get(w, "type")?
+            if text := str_of(t)
+                kind = text
+    base := location_href
+    if is_declared("import.url", env)
+        base = str_of(lookup("import.url", env)?) else location_href
+    url := specifier_url(spec, base)
+    if url == ""
+        reject_promise(promise, make_error("TypeError", "Failed to resolve module specifier \"{spec}\". Relative references must start with either \"/\", \"./\", or \"../\"."))
+        return Obj(promise)
+    job_kind := if kind == "json" then "json" else ""
+    job := ImportJob(key: mod_key(url, job_kind), url: url, kind: job_kind, promise: promise, report: false)
+    # The module loads and runs in a later job, never inside this call.
+    modules.jobs.push(job)
+    microtasks.push(closure_native("Module.kick", Undef, [], 0))
+    Obj(promise)
+
+pub fn Vm.module_native(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    match m
+        "get" =>
+            key := str_of(this_val) else ""
+            name := str_of(arg_at(args, 0)) else ""
+            local := str_of(arg_at(args, 1)) else name
+            v := read_ref(Resolution(kind: "found", key: key, name: name)) else return reference_error("Cannot access '{local}' before initialization")
+            v
+        "set" => return type_error("Assignment to constant variable.")
+        "kick" =>
+            mod_kick()
+            Undef
+        "step" =>
+            id := int_of(num_of(this_val) else -1.0)
+            run_step(id, truthy(arg_at(args, 0)), arg_at(args, 1))
+            Undef
+        "resolve" =>
+            base := str_of(this_val) else ""
+            spec := to_string(arg_at(args, 0))?
+            u := specifier_url(spec, base)
+            if u == ""
+                return type_error("Failed to resolve module specifier \"{spec}\". Relative references must start with either \"/\", \"./\", or \"../\".")
+            Str(u)
+        _ => Undef

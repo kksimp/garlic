@@ -17,7 +17,10 @@ pub fn canonical_json(prog Program) str
 
 fn Dump.program(self, prog Program) str
     d := self
-    d.node("Program", Pos(line: 1, col: 1, offset: 0), ["\"body\":{d.stmts(prog.body)}"])
+    mut fields := ["\"body\":{d.stmts(prog.body)}"]
+    if prog.module
+        fields.push("\"sourceType\":\"module\"")
+    d.node("Program", Pos(line: 1, col: 1, offset: 0), fields)
 
 fn field(name str, value str) str
     "\"{name}\":{value}"
@@ -128,6 +131,68 @@ fn Dump.stmt(self, s Stmt) str
             field("body", stmt(body)),
         ])
         Debugger(p) => node("DebuggerStatement", p, [])
+        Module(item, p) => module_item(item, p)
+
+fn Dump.module_item(self, item ModItem, p Pos) str
+    match item
+        ImportDecl(specs, source, attrs) =>
+            texts := [import_spec(x) for x in specs]
+            node("ImportDeclaration", p, [
+                field("specifiers", "[{texts.join(",")}]"),
+                field("source", literal(quote(source), p)),
+                field("attributes", import_attrs(attrs, p)),
+            ])
+        ExportNamed(decl, specs, source, attrs) =>
+            texts := [
+                node("ExportSpecifier", x.pos, [
+                    field("local", name_node(x.local, x.local_str, x.pos)),
+                    field("exported", name_node(x.exported, x.exported_str, x.pos)),
+                ])
+                for x in specs
+            ]
+            from := if src := source then literal(quote(src), p) else "null"
+            decl_text := if d := decl then stmt(d) else "null"
+            node("ExportNamedDeclaration", p, [
+                field("declaration", decl_text),
+                field("specifiers", "[{texts.join(",")}]"),
+                field("source", from),
+                field("attributes", import_attrs(attrs, p)),
+            ])
+        ExportDefault(decl, value) =>
+            inner := if d := decl then stmt(d) else opt_expr(value)
+            node("ExportDefaultDeclaration", p, [field("declaration", inner)])
+        ExportAll(exported, exported_str, source, attrs) =>
+            exported_text := if n := exported then name_node(n, exported_str, p) else "null"
+            node("ExportAllDeclaration", p, [
+                field("exported", exported_text),
+                field("source", literal(quote(source), p)),
+                field("attributes", import_attrs(attrs, p)),
+            ])
+
+## A module export name: an identifier, or a string literal.
+fn Dump.name_node(self, name str, is_str bool, p Pos) str
+    if is_str
+        return literal(quote(name), p)
+    ident(name, p)
+
+fn Dump.import_spec(self, x ImportSpec) str
+    match x.kind
+        "default" => node("ImportDefaultSpecifier", x.pos, [field("local", ident(x.local, x.pos))])
+        "namespace" => node("ImportNamespaceSpecifier", x.pos, [field("local", ident(x.local, x.pos))])
+        _ => node("ImportSpecifier", x.pos, [
+            field("imported", name_node(x.imported, x.imported_str, x.pos)),
+            field("local", ident(x.local, x.pos)),
+        ])
+
+fn Dump.import_attrs(self, attrs List[ImportAttr], p Pos) str
+    texts := [
+        node("ImportAttribute", p, [
+            field("key", ident(a.key, p)),
+            field("value", literal(quote(a.value), p)),
+        ])
+        for a in attrs
+    ]
+    "[{texts.join(",")}]"
 
 fn Dump.catch_clause(self, param Pat?, body List[Stmt], p Pos) str
     param_text := if x := param then pat(x) else "null"
@@ -221,7 +286,7 @@ fn flatten(items List[Expr]) List[Expr]
 fn seq_items(e Expr) List[Expr]
     match e
         Seq(items, _) => items
-        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget => []
+        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import => []
         Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => []
         Assign | Cond | Call | New | Member | Spread | Chain | PrivName | Paren | Yield | Await => []
 
@@ -353,6 +418,16 @@ fn Dump.expr(self, e Expr) str
             field("delegate", bool_text(delegate)),
         ])
         Await(arg, p) => node("AwaitExpression", p, [field("argument", expr(arg))])
+        Import(arg, opts, p) =>
+            if a := arg
+                return node("ImportExpression", p, [
+                    field("source", expr(a)),
+                    field("options", opt_expr(opts)),
+                ])
+            node("MetaProperty", p, [
+                field("meta", ident("import", p)),
+                field("property", ident("meta", p)),
+            ])
 
 fn Dump.prop(self, x Prop) str
     match x

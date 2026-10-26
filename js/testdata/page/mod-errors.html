@@ -1,0 +1,10 @@
+<!DOCTYPE html><html><head><title>Module errors</title></head><body>
+<script type="module" src="./mod-throws.js"></script>
+<script type="module">
+console.log("after the failing module");
+</script>
+<script type="module">
+await Promise.reject(new Error("tla rejected"));
+</script>
+<script>console.log("classic still runs");</script>
+</body></html>

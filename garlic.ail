@@ -586,6 +586,14 @@ fn load_doc(
             if src := d.attr(s, "src")
                 u := page.resolve(page.base_of(d, at), src)
                 scripts[script_url(u)] = fetch_text(u, at, mut cj, mut cache)
+        for s in d.all("script")
+            if (d.attr(s, "type") else "").to_lower().trim() != "module"
+                continue
+            if src := d.attr(s, "src")
+                u := script_url(page.resolve(page.base_of(d, at), src))
+                prefetch_modules(scripts.get(u) else "", u, at, mut scripts, mut cj, mut cache)
+            else
+                prefetch_modules(d.text(s), script_url(at), at, mut scripts, mut cj, mut cache)
         now := time.now_ms().to_float()
         ## A page with no scripts has nothing to run, and starting the engine
         ## costs about 0.2 s.
@@ -596,6 +604,7 @@ fn load_doc(
             body: "",
             console: [],
             missing: [],
+            mods: [],
             changes: 0,
             cookies: [],
             asks: [],
@@ -653,13 +662,21 @@ fn serve_page(
     mut out := first
     mut asks := first.asks
     mut ops := first.sockets
+    mut mods := first.mods
     out.asks = []
     out.sockets = []
+    out.mods = []
     mut work := 0
     mut polled := false
     while work < MAX_REPLIES
         mut more := quiet()
-        if asks.len() > 0
+        if mods.len() > 0
+            ## A module the page imports: fetched with CORS, handed to the
+            ## engine, which goes on with the imports waiting for it.
+            want := mods.remove_at(0)
+            src := module_source(want, at, mut cj)
+            more = live.module(mut d, want, src else "", src != none, 1000.0)
+        elif asks.len() > 0
             ask := asks.remove_at(0)
             out.net.push("{ask.method} {ask.url}")
             more = live.reply(mut d, ask.id, script_reply(ask, at, mut cj), 1000.0)
@@ -685,7 +702,11 @@ fn serve_page(
         out.changes += more.changes
         asks.extend(more.asks)
         ops.extend(more.sockets)
-        if more.changes > 0 or more.asks.len() > 0 or more.sockets.len() > 0
+        mods.extend(more.mods)
+        if more.changes > 0
+            or more.asks.len() > 0
+            or more.sockets.len() > 0
+            or more.mods.len() > 0
             polled = false
     out
 
@@ -696,6 +717,7 @@ fn quiet() jsdom.Outcome
         body: "",
         console: [],
         missing: [],
+        mods: [],
         changes: 0,
         cookies: [],
         asks: [],
@@ -760,6 +782,58 @@ fn deliver_received(
             if ev.kind == "close"
                 socks.remove(id)
     out
+
+## The source of the module at `u` (an engine address) for the page `from`,
+## or none. An http(s) module is a CORS request: another origin must allow
+## the page with `Access-Control-Allow-Origin`.
+fn module_source(u str, from str, mut cj jar.Jar) str?
+    real := u.strip_prefix("file://local/") else u
+    if real.starts_with("data:")
+        return data_text(real)
+    s := page.scheme(real)
+    if s == "http" or s == "https"
+        w := walk("GET", real, "", "", from, false, origin_of(from) == origin_of(real), {}, mut cj)
+        if w.failure != "" or w.status >= 400
+            return none
+        if origin_of(w.url) != origin_of(from)
+            allow := w.headers.get("access-control-allow-origin") else ""
+            if allow != "*" and allow != origin_of(from)
+                return none
+        return w.text
+    file := page.file_path(real).split("?")[0].split("#")[0]
+    data := fs.read_bytes(file) else err
+        return none
+    decode(data, "")
+
+## The most modules fetched ahead for one page.
+MAX_MODULES := 400
+
+## Fetches the static imports of the module `source` (at the engine address
+## `base`), and theirs, into `scripts`: the engine runs a module only once
+## everything it imports is at hand.
+fn prefetch_modules(
+    source str,
+    base str,
+    from str,
+    mut scripts Map[str, str],
+    mut cj jar.Jar,
+    mut cache Map[str, Cached],
+)
+    mut queue := jsdom.module_deps(source, base)
+    mut i := 0
+    while i < queue.len() and i < MAX_MODULES
+        u := queue[i]
+        i += 1
+        if scripts.contains(u)
+            continue
+        real := u.strip_prefix("file://local/") else u
+        text := fetch_text(real, from, mut cj, mut cache)
+        if text == ""
+            continue
+        scripts[u] = text
+        for dep in jsdom.module_deps(text, u)
+            if not queue.contains(dep)
+                queue.push(dep)
 
 ## The origin (`scheme://host:port`) of an address.
 fn origin_of(u str) str

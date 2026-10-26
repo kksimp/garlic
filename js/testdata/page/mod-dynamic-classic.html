@@ -1,0 +1,12 @@
+<!DOCTYPE html><html><head><title>Dynamic import in a classic script</title></head><body><p id="p">waiting</p>
+<script>
+console.log("classic start");
+const pending = import("./mod-dyn.js");
+console.log(pending instanceof Promise);
+pending.then((m) => {
+  console.log("classic got", m.default, m.answer);
+  document.getElementById("p").textContent = m.default;
+});
+console.log("classic end");
+</script>
+</body></html>

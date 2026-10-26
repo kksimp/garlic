@@ -38,6 +38,47 @@ pub enum Stmt
     Labeled(label str, body Stmt, pos Pos)
     With(object Expr, body Stmt, pos Pos)
     Debugger(pos Pos)
+    ## An `import` or `export` declaration, only in a module (§16.2.2, §16.2.3).
+    Module(item ModItem, pos Pos)
+
+## An import or export declaration (ESTree ImportDeclaration,
+## ExportNamedDeclaration, ExportDefaultDeclaration, ExportAllDeclaration).
+pub enum ModItem
+    ## `import d, * as n, {a as b} from "src" with {k: "v"}`; no `specs` for
+    ## `import "src"`.
+    ImportDecl(specs List[ImportSpec], source str, attrs List[ImportAttr])
+    ## `export var x`, `export function f`, `export class C` (`decl`), or
+    ## `export {a as b}` and `export {a as b} from "src"` (`specs`).
+    ExportNamed(decl Stmt?, specs List[ExportSpec], source str?, attrs List[ImportAttr])
+    ## `export default` a function or class declaration (`decl`), else an
+    ## assignment expression (`value`).
+    ExportDefault(decl Stmt?, value Expr?)
+    ## `export * from "src"`, or `export * as name from "src"` (`exported_str`:
+    ## the name is written as a string).
+    ExportAll(exported str?, exported_str bool, source str, attrs List[ImportAttr])
+
+## One imported name: `kind` is "default", "namespace" or "named". The name
+## `imported` is "default" for a default import and "*" for a namespace.
+pub struct ImportSpec
+    pub kind str
+    pub imported str
+    ## The imported name is written as a string: `import {"a b" as c}`.
+    pub imported_str bool
+    pub local str
+    pub pos Pos
+
+## `local as exported`; with a `source`, `local` is the name the source exports.
+pub struct ExportSpec
+    pub local str
+    pub local_str bool
+    pub exported str
+    pub exported_str bool
+    pub pos Pos
+
+## An import attribute, `with {type: "json"}` (ES2025).
+pub struct ImportAttr
+    pub key str
+    pub value str
 
 ## `var`, `let` or `const` and its declarators.
 pub struct VarDecl
@@ -104,6 +145,8 @@ pub enum Expr
     Yield(arg Expr?, delegate bool, pos Pos)
     ## `await x` in an async function (§15.8).
     Await(arg Expr, pos Pos)
+    ## `import(arg, opts)` (§13.3.10), or with no `arg`, `import.meta` (§13.3.12.2).
+    Import(arg Expr?, opts Expr?, pos Pos)
 
 ## One literal piece of a template; `cooked` is none for an invalid escape
 ## in a tagged template (§13.2.8.2).
@@ -211,6 +254,7 @@ pub fn expr_pos(e Expr) Pos
         Paren(_, p) => p
         Yield(_, _, p) => p
         Await(_, p) => p
+        Import(_, _, p) => p
         Function(f) => f.pos
         Arrow(f) => f.pos
         ClassExpr(c) => c.pos
@@ -258,6 +302,7 @@ pub fn expr_kind(e Expr) str
         Paren => "Paren"
         Yield => "Yield"
         Await => "Await"
+        Import => "Import"
 
 pub fn pat_kind(p Pat) str
     match p
@@ -273,6 +318,9 @@ pub fn pat_kind(p Pat) str
 pub fn expr_suspends(e Expr) bool
     match e
         Yield | Await => true
+        Import(arg, opts, _) =>
+            (if a := arg then expr_suspends(a) else false)
+                or (if o := opts then expr_suspends(o) else false)
         Num | Str | Regex | Bool | Null | Ident | This | Super | NewTarget | PrivName | Function | Arrow => false
         Template(_, exprs, _) => any_suspends(exprs)
         Tagged(tag, _, exprs, _) => expr_suspends(tag) or any_suspends(exprs)
@@ -357,6 +405,7 @@ pub fn stmt_suspends(s Stmt) bool
     match s
         Exp(e, _) => expr_suspends(e)
         Var(d) => decl_suspends(d)
+        Module(item, _) => item_suspends(item)
         FuncDecl | Empty | Break | Continue | Debugger => false
         ClassDecl(c) => class_suspends(c)
         Return(value, _) => if v := value then expr_suspends(v) else false
@@ -406,6 +455,14 @@ pub fn stmt_suspends(s Stmt) bool
             false
         Labeled(_, body, _) => stmt_suspends(body)
         With(object, body, _) => expr_suspends(object) or stmt_suspends(body)
+
+fn item_suspends(item ModItem) bool
+    match item
+        ExportNamed(decl, _, _, _) => if d := decl then stmt_suspends(d) else false
+        ExportDefault(decl, value) =>
+            (if d := decl then stmt_suspends(d) else false)
+                or (if e := value then expr_suspends(e) else false)
+        ImportDecl | ExportAll => false
 
 pub fn block_suspends(body List[Stmt]) bool
     for s in body

@@ -1,0 +1,17 @@
+classic still runs
+throws evaluated
+Uncaught Error: module boom
+after the failing module
+Uncaught Error: tla rejected
+== body
+
+<script type="module" src="./mod-throws.js"></script>
+<script type="module">
+console.log("after the failing module");
+</script>
+<script type="module">
+await Promise.reject(new Error("tla rejected"));
+</script>
+<script>console.log("classic still runs");</script>
+
+

@@ -1,0 +1,11 @@
+<!DOCTYPE html><html><head><title>Top-level await</title></head><body><p id="p">start</p>
+<script type="module">
+console.log("tla start");
+await Promise.resolve();
+console.log("tla after microtask");
+await new Promise((resolve) => setTimeout(resolve, 20));
+console.log("tla after timer");
+document.getElementById("p").textContent = "done";
+</script>
+<script>console.log("classic");</script>
+</body></html>

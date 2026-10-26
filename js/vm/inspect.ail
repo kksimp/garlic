@@ -200,12 +200,17 @@ fn Vm.show_object(self, mut st Inspector, o ref JsObject, depth int) str
         base = "/{src}/{fl}"
     elif o.class == "Date"
         base = if t := num_of(o.prim) then iso_date(t) else "Invalid Date"
+    elif o.class == "Module"
+        open = "[Module: null prototype] \{"
     elif ctor == none
         open = "[Object: null prototype] \{"
     elif cname != "Object"
         open = "{cname} \{"
     for k in own_keys(o)
-        p := o.props.get(k) else continue
+        mut entry := o.props.get(k)
+        if o.class == "Module"
+            entry = own(o, k)
+        p := entry else continue
         if not p.enumerable
             continue
         if is_array_kind and index_of_key(k) != none

@@ -5,7 +5,7 @@
 ## (the cover grammars of §13.2.5, §13.15.1, §15.3). The first error stops
 ## the parse, as in every JavaScript engine (§16.1.6, early errors).
 ##
-## Not yet: generators, async functions, modules, BigInt, and the early
+## Not yet: BigInt, and the early
 ## errors that need scope analysis (redeclared `let`, undeclared private
 ## names); see docs/design/garlic-js.md.
 
@@ -125,6 +125,19 @@ pub struct Parser
     ## The next `assign` parses an element that may become part of a pattern.
     maybe_pattern bool
     scopes List[Scope]
+    ## Parsing the Module goal (§16.2): strict, with `import` and `export`.
+    module bool
+    ## A module's top level has used `await` (top-level await).
+    tla bool
+    ## The names a module exports, to catch a repeat.
+    exported Set[str]
+    ## Locals named by `export {x}`, which must be declared by the end.
+    export_refs List[ExportRef]
+
+## A name `export {name}` exports from this module.
+struct ExportRef
+    name str
+    pos Pos
 
 ## The names one scope declares (§8.2, §16.1.7, §14.2.1): an error names
 ## one twice where either is lexical (`let`, `const`, `class`).
@@ -144,6 +157,14 @@ struct Body
 
 ## Parse a script (§16.1 Script).
 pub fn parse(source str) Program ! JsError
+    parse_goal(source, false)
+
+## Parse a module (§16.2 Module): strict code where `import` and `export`
+## declarations stand and `await` is an operator at the top level.
+pub fn parse_module(source str) Program ! JsError
+    parse_goal(source, true)
+
+fn parse_goal(source str, module bool) Program ! JsError
     mut empty := new_lexer("")
     first := empty.next(false)?
     mut p := Parser(
@@ -151,7 +172,7 @@ pub fn parse(source str) Program ! JsError
         tok: first,
         last_end: 0,
         ahead: [],
-        strict: false,
+        strict: module,
         in_function: false,
         labels: [],
         loop_depth: 0,
@@ -160,16 +181,24 @@ pub fn parse(source str) Program ! JsError
         super_prop: false,
         new_target: false,
         in_gen: false,
-        in_async: false,
+        in_async: module,
         in_params: false,
         covers: [],
         maybe_pattern: false,
         scopes: [],
+        module: module,
+        tla: false,
+        exported: Set[str](),
+        export_refs: [],
     )
     p.enter_scope(true)
     p.next()?
     body := p.statements_until_end("")?
-    Program(body: body.stmts, strict: body.strict)
+    for r in p.export_refs
+        top := p.scopes[0]
+        if not (top.vars.contains(r.name) or top.lexical.contains(r.name) or top.functions.contains(r.name))
+            return p.fail_at("Export '{r.name}' is not defined in module", r.pos)
+    Program(body: body.stmts, strict: body.strict, module: module, has_tla: p.tla)
 
 # ---- Tokens ----
 
@@ -383,6 +412,267 @@ fn Parser.function_kind(self) str
         return "function"
     if scopes[scopes.len() - 1].is_function then "var" else "lexical"
 
+# ---- Modules (§16.2) ----
+
+## An `await` at a module's top level (not inside a function).
+fn Parser.note_await(mut self)
+    if module and not in_function
+        tla = true
+
+## `import` here starts `import(...)` or `import.meta`, not a declaration.
+fn Parser.import_is_expr(mut self) bool ! JsError
+    n := peek()?
+    n.kind == Punct and (n.text == "(" or n.text == ".")
+
+## `import(arg, options)` (§13.3.10) and `import.meta` (§13.3.12.2).
+fn Parser.import_expr(mut self) Expr ! JsError
+    p := pos()
+    next()?
+    if eat(".")?
+        if not is_kw("meta")
+            return unexpected()
+        if not module
+            return fail_at("Cannot use 'import.meta' outside a module", p)
+        next()?
+        return Import(none, none, p)
+    if not is_p("(")
+        return fail_at("Cannot use import statement outside a module", p)
+    next()?
+    arg := assign(false)?
+    mut opts := none
+    if eat(",")?
+        if not is_p(")")
+            opts = assign(false)?
+            eat(",")?
+    expect(")")?
+    Import(arg, opts, p)
+
+## A string or identifier name in an import or export list (§16.2.2).
+fn Parser.module_name(mut self) str ! JsError
+    if tok.kind != Name and tok.kind != Str
+        return unexpected()
+    name := tok.text
+    next()?
+    name
+
+fn Parser.add_export(mut self, name str, p Pos) ! JsError
+    if not exported.add(name)
+        return fail_at("Duplicate export of '{name}'", p)
+
+## `with {type: "json"}` after a module specifier (ES2025 import attributes).
+fn Parser.import_attrs(mut self) List[ImportAttr] ! JsError
+    mut out := List[ImportAttr]()
+    if not is_kw("with")
+        return out
+    next()?
+    expect("\{")?
+    while not is_p("}")
+        key := module_name()?
+        expect(":")?
+        if tok.kind != Str
+            return unexpected()
+        out.push(ImportAttr(key: key, value: tok.text))
+        next()?
+        if not is_p("}")
+            expect(",")?
+    next()?
+    out
+
+## An `import` or `export` declaration at the top of a module.
+fn Parser.module_item(mut self, p Pos) Stmt ! JsError
+    if is_kw("import")
+        return import_decl(p)
+    export_decl(p)
+
+fn Parser.import_decl(mut self, p Pos) Stmt ! JsError
+    next()?
+    mut specs := List[ImportSpec]()
+    if tok.kind == Str
+        source := tok.text
+        next()?
+        attrs := import_attrs()?
+        semicolon()?
+        return Module(ImportDecl(specs, source, attrs), p)
+    mut more := true
+    if tok.kind == Name
+        sp := pos()
+        local := ident_name(true)?
+        declare(local, "lexical", sp)?
+        specs.push(ImportSpec(
+            kind: "default",
+            imported: "default",
+            imported_str: false,
+            local: local,
+            pos: sp,
+        ))
+        more = eat(",")?
+    if more
+        if is_p("*")
+            sp := pos()
+            next()?
+            if not is_kw("as")
+                return unexpected()
+            next()?
+            lp := pos()
+            local := ident_name(true)?
+            declare(local, "lexical", lp)?
+            specs.push(ImportSpec(
+                kind: "namespace",
+                imported: "*",
+                imported_str: false,
+                local: local,
+                pos: sp,
+            ))
+        elif is_p("\{")
+            next()?
+            while not is_p("}")
+                sp := pos()
+                was_str := tok.kind == Str
+                imported := module_name()?
+                mut local := imported
+                if is_kw("as")
+                    next()?
+                    local = ident_name(true)?
+                elif was_str
+                    return unexpected()
+                else
+                    check_binding(imported, sp)?
+                declare(local, "lexical", sp)?
+                specs.push(ImportSpec(
+                    kind: "named",
+                    imported: imported,
+                    imported_str: was_str,
+                    local: local,
+                    pos: sp,
+                ))
+                if not is_p("}")
+                    expect(",")?
+            next()?
+        else
+            return unexpected()
+    source := string_after_from()?
+    attrs := import_attrs()?
+    semicolon()?
+    Module(ImportDecl(specs, source, attrs), p)
+
+## `from "src"`: the source string.
+fn Parser.string_after_from(mut self) str ! JsError
+    if not is_kw("from")
+        return unexpected()
+    next()?
+    if tok.kind != Str
+        return unexpected()
+    source := tok.text
+    next()?
+    source
+
+fn Parser.export_decl(mut self, p Pos) Stmt ! JsError
+    next()?
+    if eat("*")?
+        mut exported_as := none
+        mut as_str := false
+        if is_kw("as")
+            next()?
+            ep := pos()
+            as_str = tok.kind == Str
+            name := module_name()?
+            add_export(name, ep)?
+            exported_as = name
+        source := string_after_from()?
+        attrs := import_attrs()?
+        semicolon()?
+        return Module(ExportAll(exported_as, as_str, source, attrs), p)
+    if is_kw("default")
+        return export_default(p)
+    if is_p("\{")
+        return export_list(p)
+    dp := pos()
+    if not (tok.kind == Name and ["var", "let", "const", "function", "class", "async"].contains(tok.text))
+        return unexpected()
+    s := statement(true)?
+    mut names := List[str]()
+    match s
+        Var(d) =>
+            for x in d.decls
+                collect_names(x.target, mut names)
+        FuncDecl(f) =>
+            if n := f.name
+                names.push(n)
+        ClassDecl(c) =>
+            if n := c.name
+                names.push(n)
+        Exp | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger | Module =>
+            return fail_at("Unexpected token", dp)
+    for n in names
+        add_export(n, dp)?
+    Module(ExportNamed(s, [], none, []), p)
+
+## `export {a, b as c}` with an optional `from "src"` (§16.2.3).
+fn Parser.export_list(mut self, p Pos) Stmt ! JsError
+    next()?
+    mut specs := List[ExportSpec]()
+    mut quoted := List[Pos]()
+    while not is_p("}")
+        sp := pos()
+        local_str := tok.kind == Str
+        local := module_name()?
+        mut out_name := local
+        mut out_str := local_str
+        if is_kw("as")
+            next()?
+            out_str = tok.kind == Str
+            out_name = module_name()?
+        add_export(out_name, sp)?
+        if local_str
+            quoted.push(sp)
+        specs.push(ExportSpec(
+            local: local,
+            local_str: local_str,
+            exported: out_name,
+            exported_str: out_str,
+            pos: sp,
+        ))
+        if not is_p("}")
+            expect(",")?
+    next()?
+    if is_kw("from")
+        source := string_after_from()?
+        attrs := import_attrs()?
+        semicolon()?
+        return Module(ExportNamed(none, specs, source, attrs), p)
+    if quoted.len() > 0
+        return fail_at("Unexpected string", quoted[0])
+    for x in specs
+        if RESERVED.contains(x.local)
+            return fail_at("Unexpected token '{x.local}'", x.pos)
+        export_refs.push(ExportRef(name: x.local, pos: x.pos))
+    semicolon()?
+    Module(ExportNamed(none, specs, none, []), p)
+
+## `export default` a function, a class, or an expression (§16.2.3).
+fn Parser.export_default(mut self, p Pos) Stmt ! JsError
+    dp := pos()
+    next()?
+    add_export("default", dp)?
+    is_async := is_kw("async") and not peek()?.nl_before and peek()?.text == "function"
+    if is_kw("function") or is_async
+        if is_async
+            next()?
+        f := function(false, is_async)?
+        if n := f.name
+            declare(n, function_kind(), dp)?
+            return Module(ExportDefault(FuncDecl(f), none), p)
+        return Module(ExportDefault(none, Function(f)), p)
+    if is_kw("class")
+        c := class(false)?
+        if n := c.name
+            declare(n, "lexical", c.pos)?
+            return Module(ExportDefault(ClassDecl(c), none), p)
+        return Module(ExportDefault(none, ClassExpr(c)), p)
+    e := assign(false)?
+    semicolon()?
+    Module(ExportDefault(none, e), p)
+
 # ---- Statements ----
 
 ## Statements up to `close` (`}`, or "" for the end of the script), with
@@ -418,7 +708,7 @@ fn is_string_statement(s Stmt) bool
     match s
         Exp(e, _) => expr_kind(e) == "Str"
         Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile => false
-        Break | Continue | Throw | Try | Switch | Labeled | With | Debugger => false
+        Break | Continue | Throw | Try | Switch | Labeled | With | Debugger | Module => false
 
 ## A statement; with `decl`, also a declaration (§14 StatementListItem).
 fn Parser.statement(mut self, decl bool) Stmt ! JsError
@@ -503,7 +793,14 @@ fn Parser.statement(mut self, decl bool) Stmt ! JsError
                 semicolon()?
                 return Debugger(p)
             "import" | "export" =>
-                return fail("Cannot use import statement outside a module")
+                if tok.text == "export" or not import_is_expr()?
+                    if not module
+                        if tok.text == "import"
+                            return fail("Cannot use import statement outside a module")
+                        return unexpected()
+                    if not decl or scopes.len() != 1
+                        return unexpected()
+                    return module_item(p)
             _ => p = pos()
     if tok.kind == Name
         and peek()?.kind == Punct
@@ -631,6 +928,7 @@ fn Parser.for_in_scope(mut self) Stmt ! JsError
     mut is_await := false
     if is_kw("await") and in_async
         is_await = true
+        note_await()
         next()?
     expect("(")?
     mut init := none
@@ -918,7 +1216,7 @@ fn Parser.simple_target(self, e Expr, msg str) Pat ! JsError
             if k == "Ident" or k == "Member" or k == "Paren"
                 return simple_target(inner, msg)
             fail_at(msg, expr_pos(e))
-        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget => fail_at(
+        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import => fail_at(
             msg,
             expr_pos(e),
         )
@@ -1003,7 +1301,7 @@ fn Parser.to_pat(self, e Expr, binding bool) Pat ! JsError
             if binding
                 check_binding_pat(target)?
             PatDefault(target, value, p)
-        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget => fail_at(
+        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import => fail_at(
             bad,
             expr_pos(e),
         )
@@ -1207,11 +1505,11 @@ fn string_value(s Stmt) str
         Exp(e, _) =>
             match e
                 Str(v, _) => v
-                Num | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget => ""
+                Num | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import => ""
                 Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign => ""
                 Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await => ""
         Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile => ""
-        Break | Continue | Throw | Try | Switch | Labeled | With | Debugger => ""
+        Break | Continue | Throw | Try | Switch | Labeled | With | Debugger | Module => ""
 
 fn collect_names(p Pat, mut out List[str])
     match p
@@ -1307,7 +1605,7 @@ fn mixes_nullish(op str, e Expr) bool
     match e
         Logical(inner, _, _, _) => (op == "??") != (inner == "??")
         Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super => false
-        NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Assign => false
+        NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Assign => false
         Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await => false
 
 ## UnaryExpression and prefix updates (§13.4, §13.5).
@@ -1335,6 +1633,7 @@ fn Parser.unary(mut self) Expr ! JsError
     if in_async and is_kw("await")
         if in_params
             return fail("Illegal await-expression in formal parameters of async function")
+        note_await()
         next()?
         return Await(unary()?, p)
     e := call_expr()?
@@ -1350,14 +1649,14 @@ fn spread_arg(e Expr) Expr
     match e
         Spread(arg, _) => arg
         Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super => e
-        NewTarget | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => e
+        NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => e
         Assign | Cond | Call | New | Member | Seq | Chain | PrivName | Paren | Yield | Await => e
 
 ## `e` without its parentheses.
 fn unparen(e Expr) Expr
     match e
         Paren(inner, _) => unparen(inner)
-        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget => e
+        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import => e
         Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => e
         Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Yield | Await => e
 
@@ -1366,7 +1665,7 @@ fn private_member(e Expr) bool
     match e
         Member(_, prop, _, _, _) => expr_kind(prop) == "PrivName"
         Paren(inner, _) => private_member(inner)
-        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget => false
+        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import => false
         Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => false
         Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await => false
 
@@ -1402,14 +1701,14 @@ fn Parser.call_expr(mut self) Expr ! JsError
 fn call_args(e Expr) List[Expr]
     match e
         Call(_, args, _, _) => args
-        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget => []
+        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import => []
         Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => []
         Assign | Cond | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await => []
 
 fn spread_of(e Expr) Expr?
     match e
         Spread(arg, _) => arg
-        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget => none
+        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import => none
         Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => none
         Assign | Cond | Call | New | Member | Seq | Chain | PrivName | Paren | Yield | Await => none
 
@@ -1419,10 +1718,10 @@ fn called_async(e Expr) bool
         Call(callee, _, _, _) =>
             match callee
                 Ident(name, _) => name == "async"
-                Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget => false
+                Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import => false
                 Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => false
                 Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await => false
-        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget => false
+        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import => false
         Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => false
         Assign | Cond | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await => false
 
@@ -1443,6 +1742,8 @@ fn Parser.new_expr(mut self) Expr ! JsError
         if not (n.kind == Punct and (n.text == "." or n.text == "["))
             return fail_at("'super' keyword unexpected here", cp)
     callee := if is_kw("new") then new_expr()? else primary()?
+    if expr_kind(callee) == "Import"
+        return fail_at("Cannot use new with import", cp)
     target := subscripts(callee, cp, true)?
     mut args := List[Expr]()
     if is_p("(")
@@ -1581,7 +1882,7 @@ fn Parser.primary(mut self) Expr ! JsError
             Ident(ident_name(false)?, p)
         "class" => ClassExpr(class(false)?)
         "super" => super_expr()
-        "import" => fail("Cannot use import statement outside a module")
+        "import" => import_expr()
         _ => Ident(ident_name(false)?, p)
 
 ## `super(...)`, `super.x`, `super[x]` (§13.3.7).

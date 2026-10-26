@@ -1,0 +1,21 @@
+module start
+dyn evaluated
+module got dyn value answer,default
+missing: TypeError
+module end
+== body
+<p id="p">dyn value</p>
+<script type="module">
+console.log("module start");
+const m = await import("./mod-dyn.js");
+console.log("module got", m.default, Object.keys(m).join());
+document.getElementById("p").textContent = m.default;
+try {
+  await import("./mod-missing.js");
+} catch (e) {
+  console.log("missing:", e.name);
+}
+console.log("module end");
+</script>
+
+

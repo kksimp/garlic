@@ -1,0 +1,17 @@
+a: start
+a: end
+[Module: null prototype] {
+  Box: [class Box],
+  default: [Function: greet],
+  late: 'var',
+  name: 'a'
+}
+[object Module] null false
+{"value":"a","writable":true,"enumerable":true,"configurable":false}
+true false undefined true
+Box,default,late,name Box,default,late,name
+key Box
+key default
+key late
+key name
+a {"late":"var","name":"a"}

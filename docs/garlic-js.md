@@ -32,7 +32,11 @@ did.
    `yield*`, `return`, `throw`), `async` functions and arrows, `await`,
    async generators, `for await`, and `for-of` that steps its iterator and
    closes it on `break`. Still to come: a bytecode compiler for speed.
-5. **Later**: modules and BigInt.
+5. **ES modules** (done): `import`/`export`, `import.meta`, `import()`,
+   top-level `await`, JSON modules (`with {type: "json"}`), and
+   `<script type="module">` with defer order, `nomodule`, and a module map
+   keyed by URL.
+6. **Later**: BigInt, import maps.
 
 ## Layout
 
@@ -46,6 +50,7 @@ tools/garlic/js/
     ast.ail         the tree
     parse.ail       §13-§16 (expressions, statements, functions, classes, scripts)
     dump.ail        ESTree JSON
+    module.ail      the specifiers a module imports (for prefetching)
     text.ail        Number::toString and JSON string quoting
   vm/               module `vm`: the interpreter
     value.ail       values, properties, scopes, conversions that need no calls
@@ -55,6 +60,7 @@ tools/garlic/js/
     array.ail       Array.prototype
     string.ail      String.prototype and Number.prototype
     numfmt.ail      toFixed, toPrecision, toExponential, toString(radix)
+    modules.ail     module records, linking, evaluation, namespaces, import()
     jsmath.ail      exp, log, sin, atan, pow, ... (AIL's float has none)
     json.ail        JSON.parse and JSON.stringify
     regexp.ail      RegExp on std.regex
@@ -357,7 +363,7 @@ it comes later for speed, and these frames will move onto it).
 - Recursion is limited to 350 JavaScript calls: each one takes about 25
   frames of the bootstrap interpreter, whose limit is 10,000. A bytecode
   compiler for the whole interpreter will remove this.
-- Modules (`import`, `export`): scripts only, as in a classic `<script>`.
+- Import maps and `<link rel=modulepreload>`; module workers.
 - BigInt literals (`10n`).
 - Regular expression pattern syntax (§22.2.1): the literal's body and flags
   are checked, and the pattern is checked when the regex engine compiles it.
@@ -482,3 +488,29 @@ What a 12,700-line AIL program ran into, for the language's designers:
   package (`ail.pkg`) that Garlic declares as a dependency instead.
 - The rest was direct: `T ! E` with `?` makes "first error stops the parse"
   a one-character cost per call.
+
+## Modules
+
+Design (ECMA-262 §16.2, HTML module scripts):
+
+- `vm/modules.ail` desugars a module at load time: an import binds a name in
+  the module's `Env` to an accessor on the exporting module's `Env.object`,
+  so bindings are live and a read before evaluation hits the TDZ. Exports
+  resolve through `ResolveExport`; `export *` conflicts become ambiguous
+  and are skipped.
+- The namespace object has class `Module`; `Vm.own` answers its keys, sorted,
+  from the live bindings (null prototype, `@@toStringTag` "Module").
+- Linking walks the graph depth first, so cycles link once and evaluate
+  once in post-order. Top-level `await` reuses the async frame machinery:
+  modules evaluate one at a time, in order, and a rejection fails every
+  importer.
+- `import()` queues its load and a `Module.kick` microtask, so a script
+  does not see its own dynamic import resolve synchronously.
+- Garlic fetches modules through the host: `prefetch_modules` walks static
+  imports before running, and later `fetch-module` requests serve dynamic
+  imports. http(s) module fetches are CORS requests; `data:` and files are
+  served as-is.
+- `.mjs` files run as modules from the CLI (`--run`, `--ast`, `--check`).
+- Tests: `testdata/run/mod-*.mjs` (goldens from Node 22), `testdata/page/mod-*.html`
+  (goldens from Chromium via Playwright), `testdata/syntax/module-*.mjs`,
+  `err-module-*`. Regenerate; never hand-edit.

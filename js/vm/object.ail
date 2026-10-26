@@ -38,6 +38,8 @@ fn is_array_like(o ref JsObject) bool
 pub fn Vm.own(self, o ref JsObject, key str) Prop?
     if o.class == "Proxy"
         return own(obj_of(o.prim) else o, key)
+    if o.class == "Module"
+        return module_own(o, key)
     if is_array_like(o)
         if i := index_of_key(key)
             if i < o.elems.len()

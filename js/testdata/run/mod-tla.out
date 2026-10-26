@@ -1,0 +1,9 @@
+main: start
+first 1
+tla-dep: before await
+tla-dep: after await
+tla-user: late value
+len 10
+for await a
+for await b
+timer
