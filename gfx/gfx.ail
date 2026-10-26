@@ -1016,10 +1016,21 @@ fn Ctx.add_text(mut self, raw str, st St)
             gap = true
             if atoms.len() == 0 or atoms[atoms.len() - 1].kind != SPACE
                 atoms.push(self.space_atom(st))
+        elif breaks_anywhere(c)
+            if cur.len() > 0
+                atoms.push(self.word_atom(cur.join(""), st))
+                cur = []
+            atoms.push(self.word_atom(c.to_str(), st))
         else
             cur.push(c)
     if cur.len() > 0
         atoms.push(self.word_atom(cur.join(""), st))
+
+## Whether a line may break after `c` with no space: the ideographs, kana,
+## Hangul syllables and full-width forms (UAX 14 classes ID and similar).
+fn breaks_anywhere(c char) bool
+    k := c.code()
+    (k >= 0x3040 and k <= 0x30ff) or (k >= 0x3400 and k <= 0x4dbf) or (k >= 0x4e00 and k <= 0x9fff) or (k >= 0xac00 and k <= 0xd7af) or (k >= 0xff00 and k <= 0xffef) or (k >= 0x20000 and k <= 0x3ffff)
 
 ## The width of a run: the host's measure when there is one, else the
 ## estimate, which is then noted so the host can be asked.
