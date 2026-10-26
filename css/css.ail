@@ -438,7 +438,13 @@ pub fn selector(text str) Selector?
     Selector(parts, comb, specificity: spec)
 
 ## The specificity a compound's simple selectors add (Selectors 4, 17).
-fn simple_weight(tag str, ids List[str], classes List[str], attrs List[AttrTest], pseudos List[str]) int
+fn simple_weight(
+    tag str,
+    ids List[str],
+    classes List[str],
+    attrs List[AttrTest],
+    pseudos List[str],
+) int
     mut w := ids.len() * 10000 + (classes.len() + attrs.len() + pseudos.len()) * 100
     if tag != ""
         w += 1
@@ -488,6 +494,7 @@ PLAIN_PSEUDOS := {
     "link",
     "any-link",
 }
+
 NTH_PSEUDOS := {"nth-child", "nth-last-child", "nth-of-type", "nth-last-of-type"}
 
 ## Adds the pseudo-class `name(arg)` to `c`; false when Garlic doesn't
@@ -512,7 +519,13 @@ fn add_pseudo(mut c Compound, name str, arg str) bool
         n := compound(inner) else return false
         if n.nots.len() > 0
             return false
-        c.nots.push(Neg(tag: n.tag, ids: n.ids, classes: n.classes, attrs: n.attrs, pseudos: n.pseudos))
+        c.nots.push(Neg(
+            tag: n.tag,
+            ids: n.ids,
+            classes: n.classes,
+            attrs: n.attrs,
+            pseudos: n.pseudos,
+        ))
         return true
     false
 
@@ -570,7 +583,12 @@ fn compound(word str) Compound?
                     return none
                 mut j := i + 1
                 mut pname := List[char]()
-                while j < cs.len() and cs[j] != '(' and cs[j] != '.' and cs[j] != '#' and cs[j] != '[' and cs[j] != ':'
+                while j < cs.len()
+                    and cs[j] != '('
+                    and cs[j] != '.'
+                    and cs[j] != '#'
+                    and cs[j] != '['
+                    and cs[j] != ':'
                     pname.push(cs[j])
                     j += 1
                 mut arg := ""
@@ -639,7 +657,8 @@ fn sib_pos(d html.Doc, id int, from_end bool, of_type bool) int
     for s in d.nodes[p].children
         if s == id
             seen = true
-        elif d.nodes[s].kind == html.Kind.Element and (not of_type or d.nodes[s].tag == d.nodes[id].tag)
+        elif d.nodes[s].kind == html.Kind.Element
+            and (not of_type or d.nodes[s].tag == d.nodes[id].tag)
             if seen
                 after += 1
             else
@@ -672,7 +691,8 @@ fn pseudo_ok(d html.Doc, id int, p str) bool
     if p == "disabled"
         return has_attr(d, id, "disabled")
     if p == "enabled"
-        return (tag == "input" or tag == "button" or tag == "select" or tag == "textarea") and not has_attr(d, id, "disabled")
+        return (tag == "input" or tag == "button" or tag == "select" or tag == "textarea")
+            and not has_attr(d, id, "disabled")
     if p == "link" or p == "any-link"
         return (tag == "a" or tag == "area") and has_attr(d, id, "href")
     open := p.find("(") else return false
@@ -689,7 +709,15 @@ fn pseudo_ok(d html.Doc, id int, p str) bool
     diff <= 0 and (0 - diff) % (0 - ab[0]) == 0
 
 ## Whether element `id` satisfies one set of simple selectors.
-fn simple_ok(d html.Doc, id int, tag str, ids List[str], classes List[str], attrs List[AttrTest], pseudos List[str]) bool
+fn simple_ok(
+    d html.Doc,
+    id int,
+    tag str,
+    ids List[str],
+    classes List[str],
+    attrs List[AttrTest],
+    pseudos List[str],
+) bool
     if tag != "" and tag != d.nodes[id].tag
         return false
     for want in ids
