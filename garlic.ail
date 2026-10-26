@@ -3954,7 +3954,7 @@ fn len_starting(ts List[str], prefix str) int
         <body style="margin: 0"><ul style="list-style: none; margin: 0; padding: 0; float: left"><li style="float: left; padding: 0 10px">Your browser</li></ul></body>
         """
     ts := pixel_text(gfx.layout(html.parse(src), "file:///t.html", 800.0, css.parse("", 0)).ops)
-    assert_eq(len_starting(ts, "Your browser@"), 1)
+    assert_eq(at_of(ts, "browser")[1], at_of(ts, "Your")[1])
 
 @test fn a_tall_inline_picture_sits_on_its_line_not_above_it()
     src := """
