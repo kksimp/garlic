@@ -152,14 +152,16 @@ fn Dump.module_item(self, item ModItem, p Pos) str
             ]
             from := if src := source then literal(quote(src), p) else "null"
             decl_text := if d := decl then stmt(d) else "null"
-            node("ExportNamedDeclaration", p, [
+            mut fields := [
                 field("declaration", decl_text),
                 field("specifiers", "[{texts.join(",")}]"),
                 field("source", from),
-                field("attributes", import_attrs(attrs, p)),
-            ])
+            ]
+            if source != none
+                fields.push(field("attributes", import_attrs(attrs, p)))
+            node("ExportNamedDeclaration", p, fields)
         ExportDefault(decl, value) =>
-            inner := if d := decl then stmt(d) else opt_expr(value)
+            inner := if d := decl then stmt(d) else default_value(value)
             node("ExportDefaultDeclaration", p, [field("declaration", inner)])
         ExportAll(exported, exported_str, source, attrs) =>
             exported_text := if n := exported then name_node(n, exported_str, p) else "null"
@@ -168,6 +170,16 @@ fn Dump.module_item(self, item ModItem, p Pos) str
                 field("source", literal(quote(source), p)),
                 field("attributes", import_attrs(attrs, p)),
             ])
+
+## The operand of `export default`: an unparenthesized anonymous function
+## or class is a declaration in ESTree.
+fn Dump.default_value(self, value Expr?) str
+    if v := value
+        match v
+            Function(f) => return function("FunctionDeclaration", f)
+            ClassExpr(c) => return class("ClassDeclaration", c)
+            _ => return expr(v)
+    "null"
 
 ## A module export name: an identifier, or a string literal.
 fn Dump.name_node(self, name str, is_str bool, p Pos) str
