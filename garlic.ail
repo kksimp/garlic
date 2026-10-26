@@ -3814,6 +3814,28 @@ fn probe_font(style str) str
     cells := [b.name for b in p.boxes if b.role == "cell"]
     assert(not cells.join(" ").contains("var x"))
 
+@test fn grid_template_areas_place_items_by_name_in_their_tracks()
+    src := """
+        <style>.g \{ display: grid; grid-template-columns: 100px 1fr; column-gap: 0; grid-template-areas: 'h h' 's m' } .h \{ grid-area: h } .s \{ grid-area: s } .m \{ grid-area: m }</style>
+        <div class=g><div class=m>main</div><div class=s>side</div><div class=h>head</div></div>
+        """
+    ts := pixel_text(gfx.layout(html.parse(src), "file:///t.html", 400.0, css.parse("", 0)).ops)
+    head := at_of(ts, "head")
+    side := at_of(ts, "side")
+    main := at_of(ts, "main")
+    assert_eq(side[0], head[0])
+    assert_eq(main[0], side[0] + 100.0)
+    assert_eq(main[1], side[1])
+    assert(side[1] > head[1])
+
+## The x and y of the pixel text `word` in `ts` (from `pixel_text`), or [].
+fn at_of(ts List[str], word str) List[float]
+    for t in ts
+        if t.starts_with("{word}@")
+            parts := t.slice(word.chars().len() + 1, t.chars().len()).split(",")
+            return [parts[0].to_float() else 0.0, parts[1].to_float() else 0.0]
+    []
+
 @test fn browser_finds_text_and_scrolls()
     dir := testdata()
     mut b := Browser.new("{dir}/index.html", 60, 6)

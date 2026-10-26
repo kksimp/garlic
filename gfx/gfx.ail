@@ -2038,10 +2038,62 @@ fn Ctx.flex(mut self, id int, st St, cs Map[str, str], x float, w float, min_h f
             y += gap
         k = end
 
+## One grid track: positive for `Nfr`, negative for a fixed length, none for
+## `auto`, `min-content` and the like (sized by their content). `minmax(a, b)`
+## takes `b`.
+fn track(t str, size float, w float) float?
+    if t.starts_with("minmax(")
+        parts := t.slice(7, t.chars().len() - 1).split(",")
+        if parts.len() == 2
+            if v := track(parts[1].trim(), size, w)
+                return v
+            return track(parts[0].trim(), size, w)
+        return none
+    if r := t.strip_suffix("fr")
+        return r.to_float()
+    v := length(t, size, w)?
+    0.0 - v
+
+## The rows of `grid-template-areas`, each a list of area names.
+fn area_rows(spec str) List[List[str]]
+    mut rows := List[List[str]]()
+    for part in spec.replace("\"", "'").split("'")
+        words := [t for t in part.split(" ") if t.trim() != ""]
+        if words.len() > 0
+            rows.push(words)
+    rows
+
+## The first and last row and column (0-based) `name` covers in `rows`, or [].
+fn area_box(rows List[List[str]], name str) List[int]
+    mut r0 := -1
+    mut r1 := -1
+    mut c0 := -1
+    mut c1 := -1
+    for r in 0..rows.len()
+        for c in 0..rows[r].len()
+            if rows[r][c] == name
+                if r0 < 0
+                    r0 = r
+                r1 = r
+                if c0 < 0 or c < c0
+                    c0 = c
+                if c > c1
+                    c1 = c
+    if r0 < 0
+        return []
+    [r0, r1, c0, c1]
+
 fn Ctx.grid(mut self, id int, st St, cs Map[str, str], x float, w float)
     items := self.items(id)
     gap := length(cs.get("gap") else (cs.get("column-gap") else "0"), st.size, w) else 0.0
-    spec := (cs.get("grid-template-columns") else "").trim()
+    mut spec := (cs.get("grid-template-columns") else "").trim()
+    shorthand := cs.get("grid-template") else ""
+    if spec == "" and shorthand.contains("/")
+        spec = shorthand.slice(shorthand.find("/")? + 1, shorthand.chars().len()).trim()
+    areas := area_rows((cs.get("grid-template-areas") else "").trim())
+    if areas.len() > 0
+        self.grid_areas(items, st, x, w, gap, spec, areas)
+        return
     mut cols := List[float]()
     if spec.starts_with("repeat(")
         inner := spec.slice(7, spec.chars().len() - 1)
@@ -2087,6 +2139,98 @@ fn Ctx.grid(mut self, id int, st St, cs Map[str, str], x float, w float)
         self.row(items[k..end], st, x, widths[0..end - k], offsets[0..end - k], false, 0.0)
         k = end
         if k < items.len()
+            y += gap
+
+## A grid with `grid-template-areas`: each item goes in the cells its
+## `grid-area` names, a row at a time; items with no area follow, full width.
+fn Ctx.grid_areas(
+    mut self,
+    items List[int],
+    st St,
+    x float,
+    w float,
+    gap float,
+    spec str,
+    areas List[List[str]],
+)
+    ncols := areas[0].len()
+    mut cols := List[float]()
+    mut autos := List[bool]()
+    for t in tokens(spec)
+        if cols.len() < ncols
+            if v := track(t, st.size, w)
+                cols.push(v)
+                autos.push(false)
+            else
+                cols.push(0.0)
+                autos.push(true)
+    while cols.len() < ncols
+        cols.push(1.0)
+        autos.push(false)
+    ## Each item's box: [row0, row1, col0, col1]; unplaced ones get new rows.
+    mut boxes := List[List[int]]()
+    mut extra := areas.len()
+    for it in items
+        name := (self.element_style(it).get("grid-area") else "").trim()
+        b := if d.nodes[it].kind == Element and name != "" then area_box(areas, name) else []
+        if b.len() == 0
+            boxes.push([extra, extra, 0, ncols - 1])
+            extra += 1
+        else
+            boxes.push(b)
+    ## Content-sized tracks take the widest item that sits in them alone.
+    for k in 0..items.len()
+        b := boxes[k]
+        if b[2] == b[3] and autos[b[2]] and d.nodes[items[k]].kind == Element
+            cs2 := self.element_style(items[k])
+            cst := text_style(d.nodes[items[k]].tag, cs2, st)
+            cols[b[2]] = fmax(cols[b[2]], self.intrinsic(items[k], cst))
+    mut fixed := 0.0
+    mut fr := 0.0
+    for c in 0..cols.len()
+        if autos[c]
+            fixed += cols[c]
+        elif cols[c] < 0.0
+            fixed += 0.0 - cols[c]
+        else
+            fr += cols[c]
+    avail := fmax(w - fixed - gap * (cols.len() - 1).to_float(), 0.0)
+    mut widths := List[float]()
+    mut offsets := List[float]()
+    mut at := 0.0
+    for c in 0..cols.len()
+        mut cw := cols[c]
+        if not autos[c]
+            if cw < 0.0
+                cw = 0.0 - cw
+            elif fr > 0.0
+                cw = avail * cw / fr
+            else
+                cw = 0.0
+        widths.push(cw)
+        offsets.push(at)
+        at += cw + gap
+    for r in 0..extra
+        mut order := List[int]()
+        for k in 0..items.len()
+            if boxes[k][0] == r
+                mut pos := 0
+                while pos < order.len() and boxes[order[pos]][2] <= boxes[k][2]
+                    pos += 1
+                order.insert(pos, k)
+        if order.len() > 0
+            mut row := List[int]()
+            mut ws := List[float]()
+            mut os := List[float]()
+            for k in order
+                b := boxes[k]
+                mut span := gap * (b[3] - b[2]).to_float()
+                for c in b[2]..b[3] + 1
+                    span += widths[c]
+                row.push(items[k])
+                ws.push(span)
+                os.push(offsets[b[2]])
+            self.row(row, st, x, ws, os, false, 0.0)
             y += gap
 
 fn Ctx.table(mut self, id int, st St, x float, w float)
