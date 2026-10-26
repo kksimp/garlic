@@ -298,13 +298,7 @@ fn serve_page_modules(mut machine vm.Vm, files Map[str, str])
 
 ## `run_page_at` with the files beside the page (modules and scripts) by
 ## address.
-fn run_page_with(
-    html str,
-    max_steps int,
-    url str,
-    files Map[str, str],
-    trace bool,
-) List[str]
+fn run_page_with(html str, max_steps int, url str, files Map[str, str], trace bool) List[str]
     mut machine := vm.new_vm()
     machine.trace = trace
     machine.step_limit = max_steps
@@ -363,9 +357,7 @@ fn test_pages(dir str) !bool
         file := path.join(dir, name)
         stem := name.slice(0, name.chars().len() - 5)
         html := fs.read_text(file)?
-        actual := run_page_with(html, 10000000, "", page_files(dir)?, false)
-            .join("\n")
-            .trim()
+        actual := run_page_with(html, 10000000, "", page_files(dir)?, false).join("\n").trim()
         expected := fs.read_text(path.join(dir, "{stem}.out"))?.trim()
         if actual == expected
             passed += 1
