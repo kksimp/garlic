@@ -3726,11 +3726,17 @@ fn probe_font(style str) str
     assert(css.selector("li:not(.a):first-child")?.specificity > css.selector("li:first-child")?.specificity)
 
 @test fn css_layer_blocks_apply_as_unlayered_rules()
-    sheet := css.parse("@layer a, b; @layer b \{ p \{ display: none } @media (min-width: 10px) \{ i \{ display: block } } } @layer c \{ b \{ display: block } }", 0)
+    sheet := css.parse(
+        "@layer a, b; @layer b \{ p \{ display: none } @media (min-width: 10px) \{ i \{ display: block } } } @layer c \{ b \{ display: block } }",
+        0,
+    )
     assert_eq(sheet.rules.len(), 3)
 
 @test fn css_supports_blocks_apply_unless_they_are_fallbacks()
-    sheet := css.parse("@supports (display: grid) \{ p \{ display: none } } @supports not (display: grid) \{ i \{ display: block } } @supports (-webkit-hyphens: none) \{ b \{ display: block } }", 0)
+    sheet := css.parse(
+        "@supports (display: grid) \{ p \{ display: none } } @supports not (display: grid) \{ i \{ display: block } } @supports (-webkit-hyphens: none) \{ b \{ display: block } }",
+        0,
+    )
     assert_eq(sheet.rules.len(), 1)
 
 @test fn css_rule_lists_split_outside_parentheses()
