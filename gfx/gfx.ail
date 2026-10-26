@@ -2089,7 +2089,7 @@ fn Ctx.grid(mut self, id int, st St, cs Map[str, str], x float, w float)
     mut spec := (cs.get("grid-template-columns") else "").trim()
     shorthand := cs.get("grid-template") else ""
     if spec == "" and shorthand.contains("/")
-        spec = shorthand.slice(shorthand.find("/")? + 1, shorthand.chars().len()).trim()
+        spec = shorthand.slice((shorthand.find("/") else 0) + 1, shorthand.chars().len()).trim()
     areas := area_rows((cs.get("grid-template-areas") else "").trim())
     if areas.len() > 0
         self.grid_areas(items, st, x, w, gap, spec, areas)
