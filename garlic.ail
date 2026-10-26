@@ -2002,13 +2002,30 @@ fn Gui.refresh(mut self)
         for k in scene.bits.keys()
             if not b.bits.contains(k)
                 b.bits[k] = scene.bits[k]
-        for k in b.bits.keys()
-            if not sent.contains(k)
-                fresh.add(k)
         if b.url != scene_url
             top = 0.0
             scene_url = b.url
     top = top.max(0.0).min((scene.height - area_h).max(0.0))
+    mark_fresh()
+
+## Marks as fresh the decoded pictures the view will draw that the host
+## hasn't been given: only a picture inside the shown part of the page goes
+## out, so one marked when it was laid out but scrolled or cut off then was
+## counted as sent without its data ever reaching the host.
+fn Gui.mark_fresh(mut self)
+    fresh = {}
+    if not pixel
+        return
+    for op in display()
+        src := pic_src(op)
+        if src != "" and b.bits.contains(src) and not sent.contains(src)
+            fresh.add(src)
+
+## The address of picture `op`, "" for any other operation.
+fn pic_src(op draw.Op) str
+    match op
+        Pic(_, _, _, _, src) => src
+        Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Str(_, _, _, _, _, _, _, _, _) => ""
 
 ## A click at (`x`, `y`) points in the page area: uses the target there.
 fn Gui.click(mut self, x float, y float)
@@ -4134,6 +4151,22 @@ fn bench(args List[str])
     second := [to_app(op, a.g) for op in a.g.display()]
     assert_eq(bitmap_data_lens(first), [[37, 29, 1]])
     assert_eq(bitmap_data_lens(second)[0][2], 0)
+
+@test fn a_picture_scrolled_into_view_after_it_was_decoded_still_gets_its_data()
+    dir := "{env.cwd()}/vendor/image/testdata"
+    mut a := Garlic.new(Browser.new("file://{dir}/missing.html", 100, 32), 400.0, 100.0, 8.0, 16.0)
+    a.g.pixel = true
+    a.g.b.doc = html.parse("<div style='height: 600px'>top</div><img src=gray8.png>")
+    a.g.b.url = "file://{dir}/page.html"
+    a.g.b.stamp += 1
+    a.g.refresh()
+    ## Off screen: nothing to send yet, and a later event must not count it as sent.
+    assert_eq(bitmap_data_lens([to_app(op, a.g) for op in a.g.display()]).len(), 0)
+    a.update(app.event("noop"))
+    a.g.top = 600.0
+    a.g.refresh()
+    first := [to_app(op, a.g) for op in a.g.display()]
+    assert_eq(bitmap_data_lens(first), [[37, 29, 1]])
 
 @allow("expr.match.3") fn bitmap_data_lens(ops List[app.Op]) List[List[int]]
     mut out := List[List[int]]()
