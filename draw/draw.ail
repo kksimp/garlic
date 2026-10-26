@@ -125,14 +125,18 @@ pub fn shift(ops List[Op], bg int, w float, h float, top float) List[Op]
     for op in ops
         match op
             Rect(x, y, rw, rh, c) =>
-                if y + rh >= top and y <= top + h
-                    out.push(Rect(x, y: y - top, w: rw, h: rh, color: c))
+                # Clip to the area: the host draws outside a canvas, over the
+                # address bar and the tabs.
+                y0 := (y - top).max(0.0)
+                y1 := (y - top + rh).min(h)
+                if y1 > y0
+                    out.push(Rect(x, y: y0, w: rw, h: y1 - y0, color: c))
             Text(x, y, t, fg, bold, italic, underline) =>
                 out.push(Text(x, y: y - top, text: t, fg, bold, italic, underline))
             Str(x, y, t, font, size, fg, bold, italic, underline) =>
-                if y + size * 2.0 >= top and y <= top + h
+                if y >= top and y - top + size * 1.3 <= h
                     out.push(Str(x, y: y - top, text: t, font, size, fg, bold, italic, underline))
             Pic(x, y, pw, ph, src) =>
-                if y + ph >= top and y <= top + h
+                if y >= top and y - top + ph <= h
                     out.push(Pic(x, y: y - top, w: pw, h: ph, src))
     out
