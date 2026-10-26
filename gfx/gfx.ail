@@ -479,6 +479,8 @@ fn Bx.boxed(self) bool
 fn Bx.padded(self) bool
     pt > 0.0 or pb > 0.0 or bt > 0.0 or bb > 0.0
 
+## A column at least this wide is `max_content`'s measuring column.
+SHRINK_W := 50000.0
 LINK := 0x0000ee
 INK := 0x000000
 RULE := 0x9a9a9a
@@ -1069,9 +1071,12 @@ fn Ctx.break_atom(mut self, st St) Atom
 
 ## Lays out the pending inline atoms as lines in the column from `x`, `w`
 ## wide.
-fn Ctx.flush(mut self, x float, w float, align str)
+fn Ctx.flush(mut self, x float, w float, align0 str)
     if atoms.len() == 0
         return
+    ## In the very wide column `max_content` measures in, nothing is centred
+    ## or pushed right: the extent would be the column's.
+    align := if w >= SHRINK_W then "left" else align0
     mut line := List[Atom]()
     mut lw := 0.0
     mut lx := x
@@ -1638,7 +1643,7 @@ fn Ctx.max_content(mut self, id int, st St) float
     m0 := marker
     saved := atoms
     atoms = []
-    self.block(id, st, 0.0, 100000.0)
+    self.block(id, st, 0.0, 2.0 * SHRINK_W)
     mut extent := 0.0
     for k in o0..ops.len()
         match ops[k]
@@ -1713,7 +1718,9 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
     if sw := set_w
         if sw < inner_w
             free := inner_w - sw
-            if bx.ml_auto and bx.mr_auto
+            if w >= SHRINK_W
+                left += 0.0
+            elif bx.ml_auto and bx.mr_auto
                 left += free / 2.0
             elif bx.ml_auto
                 left += free
@@ -1973,7 +1980,8 @@ fn shifted(op draw.Op, dy float) draw.Op
 fn Ctx.flex(mut self, id int, st St, cs Map[str, str], x float, w float, min_h float)
     items := self.items(id)
     gap := length(cs.get("gap") else (cs.get("column-gap") else "0"), st.size, w) else 0.0
-    justify := (cs.get("justify-content") else "flex-start").trim()
+    justify := if w
+        >= SHRINK_W then "flex-start" else (cs.get("justify-content") else "flex-start").trim()
     wrap := (cs.get("flex-wrap") else "nowrap").trim() == "wrap"
     mut sizes := List[float]()
     mut grows := List[float]()
