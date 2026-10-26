@@ -432,13 +432,13 @@ pub fn selector(text str) Selector?
         return none
     mut spec := 0
     for p in parts
-        spec += weight(p.tag, p.ids, p.classes, p.attrs, p.pseudos)
+        spec += simple_weight(p.tag, p.ids, p.classes, p.attrs, p.pseudos)
         for ng in p.nots
-            spec += weight(ng.tag, ng.ids, ng.classes, ng.attrs, ng.pseudos)
+            spec += simple_weight(ng.tag, ng.ids, ng.classes, ng.attrs, ng.pseudos)
     Selector(parts, comb, specificity: spec)
 
 ## The specificity a compound's simple selectors add (Selectors 4, 17).
-fn weight(tag str, ids List[str], classes List[str], attrs List[AttrTest], pseudos List[str]) int
+fn simple_weight(tag str, ids List[str], classes List[str], attrs List[AttrTest], pseudos List[str]) int
     mut w := ids.len() * 10000 + (classes.len() + attrs.len() + pseudos.len()) * 100
     if tag != ""
         w += 1
