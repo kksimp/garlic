@@ -570,15 +570,14 @@ fn text_style(tag str, cs Map[str, str], parent St) St
             st.size = k
         elif x := length(fs, parent.size, parent.size)
             st.size = x
+    if f := cs.get("font")
+        shorthand := page.font_shorthand(f, st.italic, st.bold)
+        st.italic = shorthand.0
+        st.bold = shorthand.1
     if w := cs.get("font-weight")
-        st.bold = w == "bold"
-            or w == "bolder"
-            or w == "600"
-            or w == "700"
-            or w == "800"
-            or w == "900"
+        st.bold = page.font_bold(w, parent.bold)
     if s := cs.get("font-style")
-        st.italic = s == "italic" or s == "oblique"
+        st.italic = page.font_italic(s, parent.italic)
     if c := cs.get("color")
         if c.trim() == "inherit"
             st.color = parent.color

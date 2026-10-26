@@ -83,6 +83,7 @@ USED := {
     "padding-inline-start",
     "padding-inline-end",
     "visibility",
+    "font",
     "font-weight",
     "font-style",
     "text-transform",
