@@ -343,7 +343,7 @@ fn Vm.setup(mut self)
     methods(
         global_obj,
         "global",
-        "parseInt:2 parseFloat:1 isNaN:1 isFinite:1 encodeURIComponent:1 encodeURI:1 decodeURIComponent:1 decodeURI:1 eval:1",
+        "parseInt:2 parseFloat:1 isNaN:1 isFinite:1 encodeURIComponent:1 encodeURI:1 decodeURIComponent:1 decodeURI:1 escape:1 unescape:1 eval:1",
     )
     # Number.parseInt and parseInt are the same function (§21.1.2.13).
     number_ctor.props["parseInt"] = global_obj.props["parseInt"]
@@ -636,6 +636,8 @@ pub fn Vm.native(
         "global.encodeURI" => Value.Str(uri_encode(to_string(a0)?, "{URI_UNRESERVED};/?:@&=+$,#"))
         "global.decodeURIComponent" => Value.Str(uri_decode(to_string(a0)?, "")?)
         "global.decodeURI" => Value.Str(uri_decode(to_string(a0)?, ";/?:@&=+$,#")?)
+        "global.escape" => Value.Str(js_escape(to_string(a0)?))
+        "global.unescape" => Value.Str(js_unescape(to_string(a0)?))
         _ => return type_error("{name} is not supported yet")
 
 ## A wrapper object made by `new String(s)`, `new Number(n)`, ...
@@ -1295,6 +1297,57 @@ pub fn uri_encode(s str, keep str) str
             for b in "{c}".to_bytes()
                 out.push("%{b.to_int().to_hex().to_upper().pad_left(2, '0')}")
     out.join("")
+
+## `escape` (Annex B.2.1.1): letters, digits and `@*_+-./` stay; other code
+## units below 256 become %XX and the rest %uXXXX.
+pub fn js_escape(s str) str
+    mut out := List[str]()
+    for c in s.chars()
+        if "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@*_+-./".contains(c)
+            out.push("{c}")
+            continue
+        code := c.code()
+        if code < 256
+            out.push("%{code.to_hex().to_upper().pad_left(2, '0')}")
+        elif code < 65536
+            out.push("%u{code.to_hex().to_upper().pad_left(4, '0')}")
+        else
+            v := code - 65536
+            hi := 55296 + v.shr(10)
+            lo := 56320 + v.bit_and(1023)
+            out.push("%u{hi.to_hex().to_upper()}%u{lo.to_hex().to_upper()}")
+    out.join("")
+
+## `unescape` (Annex B.2.1.2): %XX and %uXXXX become code units; anything
+## malformed stays as it is.
+pub fn js_unescape(s str) str
+    cs := s.chars()
+    mut out := List[str]()
+    mut i := 0
+    while i < cs.len()
+        if cs[i] == '%' and i + 5 < cs.len() and cs[i + 1] == 'u'
+            v := hex_run(cs, i + 2, 4)
+            if v >= 0
+                out.push("{char.from_code(v) else '?'}")
+                i += 6
+                continue
+        if cs[i] == '%' and i + 2 < cs.len()
+            v := hex_run(cs, i + 1, 2)
+            if v >= 0
+                out.push("{char.from_code(v) else '?'}")
+                i += 3
+                continue
+        out.push("{cs[i]}")
+        i += 1
+    out.join("")
+
+## The value of the `n` hex digits of `cs` from `at`, or -1 if one isn't.
+fn hex_run(cs List[char], at int, n int) int
+    mut v := 0
+    for k in 0..n
+        d := cs[at + k].to_digit(16) else return -1
+        v = v * 16 + d
+    v
 
 ## Decode (§19.2.6.6): %XX escapes of UTF-8, except those in `reserved`.
 pub fn Vm.uri_decode(mut self, s str, reserved str) str ! Thrown
