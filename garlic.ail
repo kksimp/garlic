@@ -3357,7 +3357,8 @@ fn testdata() str
     assert(not css.media_matches("print", 800))
     assert(css.media_matches("not print", 800))
     assert(css.media_matches("(width >= 700px)", 800))
-    assert(not css.media_matches("(prefers-color-scheme: dark)", 800))
+    assert(css.media_matches("(prefers-color-scheme: dark)", 800))
+    assert(not css.media_matches("(prefers-color-scheme: light)", 800))
     src := """
         <style>.wide \{ display: none } @media (min-width: 640px) \{ .wide \{ display: block } .narrow \{ display: none } }</style>
         <p class=wide>Wide layout</p><p class=narrow>Narrow layout</p>

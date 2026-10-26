@@ -253,7 +253,7 @@ fn all_match(media str, px int) bool
 
 ## Whether media query list `query` matches a screen `px` CSS pixels wide
 ## (Media Queries 4, simplified). Types `all` and `screen` match; widths
-## compare in `px`, `em` and `rem` (16 px); the screen is light, without
+## compare in `px`, `em` and `rem` (16 px); the screen is dark (Kaleb, 2026-10-26), without
 ## hover or motion. Anything else doesn't match, so its rules stay off.
 pub fn media_matches(query str, px int) bool
     q := query.trim().to_lower()
@@ -299,7 +299,7 @@ fn feature_matches(f str, px int) bool
         "min-width" | "min-device-width" => px >= (length_px(value) else return false)
         "max-width" | "max-device-width" => px <= (length_px(value) else return false)
         "width" => px == (length_px(value) else return false)
-        "prefers-color-scheme" => value == "light"
+        "prefers-color-scheme" => value == "dark"
         "prefers-reduced-motion" => value == "reduce"
         "hover" | "any-hover" => value == "none"
         "orientation" => value == "landscape"
