@@ -77,7 +77,9 @@ fn Vm.encoding_native(mut self, m str, this_val Value, args List[Value]) Value !
             return new_bytes_array(out)
         if m == "TextEncoder.prototype.encodeInto"
             s := to_string(a0)?
-            d := obj_of(arg_at(args, 1)) else return type_error("The \"dest\" argument must be an instance of Uint8Array.")
+            d := obj_of(
+                arg_at(args, 1),
+            ) else return type_error("The \"dest\" argument must be an instance of Uint8Array.")
             if d.class != "Uint8Array"
                 return type_error("The \"dest\" argument must be an instance of Uint8Array.")
             buf := obj_of(d.prim) else return Undef

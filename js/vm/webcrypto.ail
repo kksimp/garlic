@@ -19,10 +19,16 @@ fn Vm.crypto_native(mut self, m str, this_val Value, args List[Value]) Value ! T
         o := obj_of(a0) else return type_error("Failed to execute 'getRandomValues' on 'Crypto': parameter 1 is not of type 'ArrayBufferView'.")
         e := elem_of(o.class)
         if not is_view(o) or e.kind == "f"
-            return dom_exception("TypeMismatchError", "The data argument must be an integer-type TypedArray")
+            return dom_exception(
+                "TypeMismatchError",
+                "The data argument must be an integer-type TypedArray",
+            )
         n := view_len(o) * e.size
         if n > 65536
-            return dom_exception("QuotaExceededError", "The ArrayBufferView's byte length ({n}) exceeds the number of bytes of entropy available via this API (65536)")
+            return dom_exception(
+                "QuotaExceededError",
+                "The ArrayBufferView's byte length ({n}) exceeds the number of bytes of entropy available via this API (65536)",
+            )
         buf := obj_of(o.prim) else return a0
         base := view_off(o)
         for i in 0..n
@@ -46,7 +52,10 @@ fn Vm.crypto_native(mut self, m str, this_val Value, args List[Value]) Value ! T
             algo = get(a0, "name")?
         name := to_string(algo)?.to_upper()
         input := bytes_of(arg_at(args, 1)) else err
-            return rejected("TypeError", "Failed to execute 'digest' on 'SubtleCrypto': 2nd argument is not an ArrayBuffer or ArrayBufferView")
+            return rejected(
+                "TypeError",
+                "Failed to execute 'digest' on 'SubtleCrypto': 2nd argument is not an ArrayBuffer or ArrayBufferView",
+            )
         digest := match name
             "SHA-256" => digest_sha256(input)
             "SHA-1" => digest_sha1(input)

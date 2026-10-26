@@ -237,7 +237,9 @@ fn Vm.bin_new(mut self, name str, args List[Value], new_target Value) Value ! Th
             n := to_index(arg_at(args, 0))?
             Value.Obj(new_buffer(n, proto_from(new_target, name)?)?)
         "DataView" =>
-            buf := obj_of(arg_at(args, 0)) else return type_error("First argument to DataView constructor must be an ArrayBuffer")
+            buf := obj_of(
+                arg_at(args, 0),
+            ) else return type_error("First argument to DataView constructor must be an ArrayBuffer")
             if buf.class != "ArrayBuffer"
                 return type_error("First argument to DataView constructor must be an ArrayBuffer")
             off := to_index(arg_at(args, 1))?
@@ -346,14 +348,18 @@ fn Vm.typed_method(mut self, t str, this_val Value, args List[Value]) Value ! Th
             array_method(t, this_val, args)
         "toString" | "toLocaleString" => array_method("join", this_val, [])
         "slice" | "map" | "filter" | "toReversed" | "with" =>
-            arr := obj_of(array_method(t, this_val, args)?) else return type_error("Invalid typed array result")
+            arr := obj_of(
+                array_method(t, this_val, args)?,
+            ) else return type_error("Invalid typed array result")
             view_from_values(o.class, o.proto, arr.elems)
         "toSorted" =>
             if a0 != Undef and not is_callable(a0)
                 return type_error("The comparison function must be either a function or undefined")
             if a0 == Undef
                 return view_from_values(o.class, o.proto, num_sort(view_values(o)))
-            arr := obj_of(array_method(t, this_val, args)?) else return type_error("Invalid typed array result")
+            arr := obj_of(
+                array_method(t, this_val, args)?,
+            ) else return type_error("Invalid typed array result")
             view_from_values(o.class, o.proto, arr.elems)
         "fill" | "reverse" | "copyWithin" =>
             tmp := obj_of(array(view_values(o))) else return Undef
@@ -391,7 +397,13 @@ fn Vm.typed_method(mut self, t str, this_val Value, args List[Value]) Value ! Th
             end := relative(a1, len, len)?
             n := if end > start then end - start else 0
             buf := obj_of(o.prim) else return Undef
-            Value.Obj(make_view(o.class, buf, view_off(o) + start * elem_of(o.class).size, n, o.proto))
+            Value.Obj(make_view(
+                o.class,
+                buf,
+                view_off(o) + start * elem_of(o.class).size,
+                n,
+                o.proto,
+            ))
         _ => type_error("%TypedArray%.prototype.{t} is not supported yet")
 
 fn Vm.set_source(mut self, v Value) List[Value] ! Thrown
