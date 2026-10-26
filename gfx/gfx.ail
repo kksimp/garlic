@@ -1181,6 +1181,13 @@ fn Ctx.has_content(mut self, line List[Atom]) bool
             return true
     false
 
+## How far atom `a` rises above its line's baseline: a picture sits on it,
+## text and controls are centred on the text's middle.
+fn atom_asc(a Atom) float
+    if a.kind == IMAGE
+        return a.h
+    (a.h - a.size) / 2.0 + a.size * 0.9
+
 ## Draws one line of atoms at `y`; `empty` is the height of an empty
 ## line (a `<br>`).
 fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty float)
@@ -1197,7 +1204,7 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
     mut desc := 0.0
     for a in line
         total += a.w
-        a_asc := (a.h - a.size) / 2.0 + a.size * 0.9
+        a_asc := atom_asc(a)
         asc = fmax(asc, a_asc)
         desc = fmax(desc, a.h - a_asc)
     mut cx := x
@@ -1210,7 +1217,7 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
         mw := tw(marker, first.size, false, false, "sans")
         ops.push(draw.Op.Str(
             x: marker_x - mw,
-            y: y + asc - ((first.h - first.size) / 2.0 + first.size * 0.9) + 0.0,
+            y: y + asc - atom_asc(first),
             text: marker,
             font: "sans",
             size: first.size,
@@ -1223,7 +1230,7 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
     mut k := 0
     while k < line.len()
         a := line[k]
-        a_asc := (a.h - a.size) / 2.0 + a.size * 0.9
+        a_asc := atom_asc(a)
         top := y + asc - a_asc
         ## Neighbouring words in one style are drawn as one string, so the
         ## host spaces them itself; only the estimate places the string.

@@ -3873,6 +3873,22 @@ fn len_starting(ts List[str], prefix str) int
     assert_eq(sheet.rules[0].decls[0].value, "none")
     assert_eq(sheet.rules[1].decls[0].value, "square")
 
+@test fn a_tall_inline_picture_sits_on_its_line_not_above_it()
+    src := """
+        <p>before</p><div style="width: 100px"><img src="data:x" width="50" height="200"></div><p>after</p>
+        """
+    s := gfx.layout(html.parse(src), "file:///t.html", 400.0, css.parse("", 0))
+    ts := pixel_text(s.ops)
+    before := at_of(ts, "before")
+    after := at_of(ts, "after")
+    mut top := -1.0
+    for op in s.ops
+        match op
+            Pic(_, y, _, _, _) => top = y
+            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Str(_, _, _, _, _, _, _, _, _) => top = top
+    assert(top > before[1])
+    assert(top + 200.0 < after[1] + 1.0)
+
 @test fn browser_finds_text_and_scrolls()
     dir := testdata()
     mut b := Browser.new("{dir}/index.html", 60, 6)
