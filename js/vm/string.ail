@@ -287,7 +287,7 @@ fn Vm.this_number(mut self, v Value, m str) float ! Thrown
                 if n := num_of(o.prim)
                     return n
             return type_error("Number.prototype.{m} requires that 'this' be a Number")
-        Undef | Null | Bool | Str => return type_error("Number.prototype.{m} requires that 'this' be a Number")
+        Undef | Null | Bool | Str | Big | Sym => return type_error("Number.prototype.{m} requires that 'this' be a Number")
 
 fn Vm.number_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
     x := this_number(this_val, m)?
