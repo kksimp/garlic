@@ -21,6 +21,8 @@ pub fn elem_of(class str) Elem
         "Uint32Array" => Elem(size: 4, kind: "u")
         "Float32Array" => Elem(size: 4, kind: "f")
         "Float64Array" => Elem(size: 8, kind: "f")
+        "BigInt64Array" => Elem(size: 8, kind: "b")
+        "BigUint64Array" => Elem(size: 8, kind: "B")
         _ => Elem(size: 0, kind: "")
 
 pub fn typed_names() List[str]
@@ -34,6 +36,8 @@ pub fn typed_names() List[str]
         "Uint32Array",
         "Float32Array",
         "Float64Array",
+        "BigInt64Array",
+        "BigUint64Array",
     ]
 
 ## A typed array object: a class named `...Array` other than `Array`.

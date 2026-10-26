@@ -158,6 +158,14 @@ pub SYMBOL := "\u{0}@"
 pub fn is_symbol(s str) bool
     s.starts_with(SYMBOL)
 
+## A BigInt is a string "\u{0}nDIGITS" (DIGITS in decimal, with a leading
+## `-` if negative, canonical), like a symbol: no new kind of value, and no
+## script can write such a string by accident. See bigint.ail.
+pub BIGINT := "\u{0}n"
+
+pub fn is_bigint(s str) bool
+    s.starts_with(BIGINT)
+
 ## What `Symbol(...).description` gives: the text after the id.
 pub fn symbol_description(s str) str?
     rest := s.slice(2, s.chars().len())
@@ -176,7 +184,7 @@ pub fn type_of(v Value) str
         Null => "object"
         Bool(_) => "boolean"
         Num(_) => "number"
-        Str(s) => if is_symbol(s) then "symbol" else "string"
+        Str(s) => if is_symbol(s) then "symbol" else (if is_bigint(s) then "bigint" else "string")
         Obj(o) => if o.call != none then "function" else "object"
 
 ## ToBoolean (§7.1.2).
@@ -185,7 +193,7 @@ pub fn truthy(v Value) bool
         Undef | Null => false
         Bool(b) => b
         Num(n) => n == n and n != 0.0
-        Str(s) => s != ""
+        Str(s) => s != "" and s != "\u{0}n0"
         Obj(_) => true
 
 ## StringToNumber (§7.1.4.1.1): decimal, `0x`, `0o`, `0b`, `Infinity`;

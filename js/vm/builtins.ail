@@ -527,7 +527,7 @@ pub fn Vm.native(
                     out = "{out}{to_string(args[i + 1])?}"
             Value.Str(out)
         "Number" =>
-            n := if args.len() == 0 then 0.0 else to_number(a0)?
+            n := if args.len() == 0 then 0.0 else (if is_big_val(a0) then big_to_float(big_of(a0)) else to_number(a0)?)
             if new_target == Undef
                 return Value.Num(n)
             Obj(wrap_with(new_target, "Number", Num(n))?)

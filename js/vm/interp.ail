@@ -208,6 +208,8 @@ pub fn Vm.to_number(mut self, v Value) float ! Thrown
         Str(s) =>
             if is_symbol(s)
                 return type_error("Cannot convert a Symbol value to a number")
+            if is_bigint(s)
+                return type_error("Cannot convert a BigInt value to a number")
             string_to_number(s)
         Obj => to_number(to_primitive(v, "number")?)
 
@@ -221,13 +223,15 @@ pub fn Vm.to_string(mut self, v Value) str ! Thrown
         Str(s) =>
             if is_symbol(s)
                 return type_error("Cannot convert a Symbol value to a string")
+            if is_bigint(s)
+                return s.slice(2, s.chars().len())
             s
         Obj => to_string(to_primitive(v, "string")?)
 
 ## ToPropertyKey (§7.1.19): a symbol is its own key.
 pub fn Vm.to_key(mut self, v Value) str ! Thrown
     match v
-        Str(s) => s
+        Str(s) => if is_bigint(s) then s.slice(2, s.chars().len()) else s
         Num(n) => syntax.number_to_string(n)
         Undef | Null | Bool => to_string(v)
         Obj =>
@@ -243,7 +247,7 @@ pub fn Vm.to_object(mut self, v Value) ref JsObject ! Thrown
         Undef | Null => return type_error("Cannot convert undefined or null to object")
         Bool => wrap("Boolean", v)
         Num => wrap("Number", v)
-        Str(s) => wrap(if is_symbol(s) then "Symbol" else "String", v)
+        Str(s) => wrap(if is_symbol(s) then "Symbol" else (if is_bigint(s) then "BigInt" else "String"), v)
 
 pub fn Vm.wrap(mut self, class str, v Value) ref JsObject
     o := object(class, proto_of(class))
@@ -1038,7 +1042,12 @@ pub fn Vm.eval(mut self, e syntax.Expr, env ref Env) Value ! Thrown
         ClassExpr(c) => make_class(c, env)
         Unary(op, operand, _) => unary(op, operand, env)
         Update(op, prefix, operand, _) =>
-            old := to_number(eval(operand, env)?)?
+            cur := eval(operand, env)?
+            if is_big_val(cur)
+                stepped := big_step(cur, op)
+                assign_to(operand, stepped, env)?
+                return if prefix then stepped else cur
+            old := to_number(cur)?
             v := if op == "++" then old + 1.0 else old - 1.0
             assign_to(operand, Num(v), env)?
             Value.Num(if prefix then v else old)
@@ -1210,6 +1219,8 @@ fn Vm.unary(mut self, op str, operand syntax.Expr, env ref Env) Value ! Thrown
     if op == "delete"
         return Value.Bool(delete_expr(operand, env)?)
     v := eval(operand, env)?
+    if is_big_val(v) and (op == "-" or op == "~" or op == "+")
+        return big_unary(op, v)
     match op
         "!" => Value.Bool(not truthy(v))
         "-" => Value.Num(-to_number(v)?)
@@ -1277,6 +1288,8 @@ pub fn Vm.binary(mut self, op str, a Value, b Value) Value ! Thrown
         Undef | Null | Bool | Str | Obj => return binary_slow(op, a, b)
 
 fn Vm.binary_slow(mut self, op str, a Value, b Value) Value ! Thrown
+    if (is_big_val(a) or is_big_val(b)) and big_op(op)
+        return big_binary(op, a, b)
     match op
         "+" =>
             pa := to_primitive(a, "default")?
@@ -1882,7 +1895,7 @@ pub fn obj_of(v Value) ref JsObject?
 
 pub fn str_of(v Value) str?
     match v
-        Str(x) => x
+        Str(x) => if is_bigint(x) then none else x
         Undef | Null | Bool | Num | Obj => none
 
 fn returned(f Flow) Value?

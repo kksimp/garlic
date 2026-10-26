@@ -1,0 +1,412 @@
+## BigInt (ECMA-262 §6.1.6.2, §21.2): arbitrary-precision integers. A BigInt
+## value is a string "\u{0}nDIGITS" (see `BIGINT` in value.ail), so it needs no
+## new kind of value; arithmetic is `std.bigint`'s, with the shifts and
+## bitwise operators built on top of it by two's complement.
+use syntax
+use std.bigint
+
+fn is_big_val(v Value) bool
+    match v
+        Str(s) => is_bigint(s)
+        Undef | Null | Bool | Num | Obj => false
+
+## The engine's BigInt value for `b`.
+pub fn big_value(b bigint.BigInt) Value
+    Value.Str("{BIGINT}{b.to_text()}")
+
+## The number a BigInt value holds; zero for any other value.
+pub fn big_of(v Value) bigint.BigInt
+    match v
+        Str(s) =>
+            if is_bigint(s)
+                b := bigint.parse(s.slice(2, s.chars().len())) else err
+                    return bigint.from_int(0)
+                return b
+            bigint.from_int(0)
+        Undef | Null | Bool | Num | Obj => bigint.from_int(0)
+
+fn big_one() bigint.BigInt
+    bigint.from_int(1)
+
+fn big_pow(b bigint.BigInt, n int) bigint.BigInt
+    r := b.pow(n) else err
+        return bigint.from_int(0)
+    r
+
+fn big_divmod(a bigint.BigInt, b bigint.BigInt) bigint.QuoRem
+    r := a.divmod(b) else err
+        return bigint.QuoRem(quo: bigint.from_int(0), rem: bigint.from_int(0))
+    r
+
+pub fn big_to_float(b bigint.BigInt) float
+    b.to_text().to_float() else 0.0
+
+## The BigInt equal to the integer-valued number `x`.
+fn float_to_big(x float) bigint.BigInt
+    a := x.abs()
+    if a < 9000000000000000000.0
+        return bigint.from_int(x.to_int())
+    e := exponent(a)
+    m := bigint.from_int((a / pow2(e - 52)).to_int())
+    r := m.mul(big_pow(bigint.from_int(2), e - 52))
+    if x < 0.0
+        return r.negate()
+    r
+
+## The BigInt a string means (StringToBigInt, §7.1.14), or none.
+fn parse_big_string(text str) bigint.BigInt?
+    s := trim_js(text)
+    if s == ""
+        return bigint.from_int(0)
+    cs := s.chars()
+    if cs.len() > 2 and cs[0] == '0'
+        radix := match cs[1]
+            'x' | 'X' => 16
+            'o' | 'O' => 8
+            'b' | 'B' => 2
+            _ => 0
+        if radix > 0
+            mut v := bigint.from_int(0)
+            r := bigint.from_int(radix)
+            for c in cs[2..]
+                d := c.to_digit(radix) else return none
+                v = v.mul(r).add(bigint.from_int(d))
+            return v
+    mut start := 0
+    if cs[0] == '+' or cs[0] == '-'
+        start = 1
+    if start >= cs.len()
+        return none
+    for i in start..cs.len()
+        if not cs[i].is_digit()
+            return none
+    b := bigint.parse(s) else err
+        return none
+    b
+
+fn big_text(v Value) str
+    big_of(v).to_text()
+
+## -1, 0 or 1 as the BigInt `x` is less than, equal to or greater than the
+## number `n`; none for NaN.
+fn cmp_big_num(x bigint.BigInt, n float) int?
+    if n != n
+        return none
+    if n == infinity()
+        return -1
+    if n == 0.0 - infinity()
+        return 1
+    f := n.floor()
+    c := x.cmp(float_to_big(f))
+    if c == 0 and n > f
+        return -1
+    c
+
+fn cmp_big_other(x bigint.BigInt, o Value) int?
+    match o
+        Num(n) => cmp_big_num(x, n)
+        Bool(b) => cmp_big_num(x, if b then 1.0 else 0.0)
+        Null => cmp_big_num(x, 0.0)
+        Str(s) =>
+            if is_symbol(s)
+                return none
+            y := parse_big_string(s) else return none
+            x.cmp(y)
+        Undef | Obj => none
+
+fn big_compare(a Value, b Value) int?
+    if is_big_val(a) and is_big_val(b)
+        return big_of(a).cmp(big_of(b))
+    if is_big_val(a)
+        return cmp_big_other(big_of(a), b)
+    c := cmp_big_other(big_of(b), a) else return none
+    -c
+
+fn big_loose_eq(a Value, b Value) bool
+    if is_nullish(a) or is_nullish(b)
+        return false
+    c := big_compare(a, b) else return false
+    c == 0
+
+## `x >> k` (floor division by 2^k).
+fn big_shr(x bigint.BigInt, k int) bigint.BigInt
+    qr := big_divmod(x, big_pow(bigint.from_int(2), k))
+    if x.is_negative() and not qr.rem.is_zero()
+        return qr.quo.sub(big_one())
+    qr.quo
+
+fn big_limbs32(x bigint.BigInt, n int) List[int]
+    base := bigint.from_int(4294967296)
+    mut out := List[int]()
+    mut cur := x
+    for _ in 0..n
+        qr := big_divmod(cur, base)
+        out.push(qr.rem.as_int() else 0)
+        cur = qr.quo
+    out
+
+## `&`, `|` and `^` on two's complement (§6.1.6.2.18-20).
+fn big_bitop(op str, x bigint.BigInt, y bigint.BigInt) bigint.BigInt
+    digits := x.abs().to_text().chars().len().max(y.abs().to_text().chars().len())
+    n := digits * 4 / 32 + 2
+    two := bigint.from_int(2)
+    m := big_pow(two, 32 * n)
+    xl := big_limbs32(if x.is_negative() then x.add(m) else x, n)
+    yl := big_limbs32(if y.is_negative() then y.add(m) else y, n)
+    base := bigint.from_int(4294967296)
+    mut r := bigint.from_int(0)
+    mut i := n - 1
+    while i >= 0
+        w := match op
+            "&" => xl[i].bit_and(yl[i])
+            "|" => xl[i].bit_or(yl[i])
+            _ => xl[i].bit_xor(yl[i])
+        r = r.mul(base).add(bigint.from_int(w))
+        i -= 1
+    if r.cmp(big_pow(two, 32 * n - 1)) >= 0
+        return r.sub(m)
+    r
+
+## BigInt.asUintN(bits, x) (§21.2.2.2).
+fn big_as_uint(bits int, x bigint.BigInt) bigint.BigInt
+    if bits == 0
+        return bigint.from_int(0)
+    m := big_pow(bigint.from_int(2), bits)
+    r := big_divmod(x, m).rem
+    if r.is_negative()
+        return r.add(m)
+    r
+
+fn big_as_int(bits int, x bigint.BigInt) bigint.BigInt
+    if bits == 0
+        return bigint.from_int(0)
+    r := big_as_uint(bits, x)
+    m := big_pow(bigint.from_int(2), bits)
+    if r.cmp(big_pow(bigint.from_int(2), bits - 1)) >= 0
+        return r.sub(m)
+    r
+
+fn big_radix_text(x bigint.BigInt, radix int) str
+    if x.is_zero()
+        return "0"
+    digits := "0123456789abcdefghijklmnopqrstuvwxyz".chars()
+    r := bigint.from_int(radix)
+    mut out := List[str]()
+    mut cur := x.abs()
+    while not cur.is_zero()
+        qr := big_divmod(cur, r)
+        out.push("{digits[qr.rem.as_int() else 0]}")
+        cur = qr.quo
+    if x.is_negative()
+        out.push("-")
+    out.reverse()
+    out.join("")
+
+fn big_group(text str) str
+    neg := text.starts_with("-")
+    cs := (if neg then text.slice(1, text.chars().len()) else text).chars()
+    mut out := List[str]()
+    for i in 0..cs.len()
+        if i > 0 and (cs.len() - i) % 3 == 0
+            out.push(",")
+        out.push("{cs[i]}")
+    "{if neg then "-" else ""}{out.join("")}"
+
+## A shift count: the BigInt `y` as an int.
+fn Vm.big_count(mut self, y bigint.BigInt) int ! Thrown
+    k := y.as_int() else return range_error("Maximum BigInt size exceeded")
+    if k > 1000000 or k < -1000000
+        return range_error("Maximum BigInt size exceeded")
+    k
+
+pub fn big_op(op str) bool
+    match op
+        "+" | "-" | "*" | "/" | "%" | "**" | "&" | "|" | "^" | "<<" | ">>" | ">>>" | "==" | "!=" | "<" | ">" | "<=" | ">=" => true
+        _ => false
+
+## A binary operator where an operand is a BigInt (§6.1.6.2, §13.15.3).
+pub fn Vm.big_binary(mut self, op str, a Value, b Value) Value ! Thrown
+    pa := to_primitive(a, "default")?
+    pb := to_primitive(b, "default")?
+    if op == "==" or op == "!="
+        eq := big_loose_eq(pa, pb)
+        return Value.Bool(if op == "==" then eq else not eq)
+    if op == "<" or op == ">" or op == "<=" or op == ">="
+        c := big_compare(pa, pb) else return Value.Bool(false)
+        mut holds := c >= 0
+        if op == "<"
+            holds = c < 0
+        elif op == ">"
+            holds = c > 0
+        elif op == "<="
+            holds = c <= 0
+        return Value.Bool(holds)
+    if op == "+" and (type_of(pa) == "string" or type_of(pb) == "string")
+        return Value.Str("{to_string(pa)?}{to_string(pb)?}")
+    if not (is_big_val(pa) and is_big_val(pb))
+        return type_error("Cannot mix BigInt and other types, use explicit conversions")
+    x := big_of(pa)
+    y := big_of(pb)
+    match op
+        "+" => big_value(x.add(y))
+        "-" => big_value(x.sub(y))
+        "*" => big_value(x.mul(y))
+        "/" | "%" =>
+            if y.is_zero()
+                return range_error("Division by zero")
+            qr := big_divmod(x, y)
+            big_value(if op == "/" then qr.quo else qr.rem)
+        "**" =>
+            if y.is_negative()
+                return range_error("Exponent must be non-negative")
+            k := y.as_int() else return range_error("Maximum BigInt size exceeded")
+            if k > 1000000 and x.abs().cmp(big_one()) > 0
+                return range_error("Maximum BigInt size exceeded")
+            big_value(big_pow(x, k))
+        "&" | "|" | "^" => big_value(big_bitop(op, x, y))
+        "<<" | ">>" =>
+            k := big_count(y)?
+            left := (op == "<<") == (k >= 0)
+            n := k.abs()
+            if left
+                return big_value(x.mul(big_pow(bigint.from_int(2), n)))
+            big_value(big_shr(x, n))
+        _ => type_error("BigInts have no unsigned right shift, use >> instead")
+
+## Unary `-`, `+` and `~` on a BigInt.
+pub fn Vm.big_unary(mut self, op str, v Value) Value ! Thrown
+    x := big_of(v)
+    match op
+        "-" => big_value(x.negate())
+        "~" => big_value(x.negate().sub(big_one()))
+        _ => type_error("Cannot convert a BigInt value to a number")
+
+## `++` or `--` on a BigInt.
+pub fn big_step(v Value, op str) Value
+    x := big_of(v)
+    big_value(if op == "++" then x.add(big_one()) else x.sub(big_one()))
+
+## ToBigInt (§7.1.13): what a BigInt64Array element takes.
+pub fn Vm.to_bigint(mut self, v Value) Value ! Thrown
+    p := to_primitive(v, "number")?
+    match p
+        Bool(b) => big_value(bigint.from_int(if b then 1 else 0))
+        Str(s) =>
+            if is_bigint(s)
+                return p
+            if is_symbol(s)
+                return type_error("Cannot convert a Symbol value to a bigint")
+            y := parse_big_string(s) else return syntax_error("Cannot convert {s} to a BigInt")
+            big_value(y)
+        Undef => type_error("Cannot convert undefined to a BigInt")
+        Null => type_error("Cannot convert null to a BigInt")
+        Num(n) => type_error("Cannot convert {syntax.number_to_string(n)} to a BigInt")
+        Obj => type_error("Cannot convert object to a BigInt")
+
+## The function `BigInt(value)` (§21.2.1.1).
+pub fn Vm.big_function(mut self, args List[Value], new_target Value) Value ! Thrown
+    if new_target != Undef
+        return type_error("BigInt is not a constructor")
+    p := to_primitive(arg_at(args, 0), "number")?
+    match p
+        Num(n) =>
+            if n != n or not is_finite(n) or n != n.floor()
+                return range_error("The number {syntax.number_to_string(n)} cannot be converted to a BigInt because it is not an integer")
+            big_value(float_to_big(n))
+        Undef | Null | Bool | Str | Obj => to_bigint(p)
+
+fn Vm.this_big(mut self, v Value, m str) Value ! Thrown
+    if is_big_val(v)
+        return v
+    if o := obj_of(v)
+        if o.class == "BigInt" and is_big_val(o.prim)
+            return o.prim
+    type_error("BigInt.prototype.{m} requires that 'this' be a BigInt")
+
+## `BigInt.asIntN`, `BigInt.prototype.toString` and the rest.
+pub fn Vm.big_native(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    a0 := arg_at(args, 0)
+    if m == "asIntN" or m == "asUintN"
+        n := trunc(to_number(a0)?)
+        if is_nan(n)
+            return type_error("Invalid value: not (convertible to) a safe integer")
+        if n < 0.0 or n > 9007199254740991.0
+            return range_error("Invalid value: not (convertible to) a safe integer")
+        bits := n.to_int()
+        x := big_of(to_bigint(arg_at(args, 1))?)
+        if bits > 10000000
+            return range_error("Maximum BigInt size exceeded")
+        return big_value(if m == "asIntN" then big_as_int(bits, x) else big_as_uint(bits, x))
+    v := this_big(this_val, m)?
+    match m
+        "valueOf" => v
+        "toLocaleString" => Value.Str(big_group(big_text(v)))
+        "toString" =>
+            if a0 == Undef
+                return Value.Str(big_text(v))
+            r := trunc(to_number(a0)?)
+            if is_nan(r) or r < 2.0 or r > 36.0
+                return range_error("toString() radix must be between 2 and 36")
+            Value.Str(big_radix_text(big_of(v), r.to_int()))
+        _ => type_error("BigInt.prototype.{m} is not supported yet")
+
+# ------------------------------------------------- BigInt64Array elements
+
+pub fn big_kind(e Elem) bool
+    e.kind == "b" or e.kind == "B"
+
+## The element stored in 8 little-endian bytes of a BigInt64Array or a
+## BigUint64Array.
+pub fn big_from_bytes(bs List[int], e Elem) Value
+    base := bigint.from_int(256)
+    mut v := bigint.from_int(0)
+    mut i := bs.len() - 1
+    while i >= 0
+        v = v.mul(base).add(bigint.from_int(bs[i]))
+        i -= 1
+    if e.kind == "b"
+        return big_value(big_as_int(64, v))
+    big_value(v)
+
+pub fn big_to_bytes(v Value) List[int]
+    r := big_as_uint(64, big_of(v))
+    base := bigint.from_int(256)
+    mut out := List[int]()
+    mut cur := r
+    for _ in 0..8
+        qr := big_divmod(cur, base)
+        out.push(qr.rem.as_int() else 0)
+        cur = qr.quo
+    out
+
+## The default sort of a BigInt64Array: numeric.
+pub fn big_sort(items List[Value]) List[Value]
+    if items.len() < 2
+        return items
+    mid := items.len() / 2
+    a := big_sort(items[0..mid])
+    b := big_sort(items[mid..])
+    mut out := List[Value]()
+    mut i := 0
+    mut j := 0
+    while i < a.len() and j < b.len()
+        if big_of(b[j]).cmp(big_of(a[i])) < 0
+            out.push(b[j])
+            j += 1
+        else
+            out.push(a[i])
+            i += 1
+    while i < a.len()
+        out.push(a[i])
+        i += 1
+    while j < b.len()
+        out.push(b[j])
+        j += 1
+    out
+
+pub fn Vm.big_setup(mut self)
+    c := bin_ctor("BigInt", 1)
+    p := obj_of(proto_of("BigInt")) else return
+    methods(c, "bin.BigInt", "asIntN:2 asUintN:2")
+    methods(p, "bin.BigInt.prototype", "toString:0 valueOf:0 toLocaleString:0")
+    bin_tag(p, "BigInt")

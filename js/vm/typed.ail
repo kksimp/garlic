@@ -2,8 +2,7 @@
 ## An ArrayBuffer is an object whose `elems` hold its bytes as numbers. A
 ## typed array or DataView keeps its buffer in `prim`, and its byte offset
 ## and element count in two hidden properties, so views share the bytes of
-## one buffer. Not supported: resizable or detached buffers, SharedArrayBuffer,
-## BigInt64Array and BigUint64Array (the engine has no BigInt).
+## one buffer. Not supported: resizable or detached buffers, SharedArrayBuffer.
 use syntax
 
 VIEW_OFF := "\u{0}#off"
@@ -29,10 +28,15 @@ fn read_at(buf ref JsObject, at int, e Elem, little bool) Value
         bs.push(byte_at(buf, at + k))
     if not little
         bs.reverse()
+    if big_kind(e)
+        return big_from_bytes(bs, e)
     Value.Num(decode_number(bs, e))
 
 fn write_at(buf ref JsObject, at int, e Elem, x float, little bool)
-    mut bs := encode_number(x, e)
+    store_bytes(buf, at, e, encode_number(x, e), little)
+
+fn store_bytes(buf ref JsObject, at int, e Elem, bytes_le List[int], little bool)
+    mut bs := bytes_le
     if not little
         bs.reverse()
     for k in 0..e.size
@@ -66,12 +70,20 @@ pub fn view_values(o ref JsObject) List[Value]
 
 ## An element write (§10.4.5.5): out-of-range indexes are ignored.
 pub fn Vm.view_set(mut self, o ref JsObject, key str, v Value) ! Thrown
+    e := elem_of(o.class)
+    if big_kind(e)
+        bv := to_bigint(v)?
+        j := index_of_key(key) else return
+        if j >= view_len(o)
+            return
+        bbuf := obj_of(o.prim) else return
+        store_bytes(bbuf, view_off(o) + j * e.size, e, big_to_bytes(bv), true)
+        return
     x := to_number(v)?
     i := index_of_key(key) else return
     if i >= view_len(o)
         return
     buf := obj_of(o.prim) else return
-    e := elem_of(o.class)
     write_at(buf, view_off(o) + i * e.size, e, x, true)
 
 fn Vm.store_values(mut self, o ref JsObject, items List[Value]) ! Thrown
@@ -194,6 +206,11 @@ fn num_sort(items List[Value]) List[Value]
         out.push(Value.Num(nan()))
     out
 
+fn sorted_default(o ref JsObject) List[Value]
+    if big_kind(elem_of(o.class))
+        return big_sort(view_values(o))
+    num_sort(view_values(o))
+
 ## `new Int8Array(...)` and the other element types (§23.2.5.1).
 fn Vm.view_new(mut self, class str, args List[Value], new_target Value) Value ! Thrown
     e := elem_of(class)
@@ -228,6 +245,8 @@ fn Vm.view_new(mut self, class str, args List[Value], new_target Value) Value ! 
     Value.Obj(make_view(class, buf, 0, n, proto))
 
 fn Vm.bin_new(mut self, name str, args List[Value], new_target Value) Value ! Thrown
+    if name == "BigInt"
+        return big_function(args, new_target)
     if new_target == Undef
         return type_error("Constructor {name} requires 'new'")
     if elem_of(name).size > 0
@@ -265,6 +284,8 @@ pub fn Vm.bin_native(
 ) Value ! Thrown
     if t := m.strip_prefix("new.")
         return bin_new(t, args, new_target)
+    if t := m.strip_prefix("BigInt.")
+        return big_native(t, this_val, args)
     if t := m.strip_prefix("TypedArray.prototype.")
         return typed_method(t, this_val, args)
     if t := m.strip_prefix("TypedArray.get.")
@@ -358,7 +379,7 @@ fn Vm.typed_method(mut self, t str, this_val Value, args List[Value]) Value ! Th
             if a0 != Undef and not is_callable(a0)
                 return type_error("The comparison function must be either a function or undefined")
             if a0 == Undef
-                return view_from_values(o.class, o.proto, num_sort(view_values(o)))
+                return view_from_values(o.class, o.proto, sorted_default(o))
             arr := obj_of(
                 array_method(t, this_val, args)?,
             ) else return type_error("Invalid typed array result")
@@ -367,7 +388,10 @@ fn Vm.typed_method(mut self, t str, this_val Value, args List[Value]) Value ! Th
             tmp := obj_of(array(view_values(o))) else return Undef
             mut args2 := List[Value]()
             if t == "fill"
-                args2.push(Value.Num(to_number(a0)?))
+                if big_kind(elem_of(o.class))
+                    args2.push(to_bigint(a0)?)
+                else
+                    args2.push(Value.Num(to_number(a0)?))
                 if args.len() > 1
                     args2.extend(args[1..])
             else
@@ -379,7 +403,7 @@ fn Vm.typed_method(mut self, t str, this_val Value, args List[Value]) Value ! Th
             if a0 != Undef and not is_callable(a0)
                 return type_error("The comparison function must be either a function or undefined")
             if a0 == Undef
-                store_values(o, num_sort(view_values(o)))?
+                store_values(o, sorted_default(o))?
                 return this_val
             tmp := obj_of(array(view_values(o))) else return Undef
             array_method("sort", Value.Obj(tmp), args)?
@@ -434,6 +458,10 @@ fn Vm.dataview_native(mut self, t str, this_val Value, args List[Value]) Value !
     at := view_off(o) + idx
     if name.starts_with("get")
         return read_at(buf, at, e, truthy(arg_at(args, 1)))
+    if big_kind(e)
+        bv := to_bigint(arg_at(args, 1))?
+        store_bytes(buf, at, e, big_to_bytes(bv), truthy(arg_at(args, 2)))
+        return Undef
     x := to_number(arg_at(args, 1))?
     write_at(buf, at, e, x, truthy(arg_at(args, 2)))
     Undef
@@ -515,3 +543,4 @@ pub fn Vm.bin_setup(mut self)
     encoding_setup()
     crypto_setup()
     custom_setup()
+    big_setup()

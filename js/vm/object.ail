@@ -111,6 +111,8 @@ pub fn Vm.get(mut self, base Value, key str) Value ! Thrown
         Str(s) =>
             if is_symbol(s)
                 return proto_get("Symbol", key, base)
+            if is_bigint(s)
+                return proto_get("BigInt", key, base)
             if key == "length"
                 return Num(unit_len(s).to_float())
             if i := index_of_key(key)

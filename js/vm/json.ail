@@ -245,6 +245,8 @@ fn Vm.serialize(mut self, mut st Stringifier, holder Value, key str, start Value
             v = call(to_json, v, [Value.Str(key)])?
     if st.replacer != Undef
         v = call(st.replacer, holder, [Value.Str(key), v])?
+    if type_of(v) == "bigint"
+        return type_error("Do not know how to serialize a BigInt")
     if o := obj_of(v)
         if o.class == "Number"
             v = Num(to_number(v)?)
