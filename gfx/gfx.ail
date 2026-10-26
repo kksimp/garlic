@@ -2041,13 +2041,13 @@ fn Ctx.flex(mut self, id int, st St, cs Map[str, str], x float, w float, min_h f
 ## One grid track: positive for `Nfr`, negative for a fixed length, none for
 ## `auto`, `min-content` and the like (sized by their content). `minmax(a, b)`
 ## takes `b`.
-fn track(t str, size float, w float) float?
+fn grid_track(t str, size float, w float) float?
     if t.starts_with("minmax(")
         parts := t.slice(7, t.chars().len() - 1).split(",")
         if parts.len() == 2
-            if v := track(parts[1].trim(), size, w)
+            if v := grid_track(parts[1].trim(), size, w)
                 return v
-            return track(parts[0].trim(), size, w)
+            return grid_track(parts[0].trim(), size, w)
         return none
     if r := t.strip_suffix("fr")
         return r.to_float()
@@ -2158,7 +2158,7 @@ fn Ctx.grid_areas(
     mut autos := List[bool]()
     for t in tokens(spec)
         if cols.len() < ncols
-            if v := track(t, st.size, w)
+            if v := grid_track(t, st.size, w)
                 cols.push(v)
                 autos.push(false)
             else

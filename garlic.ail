@@ -3822,10 +3822,10 @@ fn probe_font(style str) str
     ts := pixel_text(gfx.layout(html.parse(src), "file:///t.html", 400.0, css.parse("", 0)).ops)
     head := at_of(ts, "head")
     side := at_of(ts, "side")
-    main := at_of(ts, "main")
+    mn := at_of(ts, "main")
     assert_eq(side[0], head[0])
-    assert_eq(main[0], side[0] + 100.0)
-    assert_eq(main[1], side[1])
+    assert_eq(mn[0], side[0] + 100.0)
+    assert_eq(mn[1], side[1])
     assert(side[1] > head[1])
 
 ## The x and y of the pixel text `word` in `ts` (from `pixel_text`), or [].
