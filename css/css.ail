@@ -2,8 +2,8 @@
 ## (docs/design/garlic-browser.md, "CSS on cells").
 ##
 ## Written from CSS Syntax Level 3 (tokenizing, simplified), Selectors
-## Level 4 (type, universal, `#id`, `.class`, `[attr]`, `[attr=v]`,
-## descendant and child combinators, `,` lists) and CSS Cascade Level 4
+## Level 4 (type, universal, `#id`, `.class`, `[attr]` with operators,
+## structural pseudo-classes, `:not()`, the four combinators, `,` lists) and CSS Cascade Level 4
 ## (specificity, order, `!important`, inline `style`). At-rules are skipped
 ## with their blocks, except `@media`, whose rules apply when its query
 ## matches the window (Media Queries Level 4, simplified: `media_matches`).
@@ -16,24 +16,37 @@ pub struct Decl
     pub value str
     pub important bool
 
-## A compound selector: an optional type and any ids, classes and
-## attribute tests, all of which must hold.
+## The simple selectors that must all hold on one element: an optional
+## type, ids, classes, attribute tests and structural pseudo-classes.
+pub struct Neg
+    pub tag str
+    pub ids List[str]
+    pub classes List[str]
+    pub attrs List[AttrTest]
+    pub pseudos List[str]
+
+## A compound selector: a `Neg`'s tests plus the `:not(...)` ones, none
+## of which may hold.
 pub struct Compound
     pub tag str
     pub ids List[str]
     pub classes List[str]
     pub attrs List[AttrTest]
+    pub pseudos List[str]
+    pub nots List[Neg]
 
-## `[name]` (any value) or `[name=value]`.
+## `[name]` (`op` empty) or `[name op value]` with `op` one of `=`, `~=`,
+## `|=`, `^=`, `$=`, `*=`.
 pub struct AttrTest
     pub name str
-    pub value str?
+    pub op str
+    pub value str
 
-## A complex selector: compounds left to right; `child[k]` says whether
-## compound k+1 is a child (`>`) of compound k rather than a descendant.
+## A complex selector: compounds left to right; `comb[k]` is the
+## combinator between compound k and k+1: " ", ">", "+" or "~".
 pub struct Selector
     pub parts List[Compound]
-    pub child List[bool]
+    pub comb List[str]
     pub specificity int
 
 ## A style rule; `order` is its position, for the cascade. `media` holds
@@ -174,7 +187,7 @@ fn rules_of(cs List[char], media str, start int, mut rules List[Rule])
             body := cs[i + 1..close].join("")
             decls := declarations(body)
             if decls.len() > 0
-                for text in prelude.join("").split(",")
+                for text in split_top(prelude.join(""))
                     if sel := selector(text)
                         rules.push(Rule(selector: sel, decls, order: start + rules.len(), media))
             prelude.clear()
@@ -182,6 +195,24 @@ fn rules_of(cs List[char], media str, start int, mut rules List[Rule])
             continue
         prelude.push(c)
         i += 1
+
+## `text` split at the commas outside parentheses and brackets.
+fn split_top(text str) List[str]
+    mut out := List[str]()
+    mut cur := List[char]()
+    mut depth := 0
+    for ch in text.chars()
+        if ch == '(' or ch == '['
+            depth += 1
+        elif ch == ')' or ch == ']'
+            depth -= 1
+        if ch == ',' and depth == 0
+            out.push(cur.join(""))
+            cur.clear()
+        else
+            cur.push(ch)
+    out.push(cur.join(""))
+    out
 
 ## Builds the lookup maps of a sheet's rules.
 pub fn index(rules List[Rule]) Sheet
@@ -348,73 +379,218 @@ pub fn declarations(body str) List[Decl]
     out
 
 ## Parses one complex selector, or none when Garlic doesn't support it
-## (pseudo-classes and pseudo-elements, `+`, `~`), so the rule is dropped.
+## (pseudo-elements, dynamic pseudo-classes such as `:hover`, `:is`,
+## `:where`, `:has`), so the rule is dropped. Selectors Level 4: type,
+## `*`, `#id`, `.class` (with `\` escapes), `[attr]` and its operators,
+## `:not()`, `:first-child`, `:nth-child()` and kin, `:empty`, `:checked`,
+## `:disabled`, `:enabled`, `:link`, and the ` `, `>`, `+`, `~` combinators.
 pub fn selector(text str) Selector?
     t := text.trim().replace(":root", "html")
-    if t == "" or t.contains(":") or t.contains("+") or t.contains("~")
+    if t == ""
         return none
+    cs := t.chars()
     mut parts := List[Compound]()
-    mut child := List[bool]()
-    mut next_child := false
-    for word in t.replace(">", " > ").split(" ")
-        if word == ""
+    mut comb := List[str]()
+    mut buf := List[char]()
+    mut pending := ""
+    mut depth := 0
+    mut i := 0
+    while i <= cs.len()
+        ch := if i < cs.len() then cs[i] else ' '
+        if i < cs.len() and ch == '\\'
+            buf.push(ch)
+            if i + 1 < cs.len()
+                buf.push(cs[i + 1])
+            i += 2
             continue
-        if word == ">"
-            next_child = true
-            continue
-        c := compound(word)?
-        if parts.len() > 0
-            child.push(next_child)
-        next_child = false
-        parts.push(c)
-    if parts.len() == 0
+        if i < cs.len() and (ch == '(' or ch == '[')
+            depth += 1
+        if i < cs.len() and (ch == ')' or ch == ']')
+            depth -= 1
+        gap := ch == ' ' or ch == '\t' or ch == '\n'
+        sym := ch == '>' or ch == '+' or ch == '~'
+        if depth == 0 and (i == cs.len() or gap or sym)
+            if buf.len() > 0
+                c := compound(buf.join(""))?
+                if parts.len() > 0
+                    comb.push(if pending == "" then " " else pending)
+                parts.push(c)
+                buf.clear()
+                pending = ""
+            if i < cs.len() and sym
+                if parts.len() == 0 or pending != ""
+                    return none
+                pending = "~"
+                if ch == '>'
+                    pending = ">"
+                elif ch == '+'
+                    pending = "+"
+        else
+            buf.push(ch)
+        i += 1
+    if parts.len() == 0 or pending != ""
         return none
     mut spec := 0
     for p in parts
-        spec += p.ids.len() * 10000 + (p.classes.len() + p.attrs.len()) * 100
-        if p.tag != ""
-            spec += 1
-    Selector(parts, child, specificity: spec)
+        spec += weight(p.tag, p.ids, p.classes, p.attrs, p.pseudos)
+        for ng in p.nots
+            spec += weight(ng.tag, ng.ids, ng.classes, ng.attrs, ng.pseudos)
+    Selector(parts, comb, specificity: spec)
 
-## Parses a compound selector such as `a.nav#top[href]`.
+## The specificity a compound's simple selectors add (Selectors 4, 17).
+fn weight(tag str, ids List[str], classes List[str], attrs List[AttrTest], pseudos List[str]) int
+    mut w := ids.len() * 10000 + (classes.len() + attrs.len() + pseudos.len()) * 100
+    if tag != ""
+        w += 1
+    w
+
+## Adds the type, id or class `name` that ended where `kind` began
+## (`t` type, `.`, `#`, `x` nothing may precede); false when invalid.
+fn add_simple(mut c Compound, kind char, name str) bool
+    if kind == 't'
+        if name != "*"
+            c.tag = name.to_lower()
+        return true
+    if kind == 'x'
+        return name == ""
+    if name == ""
+        return false
+    if kind == '.'
+        c.classes.push(name)
+    else
+        c.ids.push(name)
+    true
+
+## `[name]`, `[name=v]`, `[name~=v]`, `[name|=v]`, `[name^=v]`,
+## `[name$=v]`, `[name*=v]`, from the text between the brackets.
+fn attr_test(inner str) AttrTest?
+    eq := inner.find("=") else return AttrTest(name: inner.trim().to_lower(), op: "", value: "")
+    before := if eq > 0 then inner.slice(eq - 1, eq) else ""
+    two := before != "" and "~|^$*".contains(before)
+    op := if two then "{before}=" else "="
+    name := inner.slice(0, if two then eq - 1 else eq).trim().to_lower()
+    v := inner.slice(eq + 1, inner.chars().len()).trim().replace("\"", "").replace("'", "")
+    if name == ""
+        return none
+    AttrTest(name, op, value: v)
+
+PLAIN_PSEUDOS := {
+    "first-child",
+    "last-child",
+    "only-child",
+    "first-of-type",
+    "last-of-type",
+    "only-of-type",
+    "empty",
+    "checked",
+    "disabled",
+    "enabled",
+    "link",
+    "any-link",
+}
+NTH_PSEUDOS := {"nth-child", "nth-last-child", "nth-of-type", "nth-last-of-type"}
+
+## Adds the pseudo-class `name(arg)` to `c`; false when Garlic doesn't
+## support it (the rule is then dropped).
+fn add_pseudo(mut c Compound, name str, arg str) bool
+    if PLAIN_PSEUDOS.contains(name)
+        c.pseudos.push(name)
+        return true
+    if NTH_PSEUDOS.contains(name)
+        if nth_ab(arg).len() == 0
+            return false
+        compact := arg.replace(" ", "").to_lower()
+        c.pseudos.push("{name}({compact})")
+        return true
+    if name == "not"
+        inner := arg.trim()
+        for bad in [",", " ", ">", "+", "~"]
+            if inner.contains(bad)
+                return false
+        if inner == ""
+            return false
+        n := compound(inner) else return false
+        if n.nots.len() > 0
+            return false
+        c.nots.push(Neg(tag: n.tag, ids: n.ids, classes: n.classes, attrs: n.attrs, pseudos: n.pseudos))
+        return true
+    false
+
+## `an+b` as [a, b] (`odd`, `even`, `n`, `2n`, `-n+3`, `4`), or [] when
+## it isn't one.
+fn nth_ab(arg str) List[int]
+    t := arg.replace(" ", "").to_lower()
+    if t == "odd"
+        return [2, 1]
+    if t == "even"
+        return [2, 0]
+    if at := t.find("n")
+        apart := t.slice(0, at).replace("+", "")
+        bpart := t.slice(at + 1, t.chars().len()).replace("+", "")
+        mut a := 1
+        if apart == "-"
+            a = -1
+        elif apart != ""
+            a = (apart.to_float() else return []).to_int()
+        mut b := 0
+        if bpart != ""
+            b = (bpart.to_float() else return []).to_int()
+        return [a, b]
+    n := (t.to_float() else return []).to_int()
+    [0, n]
+
+## Parses a compound selector such as `a.nav#top[href]:not(.x)`.
 fn compound(word str) Compound?
-    mut c := Compound(tag: "", ids: [], classes: [], attrs: [])
+    mut c := Compound(tag: "", ids: [], classes: [], attrs: [], pseudos: [], nots: [])
     cs := word.chars()
     mut i := 0
     mut kind := 't'
     mut buf := List[char]()
     while i <= cs.len()
         ch := if i < cs.len() then cs[i] else '.'
-        if i == cs.len() or ch == '.' or ch == '#' or ch == '['
-            name := buf.join("")
-            buf.clear()
-            if kind == 't'
-                if name != "*"
-                    c.tag = name.to_lower()
-            elif kind == 'x'
-                if name != ""
-                    return none
-            elif name == ""
+        if i < cs.len() and ch == '\\'
+            if i + 1 < cs.len()
+                buf.push(cs[i + 1])
+            i += 2
+            continue
+        if i == cs.len() or ch == '.' or ch == '#' or ch == '[' or ch == ':'
+            if not add_simple(mut c, kind, buf.join(""))
                 return none
-            elif kind == '.'
-                c.classes.push(name)
-            elif kind == '#'
-                c.ids.push(name)
+            buf.clear()
             if i == cs.len()
                 break
             if ch == '['
                 close := word.slice(i, cs.len()).find("]")?
-                inner := word.slice(i + 1, i + close)
-                if eq := inner.find("=")
-                    v := inner
-                        .slice(eq + 1, inner.chars().len())
-                        .trim()
-                        .replace("\"", "")
-                        .replace("'", "")
-                    c.attrs.push(AttrTest(name: inner.slice(0, eq).trim().to_lower(), value: v))
-                else
-                    c.attrs.push(AttrTest(name: inner.trim().to_lower(), value: none))
+                c.attrs.push(attr_test(word.slice(i + 1, i + close))?)
                 i += close + 1
+                kind = 'x'
+                continue
+            if ch == ':'
+                if i + 1 < cs.len() and cs[i + 1] == ':'
+                    return none
+                mut j := i + 1
+                mut pname := List[char]()
+                while j < cs.len() and cs[j] != '(' and cs[j] != '.' and cs[j] != '#' and cs[j] != '[' and cs[j] != ':'
+                    pname.push(cs[j])
+                    j += 1
+                mut arg := ""
+                if j < cs.len() and cs[j] == '('
+                    mut open := 1
+                    mut k := j + 1
+                    mut inner := List[char]()
+                    while k < cs.len() and open > 0
+                        if cs[k] == '('
+                            open += 1
+                        elif cs[k] == ')'
+                            open -= 1
+                        if open > 0
+                            inner.push(cs[k])
+                        k += 1
+                    arg = inner.join("")
+                    j = k
+                if not add_pseudo(mut c, pname.join("").to_lower(), arg)
+                    return none
+                i = j
                 kind = 'x'
                 continue
             kind = ch
@@ -424,24 +600,123 @@ fn compound(word str) Compound?
         i += 1
     c
 
-## Whether element `id` matches compound `c`.
-fn matches_compound(d html.Doc, id int, c Compound) bool
-    n := d.nodes[id]
-    if n.kind != html.Kind.Element or (c.tag != "" and c.tag != n.tag)
+## Whether element `id` has attribute `name`, whatever its value.
+fn has_attr(d html.Doc, id int, name str) bool
+    for a in d.nodes[id].attrs
+        if a.name == name
+            return true
+    false
+
+## Whether attribute test `a` holds on element `id`.
+fn attr_ok(d html.Doc, id int, a AttrTest) bool
+    v := d.attr(id, a.name) else return false
+    n := a.value.chars().len()
+    if a.op == ""
+        return true
+    if a.op == "="
+        return v == a.value
+    if n == 0
         return false
-    for want in c.ids
+    if a.op == "~="
+        return v.replace("\n", " ").replace("\t", " ").split(" ").contains(a.value)
+    if a.op == "|="
+        return v == a.value or v.starts_with("{a.value}-")
+    if a.op == "^="
+        return v.starts_with(a.value)
+    if a.op == "$="
+        return v.chars().len() >= n and v.slice(v.chars().len() - n, v.chars().len()) == a.value
+    a.op == "*=" and v.contains(a.value)
+
+## The 1-based position of element `id` among its parent's element
+## children (or those of its type), counted from the start or the end.
+fn sib_pos(d html.Doc, id int, from_end bool, of_type bool) int
+    p := d.nodes[id].parent
+    if p < 0
+        return 1
+    mut before := 0
+    mut after := 0
+    mut seen := false
+    for s in d.nodes[p].children
+        if s == id
+            seen = true
+        elif d.nodes[s].kind == html.Kind.Element and (not of_type or d.nodes[s].tag == d.nodes[id].tag)
+            if seen
+                after += 1
+            else
+                before += 1
+    (if from_end then after else before) + 1
+
+## Whether pseudo-class `p` (as `add_pseudo` stored it) holds on `id`.
+fn pseudo_ok(d html.Doc, id int, p str) bool
+    tag := d.nodes[id].tag
+    if p == "first-child"
+        return sib_pos(d, id, false, false) == 1
+    if p == "last-child"
+        return sib_pos(d, id, true, false) == 1
+    if p == "only-child"
+        return sib_pos(d, id, false, false) == 1 and sib_pos(d, id, true, false) == 1
+    if p == "first-of-type"
+        return sib_pos(d, id, false, true) == 1
+    if p == "last-of-type"
+        return sib_pos(d, id, true, true) == 1
+    if p == "only-of-type"
+        return sib_pos(d, id, false, true) == 1 and sib_pos(d, id, true, true) == 1
+    if p == "empty"
+        for k in d.nodes[id].children
+            n := d.nodes[k]
+            if n.kind == html.Kind.Element or (n.kind == html.Kind.Text and n.text != "")
+                return false
+        return true
+    if p == "checked"
+        return has_attr(d, id, "checked") or has_attr(d, id, "selected")
+    if p == "disabled"
+        return has_attr(d, id, "disabled")
+    if p == "enabled"
+        return (tag == "input" or tag == "button" or tag == "select" or tag == "textarea") and not has_attr(d, id, "disabled")
+    if p == "link" or p == "any-link"
+        return (tag == "a" or tag == "area") and has_attr(d, id, "href")
+    open := p.find("(") else return false
+    name := p.slice(0, open)
+    ab := nth_ab(p.slice(open + 1, p.chars().len() - 1))
+    if ab.len() == 0
+        return false
+    pos := sib_pos(d, id, name.contains("last"), name.contains("of-type"))
+    diff := pos - ab[1]
+    if ab[0] == 0
+        return diff == 0
+    if ab[0] > 0
+        return diff >= 0 and diff % ab[0] == 0
+    diff <= 0 and (0 - diff) % (0 - ab[0]) == 0
+
+## Whether element `id` satisfies one set of simple selectors.
+fn simple_ok(d html.Doc, id int, tag str, ids List[str], classes List[str], attrs List[AttrTest], pseudos List[str]) bool
+    if tag != "" and tag != d.nodes[id].tag
+        return false
+    for want in ids
         if d.attr(id, "id") != want
             return false
-    if c.classes.len() > 0
-        have := (d.attr(id, "class") else "").split(" ")
-        for want in c.classes
+    if classes.len() > 0
+        have := (d.attr(id, "class") else "").replace("\n", " ").replace("\t", " ").split(" ")
+        for want in classes
             if not have.contains(want)
                 return false
-    for a in c.attrs
-        v := d.attr(id, a.name) else return false
-        if want := a.value
-            if v != want
-                return false
+    for a in attrs
+        if not attr_ok(d, id, a)
+            return false
+    for p in pseudos
+        if not pseudo_ok(d, id, p)
+            return false
+    true
+
+## Whether element `id` matches compound `c`.
+fn matches_compound(d html.Doc, id int, c Compound) bool
+    if d.nodes[id].kind != html.Kind.Element
+        return false
+    if not simple_ok(d, id, c.tag, c.ids, c.classes, c.attrs, c.pseudos)
+        return false
+    for ng in c.nots
+        if simple_ok(d, id, ng.tag, ng.ids, ng.classes, ng.attrs, ng.pseudos)
+            return false
     true
 
 ## Whether element `id` matches selector `s`, right to left.
@@ -453,8 +728,26 @@ fn matches_from(d html.Doc, id int, s Selector, k int) bool
         return false
     if k == 0
         return true
+    op := s.comb[k - 1]
     mut p := d.nodes[id].parent
-    if s.child[k - 1]
+    if op == "+" or op == "~"
+        if p < 0
+            return false
+        mut before := List[int]()
+        for sb in d.nodes[p].children
+            if sb == id
+                break
+            if d.nodes[sb].kind == html.Kind.Element
+                before.push(sb)
+        if before.len() == 0
+            return false
+        if op == "+"
+            return matches_from(d, before[before.len() - 1], s, k - 1)
+        for sb in before
+            if matches_from(d, sb, s, k - 1)
+                return true
+        return false
+    if op == ">"
         return p > 0 and matches_from(d, p, s, k - 1)
     while p > 0
         if matches_from(d, p, s, k - 1)
