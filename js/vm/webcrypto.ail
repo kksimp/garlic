@@ -1,12 +1,32 @@
 ## `crypto` (Web Crypto API §10, WebCrypto Level 2): getRandomValues,
 ## randomUUID, and `crypto.subtle.digest` for SHA-1 and SHA-256. Every other
-## SubtleCrypto method rejects with NotSupportedError. The random bytes come
-## from the interpreter's seeded generator (the one behind Math.random), so
-## a run repeats exactly and they are NOT cryptographically secure.
+## SubtleCrypto method rejects with NotSupportedError. Random bytes come
+## from the operating system (`/dev/urandom` through `sh`, .NET's generator
+## through PowerShell on Windows), one process per call; if that fails the
+## call throws OperationError rather than fall back to a seeded generator.
 
-fn Vm.random_byte(mut self) int ! Thrown
-    r := math_function("random", [])?
-    ((num_of(r) else 0.0) * 256.0).floor().to_int()
+fn os_random(n int) List[int]
+    mut out := List[int]()
+    windows := (env.get("OS") else "") == "Windows_NT"
+    cmd := if windows then "powershell" else "sh"
+    args := if windows then [
+        "-NoProfile",
+        "-Command",
+        "$b = New-Object byte[] {n}; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); $b -join ' '",
+    ] else ["-c", "head -c {n} /dev/urandom | od -An -v -tu1"]
+    r := proc.run(cmd, args, none, none) else err
+        return out
+    if not r.ok()
+        return out
+    for w in r.text().words()
+        out.push(w.to_int() else 0)
+    out
+
+fn Vm.random_bytes(mut self, n int) List[int] ! Thrown
+    bs := os_random(n)
+    if bs.len() != n
+        return dom_exception("OperationError", "No secure random source is available")
+    bs
 
 fn Vm.rejected(mut self, name str, msg str) Value
     p := new_promise()
@@ -31,13 +51,12 @@ fn Vm.crypto_native(mut self, m str, this_val Value, args List[Value]) Value ! T
             )
         buf := obj_of(o.prim) else return a0
         base := view_off(o)
+        rb := random_bytes(n)?
         for i in 0..n
-            buf.elems[base + i] = Value.Num(random_byte()?.to_float())
+            buf.elems[base + i] = Value.Num(rb[i].to_float())
         return a0
     if m == "crypto.randomUUID"
-        mut bs := List[int]()
-        for _ in 0..16
-            bs.push(random_byte()?)
+        mut bs := random_bytes(16)?
         bs[6] = bs[6].bit_and(15) + 64
         bs[8] = bs[8].bit_and(63) + 128
         mut parts := List[str]()
