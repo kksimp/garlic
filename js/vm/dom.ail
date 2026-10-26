@@ -1462,16 +1462,15 @@ fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
             else
                 dom_append(holder, need_node(a1, m)?)
             items := dom[holder].children
+            ## One anchor for the whole fragment, so its nodes keep their order.
+            first := if dom[id].children.len() > 0 then dom[id].children[0] else -1
+            after := next_sibling(id)
             for c in items
                 match pos
                     "beforebegin" => insert_checked(dom[id].parent, c, id)?
-                    "afterbegin" => insert_checked(
-                        id,
-                        c,
-                        if dom[id].children.len() > 0 then dom[id].children[0] else -1,
-                    )?
+                    "afterbegin" => insert_checked(id, c, first)?
                     "beforeend" => insert_checked(id, c, -1)?
-                    _ => insert_checked(dom[id].parent, c, next_sibling(id))?
+                    _ => insert_checked(dom[id].parent, c, after)?
             if m == "insertAdjacentElement"
                 return a1
             Undef
@@ -1518,7 +1517,10 @@ fn Vm.insert_checked(mut self, parent int, child int, before int) ! Thrown
         for c in dom[child].children
             dom_insert_before(parent, c, before)
         return
-    dom_insert_before(parent, child, before)
+    ## Inserting a node before itself leaves it in place (DOM 4.2.3: the
+    ## reference child becomes its next sibling).
+    anchor := if before == child then next_sibling(child) else before
+    dom_insert_before(parent, child, anchor)
 
 fn Vm.clone(mut self, id int, deep bool) int
     n := dom[id]
@@ -2316,8 +2318,11 @@ fn Vm.window_method(mut self, m str, args List[Value]) Value ! Thrown
             Value.Obj(o)
         "matchMedia" =>
             o := plain()
-            o.props["matches"] = data(Bool(false))
-            o.props["media"] = data(Str(to_string(a0)?))
+            q := to_string(a0)?
+            ## Garlic's screen is dark, like `css.media_matches` says.
+            dark := q.to_lower().replace(" ", "").contains("(prefers-color-scheme:dark)")
+            o.props["matches"] = data(Bool(dark and not q.to_lower().contains("not")))
+            o.props["media"] = data(Str(q))
             noop := native_fn("dom.window.noop", "", 0)
             for k in ["addListener", "removeListener", "addEventListener", "removeEventListener"]
                 o.props[k] = hidden(noop)
