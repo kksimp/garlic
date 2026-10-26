@@ -395,8 +395,21 @@ pub fn declarations(body str) List[Decl]
         if bang := value.find("!")
             important = value.slice(bang + 1, value.chars().len()).trim().to_lower() == "important"
             value = value.slice(0, bang).trim()
-        out.push(Decl(name, value: value.to_lower(), important))
+        if name == "list-style"
+            ## The shorthand resets the type, so it competes with `list-style-type`.
+            out.push(Decl("list-style-type", value: list_style_type(value.to_lower()), important))
+        else
+            out.push(Decl(name, value: value.to_lower(), important))
     out
+
+## The type a `list-style` shorthand sets: `none`, a keyword, or `disc`.
+fn list_style_type(v str) str
+    for t in v.split(" ")
+        if t == "none"
+            return "none"
+        if t != "" and t != "inside" and t != "outside" and not t.starts_with("url(")
+            return t
+    "disc"
 
 ## Parses one complex selector, or none when Garlic doesn't support it
 ## (pseudo-elements, dynamic pseudo-classes such as `:hover`, `:is`,

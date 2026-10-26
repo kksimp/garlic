@@ -3862,6 +3862,17 @@ fn len_starting(ts List[str], prefix str) int
     assert(talk[0] > art[0] + 30.0)
     assert(talk[0] < 400.0)
 
+@test fn list_style_shorthand_competes_with_list_style_type_by_specificity()
+    src := """
+        <style>ul \{ list-style-type: disc } .m \{ list-style: none outside } p \{ list-style: url(x.png) inside }</style>
+        <ul class=m><li>one</li></ul>
+        """
+    ts := pixel_text(gfx.layout(html.parse(src), "file:///t.html", 400.0, css.parse("", 0)).ops)
+    assert_eq(len_starting(ts, "\u{2022}@"), 0)
+    sheet := css.parse(".m \{ list-style: none inside } .k \{ list-style: square }", 0)
+    assert_eq(sheet.rules[0].decls[0].value, "none")
+    assert_eq(sheet.rules[1].decls[0].value, "square")
+
 @test fn browser_finds_text_and_scrolls()
     dir := testdata()
     mut b := Browser.new("{dir}/index.html", 60, 6)
