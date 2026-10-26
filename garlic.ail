@@ -3885,7 +3885,17 @@ fn len_starting(ts List[str], prefix str) int
     for op in s.ops
         match op
             Pic(_, y, _, _, _) => top = y
-            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Str(_, _, _, _, _, _, _, _, _) => top = top
+            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Str(
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+            ) => top = top
     assert(top > before[1])
     assert(top + 200.0 < after[1] + 1.0)
 
