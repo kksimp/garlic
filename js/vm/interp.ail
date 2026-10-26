@@ -247,7 +247,10 @@ pub fn Vm.to_object(mut self, v Value) ref JsObject ! Thrown
         Undef | Null => return type_error("Cannot convert undefined or null to object")
         Bool => wrap("Boolean", v)
         Num => wrap("Number", v)
-        Str(s) => wrap(if is_symbol(s) then "Symbol" else (if is_bigint(s) then "BigInt" else "String"), v)
+        Str(s) => wrap(
+            if is_symbol(s) then "Symbol" else (if is_bigint(s) then "BigInt" else "String"),
+            v,
+        )
 
 pub fn Vm.wrap(mut self, class str, v Value) ref JsObject
     o := object(class, proto_of(class))

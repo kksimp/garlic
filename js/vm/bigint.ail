@@ -195,7 +195,8 @@ fn big_radix_text(x bigint.BigInt, radix int) str
     mut cur := x.abs()
     while not cur.is_zero()
         qr := big_divmod(cur, r)
-        out.push("{digits[qr.rem.as_int() else 0]}")
+        d := qr.rem.as_int() else 0
+        out.push("{digits[d]}")
         cur = qr.quo
     if x.is_negative()
         out.push("-")

@@ -2049,7 +2049,10 @@ fn Parser.prop_key(mut self, private bool) Key ! JsError
             if strict and tok.octal
                 return fail("Octal escape sequences are not allowed in strict mode.")
             # A BigInt key `1n` is the string "1" (§13.2.5.5).
-            v := if tok.text.starts_with("\u{0}n") then tok.text.slice(2, tok.text.chars().len()) else tok.text
+            v := if tok.text.starts_with("\u{0}n") then tok.text.slice(
+                2,
+                tok.text.chars().len(),
+            ) else tok.text
             next()?
             KeyStr(v, p)
         Num =>
