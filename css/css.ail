@@ -180,6 +180,15 @@ fn rules_of(cs List[char], media str, start int, mut rules List[Rule])
                     inner := if media == "" then query else "{media}\n{query}"
                     close := block_end(cs, i + open)
                     rules_of(cs[i + open + 1..close], inner, start, mut rules)
+            elif head.to_lower().starts_with("@supports")
+                ## Conditional Rules 3, simplified: a plain feature test passes
+                ## (Garlic claims a modern engine); anything with `not` or a
+                ## vendor-prefixed test is a fallback for other engines.
+                if open := head.find("\{")
+                    cond := head.slice(9, open).to_lower()
+                    if not cond.contains("not") and not cond.contains("-webkit-") and not cond.contains("-moz-")
+                        close := block_end(cs, i + open)
+                        rules_of(cs[i + open + 1..close], media, start, mut rules)
             elif head.to_lower().starts_with("@layer")
                 ## Cascade Layers 5, simplified: the rules apply as if unlayered.
                 if open := head.find("\{")
