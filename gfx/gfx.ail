@@ -183,6 +183,8 @@ fn fmin(a float, b float) float
 ## `none` for `auto`, keywords and anything else.
 pub fn length(v str, size float, rel float) float?
     t := v.trim().to_lower()
+    if inner := t.strip_prefix("calc(")
+        return calc_sum(inner.slice(0, inner.chars().len() - 1), size, rel)
     mut scale := 1.0
     mut num := t
     if r := t.strip_suffix("px")
@@ -203,6 +205,64 @@ pub fn length(v str, size float, rel float) float?
         return none
     x := num.trim().to_float()?
     x * scale
+
+## `a + b - c` of products, as in `calc()` (CSS Values 4): `+` and `-`
+## need spaces around them.
+fn calc_sum(s str, size float, rel float) float?
+    cs := s.chars()
+    mut depth := 0
+    mut total := 0.0
+    mut sign := 1.0
+    mut cur := List[char]()
+    for k in 0..cs.len()
+        ch := cs[k]
+        if ch == '('
+            depth += 1
+        elif ch == ')'
+            depth -= 1
+        spaced := k > 0 and k + 1 < cs.len() and cs[k - 1] == ' ' and cs[k + 1] == ' '
+        if depth == 0 and spaced and (ch == '+' or ch == '-')
+            total += sign * calc_prod(cur.join(""), size, rel)?
+            sign = 1.0
+            if ch == '-'
+                sign = -1.0
+            cur.clear()
+        else
+            cur.push(ch)
+    total + sign * calc_prod(cur.join(""), size, rel)?
+
+## `a * b / c` of atoms.
+fn calc_prod(s str, size float, rel float) float?
+    cs := s.chars()
+    mut depth := 0
+    mut acc := 1.0
+    mut times := true
+    mut cur := List[char]()
+    for ch in cs
+        if ch == '('
+            depth += 1
+        elif ch == ')'
+            depth -= 1
+        if depth == 0 and (ch == '*' or ch == '/')
+            v := calc_atom(cur.join(""), size, rel)?
+            acc = if times then acc * v else acc / v
+            times = ch == '*'
+            cur.clear()
+        else
+            cur.push(ch)
+    v := calc_atom(cur.join(""), size, rel)?
+    if times then acc * v else acc / v
+
+## A length, a number or a parenthesised sum.
+fn calc_atom(s str, size float, rel float) float?
+    t := s.trim()
+    if t.starts_with("(") and t.ends_with(")")
+        return calc_sum(t.slice(1, t.chars().len() - 1), size, rel)
+    if t.starts_with("calc(") and t.ends_with(")")
+        return calc_sum(t.slice(5, t.chars().len() - 1), size, rel)
+    if v := length(t, size, rel)
+        return v
+    t.to_float()
 
 NAMED := {
     "black": 0x000000,

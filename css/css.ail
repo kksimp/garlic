@@ -5,7 +5,7 @@
 ## Level 4 (type, universal, `#id`, `.class`, `[attr]` with operators,
 ## structural pseudo-classes, `:not()`, the four combinators, `,` lists) and CSS Cascade Level 4
 ## (specificity, order, `!important`, inline `style`). At-rules are skipped
-## with their blocks, except `@media`, whose rules apply when its query
+## with their blocks, except `@layer` (its rules count as unlayered) and `@media`, whose rules apply when its query
 ## matches the window (Media Queries Level 4, simplified: `media_matches`).
 
 use html
@@ -180,6 +180,11 @@ fn rules_of(cs List[char], media str, start int, mut rules List[Rule])
                     inner := if media == "" then query else "{media}\n{query}"
                     close := block_end(cs, i + open)
                     rules_of(cs[i + open + 1..close], inner, start, mut rules)
+            elif head.to_lower().starts_with("@layer")
+                ## Cascade Layers 5, simplified: the rules apply as if unlayered.
+                if open := head.find("\{")
+                    close := block_end(cs, i + open)
+                    rules_of(cs[i + open + 1..close], media, start, mut rules)
             i = end
             prelude.clear()
             continue

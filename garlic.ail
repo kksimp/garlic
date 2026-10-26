@@ -3725,6 +3725,10 @@ fn probe_font(style str) str
     assert(css.selector("li >") == none)
     assert(css.selector("li:not(.a):first-child")?.specificity > css.selector("li:first-child")?.specificity)
 
+@test fn css_layer_blocks_apply_as_unlayered_rules()
+    sheet := css.parse("@layer a, b; @layer b \{ p \{ display: none } @media (min-width: 10px) \{ i \{ display: block } } } @layer c \{ b \{ display: block } }", 0)
+    assert_eq(sheet.rules.len(), 3)
+
 @test fn css_rule_lists_split_outside_parentheses()
     sheet := css.parse("li:not(.a, .b) \{ display: none } p, i \{ display: block }", 0)
     assert_eq(sheet.rules.len(), 2)
@@ -3832,6 +3836,9 @@ fn pixels(src str, width float) gfx.Scene
     assert_eq(gfx.length("2em", 10.0, 0.0), 20.0)
     assert_eq(gfx.length("50%", 10.0, 200.0), 100.0)
     assert_eq(gfx.length("auto", 10.0, 0.0), none)
+    assert_eq(gfx.length("calc(0.25rem * 4)", 10.0, 0.0), 16.0)
+    assert_eq(gfx.length("calc(100% - 2em)", 10.0, 200.0), 180.0)
+    assert_eq(gfx.length("calc((1px + 3px) * 2)", 10.0, 0.0), 8.0)
     assert_eq(gfx.color("light-dark(#eee, #222)"), 0x222222)
     assert_eq(gfx.color("light-dark(rgb(1, 2, 3), #fff)"), 0xffffff)
     assert_eq(gfx.color("#fff"), 0xffffff)
