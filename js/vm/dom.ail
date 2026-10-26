@@ -783,6 +783,7 @@ pub fn Vm.dom_setup(mut self)
     performance.props["memory"] = data(Obj(memory))
     global_obj.props["performance"] = hidden(Obj(performance))
     host_interfaces()
+    cssom_interfaces()
 
 fn Vm.accessor(mut self, target ref JsObject, name str)
     accessor_named(target, name, name)
