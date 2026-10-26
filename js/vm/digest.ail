@@ -147,7 +147,16 @@ fn sha256_k() List[int]
 pub fn digest_sha256(msg List[int]) List[int]
     k := sha256_k()
     m := pad_message(msg)
-    mut h := [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]
+    mut h := [
+        0x6a09e667,
+        0xbb67ae85,
+        0x3c6ef372,
+        0xa54ff53a,
+        0x510e527f,
+        0x9b05688c,
+        0x1f83d9ab,
+        0x5be0cd19,
+    ]
     mut base := 0
     while base < m.len()
         mut w := List[int]()
