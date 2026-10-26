@@ -34,6 +34,17 @@ fn Vm.weak_setup(mut self)
                 == "ResizeObserver" then "observe:1 unobserve:1 disconnect:0" else "observe:1 unobserve:1 disconnect:0 takeRecords:0",
         )
         weak_tag(name)
+    # Garlic records no performance entries: an observer takes its callback
+    # and sees nothing, and it supports no entry types.
+    constructor("PerformanceObserver", 1)
+    methods(
+        obj_of(proto_of("PerformanceObserver")) else weak_map,
+        "PerformanceObserver.prototype",
+        "observe:1 disconnect:0 takeRecords:0",
+    )
+    weak_tag("PerformanceObserver")
+    if c := obj_of((global_obj.props.get("PerformanceObserver") else hidden(Undef)).value)
+        c.props["supportedEntryTypes"] = data(array([]))
 
 fn Vm.weak_tag(mut self, name str)
     p := obj_of(proto_of(name)) else return
