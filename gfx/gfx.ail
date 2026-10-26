@@ -2452,7 +2452,6 @@ pub fn layout_measured(
         pend: 0.0,
         marker: "",
         marker_x: 0.0,
-        reach: 0.0,
         canvas: 0xffffff,
         styles: {},
         scopes: {},
@@ -2470,6 +2469,7 @@ pub fn layout_measured(
         page_w: width,
         col_x: 0.0,
         col_w: width,
+        reach: 0.0,
     )
     c.block(0, base, 0.0, width)
     c.settle()
