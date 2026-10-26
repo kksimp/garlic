@@ -3914,6 +3914,28 @@ fn len_starting(ts List[str], prefix str) int
     assert_eq(sheet.rules[0].decls[0].value, "none")
     assert_eq(sheet.rules[1].decls[0].value, "square")
 
+@test fn a_float_with_a_negative_left_margin_keeps_its_picture_size()
+    src := """
+        <table style="width: 300px"><tr><th>Name <span style="float: right; margin-left: -3em; padding-right: 5px"><a href="x"><img src="data:x" width="15" height="15"></a></span></th></tr></table>
+        """
+    s := gfx.layout(html.parse(src), "file:///t.html", 400.0, css.parse("", 0))
+    mut pw := -1.0
+    for op in s.ops
+        match op
+            Pic(_, _, w, _, _) => pw = w
+            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Str(
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+                _,
+            ) => pw = pw
+    assert_eq(pw, 15.0)
+
 @test fn a_tall_inline_picture_sits_on_its_line_not_above_it()
     src := """
         <p>before</p><div style="width: 100px"><img src="data:x" width="50" height="200"></div><p>after</p>

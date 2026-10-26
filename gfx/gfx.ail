@@ -1540,7 +1540,8 @@ fn Ctx.place_float(mut self, id int, st St, x float, w float, right bool)
     fst := text_style(d.nodes[id].tag, self.with_attrs(id, d.nodes[id].tag, cs), st)
     bx := box_of(d.nodes[id].tag, cs, fst, w)
     settle()
-    wide := fmin((bx.width else self.max_content(id, st)) + bx.ml + bx.mr, w)
+    ## The measured extent already includes the left margin (the box is laid out from x = 0).
+    wide := fmin((if bw := bx.width then bw + bx.ml else self.max_content(id, st)) + bx.mr, w)
     fx := if right then x + w - wide else x
     y0 := y
     p0 := pend
