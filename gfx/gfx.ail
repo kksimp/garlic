@@ -1654,7 +1654,7 @@ fn Ctx.max_content(mut self, id int, st St) float
     mut extent := 0.0
     for k in o0..ops.len()
         match ops[k]
-            Rect(x, _, w, _, _) => extent = fmax(extent, x + w)
+            Rect(x, _, w, _, _) => extent = if x + w < SHRINK_W then fmax(extent, x + w) else extent
             Str(x, _, t, _, size, _, bold, _, _) => extent = fmax(extent, x + text_width(
                 t,
                 size,
