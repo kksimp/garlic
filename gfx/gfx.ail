@@ -502,7 +502,7 @@ fn text_style(tag str, cs Map[str, str], parent St) St
         _ => st.bold = st.bold
     if tag == "a"
         st.underline = true
-        st.color = LINK
+        st.color = if st.color == 0xe8e8e8 then 0x9e9eff else LINK
     if fs := cs.get("font-size")
         if k := size_keyword(fs.trim())
             st.size = k
@@ -2099,8 +2099,15 @@ pub fn layout_measured(
     meas Map[str, float],
     editing int,
 ) Scene
+    all := css.for_width(css.concat(sheet, css.document_sheet(d)), width.to_int())
+    ## `color-scheme: ... dark` on the root: the screen is dark, so the
+    ## default text is light (CSS Color Adjust 1).
+    mut ink := INK
+    if root := d.first("html")
+        if (css.cascade(d, root, all).get("color-scheme") else "").contains("dark")
+            ink = 0xe8e8e8
     base := St(
-        color: INK,
+        color: ink,
         size: 16.0,
         bold: false,
         italic: false,
@@ -2117,7 +2124,6 @@ pub fn layout_measured(
         alt: "",
         under: 0xffffff,
     )
-    all := css.for_width(css.concat(sheet, css.document_sheet(d)), width.to_int())
     mut c := Ctx(
         d,
         svgs: {},

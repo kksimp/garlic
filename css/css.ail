@@ -136,6 +136,7 @@ USED := {
     "list-style",
     "list-style-type",
     "font-family",
+    "color-scheme",
 }
 
 ## Removes `/* ... */` comments.
