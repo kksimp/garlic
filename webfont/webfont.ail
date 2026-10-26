@@ -133,3 +133,36 @@ pub fn prefetch(
             raw := load(f.url, o, from, cj) else continue
             file := sfnt(raw) else continue
             fonts[f.family] = file.base64()
+
+@test fn woff_files_unpack_and_plain_fonts_pass_through()
+    mut woff := List[u8]()
+    put32(mut woff, 0x774f4646)
+    put32(mut woff, 0x00010000)
+    put32(mut woff, 68)
+    put16(mut woff, 1)
+    put16(mut woff, 0)
+    put32(mut woff, 32)
+    for k in 0..6
+        put32(mut woff, 0)
+    for v in [0x61, 0x62, 0x63, 0x64]
+        woff.push(v.to_u8())
+    put32(mut woff, 64)
+    put32(mut woff, 4)
+    put32(mut woff, 4)
+    put32(mut woff, 7)
+    for v in [1, 2, 3, 4]
+        woff.push(v.to_u8())
+    file := sfnt(bytes.from_list(woff)) else
+        assert(false)
+        return
+    assert_eq(file.len(), 12 + 16 + 4)
+    assert_eq(be32(file, 0), 0x00010000)
+    assert_eq(be16(file, 4), 1)
+    assert_eq(be32(file, 12), 0x61626364)
+    assert_eq(be32(file, 24), 4)
+    assert_eq(file[28].to_int(), 1)
+    ttf := bytes.from_list([0x00.to_u8(), 0x01.to_u8(), 0x00.to_u8(), 0x00.to_u8(), 0.to_u8(), 0.to_u8(), 0.to_u8(), 0.to_u8(), 0.to_u8(), 0.to_u8(), 0.to_u8(), 0.to_u8()])
+    passed := sfnt(ttf) else b""
+    assert_eq(passed.len(), 12)
+    refused := sfnt(b"wOF2aaaaaaaaaaaa") else b"none"
+    assert_eq(refused.len(), 4)

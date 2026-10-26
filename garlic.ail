@@ -22,6 +22,7 @@ use draw
 use gfx
 use jsdom
 use images
+use webfont
 use attach
 use ws
 use look
@@ -104,6 +105,10 @@ struct Browser
     ahead List[str]
     ## The pictures decoded for the window host, by address.
     bits Map[str, images.Bitmap]
+    ## The web fonts fetched for the window host: a family (lower case) to
+    ## its TrueType or OpenType file in base64, and the font addresses tried.
+    fonts Map[str, str]
+    font_seen Set[str]
     ## The page's engine while its scripts listen; clicks, typing and
     ## submits go through it first (GL-JS events).
     js jsdom.Session?
@@ -480,6 +485,33 @@ fn linked_sheets(d html.Doc, url str, mut cj jar.Jar, mut cache Map[str, Cached]
             media,
         ))
     all
+
+## The `@font-face` rules of the page's `<style>` elements and linked style
+## sheets, with their addresses resolved.
+fn page_faces(d html.Doc, url str, mut cj jar.Jar, mut cache Map[str, Cached]) List[css.FontFace]
+    base := page.base_of(d, url)
+    mut out := List[css.FontFace]()
+    for el in d.all("style")
+        for f in css.font_faces(d.text(el))
+            out.push(resolved_face(f, base))
+    mut n := 0
+    for l in d.all("link")
+        rel := (d.attr(l, "rel") else "").to_lower().split(" ")
+        if not rel.contains("stylesheet") or rel.contains("alternate")
+            continue
+        href := d.attr(l, "href") else continue
+        if n == MAX_SHEETS
+            break
+        n += 1
+        at := page.resolve(base, href)
+        for f in css.font_faces(fetch_text(at, url, mut cj, mut cache))
+            out.push(resolved_face(f, at))
+    out
+
+fn resolved_face(f css.FontFace, base str) css.FontFace
+    if f.url.starts_with("data:")
+        return f
+    css.FontFace(family: f.family, url: page.resolve(base, f.url), kind: f.kind, bold: f.bold, italic: f.italic)
 
 ## The bytes of a `data:` URL's payload (RFC 2397): base64 or %-escapes.
 fn data_bytes(url str) bytes
@@ -926,6 +958,8 @@ fn Browser.empty(url str, width int, height int) Browser
         kept_order: [],
         ahead: [],
         bits: {},
+        fonts: {},
+        font_seen: {},
         js: none,
     )
     b
@@ -1938,6 +1972,8 @@ struct Gui
     meas Map[str, float]
     ## Whether the node numbers an agent uses are drawn over the page (Cmd-I).
     ids bool
+    ## The page whose web fonts were last fetched.
+    font_url str
 
 fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
     mut g := Gui(
@@ -1961,6 +1997,7 @@ fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
         fresh: {},
         meas: {},
         ids: false,
+        font_url: "",
     )
     g.resize(w, h, cell_w, cell_h)
     g
@@ -1995,7 +2032,17 @@ fn Gui.refresh(mut self)
             mut b.sizes,
             mut b.bits,
         )
-        scene = gfx.layout_measured(b.doc, b.url, area_w, b.sheet, b.sizes, meas, b.editing())
+        if font_url != b.url
+            font_url = b.url
+            webfont.prefetch(
+                page_faces(b.doc, b.url, mut b.cj, mut b.cache),
+                b.url,
+                b.cj,
+                image_options(),
+                mut b.fonts,
+                mut b.font_seen,
+            )
+        scene = gfx.layout_measured(b.doc, b.url, area_w, b.sheet, b.sizes, with_fonts(), b.editing())
         scene_edit = b.editing()
         scene_stamp = b.stamp
         scene_w = area_w
@@ -2007,6 +2054,14 @@ fn Gui.refresh(mut self)
             scene_url = b.url
     top = top.max(0.0).min((scene.height - area_h).max(0.0))
     mark_fresh()
+
+## The measured widths plus a `@web:` key for each web font loaded, which is
+## how `gfx` learns the families the page can use.
+fn Gui.with_fonts(self) Map[str, float]
+    mut m := meas
+    for k in b.fonts.keys()
+        m["@web:{k}"] = 1.0
+    m
 
 ## Marks as fresh the decoded pictures the view will draw that the host
 ## hasn't been given: only a picture inside the shown part of the page goes
@@ -3960,6 +4015,28 @@ fn len_starting(ts List[str], prefix str) int
     src := "<body style=\"margin: 0; font-size: 20px\">日本語のテキストは空白がなくても折り返されます日本語のテキストは空白がなくても折り返されます</body>"
     s := gfx.layout(html.parse(src), "file:///t.html", 200.0, css.parse("", 0))
     assert(s.height > 40.0)
+
+@test fn font_face_rules_name_their_files()
+    src := "@font-face \{ font-family: 'My Font'; src: url(a.eot), url(\"a.woff2\") format(\"woff2\"), url(a.woff?v=1) format(\"woff\"); font-weight: bold } p \{ color: red }"
+    faces := css.font_faces(src)
+    assert_eq(faces.len(), 1)
+    assert_eq(faces[0].family, "my font")
+    assert_eq(faces[0].url, "a.woff?v=1")
+    assert_eq(faces[0].kind, "woff")
+    assert(faces[0].bold)
+
+@test fn text_in_a_loaded_web_font_is_drawn_and_measured_in_it()
+    src := "<style>h1 \{ font-family: 'Cool Face', Arial, sans-serif }</style><h1>Title</h1><p>body</p>"
+    mut meas := Map[str, float]()
+    meas["@web:cool face"] = 1.0
+    s := gfx.layout_measured(html.parse(src), "file:///t.html", 400.0, css.parse("", 0), {}, meas, -1)
+    mut seen := List[str]()
+    for op in s.ops
+        match op
+            Str(_, _, t, font, _, _, _, _, _) => seen.push("{t}:{font}")
+            Rect(_, _, _, _, _) | Pic(_, _, _, _, _) | Text(_, _, _, _, _, _, _) => seen = seen
+    assert(seen.contains("Title:web:cool face"))
+    assert(not seen.contains("body:web:cool face"))
 
 @test fn a_tall_inline_picture_sits_on_its_line_not_above_it()
     src := """

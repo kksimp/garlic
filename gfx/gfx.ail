@@ -429,6 +429,8 @@ struct St
     underline bool
     mono bool
     serif bool
+    ## The web font (`@font-face` family) the text is drawn in, or "".
+    web str
     pre bool
     align str
     lh float
@@ -602,7 +604,10 @@ fn text_style(tag str, cs Map[str, str], parent St) St
             st.lh = p / st.size
     if ff := cs.get("font-family")
         low := ff.to_lower()
-        if low.contains("mono") or low.contains("courier") or low.contains("consolas")
+        st.web = ""
+        if low.starts_with("web:")
+            st.web = low.slice(4, low.chars().len())
+        elif low.contains("mono") or low.contains("courier") or low.contains("consolas")
             st.mono = true
         else
             st.serif = first_family_is_serif(low)
@@ -943,6 +948,10 @@ fn Ctx.element_style(mut self, id int) Map[str, str]
     for k in r.keys()
         if not k.starts_with("--")
             out[k] = subst(r[k], sc)
+    if ff := out.get("font-family")
+        web := web_family(ff, meas)
+        if web != ""
+            out["font-family"] = "web:{web}"
     styles[id] = out
     out
 
@@ -1144,8 +1153,24 @@ fn Ctx.avail(self, x float, w float, top float, bottom float)(float, float)
                 left = fmax(left, f.x + f.w)
     (left, fmax(right - left, 40.0))
 
+## The web font a `font-family` list picks: the first family that is a web
+## font the page loaded (`meas` holds those as `@web:` keys), unless a face
+## the system is assumed to have comes before it. "" for none.
+fn web_family(ff str, known Map[str, float]) str
+    if known.len() == 0
+        return ""
+    for part in ff.to_lower().split(",")
+        name := part.replace("'", "").replace("\"", "").trim()
+        if known.contains("@web:{name}")
+            return name
+        if SANS_FACES.contains(name) or SERIF_FACES.contains(name) or name.contains("mono")
+            return ""
+    ""
+
 ## The host font family a style is drawn in.
 fn font_of(st St) str
+    if st.web != ""
+        return "web:{st.web}"
     if st.mono
         return "mono"
     if st.serif then "serif" else "sans"
@@ -1194,6 +1219,7 @@ fn same_look(a St, b St) bool
         and a.underline == b.underline
         and a.mono == b.mono
         and a.serif == b.serif
+        and a.web == b.web
         and a.href == b.href
 
 fn Ctx.has_content(mut self, line List[Atom]) bool
@@ -2449,6 +2475,7 @@ pub fn layout_measured(
         underline: false,
         mono: false,
         serif: false,
+        web: "",
         pre: false,
         align: "left",
         lh: 1.3,
