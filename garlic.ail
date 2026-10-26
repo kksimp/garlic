@@ -2604,12 +2604,16 @@ impl app.App for Garlic
         mut page_ops := [to_app(op, g) for op in g.display()]
         page_ops.extend(tabstrip.menu_ops(theme(), menu_rows(), menu_x, g.scene.bg))
         rows.push(app.canvas("page", 0.0, 0.0, page_ops))
-        rows.push(app.canvas(
-            "status",
-            0.0,
-            tabstrip.STATUS_H,
-            tabstrip.status(theme(), g.status(), strip_w),
-        ))
+        ## The address is already in the bar above, so a status row that
+        ## would only repeat it is left out; prompts and messages still show.
+        shown := g.status()
+        if shown != "" and shown != g.b.url
+            rows.push(app.canvas(
+                "status",
+                0.0,
+                tabstrip.STATUS_H,
+                tabstrip.status(theme(), shown, strip_w),
+            ))
         app.column(rows)
 
     fn title(self) str

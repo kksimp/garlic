@@ -1,0 +1,152 @@
+## Binary data helpers for ArrayBuffer, typed arrays and DataView (ECMA-262
+## §25.1.3 NumericToRawBytes, RawBytesToNumeric): element kinds, integer
+## wrapping and the IEEE 754 binary32 and binary64 codecs. Bytes are ints
+## 0..255, least significant first.
+
+## How one typed array element is stored: `size` bytes, `kind` "i" (signed),
+## "u" (unsigned), "c" (clamped to 0..255) or "f" (float). Size 0 means the
+## class is not a typed array.
+pub struct Elem
+    pub size int
+    pub kind str
+
+pub fn elem_of(class str) Elem
+    match class
+        "Int8Array" => Elem(size: 1, kind: "i")
+        "Uint8Array" => Elem(size: 1, kind: "u")
+        "Uint8ClampedArray" => Elem(size: 1, kind: "c")
+        "Int16Array" => Elem(size: 2, kind: "i")
+        "Uint16Array" => Elem(size: 2, kind: "u")
+        "Int32Array" => Elem(size: 4, kind: "i")
+        "Uint32Array" => Elem(size: 4, kind: "u")
+        "Float32Array" => Elem(size: 4, kind: "f")
+        "Float64Array" => Elem(size: 8, kind: "f")
+        _ => Elem(size: 0, kind: "")
+
+pub fn typed_names() List[str]
+    [
+        "Int8Array",
+        "Uint8Array",
+        "Uint8ClampedArray",
+        "Int16Array",
+        "Uint16Array",
+        "Int32Array",
+        "Uint32Array",
+        "Float32Array",
+        "Float64Array",
+    ]
+
+## A typed array object: a class named `...Array` other than `Array`.
+pub fn is_view(o ref JsObject) bool
+    o.class.ends_with("Array") and o.class != "Array"
+
+fn round_even(f float) int
+    r := f.floor()
+    d := f - r
+    n := r.to_int()
+    if d > 0.5 or (d == 0.5 and n.bit_and(1) == 1)
+        return n + 1
+    n
+
+## The bytes of `x` as binary32 (`wide` false) or binary64 (`wide` true).
+pub fn float_bytes(x float, wide bool) List[int]
+    nb := if wide then 8 else 4
+    mbits := if wide then 52 else 23
+    bias := if wide then 1023 else 127
+    emax := if wide then 2047 else 255
+    neg := x < 0.0 or x == 0.0 and 1.0 / x < 0.0
+    mut ex := 0
+    mut frac := 0
+    if x != x
+        ex = emax
+        frac = pow2(mbits - 1).to_int()
+    elif not is_finite(x)
+        ex = emax
+    elif x != 0.0
+        a := x.abs()
+        e := exponent(a)
+        if e < 1 - bias
+            # Subnormal: a carry into the exponent field is the smallest normal.
+            frac = round_even(a / pow2(1 - bias - mbits))
+        else
+            ex = e + bias
+            frac = round_even((a / pow2(e) - 1.0) * pow2(mbits))
+            if frac >= pow2(mbits).to_int()
+                ex += 1
+                frac = 0
+            if ex >= emax
+                ex = emax
+                frac = 0
+    mut m := ex.shl(mbits) + frac
+    mut out := List[int]()
+    for _ in 0..nb
+        out.push(m.bit_and(255))
+        m = m.shr(8)
+    if neg
+        out[nb - 1] = out[nb - 1] + 128
+    out
+
+## The number in 4 (binary32) or 8 (binary64) bytes.
+pub fn bytes_float(bs List[int], wide bool) float
+    nb := if wide then 8 else 4
+    mbits := if wide then 52 else 23
+    bias := if wide then 1023 else 127
+    emax := if wide then 2047 else 255
+    top := bs[nb - 1]
+    mut m := top.bit_and(127).shl(8 * (nb - 1))
+    for i in 0..nb - 1
+        m = m + bs[i].shl(8 * i)
+    ex := m.shr(mbits)
+    one := pow2(mbits).to_int()
+    frac := m.bit_and(one - 1)
+    mut v := 0.0
+    if ex == emax
+        v = if frac == 0 then infinity() else nan()
+    elif ex == 0
+        v = frac.to_float() * pow2(1 - bias - mbits)
+    else
+        v = (frac + one).to_float() * pow2(ex - bias - mbits)
+    if top >= 128
+        return v * (0.0 - 1.0)
+    v
+
+## ToUint8Clamp (§7.1.12): round half to even.
+fn clamp_byte(x float) int
+    if x != x or x <= 0.0
+        return 0
+    if x >= 255.0
+        return 255
+    round_even(x)
+
+## The low `size` bytes of the number, as ToInt8 .. ToUint32 take them.
+fn int_bytes(x float, size int) List[int]
+    mut out := List[int]()
+    if not is_finite(x)
+        for _ in 0..size
+            out.push(0)
+        return out
+    modulus := pow2(8 * size)
+    t := trunc(x)
+    mut n := (t - (t / modulus).floor() * modulus).to_int()
+    for _ in 0..size
+        out.push(n.bit_and(255))
+        n = n.shr(8)
+    out
+
+## The bytes a number is stored as in an element of kind `e`.
+pub fn encode_number(x float, e Elem) List[int]
+    match e.kind
+        "f" => float_bytes(x, e.size == 8)
+        "c" => [clamp_byte(x)]
+        _ => int_bytes(x, e.size)
+
+## The number stored in `bs` (already in little-endian order).
+pub fn decode_number(bs List[int], e Elem) float
+    if e.kind == "f"
+        return bytes_float(bs, e.size == 8)
+    mut n := 0
+    for i in 0..e.size
+        n = n + bs[i].shl(8 * i)
+    if e.kind == "i" and n >= pow2(8 * e.size - 1).to_int()
+        n = n - pow2(8 * e.size).to_int()
+    n.to_float()
