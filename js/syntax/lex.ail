@@ -45,6 +45,8 @@ pub struct Token
     pub bad_escape bool
     ## A legacy octal number or escape: `010`, `"\07"` (Annex B; a strict-mode error).
     pub octal bool
+    ## A BigInt literal `12n`: `text` holds its decimal digits.
+    pub big bool
     ## Offsets into the source: the token is `src[start..end]`.
     pub start int
     pub end int
@@ -202,6 +204,7 @@ fn Lexer.token(self, kind Kind, text str, start int, line_no int, col int, nl bo
         tail: false,
         bad_escape: false,
         octal: false,
+        big: false,
         start: start,
         end: pos,
         line: line_no,
@@ -431,8 +434,8 @@ fn Lexer.number(mut self, start int, line_no int, col int, nl bool) Token ! JsEr
     t.octal = octal
     t
 
-## `123n`, `0xFFn` (§12.9.3 BigInt literals) as a string token holding the
-## value in the engine's BigInt form, "\u{0}n" and decimal digits.
+## `123n`, `0xFFn` (§12.9.3 BigInt literals) as a number token with `big` set
+## and the value in decimal digits as its text.
 fn Lexer.bigint_literal(
     mut self,
     start int,
@@ -454,7 +457,9 @@ fn Lexer.bigint_literal(
     pos += 1
     if id_start(cur()) or cur().is_digit() or cur() == '\\'
         return fail("Invalid or unexpected token", pos)
-    token(Str, "\u{0}n{v.to_text()}", start, line_no, col, nl)
+    mut t := token(Num, v.to_text(), start, line_no, col, nl)
+    t.big = true
+    t
 
 ## A `0` and digits that include an 8 or a 9 (Annex B NonOctalDecimalIntegerLiteral).
 fn Lexer.legacy_decimal(self) bool

@@ -1,6 +1,7 @@
 ## The tree-walking interpreter: scopes (ECMA-262 §9.1), statements (§14),
 ## expressions (§13), functions (§10.2, §15.2) and classes (§15.7).
 use syntax
+use std.bigint
 
 pub struct Vm
     pub global_obj ref JsObject
@@ -167,7 +168,7 @@ pub fn Vm.error_text(self, v Value) str
                     return name
                 return "{name}: {msg}"
             inspect_nested(v)
-        Undef | Null | Bool | Num | Str => inspect_nested(v)
+        Undef | Null | Bool | Num | Str | Big | Sym => inspect_nested(v)
 
 fn Vm.plain_string(self, start ref JsObject, key str) str?
     mut o := start
@@ -175,10 +176,10 @@ fn Vm.plain_string(self, start ref JsObject, key str) str?
         if p := own(o, key)
             return match p.value
                 Str(s) => s
-                Undef | Null | Bool | Num | Obj => none
+                Undef | Null | Bool | Num | Big | Sym | Obj => none
         match o.proto
             Obj(next) => o = next
-            Undef | Null | Bool | Num | Str => return none
+            Undef | Null | Bool | Num | Str | Big | Sym => return none
     none
 
 # ----------------------------------------------------------- conversions
@@ -187,7 +188,7 @@ fn Vm.plain_string(self, start ref JsObject, key str) str?
 pub fn Vm.to_primitive(mut self, v Value, hint str) Value ! Thrown
     o := match v
         Obj(x) => x
-        Undef | Null | Bool | Num | Str => return v
+        Undef | Null | Bool | Num | Str | Big | Sym => return v
     as_string := hint == "string" or (hint == "default" and o.class == "Date")
     order := if as_string then ["toString", "valueOf"] else ["valueOf", "toString"]
     for name in order
@@ -205,12 +206,9 @@ pub fn Vm.to_number(mut self, v Value) float ! Thrown
         Null => 0.0
         Bool(b) => if b then 1.0 else 0.0
         Num(n) => n
-        Str(s) =>
-            if is_symbol(s)
-                return type_error("Cannot convert a Symbol value to a number")
-            if is_bigint(s)
-                return type_error("Cannot convert a BigInt value to a number")
-            string_to_number(s)
+        Str(s) => string_to_number(s)
+        Big => type_error("Cannot convert a BigInt value to a number")
+        Sym => type_error("Cannot convert a Symbol value to a number")
         Obj => to_number(to_primitive(v, "number")?)
 
 ## ToString (§7.1.17).
@@ -220,25 +218,19 @@ pub fn Vm.to_string(mut self, v Value) str ! Thrown
         Null => "null"
         Bool(b) => if b then "true" else "false"
         Num(n) => syntax.number_to_string(n)
-        Str(s) =>
-            if is_symbol(s)
-                return type_error("Cannot convert a Symbol value to a string")
-            if is_bigint(s)
-                return s.slice(2, s.chars().len())
-            s
+        Str(s) => s
+        Big(b) => b.to_text()
+        Sym => type_error("Cannot convert a Symbol value to a string")
         Obj => to_string(to_primitive(v, "string")?)
 
 ## ToPropertyKey (§7.1.19): a symbol is its own key.
 pub fn Vm.to_key(mut self, v Value) str ! Thrown
     match v
-        Str(s) => if is_bigint(s) then s.slice(2, s.chars().len()) else s
+        Str(s) => string_key(s)
+        Sym(k) => k
         Num(n) => syntax.number_to_string(n)
-        Undef | Null | Bool => to_string(v)
-        Obj =>
-            p := to_primitive(v, "string")?
-            if s := str_of(p)
-                return s
-            to_string(p)
+        Undef | Null | Bool | Big => to_string(v)
+        Obj => to_key(to_primitive(v, "string")?)
 
 ## ToObject (§7.1.18): a primitive's wrapper.
 pub fn Vm.to_object(mut self, v Value) ref JsObject ! Thrown
@@ -247,10 +239,9 @@ pub fn Vm.to_object(mut self, v Value) ref JsObject ! Thrown
         Undef | Null => return type_error("Cannot convert undefined or null to object")
         Bool => wrap("Boolean", v)
         Num => wrap("Number", v)
-        Str(s) => wrap(
-            if is_symbol(s) then "Symbol" else (if is_bigint(s) then "BigInt" else "String"),
-            v,
-        )
+        Str => wrap("String", v)
+        Big => wrap("BigInt", v)
+        Sym => wrap("Symbol", v)
 
 pub fn Vm.wrap(mut self, class str, v Value) ref JsObject
     o := object(class, proto_of(class))
@@ -273,6 +264,8 @@ pub fn Vm.loose_eq(mut self, a Value, b Value) bool ! Thrown
         return loose_eq(a, to_primitive(b, "default")?)
     if is_obj(a) or is_obj(b)
         return a == b
+    if type_of(a) == "symbol" or type_of(b) == "symbol"
+        return false
     to_number(a)? == to_number(b)?
 
 ## SameValueZero (§7.2.11): `===` except that NaN equals NaN.
@@ -281,8 +274,8 @@ pub fn same_value_zero(a Value, b Value) bool
         Num(x) =>
             match b
                 Num(y) => x == y or (is_nan(x) and is_nan(y))
-                Undef | Null | Bool | Str | Obj => false
-        Undef | Null | Bool | Str | Obj => a == b
+                Undef | Null | Bool | Str | Big | Sym | Obj => false
+        Undef | Null | Bool | Str | Big | Sym | Obj => a == b
 
 ## IsLessThan (§7.2.13): none when either side is NaN.
 pub fn Vm.less_than(mut self, a Value, b Value, left_first bool) bool? ! Thrown
@@ -742,7 +735,7 @@ fn Vm.for_in(
     else
         match subject
             Undef | Null => return Normal
-            Bool | Num | Str | Obj =>
+            Bool | Num | Str | Big | Sym | Obj =>
                 for k in for_in_keys(to_object(subject)?)
                     items.push(Str(k))
     for item in items
@@ -937,7 +930,7 @@ fn Vm.assign_to(mut self, target syntax.Expr, v Value, env ref Env) ! Thrown
             base := member_base(object, env)?
             key := member_key(prop, computed, env)?
             put(base, key, v)?
-        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
+        Num | Str | Big | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
             return syntax_error("Invalid left-hand side in assignment")
 
 pub fn Vm.syntax_error(mut self, msg str) Thrown
@@ -967,7 +960,7 @@ fn is_anonymous_fn(e syntax.Expr) bool
         Function(f) => f.name == none
         Arrow => true
         ClassExpr(c) => c.name == none
-        Paren | Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Yield | Await =>
+        Paren | Num | Str | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Yield | Await =>
             false
 
 fn set_fn_name(v Value, name str)
@@ -984,12 +977,16 @@ fn set_fn_name(v Value, name str)
                         writable: false,
                         configurable: true,
                     )
-        Undef | Null | Bool | Num | Str => return
+        Undef | Null | Bool | Num | Str | Big | Sym => return
 
 pub fn Vm.eval(mut self, e syntax.Expr, env ref Env) Value ! Thrown
     match e
         Num(value, _) => Value.Num(value)
         Str(value, _) => Value.Str(value)
+        Big(digits, _) =>
+            b := bigint.parse(digits) else err
+                return syntax_error("Invalid BigInt literal")
+            Value.Big(b)
         Bool(value, _) => Value.Bool(value)
         Null => Value.Null
         Ident(name, _) =>
@@ -1130,7 +1127,7 @@ fn Vm.member_key(mut self, prop syntax.Expr, computed bool, env ref Env) str ! T
     match prop
         Ident(name, _) => name
         PrivName(name, _) => "{PRIVATE}{name}"
-        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | Paren | Yield | Await =>
+        Num | Str | Big | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | Paren | Yield | Await =>
             to_key(eval(prop, env)?)
 
 ## `super[key]` with the current `this` as the receiver.
@@ -1140,8 +1137,8 @@ fn Vm.get_super(mut self, key str, env ref Env) Value ! Thrown
         Obj(h) =>
             match h.proto
                 Obj(p) => get_from(p, key, this_value(env)?)
-                Undef | Null | Bool | Num | Str => Undef
-        Undef | Null | Bool | Num | Str => return syntax_error("'super' keyword unexpected here")
+                Undef | Null | Bool | Num | Str | Big | Sym => Undef
+        Undef | Null | Bool | Num | Str | Big | Sym => return syntax_error("'super' keyword unexpected here")
 
 ## `this` (§9.4.4 ResolveThisBinding).
 fn Vm.this_value(mut self, env ref Env) Value ! Thrown
@@ -1168,7 +1165,7 @@ fn Vm.callee_of(mut self, callee syntax.Expr, env ref Env) Callee ! Thrown
             if syntax.expr_kind(inner) == "Member"
                 return callee_of(inner, env)
             Callee(f: eval(inner, env)?, this_val: Undef)
-        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
+        Num | Str | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
             Callee(f: eval(callee, env)?, this_val: Undef)
 
 ## Call, naming the callee in the error when it isn't a function.
@@ -1209,6 +1206,7 @@ pub fn expr_text(e syntax.Expr) str
         Chain(inner, _) => expr_text(inner)
         Str(value, _) => "\"{value}\""
         Num(value, _) => syntax.number_to_string(value)
+        Big(value, _) => "{value}n"
         Object(props, _) => if props.len() == 0 then "\{}" else "(intermediate value)"
         Template | Tagged | Regex | Bool | Null | NewTarget | Import | Array | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | New | Seq | Spread | Yield | Await =>
             "(intermediate value)"
@@ -1236,7 +1234,7 @@ fn ident_name(e syntax.Expr) str?
     match e
         Ident(name, _) => name
         Paren(inner, _) => ident_name(inner)
-        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Yield | Await =>
+        Num | Str | Big | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Yield | Await =>
             none
 
 ## `delete` (§13.5.1.2).
@@ -1256,7 +1254,7 @@ fn Vm.delete_expr(mut self, operand syntax.Expr, env ref Env) bool ! Thrown
             chain_shorted = false
             r
         Ident => false
-        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | PrivName | Yield | Await =>
+        Num | Str | Big | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | PrivName | Yield | Await =>
             eval(operand, env)?
             true
 
@@ -1287,8 +1285,8 @@ pub fn Vm.binary(mut self, op str, a Value, b Value) Value ! Thrown
                                 return Value.Num((x.to_int() % y.to_int()).to_float())
                             return Value.Num(fmod(x, y))
                         _ => return binary_slow(op, a, b)
-                Undef | Null | Bool | Str | Obj => return binary_slow(op, a, b)
-        Undef | Null | Bool | Str | Obj => return binary_slow(op, a, b)
+                Undef | Null | Bool | Str | Big | Sym | Obj => return binary_slow(op, a, b)
+        Undef | Null | Bool | Str | Big | Sym | Obj => return binary_slow(op, a, b)
 
 fn Vm.binary_slow(mut self, op str, a Value, b Value) Value ! Thrown
     if (is_big_val(a) or is_big_val(b)) and big_op(op)
@@ -1340,7 +1338,7 @@ fn Vm.binary_slow(mut self, op str, a Value, b Value) Value ! Thrown
                     if o.class == "Proxy"
                         return Value.Bool(proxy_has(o, key)?)
                     Value.Bool(has_property(o, key))
-                Undef | Null | Bool | Num | Str =>
+                Undef | Null | Bool | Num | Str | Big | Sym =>
                     return type_error("Cannot use 'in' operator to search for '{to_string(a)?}' in {to_string(b)?}")
         _ => return syntax_error("Unknown operator {op}")
 
@@ -1352,13 +1350,13 @@ pub fn Vm.instance_of(mut self, v Value, target Value) bool ! Thrown
         return type_error("Right-hand side of 'instanceof' is not callable")
     t := match target
         Obj(o) => o
-        Undef | Null | Bool | Num | Str => return false
+        Undef | Null | Bool | Num | Str | Big | Sym => return false
     if c := t.call
         if inner := bound_target(c)
             return instance_of(v, inner)
     o := match v
         Obj(x) => x
-        Undef | Null | Bool | Num | Str => return false
+        Undef | Null | Bool | Num | Str | Big | Sym => return false
     proto := get(target, "prototype")?
     if not is_obj(proto)
         return type_error("Function has non-object prototype '{describe(proto)}' in instanceof check")
@@ -1368,7 +1366,7 @@ pub fn Vm.instance_of(mut self, v Value, target Value) bool ! Thrown
             return true
         p = match p
             Obj(x) => x.proto
-            Undef | Null | Bool | Num | Str => Null
+            Undef | Null | Bool | Num | Str | Big | Sym => Null
     false
 
 ## `=`, `+=`, `&&=` and the rest (§13.15.2).
@@ -1557,13 +1555,13 @@ pub fn Vm.is_constructor(self, v Value) bool
                     Native(name) => native_is_ctor(name)
                     Bound(target, _, _) => is_constructor(target)
             false
-        Undef | Null | Bool | Num | Str => false
+        Undef | Null | Bool | Num | Str | Big | Sym => false
 
 ## [[Call]] (§10.2.1).
 pub fn Vm.call(mut self, f Value, this_val Value, args List[Value]) Value ! Thrown
     o := match f
         Obj(x) => x
-        Undef | Null | Bool | Num | Str => return type_error("{describe(f)} is not a function")
+        Undef | Null | Bool | Num | Str | Big | Sym => return type_error("{describe(f)} is not a function")
     c := o.call else return type_error("{describe(f)} is not a function")
     match c
         Native(name) => native(name, o, this_val, args, Undef)
@@ -1603,7 +1601,7 @@ fn Vm.function_env(
         else
             env.this_val = match this_val
                 Undef | Null => Obj(global_obj)
-                Bool | Num | Str | Obj => this_val
+                Bool | Num | Str | Big | Sym | Obj => this_val
     env
 
 ## Bind the parameters and run the body (§10.2.11 FunctionDeclarationInstantiation).
@@ -1639,7 +1637,7 @@ fn Vm.run_params_and_body(mut self, fun syntax.Func, env ref Env, args List[Valu
 pub fn Vm.construct(mut self, f Value, args List[Value], new_target Value) Value ! Thrown
     o := match f
         Obj(x) => x
-        Undef | Null | Bool | Num | Str => return type_error("{describe(f)} is not a constructor")
+        Undef | Null | Bool | Num | Str | Big | Sym => return type_error("{describe(f)} is not a constructor")
     c := o.call else return type_error("{describe(f)} is not a constructor")
     match c
         Native(name) => native(name, o, Undef, args, new_target)
@@ -1687,7 +1685,7 @@ fn Vm.super_call(mut self, args List[syntax.Expr], env ref Env) Value ! Thrown
 fn Vm.super_construct(mut self, fenv ref Env, args List[Value]) Value ! Thrown
     f := match fenv.func
         Obj(x) => x
-        Undef | Null | Bool | Num | Str => return syntax_error("'super' keyword unexpected here")
+        Undef | Null | Bool | Num | Str | Big | Sym => return syntax_error("'super' keyword unexpected here")
     parent := f.proto
     if not is_constructor(parent)
         return type_error("Super constructor {describe(parent)} of anonymous class is not a constructor")
@@ -1705,7 +1703,7 @@ fn Vm.super_construct(mut self, fenv ref Env, args List[Value]) Value ! Thrown
 fn Vm.init_fields(mut self, obj Value, info ClassInfo) ! Thrown
     o := match obj
         Obj(x) => x
-        Undef | Null | Bool | Num | Str => return
+        Undef | Null | Bool | Num | Str | Big | Sym => return
     env := new_env(info.scope, true)
     env.has_this = true
     env.this_val = obj
@@ -1894,12 +1892,12 @@ fn Vm.make_regexp(mut self, pattern str, flags str) Value
 pub fn obj_of(v Value) ref JsObject?
     match v
         Obj(o) => o
-        Undef | Null | Bool | Num | Str => none
+        Undef | Null | Bool | Num | Str | Big | Sym => none
 
 pub fn str_of(v Value) str?
     match v
-        Str(x) => if is_bigint(x) then none else x
-        Undef | Null | Bool | Num | Obj => none
+        Str(x) => x
+        Undef | Null | Bool | Num | Big | Sym | Obj => none
 
 fn returned(f Flow) Value?
     match f
@@ -1914,7 +1912,7 @@ fn left_decl(left syntax.ForLeft) syntax.VarDecl?
 fn spread_of(e syntax.Expr) syntax.Expr?
     match e
         Spread(operand, _) => operand
-        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Chain | PrivName | Paren | Yield | Await =>
+        Num | Str | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Chain | PrivName | Paren | Yield | Await =>
             none
 
 fn bound_target(c Callable) Value?
@@ -1937,5 +1935,5 @@ fn Vm.member_ref(mut self, t syntax.Expr, env ref Env) MemberRef? ! Thrown
         Member(object, prop, computed, _, _) =>
             base := member_base(object, env)?
             MemberRef(f: base, key: member_key(prop, computed, env)?)
-        Paren | Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
+        Paren | Num | Str | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
             none

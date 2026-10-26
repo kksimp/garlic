@@ -111,6 +111,8 @@ pub struct Case
 pub enum Expr
     Num(value float, pos Pos)
     Str(value str, pos Pos)
+    ## A BigInt literal: its value in decimal digits.
+    Big(value str, pos Pos)
     Template(quasis List[Quasi], exprs List[Expr], pos Pos)
     Tagged(tag Expr, quasis List[Quasi], exprs List[Expr], pos Pos)
     Regex(pattern str, flags str, pos Pos)
@@ -231,6 +233,7 @@ pub fn expr_pos(e Expr) Pos
     match e
         Num(_, p) => p
         Str(_, p) => p
+        Big(_, p) => p
         Template(_, _, p) => p
         Tagged(_, _, _, p) => p
         Regex(_, _, p) => p
@@ -276,6 +279,7 @@ pub fn expr_kind(e Expr) str
     match e
         Num => "Num"
         Str => "Str"
+        Big => "Big"
         Template => "Template"
         Tagged => "Tagged"
         Regex => "Regex"
@@ -325,7 +329,7 @@ pub fn expr_suspends(e Expr) bool
         Import(arg, opts, _) =>
             (if a := arg then expr_suspends(a) else false)
                 or (if o := opts then expr_suspends(o) else false)
-        Num | Str | Regex | Bool | Null | Ident | This | Super | NewTarget | PrivName | Function | Arrow => false
+        Num | Str | Big | Regex | Bool | Null | Ident | This | Super | NewTarget | PrivName | Function | Arrow => false
         Template(_, exprs, _) => any_suspends(exprs)
         Tagged(tag, _, exprs, _) => expr_suspends(tag) or any_suspends(exprs)
         Array(items, _, _) =>

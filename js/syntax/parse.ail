@@ -1216,7 +1216,7 @@ fn Parser.simple_target(self, e Expr, msg str) Pat ! JsError
             if k == "Ident" or k == "Member" or k == "Paren"
                 return simple_target(inner, msg)
             fail_at(msg, expr_pos(e))
-        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import => fail_at(
+        Num | Str | Big | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import => fail_at(
             msg,
             expr_pos(e),
         )
@@ -1301,7 +1301,7 @@ fn Parser.to_pat(self, e Expr, binding bool) Pat ! JsError
             if binding
                 check_binding_pat(target)?
             PatDefault(target, value, p)
-        Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import => fail_at(
+        Num | Str | Big | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import => fail_at(
             bad,
             expr_pos(e),
         )
@@ -1505,7 +1505,7 @@ fn string_value(s Stmt) str
         Exp(e, _) =>
             match e
                 Str(v, _) => v
-                Num | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import => ""
+                Num | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import => ""
                 Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign => ""
                 Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await => ""
         Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile => ""
@@ -1604,7 +1604,7 @@ fn Parser.private_in(mut self) Expr ! JsError
 fn mixes_nullish(op str, e Expr) bool
     match e
         Logical(inner, _, _, _) => (op == "??") != (inner == "??")
-        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super => false
+        Num | Str | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Super => false
         NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Assign => false
         Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await => false
 
@@ -1648,7 +1648,7 @@ fn Parser.unary(mut self) Expr ! JsError
 fn spread_arg(e Expr) Expr
     match e
         Spread(arg, _) => arg
-        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super => e
+        Num | Str | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Super => e
         NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => e
         Assign | Cond | Call | New | Member | Seq | Chain | PrivName | Paren | Yield | Await => e
 
@@ -1656,7 +1656,7 @@ fn spread_arg(e Expr) Expr
 fn unparen(e Expr) Expr
     match e
         Paren(inner, _) => unparen(inner)
-        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import => e
+        Num | Str | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import => e
         Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => e
         Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Yield | Await => e
 
@@ -1665,7 +1665,7 @@ fn private_member(e Expr) bool
     match e
         Member(_, prop, _, _, _) => expr_kind(prop) == "PrivName"
         Paren(inner, _) => private_member(inner)
-        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import => false
+        Num | Str | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import => false
         Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => false
         Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await => false
 
@@ -1701,14 +1701,14 @@ fn Parser.call_expr(mut self) Expr ! JsError
 fn call_args(e Expr) List[Expr]
     match e
         Call(_, args, _, _) => args
-        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import => []
+        Num | Str | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import => []
         Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => []
         Assign | Cond | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await => []
 
 fn spread_of(e Expr) Expr?
     match e
         Spread(arg, _) => arg
-        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import => none
+        Num | Str | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import => none
         Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => none
         Assign | Cond | Call | New | Member | Seq | Chain | PrivName | Paren | Yield | Await => none
 
@@ -1718,10 +1718,10 @@ fn called_async(e Expr) bool
         Call(callee, _, _, _) =>
             match callee
                 Ident(name, _) => name == "async"
-                Num | Str | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import => false
+                Num | Str | Big | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import => false
                 Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => false
                 Assign | Cond | Call | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await => false
-        Num | Str | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import => false
+        Num | Str | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import => false
         Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical => false
         Assign | Cond | New | Member | Seq | Spread | Chain | PrivName | Paren | Yield | Await => false
 
@@ -1833,6 +1833,10 @@ fn Parser.primary(mut self) Expr ! JsError
         Num =>
             if strict and tok.octal
                 return fail("Octal literals are not allowed in strict mode.")
+            if tok.big
+                digits := tok.text
+                next()?
+                return Big(digits, p)
             v := tok.num
             next()?
             return Num(v, p)
@@ -2048,16 +2052,17 @@ fn Parser.prop_key(mut self, private bool) Key ! JsError
         Str =>
             if strict and tok.octal
                 return fail("Octal escape sequences are not allowed in strict mode.")
-            # A BigInt key `1n` is the string "1" (§13.2.5.5).
-            v := if tok.text.starts_with("\u{0}n") then tok.text.slice(
-                2,
-                tok.text.chars().len(),
-            ) else tok.text
+            v := tok.text
             next()?
             KeyStr(v, p)
         Num =>
             if strict and tok.octal
                 return fail("Octal literals are not allowed in strict mode.")
+            # A BigInt key `1n` is the string "1" (§13.2.5.5).
+            if tok.big
+                digits := tok.text
+                next()?
+                return KeyStr(digits, p)
             v := tok.num
             next()?
             KeyNum(v, p)

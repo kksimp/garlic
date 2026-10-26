@@ -142,7 +142,7 @@ fn Vm.reflect_function(mut self, m str, args List[Value]) Value ! Thrown
             names := object_function("getOwnPropertyNames", [a0])?
             mut out := iterate(names)?
             for s in own_symbols(obj_of(proxy_unwrap(a0)) else o)
-                out.push(Value.Str(s))
+                out.push(Value.Sym(s))
             array(out)
         "getPrototypeOf" => object_function("getPrototypeOf", [a0])?
         "setPrototypeOf" =>

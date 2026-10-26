@@ -2,6 +2,7 @@
 ## convert between them (§7.1). Objects live in `ref` cells, so copies of a
 ## value share the object, as JavaScript requires.
 use syntax
+use std.bigint
 
 pub enum Value
     Undef
@@ -9,6 +10,11 @@ pub enum Value
     Bool(b bool)
     Num(n float)
     Str(s str)
+    ## A BigInt (§6.1.6.2).
+    Big(b bigint.BigInt)
+    ## A symbol (§6.1.5): `key` is its property-key encoding, "\u{0}@ID:DESC"
+    ## (ID ends in `u` when it has no description). Only a Sym carries one.
+    Sym(key str)
     Obj(o ref JsObject)
 
 ## A property (§6.1.7.1): a data property, or an accessor with `get` and `set`.
@@ -137,36 +143,26 @@ pub fn hidden(v Value) Prop
 pub fn is_obj(v Value) bool
     match v
         Obj(_) => true
-        Undef | Null | Bool | Num | Str => false
+        Undef | Null | Bool | Num | Str | Big | Sym => false
 
 pub fn is_nullish(v Value) bool
     match v
         Undef | Null => true
-        Bool | Num | Str | Obj => false
+        Bool | Num | Str | Big | Sym | Obj => false
 
 pub fn is_callable(v Value) bool
     match v
         Obj(o) => o.call != none
-        Undef | Null | Bool | Num | Str => false
+        Undef | Null | Bool | Num | Str | Big | Sym => false
 
-## typeof (§13.5.3).
-## The key prefix of symbols: a symbol is a string "\u{0}@ID:DESC" (ID ends
-## in `u` when it has no description), so that symbols are property keys
-## with no new kind of value; no script can write such a string by accident.
+## The key prefix of symbols: a symbol's key is "\u{0}@ID:DESC", so symbols
+## are property keys with no new kind of key. Only `Value.Sym` carries one;
+## `string_key` escapes a string that starts the same way.
 pub SYMBOL := "\u{0}@"
 
-pub fn is_symbol(s str) bool
-    s.starts_with(SYMBOL)
-
-## A BigInt is a string "\u{0}nDIGITS" (DIGITS in decimal, with a leading
-## `-` if negative, canonical), like a symbol: no new kind of value, and no
-## script can write such a string by accident. Known flaw, shared with
-## symbols: a script can write one on purpose ("\u0000n5" acts as 5n), so
-## a real Value variant should replace both. See bigint.ail.
-pub BIGINT := "\u{0}n"
-
-pub fn is_bigint(s str) bool
-    s.starts_with(BIGINT)
+## Whether a property key is a symbol's.
+pub fn is_symbol(k str) bool
+    k.starts_with(SYMBOL)
 
 ## What `Symbol(...).description` gives: the text after the id.
 pub fn symbol_description(s str) str?
@@ -180,13 +176,23 @@ pub fn symbol_description(s str) str?
 pub fn symbol_text(s str) str
     "Symbol({symbol_description(s) else ""})"
 
+## The property key of a string: a leading "\u{0}@" is escaped so a script's
+## string can never name a symbol's property.
+pub fn string_key(s str) str
+    if s.starts_with(SYMBOL)
+        return "\u{0}e{s}"
+    s
+
+## typeof (§13.5.3).
 pub fn type_of(v Value) str
     match v
         Undef => "undefined"
         Null => "object"
         Bool(_) => "boolean"
         Num(_) => "number"
-        Str(s) => if is_symbol(s) then "symbol" else (if is_bigint(s) then "bigint" else "string")
+        Str(_) => "string"
+        Big(_) => "bigint"
+        Sym(_) => "symbol"
         Obj(o) => if o.call != none then "function" else "object"
 
 ## ToBoolean (§7.1.2).
@@ -195,7 +201,9 @@ pub fn truthy(v Value) bool
         Undef | Null => false
         Bool(b) => b
         Num(n) => n == n and n != 0.0
-        Str(s) => s != "" and s != "\u{0}n0"
+        Str(s) => s != ""
+        Big(b) => not b.is_zero()
+        Sym(_) => true
         Obj(_) => true
 
 ## StringToNumber (§7.1.4.1.1): decimal, `0x`, `0o`, `0b`, `Infinity`;
