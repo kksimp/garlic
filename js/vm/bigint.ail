@@ -84,7 +84,7 @@ fn parse_big_string(text str) bigint.BigInt?
         return none
     b
 
-fn big_text(v Value) str
+fn bigval_text(v Value) str
     big_of(v).to_text()
 
 ## -1, 0 or 1 as the BigInt `x` is less than, equal to or greater than the
@@ -341,10 +341,10 @@ pub fn Vm.big_native(mut self, m str, this_val Value, args List[Value]) Value ! 
     v := this_big(this_val, m)?
     match m
         "valueOf" => v
-        "toLocaleString" => Value.Str(big_group(big_text(v)))
+        "toLocaleString" => Value.Str(big_group(bigval_text(v)))
         "toString" =>
             if a0 == Undef
-                return Value.Str(big_text(v))
+                return Value.Str(bigval_text(v))
             r := trunc(to_number(a0)?)
             if is_nan(r) or r < 2.0 or r > 36.0
                 return range_error("toString() radix must be between 2 and 36")
