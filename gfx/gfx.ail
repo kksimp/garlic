@@ -255,6 +255,19 @@ pub fn color(v str) int?
 ## `under` color it is drawn over.
 pub fn color_over(v str, under int) int?
     t := v.trim().to_lower()
+    if inner := t.strip_prefix("light-dark(")
+        ## The screen is dark (CSS Color 5): take the second color.
+        cs := inner.chars()
+        mut depth := 0
+        for k in 0..cs.len()
+            if cs[k] == '('
+                depth += 1
+            elif cs[k] == ')'
+                depth -= 1
+            elif cs[k] == ',' and depth == 0
+                last := inner.chars().len() - 1
+                return color_over(inner.slice(k + 1, last), under)
+        return none
     if t.starts_with("#")
         cs := t.chars()
         mut ds := List[int]()

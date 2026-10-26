@@ -3832,6 +3832,8 @@ fn pixels(src str, width float) gfx.Scene
     assert_eq(gfx.length("2em", 10.0, 0.0), 20.0)
     assert_eq(gfx.length("50%", 10.0, 200.0), 100.0)
     assert_eq(gfx.length("auto", 10.0, 0.0), none)
+    assert_eq(gfx.color("light-dark(#eee, #222)"), 0x222222)
+    assert_eq(gfx.color("light-dark(rgb(1, 2, 3), #fff)"), 0xffffff)
     assert_eq(gfx.color("#fff"), 0xffffff)
     assert_eq(gfx.color("rgb(255, 0, 0)"), 0xff0000)
     assert_eq(gfx.color("transparent"), none)
