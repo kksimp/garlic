@@ -2315,8 +2315,11 @@ fn Vm.window_method(mut self, m str, args List[Value]) Value ! Thrown
             Value.Obj(o)
         "matchMedia" =>
             o := plain()
-            o.props["matches"] = data(Bool(false))
-            o.props["media"] = data(Str(to_string(a0)?))
+            q := to_string(a0)?
+            ## Garlic's screen is dark, like `css.media_matches` says.
+            dark := q.to_lower().replace(" ", "").contains("(prefers-color-scheme:dark)")
+            o.props["matches"] = data(Bool(dark and not q.to_lower().contains("not")))
+            o.props["media"] = data(Str(q))
             noop := native_fn("dom.window.noop", "", 0)
             for k in ["addListener", "removeListener", "addEventListener", "removeEventListener"]
                 o.props[k] = hidden(noop)
