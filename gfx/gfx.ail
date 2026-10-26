@@ -766,10 +766,13 @@ fn box_of(tag str, cs Map[str, str], st St, avail float) Bx
     clip := cs.get("background-clip") else (cs.get("-webkit-background-clip") else "")
     if clip.trim() == "text"
         b.bg = none
+    ## Measuring (avail >= SHRINK_W): a percentage of the huge column means nothing.
     if v := cs.get("width")
-        b.width = length(v, size, avail)
+        if not (avail >= SHRINK_W and v.trim().ends_with("%"))
+            b.width = length(v, size, avail)
     if v := cs.get("max-width")
-        b.max_width = length(v, size, avail)
+        if not (avail >= SHRINK_W and v.trim().ends_with("%"))
+            b.max_width = length(v, size, avail)
     if v := cs.get("border-radius")
         ts := tokens(v)
         if ts.len() > 0

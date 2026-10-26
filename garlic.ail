@@ -3882,21 +3882,15 @@ fn len_starting(ts List[str], prefix str) int
     assert(b[0] > 300.0)
     assert(b[0] < 400.0)
 
-@test fn diagnose_tab_row()
-    ul := "ul \{ display: flex; align-items: center; justify-content: end; list-style: none; margin: 0; padding: 0 } li \{ white-space: nowrap } .m \{ width: 100% }"
-    row := ".row \{ display: flex; flex-flow: row; justify-content: space-between; width: 800px } #l, #r \{ display: flex; align-items: center; margin: 0 -8px } #l > nav \{ display: flex } #r \{ justify-content: flex-end }"
-    first := "#r > nav:first-child \{ width: 100% }"
-    dd := ".dd \{ position: relative } .dd input \{ position: absolute; top: 0; left: 0; opacity: 0; width: 100%; height: 100% }"
-    mut out := ""
-    for v in [
-        "{ul} {row} {first}",
-        "{ul} {row}",
-        "{ul} {row} {first} {dd}",
-    ]
-        src := "<style>{v}</style><div class=row><div id=l><nav><ul><li>Article</li><li>Talk</li></ul></nav></div><div id=r><nav><div class=m><ul><li><a>Read</a></li><li><a>Edit</a></li><li><a>View history</a></li></ul></div></nav><nav><div class=dd><input type=checkbox><label>Tools</label></div></nav></div></div>"
-        ts := pixel_text(gfx.layout(html.parse(src), "file:///t.html", 1000.0, css.parse("", 0)).ops)
-        out = "{out} | {ts}"
-    assert_eq(out, "")
+@test fn full_width_flex_item_does_not_squeeze_its_row_when_measured()
+    src := """
+        <style>ul \{ display: flex; justify-content: end; list-style: none; margin: 0; padding: 0 } .row \{ display: flex; justify-content: space-between; width: 800px } #r \{ display: flex; justify-content: flex-end } #r > nav:first-child \{ width: 100% }</style>
+        <div class=row><div>Article</div><div id=r><nav><ul><li>Read</li><li>Edit</li></ul></nav><nav>Tools</nav></div></div>
+        """
+    ts := pixel_text(gfx.layout(html.parse(src), "file:///t.html", 1000.0, css.parse("", 0)).ops)
+    assert(at_of(ts, "Read")[0] < 800.0)
+    assert(at_of(ts, "Edit")[0] > at_of(ts, "Read")[0] + 20.0)
+    assert(at_of(ts, "Tools")[0] > at_of(ts, "Edit")[0])
 
 @test fn right_aligned_flex_menus_measure_their_items_and_do_not_overlap()
     src := """
