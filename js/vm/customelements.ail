@@ -43,7 +43,10 @@ fn Vm.custom_native(mut self, m str, this_val Value, args List[Value]) Value ! T
         if not is_constructor(ctor)
             return type_error("Failed to execute 'define' on 'CustomElementRegistry': parameter 2 is not of type 'Function'.")
         if reg.props.get("{CE_DEF}{name}") != none
-            return dom_exception("NotSupportedError", "Failed to execute 'define' on 'CustomElementRegistry': the name \"{name}\" has already been used with this registry")
+            return dom_exception(
+                "NotSupportedError",
+                "Failed to execute 'define' on 'CustomElementRegistry': the name \"{name}\" has already been used with this registry",
+            )
         reg.props["{CE_DEF}{name}"] = hidden(ctor)
         if w := reg.props.get("{CE_WAIT}{name}")
             if p := obj_of(w.value)
@@ -56,4 +59,7 @@ fn Vm.custom_setup(mut self)
     proto := obj_of(proto_of("CustomElementRegistry")) else return
     methods(proto, "bin.customElements", "define:2 get:1 whenDefined:1 upgrade:1")
     bin_tag(proto, "CustomElementRegistry")
-    global_obj.props["customElements"] = hidden(Value.Obj(object("CustomElementRegistry", Value.Obj(proto))))
+    global_obj.props["customElements"] = hidden(Value.Obj(object(
+        "CustomElementRegistry",
+        Value.Obj(proto),
+    )))
