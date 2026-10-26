@@ -255,7 +255,10 @@ pub fn font_faces(src str) List[FontFace]
     mut out := List[FontFace]()
     mut i := 0
     while i < cs.len()
-        if cs[i] != '@' or not cs[i..cs.len().min(i + 10)].join("").to_lower().starts_with("@font-face")
+        if cs[i] != '@' or not cs[i..cs.len().min(i + 10)]
+            .join("")
+            .to_lower()
+            .starts_with("@font-face")
             i += 1
             continue
         open := cs[i..cs.len()].join("").find("\{") else break
@@ -278,7 +281,8 @@ pub fn font_faces(src str) List[FontFace]
                 low := value.to_lower()
                 bold = low == "bold" or (low.to_int() else 400) >= 600
             elif name == "font-style"
-                italic = value.to_lower().starts_with("italic") or value.to_lower().starts_with("oblique")
+                italic = value.to_lower().starts_with("italic")
+                    or value.to_lower().starts_with("oblique")
         if family == ""
             continue
         for entry in split_top(urls)
@@ -304,7 +308,12 @@ fn font_ref(entry str)(str, str)
         addr = addr.slice(0, end)
     mut kind := ""
     if f := low.find("format(")
-        kind = low.slice(f + 7, low.chars().len()).split(")")[0].replace("'", "").replace("\"", "").trim()
+        kind = low
+            .slice(f + 7, low.chars().len())
+            .split(")")[0]
+            .replace("'", "")
+            .replace("\"", "")
+            .trim()
     path := addr.to_lower().split("?")[0].split("#")[0]
     if kind == ""
         if path.ends_with(".ttf")
@@ -313,9 +322,11 @@ fn font_ref(entry str)(str, str)
             kind = "opentype"
         elif path.ends_with(".woff")
             kind = "woff"
-        elif addr.to_lower().starts_with("data:font/ttf") or addr.to_lower().starts_with("data:font/otf")
+        elif addr.to_lower().starts_with("data:font/ttf")
+            or addr.to_lower().starts_with("data:font/otf")
             kind = "truetype"
-        elif addr.to_lower().starts_with("data:font/woff;") or addr.to_lower().starts_with("data:application/font-woff;")
+        elif addr.to_lower().starts_with("data:font/woff;")
+            or addr.to_lower().starts_with("data:application/font-woff;")
             kind = "woff"
     if kind == "truetype" or kind == "opentype" or kind == "woff"
         return (addr, kind)

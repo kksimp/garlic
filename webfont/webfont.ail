@@ -161,7 +161,20 @@ pub fn prefetch(
     assert_eq(be32(file, 12), 0x61626364)
     assert_eq(be32(file, 24), 4)
     assert_eq(file[28].to_int(), 1)
-    ttf := bytes.from_list([0x00.to_u8(), 0x01.to_u8(), 0x00.to_u8(), 0x00.to_u8(), 0.to_u8(), 0.to_u8(), 0.to_u8(), 0.to_u8(), 0.to_u8(), 0.to_u8(), 0.to_u8(), 0.to_u8()])
+    ttf := bytes.from_list([
+        0x00.to_u8(),
+        0x01.to_u8(),
+        0x00.to_u8(),
+        0x00.to_u8(),
+        0.to_u8(),
+        0.to_u8(),
+        0.to_u8(),
+        0.to_u8(),
+        0.to_u8(),
+        0.to_u8(),
+        0.to_u8(),
+        0.to_u8(),
+    ])
     passed := sfnt(ttf) else b""
     assert_eq(passed.len(), 12)
     refused := sfnt(b"wOF2aaaaaaaaaaaa") else b"none"

@@ -511,7 +511,13 @@ fn page_faces(d html.Doc, url str, mut cj jar.Jar, mut cache Map[str, Cached]) L
 fn resolved_face(f css.FontFace, base str) css.FontFace
     if f.url.starts_with("data:")
         return f
-    css.FontFace(family: f.family, url: page.resolve(base, f.url), kind: f.kind, bold: f.bold, italic: f.italic)
+    css.FontFace(
+        family: f.family,
+        url: page.resolve(base, f.url),
+        kind: f.kind,
+        bold: f.bold,
+        italic: f.italic,
+    )
 
 ## The bytes of a `data:` URL's payload (RFC 2397): base64 or %-escapes.
 fn data_bytes(url str) bytes
@@ -2042,7 +2048,15 @@ fn Gui.refresh(mut self)
                 mut b.fonts,
                 mut b.font_seen,
             )
-        scene = gfx.layout_measured(b.doc, b.url, area_w, b.sheet, b.sizes, with_fonts(), b.editing())
+        scene = gfx.layout_measured(
+            b.doc,
+            b.url,
+            area_w,
+            b.sheet,
+            b.sizes,
+            with_fonts(),
+            b.editing(),
+        )
         scene_edit = b.editing()
         scene_stamp = b.stamp
         scene_w = area_w
@@ -4029,7 +4043,15 @@ fn len_starting(ts List[str], prefix str) int
     src := "<style>h1 \{ font-family: 'Cool Face', Arial, sans-serif }</style><h1>Title</h1><p>body</p>"
     mut meas := Map[str, float]()
     meas["@web:cool face"] = 1.0
-    s := gfx.layout_measured(html.parse(src), "file:///t.html", 400.0, css.parse("", 0), {}, meas, -1)
+    s := gfx.layout_measured(
+        html.parse(src),
+        "file:///t.html",
+        400.0,
+        css.parse("", 0),
+        {},
+        meas,
+        -1,
+    )
     mut seen := List[str]()
     for op in s.ops
         match op
