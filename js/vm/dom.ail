@@ -456,6 +456,7 @@ pub fn Vm.dom_setup(mut self)
         "images",
         "links",
         "scripts",
+        "styleSheets",
         "readyState",
         "URL",
         "documentURI",
@@ -1117,6 +1118,7 @@ fn Vm.dom_get(mut self, p str, this_val Value) Value ! Thrown
         "forms" => node_list(descendants_by_tag(0, "form"))
         "images" => node_list(descendants_by_tag(0, "img"))
         "scripts" => node_list(descendants_by_tag(0, "script"))
+        "styleSheets" => node_list([])
         "links" => node_list([e for e in descendants_by_tag(0, "a") if attr_of(e, "href") != none])
         "readyState" => Value.Str(ready_state)
         "URL" | "documentURI" => Value.Str(location_href)
