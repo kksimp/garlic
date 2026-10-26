@@ -1663,7 +1663,10 @@ fn Ctx.max_content(mut self, id int, st St) float
     atoms = []
     saved_reach := reach
     reach = 0.0
+    f0 := floats.len()
     self.block(id, st, 0.0, 2.0 * SHRINK_W)
+    while floats.len() > f0
+        floats.pop()
     mut extent := reach
     reach = saved_reach
     for k in o0..ops.len()
