@@ -579,7 +579,7 @@ fn load_doc(
         first = false
         via = at
         at = got.url
-        mut d := html.parse(got.text)
+        mut d := if env.args().contains("--no-js") then html.parse(got.text) else html.parse_scripting(got.text)
         if env.args().contains("--no-js")
             next := refresh_target(d, at, false) else return Loaded(
                 url: at,
