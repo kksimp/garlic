@@ -1,0 +1,135 @@
+## Web fonts for the pixel window (docs/design/garlic-browser.md).
+##
+## `prefetch` fetches the files a page's `@font-face` rules name, over the
+## same pool as the page, and keeps each family's TrueType or OpenType bytes
+## in base64 for the host (`app.Op.Font`). A WOFF file is unpacked to the
+## TrueType or OpenType file inside it (WOFF 1.0 §5); WOFF2 and EOT are
+## skipped, so a page that only offers those keeps its fallback font.
+
+use std.net
+use std.net.jar
+use std.fs
+use std.compress
+use css
+use page
+
+## Font files fetched per page, and the largest one taken.
+MAX_FONTS := 8
+MAX_BYTES := 8000000
+
+fn be16(b bytes, at int) int
+    b[at].to_int() * 256 + b[at + 1].to_int()
+
+fn be32(b bytes, at int) int
+    be16(b, at) * 65536 + be16(b, at + 2)
+
+fn put16(mut out List[u8], v int)
+    out.push(v.shr(8).bit_and(0xff).to_u8())
+    out.push(v.bit_and(0xff).to_u8())
+
+fn put32(mut out List[u8], v int)
+    put16(mut out, v.shr(16).bit_and(0xffff))
+    put16(mut out, v.bit_and(0xffff))
+
+## The TrueType or OpenType file in `raw`: itself, or the file a WOFF wraps.
+pub fn sfnt(raw bytes) bytes?
+    if raw.len() < 12
+        return none
+    tag := be32(raw, 0)
+    if tag == 0x00010000 or tag == 0x4f54544f or tag == 0x74727565
+        return raw
+    if tag != 0x774f4646
+        return none
+    flavor := be32(raw, 4)
+    n := be16(raw, 12)
+    if n == 0 or raw.len() < 44 + 20 * n
+        return none
+    mut pow := 1
+    mut log := 0
+    while pow * 2 <= n
+        pow *= 2
+        log += 1
+    mut out := List[u8]()
+    put32(mut out, flavor)
+    put16(mut out, n)
+    put16(mut out, pow * 16)
+    put16(mut out, log)
+    put16(mut out, n * 16 - pow * 16)
+    mut dir := List[u8]()
+    mut body := List[u8]()
+    first := 12 + 16 * n
+    for k in 0..n
+        e := 44 + 20 * k
+        at := be32(raw, e + 4)
+        comp := be32(raw, e + 8)
+        orig := be32(raw, e + 12)
+        if at + comp > raw.len()
+            return none
+        mut data := raw[at..at + comp]
+        if comp < orig
+            data = compress.unzlib(data) else return none
+        if data.len() != orig
+            return none
+        put32(mut dir, be32(raw, e))
+        put32(mut dir, be32(raw, e + 16))
+        put32(mut dir, first + body.len())
+        put32(mut dir, orig)
+        for v in data.to_list()
+            body.push(v)
+        while body.len() % 4 != 0
+            body.push(0.to_u8())
+    out.extend(dir)
+    out.extend(body)
+    bytes.from_list(out)
+
+## The file at `at`, or none: `data:` base64, over the network with the
+## page's cookies and referrer, or from disk.
+fn load(at str, base net.Options, from str, cj jar.Jar) bytes?
+    if at.starts_with("data:")
+        comma := at.find(",") else return none
+        if not at.slice(0, comma).to_lower().ends_with(";base64")
+            return none
+        raw := bytes.from_base64(at.slice(comma + 1, at.chars().len())) else return none
+        return raw
+    s := page.scheme(at)
+    if s == "http" or s == "https"
+        mut o := base
+        cookie := cj.header_from(at, from, false)
+        if cookie != ""
+            o.headers["cookie"] = cookie
+        sent := page.referrer(from, at)
+        if sent != ""
+            o.headers["referer"] = sent
+        r := net.request_bytes("GET", at, o) else return none
+        if r.status >= 400 or r.data.len() > MAX_BYTES
+            return none
+        return r.data
+    raw := fs.read_bytes(page.file_path(at)) else return none
+    if raw.len() > MAX_BYTES
+        return none
+    raw
+
+## Fetches the files of `faces` (addresses already resolved) that `fonts`
+## has no family for yet, the plain face of a family before its bold and
+## italic ones, and keeps each family's file in base64. `seen` holds the
+## addresses already tried, so a font that fails is not asked for again.
+pub fn prefetch(
+    faces List[css.FontFace],
+    from str,
+    cj jar.Jar,
+    o net.Options,
+    mut fonts Map[str, str],
+    mut seen Set[str],
+)
+    for pass in 0..2
+        for f in faces
+            if (f.bold or f.italic) == (pass == 0)
+                continue
+            if fonts.contains(f.family) or seen.contains(f.url)
+                continue
+            if seen.len() >= MAX_FONTS
+                return
+            seen.add(f.url)
+            raw := load(f.url, o, from, cj) else continue
+            file := sfnt(raw) else continue
+            fonts[f.family] = file.base64()

@@ -237,6 +237,114 @@ fn split_top(text str) List[str]
     out.push(cur.join(""))
     out
 
+## One `@font-face` rule: the family it names (lower case, unquoted), the
+## address of the file Garlic can use, its format (`truetype`, `opentype`
+## or `woff`), and whether it is the bold or italic face.
+pub struct FontFace
+    pub family str
+    pub url str
+    pub kind str
+    pub bold bool
+    pub italic bool
+
+## The `@font-face` rules in style sheet text `src`, each with the first
+## `src` entry that is a TrueType, OpenType or WOFF file (WOFF2, EOT and
+## SVG fonts are skipped). CSS Fonts 4 (5.1), simplified.
+pub fn font_faces(src str) List[FontFace]
+    cs := strip_comments(src).chars()
+    mut out := List[FontFace]()
+    mut i := 0
+    while i < cs.len()
+        if cs[i] != '@' or not cs[i..cs.len().min(i + 10)].join("").to_lower().starts_with("@font-face")
+            i += 1
+            continue
+        open := cs[i..cs.len()].join("").find("\{") else break
+        close := block_end(cs, i + open)
+        body := cs[i + open + 1..close].join("")
+        i = close + 1
+        mut family := ""
+        mut urls := ""
+        mut bold := false
+        mut italic := false
+        for part in split_semi(body)
+            colon := part.find(":") else continue
+            name := part.slice(0, colon).trim().to_lower()
+            value := part.slice(colon + 1, part.chars().len()).trim()
+            if name == "font-family"
+                family = value.replace("'", "").replace("\"", "").trim().to_lower()
+            elif name == "src"
+                urls = value
+            elif name == "font-weight"
+                low := value.to_lower()
+                bold = low == "bold" or (low.to_int() else 400) >= 600
+            elif name == "font-style"
+                italic = value.to_lower().starts_with("italic") or value.to_lower().starts_with("oblique")
+        if family == ""
+            continue
+        for entry in split_top(urls)
+            found := font_ref(entry)
+            if found.0 != ""
+                out.push(FontFace(family, url: found.0, kind: found.1, bold, italic))
+                break
+    out
+
+## The address and format (`truetype`, `opentype`, `woff`) of a font `src`
+## entry such as `url("a.woff") format("woff")`, or ("", "") when it is
+## another kind of font or not a `url()`.
+fn font_ref(entry str)(str, str)
+    low := entry.to_lower()
+    at := low.find("url(") else return ("", "")
+    rest := entry.slice(at + 4, entry.chars().len())
+    mut end := rest.find(")") else return ("", "")
+    mut addr := rest.slice(0, end).trim()
+    if addr.starts_with("\"") or addr.starts_with("'")
+        q := addr.slice(0, 1)
+        addr = addr.slice(1, addr.chars().len())
+        end = addr.find(q) else addr.chars().len()
+        addr = addr.slice(0, end)
+    mut kind := ""
+    if f := low.find("format(")
+        kind = low.slice(f + 7, low.chars().len()).split(")")[0].replace("'", "").replace("\"", "").trim()
+    path := addr.to_lower().split("?")[0].split("#")[0]
+    if kind == ""
+        if path.ends_with(".ttf")
+            kind = "truetype"
+        elif path.ends_with(".otf")
+            kind = "opentype"
+        elif path.ends_with(".woff")
+            kind = "woff"
+        elif addr.to_lower().starts_with("data:font/ttf") or addr.to_lower().starts_with("data:font/otf")
+            kind = "truetype"
+        elif addr.to_lower().starts_with("data:font/woff;") or addr.to_lower().starts_with("data:application/font-woff;")
+            kind = "woff"
+    if kind == "truetype" or kind == "opentype" or kind == "woff"
+        return (addr, kind)
+    ("", "")
+
+## `body` split at the semicolons outside parentheses and quotes.
+fn split_semi(body str) List[str]
+    mut out := List[str]()
+    mut cur := List[char]()
+    mut depth := 0
+    mut quote := ' '
+    for ch in body.chars()
+        if quote != ' '
+            if ch == quote
+                quote = ' '
+        elif ch == '"' or ch == '\''
+            quote = ch
+        elif ch == '('
+            depth += 1
+        elif ch == ')'
+            depth -= 1
+        if ch == ';' and depth == 0 and quote == ' '
+            out.push(cur.join(""))
+            cur.clear()
+        else
+            cur.push(ch)
+    out.push(cur.join(""))
+    out
+
 ## Builds the lookup maps of a sheet's rules.
 pub fn index(rules List[Rule]) Sheet
     mut s := Sheet(rules, by_id: {}, by_class: {}, by_tag: {}, general: [])
