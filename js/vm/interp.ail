@@ -453,11 +453,11 @@ fn Vm.hoist_stmt(mut self, s syntax.Stmt, env ref Env, top bool)
                 hoist_stmt(n, env, false)
         Block(b, _) => hoist_vars(b, env, false)
         For(init, _, _, b, _) =>
+            hoist_stmt(b, env, false)
             if i := init
                 match i
                     InitDecl(d) => hoist_stmt(syntax.Stmt.Var(d), env, false)
                     InitExpr => return
-            hoist_stmt(b, env, false)
         ForIn(left, _, b, _, _, _) =>
             if d := left_decl(left)
                 hoist_stmt(syntax.Stmt.Var(d), env, false)
