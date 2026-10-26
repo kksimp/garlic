@@ -2737,6 +2737,10 @@ fn to_app(op draw.Op, g Gui) app.Op
             underline: underline,
         )
         Pic(x, y, w, h, src) =>
+            if env.get("GARLIC_TRACE_PICS") != none and src.contains("Woodwill")
+                io.eprint("pic {src.slice(0, 60)} bits={g.b.bits.contains(src)} fresh={g.fresh.contains(src)} sent={g.sent.contains(src)}")
+            if env.get("GARLIC_PICS_BY_URL") != none
+                return app.Op.Pic(x: x, y: y, w: w, h: h, src: src)
             bm := g.b.bits.get(src) else return app.Op.Pic(x: x, y: y, w: w, h: h, src: src)
             app.Op.Bitmap(
                 x: x,
