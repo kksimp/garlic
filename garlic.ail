@@ -3956,6 +3956,11 @@ fn len_starting(ts List[str], prefix str) int
     ts := pixel_text(gfx.layout(html.parse(src), "file:///t.html", 800.0, css.parse("", 0)).ops)
     assert_eq(len_starting(ts, "Your browser@"), 1)
 
+@test fn text_without_spaces_wraps_between_ideographs()
+    src := "<body style=\"margin: 0; font-size: 20px\">日本語のテキストは空白がなくても折り返されます日本語のテキストは空白がなくても折り返されます</body>"
+    s := gfx.layout(html.parse(src), "file:///t.html", 200.0, css.parse("", 0))
+    assert(s.height > 40.0)
+
 @test fn a_tall_inline_picture_sits_on_its_line_not_above_it()
     src := """
         <p>before</p><div style="width: 100px"><img src="data:x" width="50" height="200"></div><p>after</p>
