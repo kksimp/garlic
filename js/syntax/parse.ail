@@ -434,7 +434,7 @@ fn Parser.import_expr(mut self) Expr ! JsError
         if not module
             return fail_at("Cannot use 'import.meta' outside a module", p)
         next()?
-        return Import(none, none, p)
+        return Import(arg: none, opts: none, pos: p)
     if not is_p("(")
         return fail_at("Cannot use import statement outside a module", p)
     next()?

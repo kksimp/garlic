@@ -695,7 +695,7 @@ pub fn Vm.import_expr(mut self, arg syntax.Expr?, opts syntax.Expr?, env ref Env
             t := get(w, "type")?
             if text := str_of(t)
                 kind = text
-    base := location_href
+    mut base := location_href
     if is_declared("import.url", env)
         base = str_of(lookup("import.url", env)?) else location_href
     url := specifier_url(spec, base)

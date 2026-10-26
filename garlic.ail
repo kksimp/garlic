@@ -703,10 +703,7 @@ fn serve_page(
         asks.extend(more.asks)
         ops.extend(more.sockets)
         mods.extend(more.mods)
-        if more.changes > 0
-            or more.asks.len() > 0
-            or more.sockets.len() > 0
-            or more.mods.len() > 0
+        if more.changes > 0 or more.asks.len() > 0 or more.sockets.len() > 0 or more.mods.len() > 0
             polled = false
     out
 

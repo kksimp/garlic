@@ -13,6 +13,10 @@ pub struct Program
     pub body List[Stmt]
     ## The script starts with a "use strict" directive (§11.2.2).
     pub strict bool
+    ## Parsed as the Module goal (§16.2).
+    pub module bool
+    ## A module's top level uses `await` (top-level await).
+    pub has_tla bool
 
 pub enum Stmt
     Exp(expr Expr, pos Pos)
