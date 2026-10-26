@@ -766,10 +766,13 @@ fn box_of(tag str, cs Map[str, str], st St, avail float) Bx
     clip := cs.get("background-clip") else (cs.get("-webkit-background-clip") else "")
     if clip.trim() == "text"
         b.bg = none
+    ## Measuring (avail >= SHRINK_W): a percentage of the huge column means nothing.
     if v := cs.get("width")
-        b.width = length(v, size, avail)
+        if not (avail >= SHRINK_W and v.trim().ends_with("%"))
+            b.width = length(v, size, avail)
     if v := cs.get("max-width")
-        b.max_width = length(v, size, avail)
+        if not (avail >= SHRINK_W and v.trim().ends_with("%"))
+            b.max_width = length(v, size, avail)
     if v := cs.get("border-radius")
         ts := tokens(v)
         if ts.len() > 0
@@ -1654,7 +1657,7 @@ fn Ctx.max_content(mut self, id int, st St) float
     mut extent := 0.0
     for k in o0..ops.len()
         match ops[k]
-            Rect(x, _, w, _, _) => extent = fmax(extent, x + w)
+            Rect(x, _, w, _, _) => extent = if x + w < SHRINK_W then fmax(extent, x + w) else extent
             Str(x, _, t, _, size, _, bold, _, _) => extent = fmax(extent, x + text_width(
                 t,
                 size,
@@ -1718,7 +1721,7 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
     mut set_w := bx.width
     if m := bx.max_width
         if set_w == none
-            if m < inner_w
+            if m < inner_w and w < SHRINK_W
                 set_w = m
         elif m < (set_w else 0.0)
             set_w = m

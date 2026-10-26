@@ -3872,6 +3872,26 @@ fn len_starting(ts List[str], prefix str) int
             n += 1
     n
 
+@test fn flex_search_form_gives_the_input_the_slack_and_the_button_its_label_width()
+    src := """
+        <style>form \{ display: flex; width: 400px } .w \{ flex-grow: 1 } input \{ width: 100% } button \{ display: inline-flex; justify-content: center; flex-shrink: 0; background: #ccc; border: 1px solid #888; padding: 0 11px; max-width: 28rem }</style>
+        <form><div class=w><input></div><button>Search</button></form>
+        """
+    ts := pixel_text(gfx.layout(html.parse(src), "file:///t.html", 600.0, css.parse("", 0)).ops)
+    b := at_of(ts, "Search")
+    assert(b[0] > 300.0)
+    assert(b[0] < 400.0)
+
+@test fn full_width_flex_item_does_not_squeeze_its_row_when_measured()
+    src := """
+        <style>ul \{ display: flex; justify-content: end; list-style: none; margin: 0; padding: 0 } .row \{ display: flex; justify-content: space-between; width: 800px } #r \{ display: flex; justify-content: flex-end } #r > nav:first-child \{ width: 100% }</style>
+        <div class=row><div>Article</div><div id=r><nav><ul><li>Read</li><li>Edit</li></ul></nav><nav>Tools</nav></div></div>
+        """
+    ts := pixel_text(gfx.layout(html.parse(src), "file:///t.html", 1000.0, css.parse("", 0)).ops)
+    assert(at_of(ts, "Read")[0] < 800.0)
+    assert(at_of(ts, "Edit")[0] > at_of(ts, "Read")[0] + 20.0)
+    assert(at_of(ts, "Tools")[0] > at_of(ts, "Edit")[0])
+
 @test fn right_aligned_flex_menus_measure_their_items_and_do_not_overlap()
     src := """
         <style>.bar \{ display: flex; justify-content: flex-end } .m \{ display: flex; justify-content: end; list-style: none; margin: 0; padding: 0 } .m li \{ margin: 0 8px }</style>
