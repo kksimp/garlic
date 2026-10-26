@@ -550,6 +550,13 @@ struct Loaded
     ## What the scripts logged and requested while the page loaded.
     out jsdom.Outcome
 
+## With scripting on, `<noscript>` holds markup for browsers without
+## scripts and shows nothing (HTML §13.2.6.4.4, §4.12.2); `hidden` keeps it
+## from being drawn or listed.
+fn hide_noscript(mut d html.Doc)
+    for n in d.all("noscript")
+        d.set_attr(n, "hidden", "")
+
 ## Fetches and parses `target`, then runs its scripts (unless `--no-js`),
 ## which change the tree or send the browser on to another page.
 fn load_doc(
@@ -572,7 +579,7 @@ fn load_doc(
         first = false
         via = at
         at = got.url
-        mut d := html.parse(got.text)
+        mut d := if env.args().contains("--no-js") then html.parse(got.text) else html.parse_scripting(got.text)
         if env.args().contains("--no-js")
             next := refresh_target(d, at, false) else return Loaded(
                 url: at,
@@ -629,6 +636,7 @@ fn load_doc(
             # without scripts (HTML §4.12.2).
             next = refresh_target(d, at, true) else ""
             if next == ""
+                hide_noscript(mut d)
                 return Loaded(url: at, doc: d, js: session, out: out)
             m = "GET"
             b = ""
@@ -3199,6 +3207,11 @@ fn testdata() str
     assert_eq(b.pg.title, "Second page")
     assert(b.url.ends_with("/second.html"))
     assert_eq(b.back.len(), 0)
+
+@test fn noscript_text_is_not_drawn_while_scripts_are_on()
+    b := Browser.new("{testdata()}/noscript-text.html", 60, 12)
+    assert(b.pg.text().contains("Scripts ran"))
+    assert(not b.pg.text().contains("enable JavaScript"))
 
 @test fn a_slow_meta_refresh_stays_put()
     b := Browser.new("{testdata()}/slow-refresh.html", 60, 12)
