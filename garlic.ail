@@ -3936,6 +3936,19 @@ fn len_starting(ts List[str], prefix str) int
             ) => pw = pw
     assert_eq(pw, 15.0)
 
+@test fn column_count_balances_blocks_into_columns()
+    src := """
+        <body style="margin: 0"><div style="column-count: 3; column-gap: 20px; width: 640px"><p style="margin: 0">aaa</p><p style="margin: 0">bbb</p><p style="margin: 0">ccc</p></div><p style="margin: 0">after</p></body>
+        """
+    ts := pixel_text(gfx.layout(html.parse(src), "file:///t.html", 800.0, css.parse("", 0)).ops)
+    a := at_of(ts, "aaa")
+    b := at_of(ts, "bbb")
+    c := at_of(ts, "ccc")
+    assert(b[0] > a[0] + 200.0)
+    assert(c[0] > b[0] + 200.0)
+    assert_eq(b[1], a[1])
+    assert(at_of(ts, "after")[1] < a[1] + 40.0)
+
 @test fn a_tall_inline_picture_sits_on_its_line_not_above_it()
     src := """
         <p>before</p><div style="width: 100px"><img src="data:x" width="50" height="200"></div><p>after</p>

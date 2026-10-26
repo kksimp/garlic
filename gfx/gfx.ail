@@ -1773,6 +1773,8 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
         )
     elif display == "grid" or display == "inline-grid"
         self.grid(id, st, cs, content_x, content_w)
+    elif column_count(cs) > 1 and content_w < SHRINK_W
+        self.columns(id, st, cs, content_x, content_w, column_count(cs))
     else
         self.children(id, st, content_x, content_w)
     marker = ""
@@ -1960,6 +1962,69 @@ fn Ctx.row(
                     )
     y = y0 + tall
     pend = 0.0
+
+## `column-count` (or the count in `columns`): 1 when absent or not a number.
+fn column_count(cs Map[str, str]) int
+    if v := cs.get("column-count")
+        return v.trim().to_int() else 1
+    if v := cs.get("columns")
+        for t in tokens(v)
+            if n := t.to_int()
+                return n
+    1
+
+## Lays out the children of `id` in `n` balanced columns (css-multicol): each
+## child goes whole into one column, columns are filled in order to about an
+## equal height.
+fn Ctx.columns(mut self, id int, st St, cs Map[str, str], x float, w float, n int)
+    items := self.items(id)
+    gap := length(cs.get("column-gap") else (cs.get("gap") else "1em"), st.size, w) else 16.0
+    colw := (w - gap * (n - 1).to_float()) / n.to_float()
+    settle()
+    y0 := y
+    mut heights := List[float]()
+    mut total := 0.0
+    for it in items
+        o0 := ops.len()
+        h0 := hits.len()
+        saved := atoms
+        atoms = []
+        y = y0
+        pend = 0.0
+        self.lay_item(it, st, x, colw)
+        heights.push(y + pend - y0)
+        total += y + pend - y0
+        while ops.len() > o0
+            ops.pop()
+        while hits.len() > h0
+            hits.pop()
+        atoms = saved
+    target := total / n.to_float()
+    mut col := 0
+    mut cur := 0.0
+    mut tall := 0.0
+    y = y0
+    pend = 0.0
+    for k in 0..items.len()
+        if col < n - 1 and cur > 0.0 and cur + heights[k] / 2.0 > target
+            tall = fmax(tall, cur)
+            col += 1
+            cur = 0.0
+            y = y0
+            pend = 0.0
+        self.lay_item(items[k], st, x + col.to_float() * (colw + gap), colw)
+        cur = y + pend - y0
+    tall = fmax(tall, cur)
+    y = y0 + tall
+    pend = 0.0
+
+## One flow item of a multi-column or similar container, at `x`, `w` wide.
+fn Ctx.lay_item(mut self, it int, st St, x float, w float)
+    if d.nodes[it].kind == Text
+        add_text(d.nodes[it].text, st)
+        flush(x, w, st.align)
+    else
+        self.block(it, st, x, w)
 
 ## `op` moved down by `dy`.
 fn shifted(op draw.Op, dy float) draw.Op
