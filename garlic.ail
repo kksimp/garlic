@@ -29,7 +29,7 @@ use forms
 use extract
 use hush
 use flows
-use tabstrip
+use chrome
 use svg
 
 ## The keys, as `--keys` prints them.
@@ -1075,6 +1075,13 @@ fn Browser.load(mut self, target str, method str, body str)
     ## A fresh load replaces any copy kept for that address.
     kept.remove(url)
     kept_order = [u for u in kept_order if u != url]
+
+## Whether there is a page to go back or forward to.
+fn Browser.can_back(self) bool
+    back.len() > 0
+
+fn Browser.can_forward(self) bool
+    ahead.len() > 0
 
 fn Browser.go_back(mut self)
     prev := back.pop() else
@@ -2262,8 +2269,8 @@ fn Gui.id_marks(self) List[draw.Op]
     out
 
 ## The native window as a `std.app` app (docs/design/garlic-browser.md,
-## "Native window"): an address bar with back and reload above the page, and
-## the status line below it.
+## "Native window"): Chromium-style chrome (`chrome`) above the page, with the
+## status as a bubble over the page's bottom-left corner.
 struct Garlic
     g Gui
     ## Every tab's window state; `tabs[cur]` is out of date while it is
@@ -2271,14 +2278,25 @@ struct Garlic
     tabs List[Gui]
     cur int
     ## The tabs closed so far, newest last, for Cmd-Shift-T.
-    closed List[tabstrip.Item]
-    ## The open tab menu: the tab it is for (-1 for none) and its left edge;
-    ## `strip_w` is the strip canvas's width.
+    closed List[chrome.Item]
+    ## The open menu: the tab it is for, -1 for none, -2 for the toolbar's
+    ## menu; `menu_x` is its left edge on the page canvas and `strip_w` the
+    ## chrome canvas's width.
     menu_tab int
     menu_x float
     strip_w float
-    ## The address field's text.
-    url_text str
+    ## The omnibox: the address shown, or the text being typed.
+    omni chrome.Omni
+    ## The pointer over the chrome (`hover_x` below 0 when away) and the
+    ## link under it on the page.
+    hover_x float
+    hover_y float
+    hover_href str
+    ## Chromium's light look instead of the dark one (`--light`).
+    light bool
+    ## Whether the agent chip was clicked, so the status bubble tells what
+    ## the attached agent did.
+    show_agent bool
     ## The control to give the keyboard focus; cleared by the next event.
     want str
     ## The attach server's side (`--attach`): its bridge, the rules an agent
@@ -2312,7 +2330,12 @@ fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
         menu_tab: -1,
         menu_x: 0.0,
         strip_w: w,
-        url_text: b.url,
+        omni: chrome.omni(b.url),
+        hover_x: -1.0,
+        hover_y: -1.0,
+        hover_href: "",
+        light: false,
+        show_agent: false,
         want: "",
         attached: false,
         bridge: attach.Bridge.new(),
@@ -2492,12 +2515,14 @@ fn Garlic.new_tab(mut self)
     tabs.push(fresh_gui)
     cur = tabs.len() - 1
     g = fresh_gui
-    want = "url"
+    omni = chrome.omni("")
+    omni.start()
+    want = "chrome"
 
 ## The shown tab's page, or tab `k`'s, as the strip lists it.
-fn Garlic.item(self, k int) tabstrip.Item
+fn Garlic.item(self, k int) chrome.Item
     t := if k == cur then g else tabs[k]
-    tabstrip.Item(title: t.b.pg.title, url: t.b.url)
+    chrome.Item(title: t.b.pg.title, url: t.b.url)
 
 ## Closes tab `k` and remembers it for `reopen` (the last tab stays).
 fn Garlic.close_at(mut self, k int)
@@ -2547,11 +2572,28 @@ fn Garlic.reopen(mut self)
     g.open(it.url)
     want = ""
 
-## The rows of the open tab menu; none when no menu is open.
+## The rows of the open menu (a tab's, or the toolbar's); none when no
+## menu is open.
 fn Garlic.menu_rows(self) List[str]
+    if menu_tab == -2
+        mut rows := ["New tab"]
+        if closed.len() > 0
+            rows.push("Reopen closed tab")
+        rows.push("Find in page")
+        rows.push("Reload")
+        rows.push(if g.ids then "Hide node ids" else "Show node ids")
+        rows.push(if light then "Dark theme" else "Light theme")
+        return rows
     if menu_tab < 0
         return []
-    tabstrip.menu_rows(menu_tab, tabs.len(), closed.len())
+    mut rows := ["Close tab"]
+    if tabs.len() > 1
+        rows.push("Close other tabs")
+    if menu_tab < tabs.len() - 1
+        rows.push("Close tabs to the right")
+    if closed.len() > 0
+        rows.push("Reopen closed tab")
+    rows
 
 ## Does what row `r` of the tab menu says.
 fn Garlic.menu_pick(mut self, r int)
@@ -2565,24 +2607,63 @@ fn Garlic.menu_pick(mut self, r int)
         "Close other tabs" => close_others(k)
         "Close tabs to the right" => close_right(k)
         "Reopen closed tab" => reopen()
+        "New tab" => new_tab()
+        "Find in page" => g.b.prompt = Find("")
+        "Reload" => g.b.reload()
+        "Show node ids" | "Hide node ids" => g.ids = not g.ids
+        "Light theme" | "Dark theme" => light = not light
         _ => menu_tab = -1
 
-## A click on the tab strip.
-fn Garlic.strip_click(mut self, ev app.Event)
-    h := tabstrip.hit(ev.x, ev.y, tabs.len(), strip_w, theme().flat, menu_rows().len(), menu_x)
-    if h.kind == "menu"
-        menu_pick(h.k)
-        return
+## A click on the chrome canvas.
+fn Garlic.chrome_click(mut self, ev app.Event)
+    h := chrome.hit(ev.x, ev.y, tabs.len(), strip_w, attached, pending != "")
     menu_tab = -1
-    if h.kind == "plus"
-        new_tab()
-    elif h.kind == "tab" and ev.text == "right"
-        menu_tab = h.k
-        menu_x = ev.x.min((strip_w - tabstrip.MENU_W).max(0.0))
-    elif h.kind == "close" or (h.kind == "tab" and ev.text == "other")
-        close_at(h.k)
-    elif h.kind == "tab"
-        switch(h.k)
+    if h.kind != "omni" and omni.editing
+        omni = chrome.omni(g.b.url)
+    match h.kind
+        "plus" => new_tab()
+        "tab" =>
+            if ev.text == "right"
+                menu_tab = h.k
+                menu_x = ev.x.min((strip_w - chrome.MENU_W).max(0.0))
+            elif ev.text == "other"
+                close_at(h.k)
+            else
+                switch(h.k)
+        "close" => close_at(h.k)
+        "back" => g.b.go_back()
+        "forward" => g.b.go_forward()
+        "reload" => g.b.reload()
+        "omni" =>
+            if not omni.editing
+                omni.start()
+            want = "chrome"
+        "agent" => show_agent = not show_agent
+        "menu" =>
+            menu_tab = -2
+            menu_x = (strip_w - chrome.MENU_W - 8.0).max(0.0)
+        "allow" => decide(true)
+        "deny" => decide(false)
+        _ => menu_tab = -1
+
+## The agent chip's text: empty without `--attach`.
+fn Garlic.agent_chip(self) str
+    if attached then "Agent · {calls}" else ""
+
+## The status bubble's text: the link under the pointer, else a prompt or
+## message (the address is in the omnibox already), else what the attached
+## agent did when the chip was clicked.
+fn Garlic.bubble(self) str
+    if hover_href != ""
+        return hover_href
+    shown := g.status()
+    if shown != "" and shown != g.b.url
+        return shown
+    if show_agent then agent_line() else ""
+
+## Sans text widths for the chrome, from the layout's estimate.
+fn sans_w(s str, size float) float
+    gfx.text_width(s, size, false, false)
 
 ## The line that tells the user an agent can drive this window; empty
 ## without `--attach`.
@@ -2591,19 +2672,28 @@ fn Garlic.agent_line(self) str
         return ""
     "Agent attached at {where}: {calls} calls so far; {watches.len()} watches, {events.len()} unread changes"
 
-## The look: Safari-style dark.
-fn theme() tabstrip.Theme
-    tabstrip.chrome()
+## The look: Chromium's, dark unless `--light`.
+fn Garlic.theme(self) chrome.Theme
+    if light then chrome.light() else chrome.dark()
 
-## The tab strip: a canvas of its own (see `tabstrip`).
-fn Garlic.strip(self) app.Node
+## The chrome: one canvas with the tabs, the toolbar and any infobar.
+fn Garlic.chrome_node(self) app.Node
     items := [item(k) for k in 0..tabs.len()]
-    rows := menu_rows()
+    st := chrome.State(
+        omni: omni,
+        can_back: g.b.can_back(),
+        can_forward: g.b.can_forward(),
+        hover_x: hover_x,
+        hover_y: hover_y,
+        agent: agent_chip(),
+        ask: if pending != "" then "The agent wants to {asks}." else "",
+        width: strip_w,
+    )
     app.canvas(
-        "tabs",
+        "chrome",
         0.0,
-        tabstrip.height(rows.len()),
-        tabstrip.draw(theme(), items, cur, strip_w, [], menu_x),
+        chrome.height(pending != ""),
+        chrome.draw(theme(), items, cur, st, sans_w),
     )
 
 impl app.App for Garlic
@@ -2614,36 +2704,54 @@ impl app.App for Garlic
         g.fresh = {}
         match ev.kind
             "resize" =>
-                if ev.id == "tabs"
+                if ev.id == "chrome"
                     strip_w = ev.dx
                 elif ev.id == "page" or ev.id == ""
                     g.resize(ev.dx, ev.dy, ev.cell_w, ev.cell_h)
             "click" =>
-                if ev.id == "tabs"
-                    strip_click(ev)
-                elif ev.id == "nav"
-                    match tabstrip.nav_hit(ev.x)
-                        "back" => g.b.go_back()
-                        "forward" => g.b.go_forward()
-                        "reload" => g.b.reload()
-                        _ => menu_tab = -1
+                if ev.id == "chrome"
+                    chrome_click(ev)
                 else
-                    r := tabstrip.menu_hit(ev.x, ev.y, menu_rows().len(), menu_x)
+                    r := chrome.menu_hit(ev.x, ev.y, menu_rows().len(), menu_x, 0.0)
+                    if omni.editing
+                        omni = chrome.omni(g.b.url)
                     if r >= 0
                         menu_pick(r)
                     else
                         menu_tab = -1
                         g.click(ev.x, ev.y)
             "scroll" =>
-                if ev.id != "tabs"
+                if ev.id != "chrome"
                     g.scroll(ev.dy)
+            "move" =>
+                if ev.id == "chrome"
+                    hover_x = ev.x
+                    hover_y = ev.y
+                elif g.pixel
+                    hover_href = ""
+                    if h := g.scene.hit_at(ev.x, ev.y + g.top)
+                        hover_href = h.href
+            "leave" =>
+                if ev.id == "chrome"
+                    hover_x = -1.0
+                else
+                    hover_href = ""
+            "paste" =>
+                if omni.editing
+                    omni.insert(ev.text)
             "key" =>
-                if ev.meta and ev.shift and (ev.text == "t" or ev.text == "T")
+                if omni.editing and (not ev.meta or ev.text == "a" or ev.text == "left" or ev.text == "right")
+                    match omni.key(ev.text, ev.meta, ev.shift)
+                        "open" => g.open(omni.text)
+                        "cancel" => omni = chrome.omni(g.b.url)
+                        _ => menu_tab = menu_tab
+                elif ev.meta and ev.shift and (ev.text == "t" or ev.text == "T")
                     reopen()
-                elif ev.text == "escape" and menu_tab >= 0
+                elif ev.text == "escape" and menu_tab != -1
                     menu_tab = -1
                 elif (ev.meta and ev.text == "l") or (ev.text == "g" and g.b.reading())
-                    want = "url"
+                    omni.start()
+                    want = "chrome"
                 elif ev.meta and ev.text == "r"
                     g.b.reload()
                 elif ev.meta and ev.text == "["
@@ -2662,58 +2770,25 @@ impl app.App for Garlic
                     switch((cur + 1) % tabs.len())
                 else
                     g.key(ev.text, ev.alt, ev.shift)
-            "edit" => url_text = ev.text
             "external" =>
                 if ev.id == "mcp"
                     agent_call(ev.text)
                 elif ev.id == "tick"
                     tick()
-            "submit" => g.open(url_text)
-            "press" =>
-                if ev.id == "back"
-                    g.b.go_back()
-                elif ev.id == "reload"
-                    g.b.reload()
-                elif ev.id == "agent_allow"
-                    decide(true)
-                elif ev.id == "agent_deny"
-                    decide(false)
-                elif ev.id.starts_with("tab:")
-                    switch(ev.id.slice(4, ev.id.chars().len()).to_int() else cur)
-            _ => url_text = url_text
+            _ => menu_tab = menu_tab
         g.refresh()
-        if ev.kind != "edit"
-            url_text = g.b.url
+        if not omni.editing
+            omni = chrome.omni(g.b.url)
 
     fn view(self) app.Node
-        bar := app.row([
-            app.canvas("nav", tabstrip.NAV_W, tabstrip.NAV_H, tabstrip.nav(theme(), true, true)),
-            app.field("url", url_text, "Enter a web address"),
-        ])
         ## A canvas of 0 by 0 fills the window; the host reports its size.
-        mut rows := [strip(), bar]
-        if attached
-            rows.push(app.label(agent_line()))
-        if pending != ""
-            rows.push(app.row([
-                app.label("The agent wants to {asks}."),
-                app.button("agent_allow", "Allow"),
-                app.button("agent_deny", "Deny"),
-            ]))
         mut page_ops := [to_app(op, g) for op in g.display()]
-        page_ops.extend(tabstrip.menu_ops(theme(), menu_rows(), menu_x, g.scene.bg))
-        rows.push(app.canvas("page", 0.0, 0.0, page_ops))
-        ## The address is already in the bar above, so a status row that
-        ## would only repeat it is left out; prompts and messages still show.
-        shown := g.status()
-        if shown != "" and shown != g.b.url
-            rows.push(app.canvas(
-                "status",
-                0.0,
-                tabstrip.STATUS_H,
-                tabstrip.status(theme(), shown, strip_w),
-            ))
-        app.column(rows)
+        page_ops.extend(chrome.status_ops(theme(), bubble(), g.area_h, g.scene.bg, sans_w))
+        page_ops.extend(chrome.menu_ops(theme(), menu_rows(), menu_x, 0.0, g.scene.bg, -1))
+        app.column([chrome_node(), app.canvas("page", 0.0, 0.0, page_ops)])
+
+    fn hover(self) bool
+        true
 
     fn title(self) str
         "{g.b.pg.title} - Garlic"
@@ -2777,9 +2852,10 @@ GUI_H := 600.0
 GUI_CELL_W := 7.8
 GUI_CELL_H := 16.0
 
-fn app_main(b Browser, pixel bool, attached bool, sites str) !
+fn app_main(b Browser, pixel bool, attached bool, sites str, light bool) !
     mut a := Garlic.new(b, GUI_W, GUI_H, GUI_CELL_W, GUI_CELL_H)
     a.g.pixel = pixel
+    a.light = light
     a.g.refresh()
     if attached
         attached_main(mut a, sites)?
@@ -3069,6 +3145,7 @@ fn main() !
             not args.contains("--cells"),
             args.contains("--attach"),
             flag(args, "--allow") else "",
+            args.contains("--light"),
         ) else err
             print("garlic: {err}")
 
@@ -3481,9 +3558,10 @@ fn clicked(x float, y float) app.Event
     b := Browser.new("{testdata()}/index.html", 60, 12)
     mut a := Garlic.new(b, 960.0, 600.0, 8.0, 16.0)
     mut e := resized(112.0, 40.0)
-    e.id = "nav"
+    e.id = "chrome"
     app.script(mut a, [resized(480.0, 96.0), e])
     assert_eq((a.g.b.width, a.g.b.height), (60, 7))
+    assert_eq(a.strip_w, 112.0)
 
 @test fn the_app_shows_the_page_and_follows_links_by_click()
     b := Browser.new("{testdata()}/index.html", 60, 12)
@@ -3491,25 +3569,22 @@ fn clicked(x float, y float) app.Event
     outlines := app.script(mut a, [resized(480.0, 96.0)])
     top := outlines[0].split("\n")
     assert_eq(top[0], "column")
-    assert(top[1].starts_with("  canvas #tabs"))
-    assert(outlines[0].contains("\n  row\n    canvas #nav"))
-    assert(outlines[0].contains("#url"))
+    assert(top[1].starts_with("  canvas #chrome"))
     assert(outlines[0].contains("\n  canvas #page"))
     assert(outlines[0].contains("str 0.0,32.0 \"# Garlic\" mono 13.0 dcdcaa"))
-    assert(outlines[0].contains("\n  canvas #status"))
     link := a.g.b.pg.boxes[a.g.b.pg.links[0]]
     shown := app.script(mut a, [clicked(
         link.col.to_float() * 8.0 + 1.0,
         link.row.to_float() * 16.0 + 1.0,
     )])
     assert_eq(a.g.b.pg.title, "Second page")
-    assert(a.url_text.ends_with("second.html"))
-    assert(shown[0].contains("<{a.url_text}> #url"))
+    assert(a.omni.text.ends_with("second.html"))
+    assert(shown[0].contains("second.html"))
     assert_eq(a.title(), "Second page - Garlic")
     mut back := app.event("click")
-    back.id = "nav"
+    back.id = "chrome"
     back.x = 20.0
-    back.y = 20.0
+    back.y = 66.0
     app.script(mut a, [back])
     assert_eq(a.g.b.pg.title, "Garlic test page")
 
@@ -4802,21 +4877,51 @@ fn fwd_slashes(p str) str
     a.new_tab()
     a.new_tab()
     mut ev := app.event("click")
-    ev.id = "tabs"
-    ev.x = tabstrip.tab_x(1, 3, a.strip_w, true) + 20.0
+    ev.id = "chrome"
+    ev.x = chrome.tab_x(1, 3, a.strip_w) + 20.0
     ev.y = 20.0
     ev.text = "other"
     a.update(ev)
     assert_eq(a.tabs.len(), 2)
     ev.text = "right"
-    ev.x = tabstrip.tab_x(0, 2, a.strip_w, true) + 20.0
+    ev.x = chrome.tab_x(0, 2, a.strip_w) + 20.0
     a.update(ev)
     assert_eq(a.menu_tab, 0)
     ev.text = "left"
-    ev.y = tabstrip.BAR_H + 4.0 + 3.0
+    ev.id = "page"
+    ev.y = 8.0 + 3.0
     ev.x = a.menu_x + 5.0
     a.update(ev)
     assert_eq((a.tabs.len(), a.menu_tab), (1, -1))
+
+@test fn the_omnibox_takes_typing_and_opens_the_address()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut a := Garlic.new(b, 600.0, 300.0, 7.5, 15.0)
+    mut ev := app.event("click")
+    ev.id = "chrome"
+    ev.x = 300.0
+    ev.y = 66.0
+    ev.text = "left"
+    a.update(ev)
+    assert(a.omni.editing and a.omni.all)
+    for c in "{testdata()}/second.html".chars()
+        mut k := app.key("{c}")
+        k.id = "chrome"
+        a.update(k)
+    mut enter := app.key("enter")
+    enter.id = "chrome"
+    a.update(enter)
+    assert_eq(a.g.b.pg.title, "Second page")
+    assert(not a.omni.editing)
+    assert_eq(a.omni.text, a.g.b.url)
+    mut menu := app.event("click")
+    menu.id = "chrome"
+    menu.x = a.strip_w - 20.0
+    menu.y = 66.0
+    menu.text = "left"
+    a.update(menu)
+    assert_eq(a.menu_tab, -2)
+    assert(a.menu_rows().contains("Light theme"))
 
 @test fn font_keywords_inherit_oblique_and_the_font_shorthand()
     assert(page.font_italic("oblique 10deg", false))
