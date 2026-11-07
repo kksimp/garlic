@@ -2775,6 +2775,11 @@ impl app.App for Garlic
                     agent_call(ev.text)
                 elif ev.id == "tick"
                     tick()
+            "press" =>
+                if ev.id == "agent_allow"
+                    decide(true)
+                elif ev.id == "agent_deny"
+                    decide(false)
             _ => menu_tab = menu_tab
         g.refresh()
         if not omni.editing
@@ -3591,17 +3596,28 @@ fn clicked(x float, y float) app.Event
 @test fn the_address_field_opens_urls_and_cmd_l_focuses_it()
     b := Browser.new("{testdata()}/index.html", 60, 12)
     mut a := Garlic.new(b, 960.0, 600.0, 8.0, 16.0)
-    app.script(mut a, [app.edit("url", "{testdata()}/second.html")])
-    assert_eq(a.g.b.pg.title, "Garlic test page")
-    mut submit := app.event("submit")
-    submit.id = "url"
-    app.script(mut a, [submit])
-    assert_eq(a.g.b.pg.title, "Second page")
     mut cmd_l := app.key("l")
     cmd_l.meta = true
+    cmd_l.id = "page"
     app.script(mut a, [cmd_l])
-    assert_eq(a.focus(), "url")
-    app.script(mut a, [app.key("down")])
+    assert(a.omni.editing and a.omni.all)
+    mut keys := List[app.Event]()
+    for c in "{testdata()}/second.html".chars()
+        mut k := app.key("{c}")
+        k.id = "chrome"
+        keys.push(k)
+    app.script(mut a, keys)
+    assert_eq(a.g.b.pg.title, "Garlic test page")
+    mut enter := app.key("enter")
+    enter.id = "chrome"
+    app.script(mut a, [enter])
+    assert_eq(a.g.b.pg.title, "Second page")
+    app.script(mut a, [cmd_l])
+    assert_eq(a.focus(), "chrome")
+    mut esc := app.key("escape")
+    esc.id = "chrome"
+    app.script(mut a, [esc])
+    assert(not a.omni.editing)
     assert_eq(a.focus(), "")
     assert_eq(address("projects.voltare.us"), "https://projects.voltare.us")
     assert_eq(address(" https://a.b/c "), "https://a.b/c")
@@ -4796,7 +4812,7 @@ fn fwd_slashes(p str) str
     )))
     assert(a.pending != "")
     assert_eq(a.ask_site, "elsewhere.test")
-    assert(app.outline(a.view()).contains("#agent_allow"))
+    assert(app.outline(a.view()).contains("\"Allow\""))
     a.update(app.press("agent_deny"))
     assert_eq(a.pending, "")
     assert((a.bridge.replies.recv() else "").contains("denied"))

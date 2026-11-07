@@ -266,8 +266,12 @@ pub fn pretty(url str) (str, str)
     mut u := url
     if r := u.strip_prefix("https://")
         u = r
-    i := u.find("/") else return (u, "")
-    (u.slice(0, i), u.slice(i, u.chars().len()))
+    mut from := 0
+    if k := u.find("://")
+        from = k + 3
+    rest := u.slice(from, u.chars().len())
+    i := rest.find("/") else return (u, "")
+    (u.slice(0, from + i), rest.slice(i, rest.chars().len()))
 
 # ---- Drawing helpers ---------------------------------------------------------
 
