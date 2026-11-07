@@ -2740,7 +2740,8 @@ impl app.App for Garlic
                 if omni.editing
                     omni.insert(ev.text)
             "key" =>
-                if omni.editing and (not ev.meta or ev.text == "a" or ev.text == "left" or ev.text == "right")
+                if omni.editing
+                    and (not ev.meta or ev.text == "a" or ev.text == "left" or ev.text == "right")
                     match omni.key(ev.text, ev.meta, ev.shift)
                         "open" => g.open(omni.text)
                         "cancel" => omni = chrome.omni(g.b.url)

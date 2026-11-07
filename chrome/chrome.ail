@@ -262,7 +262,7 @@ pub fn Omni.key(mut self, key str, meta bool, shift bool) str
 
 ## The address as the omnibox shows it at rest: no `https://`, and the
 ## host apart from the rest so the path can be dimmed.
-pub fn pretty(url str) (str, str)
+pub fn pretty(url str)(str, str)
     mut u := url
     if r := u.strip_prefix("https://")
         u = r
@@ -349,7 +349,14 @@ fn arc(mut ops List[app.Op], cx float, cy float, r float, a0 float, a1 float, c 
     for i in 0..steps
         t0 := a0 + (a1 - a0) * i.to_float() / steps.to_float()
         t1 := a0 + (a1 - a0) * (i + 1).to_float() / steps.to_float()
-        ops.push(line(cx + r * t0.cos(), cy + r * t0.sin(), cx + r * t1.cos(), cy + r * t1.sin(), c, w))
+        ops.push(line(
+            cx + r * t0.cos(),
+            cy + r * t0.sin(),
+            cx + r * t1.cos(),
+            cy + r * t1.sin(),
+            c,
+            w,
+        ))
 
 # ---- Icons -------------------------------------------------------------------
 
@@ -441,13 +448,7 @@ fn button_bg(mut ops List[app.Op], th Theme, st State, x float, y float, on bool
 ## The display list for the chrome canvas: the tabs, the toolbar and, if
 ## `st.ask` is set, the infobar. `tw` measures sans text at 12 and 14 points
 ## (Garlic passes the layout's estimate).
-pub fn draw(
-    th Theme,
-    items List[Item],
-    cur int,
-    st State,
-    tw fn(str, float) float,
-) List[app.Op]
+pub fn draw(th Theme, items List[Item], cur int, st State, tw fn(str, float) float) List[app.Op]
     width := st.width.max(1.0)
     mut ops := [
         app.draw_rect(0.0, 0.0, width, STRIP_H, th.frame),
@@ -455,7 +456,14 @@ pub fn draw(
     ]
     n := items.len()
     w := tab_w(n, width)
-    hover_tab := if st.hover_x >= 0.0 then hit(st.hover_x, st.hover_y, n, width, st.agent != "", false) else miss()
+    hover_tab := if st.hover_x >= 0.0 then hit(
+        st.hover_x,
+        st.hover_y,
+        n,
+        width,
+        st.agent != "",
+        false,
+    ) else miss()
     for k in 0..n
         x0 := tab_x(k, n, width)
         shown := k == cur
@@ -504,7 +512,16 @@ pub fn draw(
     ow := omni_w(width, st.agent != "")
     if st.agent != ""
         ax := OMNI_X + ow + 8.0
-        round(mut ops, ax, OMNI_Y + 3.0, AGENT_W, OMNI_H - 6.0, (OMNI_H - 6.0) / 2.0, th.accent, th.toolbar)
+        round(
+            mut ops,
+            ax,
+            OMNI_Y + 3.0,
+            AGENT_W,
+            OMNI_H - 6.0,
+            (OMNI_H - 6.0) / 2.0,
+            th.accent,
+            th.toolbar,
+        )
         spark(mut ops, ax + 16.0, OMNI_Y + OMNI_H / 2.0, th.on_accent)
         ops.push(app.Op.Clip(x: ax + 28.0, y: OMNI_Y, w: AGENT_W - 36.0, h: OMNI_H))
         ops.push(txt(ax + 28.0, OMNI_Y + 9.0, st.agent, th.on_accent, true, 12.0))
@@ -522,17 +539,57 @@ fn omnibox(mut ops List[app.Op], th Theme, st State, tw fn(str, float) float)
     width := st.width.max(1.0)
     ow := omni_w(width, st.agent != "")
     o := st.omni
-    over := st.hover_x >= 0.0 and hit(st.hover_x, st.hover_y, 0, width, st.agent != "", false).kind == "omni"
+    over := st.hover_x >= 0.0 and hit(
+        st.hover_x,
+        st.hover_y,
+        0,
+        width,
+        st.agent != "",
+        false,
+    ).kind == "omni"
     if o.editing
-        round(mut ops, OMNI_X - 1.0, OMNI_Y - 1.0, ow + 2.0, OMNI_H + 2.0, OMNI_H / 2.0 + 1.0, th.accent, th.toolbar)
-        round(mut ops, OMNI_X, OMNI_Y, ow, OMNI_H, OMNI_H / 2.0, if th.is_light then th.toolbar else th.omni, th.accent)
+        round(
+            mut ops,
+            OMNI_X - 1.0,
+            OMNI_Y - 1.0,
+            ow + 2.0,
+            OMNI_H + 2.0,
+            OMNI_H / 2.0 + 1.0,
+            th.accent,
+            th.toolbar,
+        )
+        round(
+            mut ops,
+            OMNI_X,
+            OMNI_Y,
+            ow,
+            OMNI_H,
+            OMNI_H / 2.0,
+            if th.is_light then th.toolbar else th.omni,
+            th.accent,
+        )
     else
-        round(mut ops, OMNI_X, OMNI_Y, ow, OMNI_H, OMNI_H / 2.0, if over then th.omni_hot else th.omni, th.toolbar)
+        round(
+            mut ops,
+            OMNI_X,
+            OMNI_Y,
+            ow,
+            OMNI_H,
+            OMNI_H / 2.0,
+            if over then th.omni_hot else th.omni,
+            th.toolbar,
+        )
     tx := OMNI_X + 40.0
     ty := OMNI_Y + 8.0
     ops.push(app.Op.Clip(x: tx, y: OMNI_Y, w: (ow - 52.0).max(0.0), h: OMNI_H))
     if o.editing
-        padlock(mut ops, OMNI_X + 14.0, OMNI_Y + 10.0, th.dim, if th.is_light then th.toolbar else th.omni)
+        padlock(
+            mut ops,
+            OMNI_X + 14.0,
+            OMNI_Y + 10.0,
+            th.dim,
+            if th.is_light then th.toolbar else th.omni,
+        )
         if o.text == ""
             ops.push(txt(tx, ty, "Search DuckDuckGo or type a URL", th.dim, false, 14.0))
         else
@@ -550,7 +607,13 @@ fn omnibox(mut ops List[app.Op], th Theme, st State, tw fn(str, float) float)
             cx := tx + tw(o.text.slice(0, o.cursor), 14.0)
             ops.push(app.draw_rect(cx, OMNI_Y + 8.0, 1.5, OMNI_H - 16.0, th.text))
     else
-        padlock(mut ops, OMNI_X + 14.0, OMNI_Y + 10.0, th.dim, if over then th.omni_hot else th.omni)
+        padlock(
+            mut ops,
+            OMNI_X + 14.0,
+            OMNI_Y + 10.0,
+            th.dim,
+            if over then th.omni_hot else th.omni,
+        )
         if o.text == ""
             ops.push(txt(tx, ty, "Search DuckDuckGo or type a URL", th.dim, false, 14.0))
         else
