@@ -113,8 +113,8 @@ fn miss() Hit
     Hit(kind: "none", k: 0)
 
 ## The height the chrome canvas needs.
-pub fn height(infobar bool) float
-    if infobar then H + INFO_H else H
+pub fn height(with_infobar bool) float
+    if with_infobar then H + INFO_H else H
 
 ## A tab's width when `n` tabs share a strip `width` wide.
 pub fn tab_w(n int, width float) float
@@ -136,7 +136,7 @@ fn in_btn(x float, y float, bx float, by float) bool
 BTN_Y := 54.0
 
 ## What a click at (x, y) on the chrome canvas landed on.
-pub fn hit(x float, y float, n int, width float, agent bool, infobar bool) Hit
+pub fn hit(x float, y float, n int, width float, agent bool, with_infobar bool) Hit
     if y < STRIP_H
         if y < TAB_TOP
             return miss()
@@ -166,7 +166,7 @@ pub fn hit(x float, y float, n int, width float, agent bool, infobar bool) Hit
         if in_btn(x, y, width - MENU_BTN_W, BTN_Y)
             return Hit(kind: "menu", k: 0)
         return miss()
-    if infobar and y < H + INFO_H
+    if with_infobar and y < H + INFO_H
         if x >= width - 88.0 and x < width - 12.0
             return Hit(kind: "allow", k: 0)
         if x >= width - 172.0 and x < width - 96.0
@@ -462,7 +462,7 @@ pub fn draw(
             tab_shape(mut ops, x0, TAB_TOP, w, TAB_H, TAB_R, th.tab_hover, th.frame)
         elif k + 1 < n and k + 1 != cur and not (hover_tab.kind == "tab" and hover_tab.k == k + 1)
             ops.push(app.draw_rect(x0 + w - 0.5, TAB_TOP + 9.0, 1.0, TAB_H - 18.0, th.sep))
-        bg := if shown then th.toolbar elif hovered then th.tab_hover else th.frame
+        bg := if shown then th.toolbar else (if hovered then th.tab_hover else th.frame)
         fg := if shown then th.text else th.dim
         close := shown or hovered or w >= 120.0
         globe(mut ops, x0 + 10.0, TAB_TOP + 9.0, th.dim, bg)
@@ -576,7 +576,7 @@ fn infobar(mut ops List[app.Op], th Theme, st State, width float)
 
 ## A dropdown menu with `rows` whose top-left corner is at (x, y) on a canvas
 ## coloured `bg`; `hot` is the row under the pointer, or -1.
-pub fn menu_ops(th Theme, rows List[str], x float, y float, bg int, hot int) List[app.Op]
+pub fn menu_ops(th Theme, rows List[str], x float, y float, bg int, hot_row int) List[app.Op]
     mut ops := List[app.Op]()
     if rows.len() == 0
         return ops
@@ -585,7 +585,7 @@ pub fn menu_ops(th Theme, rows List[str], x float, y float, bg int, hot int) Lis
     round(mut ops, x, y, MENU_W, h, 8.0, th.menu, bg)
     for r in 0..rows.len()
         ry := y + MENU_PAD + r.to_float() * ROW_H
-        if r == hot
+        if r == hot_row
             ops.push(app.draw_rect(x, ry, MENU_W, ROW_H, th.menu_hot))
         ops.push(txt(x + 16.0, ry + 8.0, rows[r], th.menu_text, false, 13.0))
     ops
@@ -601,14 +601,14 @@ pub fn menu_hit(x float, y float, n int, mx float, my float) int
 
 ## The status bubble at the bottom-left of a page `h` high (Chromium shows
 ## the link under the pointer there): empty for an empty line.
-pub fn status_ops(th Theme, line str, h float, bg int, tw fn(str, float) float) List[app.Op]
+pub fn status_ops(th Theme, msg str, h float, bg int, tw fn(str, float) float) List[app.Op]
     mut ops := List[app.Op]()
-    if line == ""
+    if msg == ""
         return ops
-    w := tw(line, 12.0) + 24.0
+    w := tw(msg, 12.0) + 24.0
     round(mut ops, 0.0 - 8.0, h - 24.0, w + 8.0, 32.0, 8.0, th.sep, bg)
     round(mut ops, 0.0 - 8.0, h - 23.0, w + 7.0, 32.0, 7.0, th.toolbar, th.sep)
-    ops.push(txt(8.0, h - 18.0, line, th.text, false, 12.0))
+    ops.push(txt(8.0, h - 18.0, msg, th.text, false, 12.0))
     ops
 
 # ---- Tests -----------------------------------------------------------------------------
