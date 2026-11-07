@@ -60,7 +60,7 @@ pub fn prefetch(
             bits[at] = Bitmap(w: px.width, h: px.height, data: app.bitmap_data(px.bytes()))
 
 ## The bytes of the picture at `at`, or none.
-fn load(at str, base net.Options, from str, cj jar.Jar) List[int]?
+pub fn load(at str, base net.Options, from str, cj jar.Jar) List[int]?
     s := page.scheme(at)
     if s == "http" or s == "https"
         mut o := base

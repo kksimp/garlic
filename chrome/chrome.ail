@@ -11,6 +11,12 @@ use std.app
 pub struct Item
     pub title str
     pub url str
+    ## The favicon: the host's bitmap id ("" for the stand-in globe), its
+    ## pixel size, and its data the first time it goes to the host.
+    pub icon str
+    pub icon_w int
+    pub icon_h int
+    pub icon_data str
 
 ## The colours of the chrome; `dark()` and `light()` are Chromium's.
 pub struct Theme
@@ -483,7 +489,19 @@ pub fn draw(th Theme, items List[Item], cur int, st State, tw fn(str, float) flo
         bg := if shown then th.toolbar else (if hovered then th.tab_hover else th.frame)
         fg := if shown then th.text else th.dim
         close := shown or hovered or w >= 120.0
-        globe(mut ops, x0 + 10.0, TAB_TOP + 9.0, th.dim, bg)
+        if items[k].icon != ""
+            ops.push(app.Op.Bitmap(
+                x: x0 + 10.0,
+                y: TAB_TOP + 9.0,
+                w: 16.0,
+                h: 16.0,
+                id: items[k].icon,
+                pw: items[k].icon_w,
+                ph: items[k].icon_h,
+                data: items[k].icon_data,
+            ))
+        else
+            globe(mut ops, x0 + 10.0, TAB_TOP + 9.0, th.dim, bg)
         title := if items[k].title == "" then "New tab" else items[k].title
         room := w - 32.0 - (if close then CLOSE_W + 12.0 else 10.0)
         ops.push(app.Op.Clip(x: x0 + 32.0, y: TAB_TOP, w: room.max(0.0), h: TAB_H))
@@ -739,7 +757,13 @@ pub fn status_ops(th Theme, msg str, h float, bg int, tw fn(str, float) float) L
         ask: "",
         width: 800.0,
     )
-    ops := draw(th, [Item(title: "Example", url: "https://example.com/x")], 0, st, est)
+    ops := draw(
+        th,
+        [Item(title: "Example", url: "https://example.com/x", icon: "", icon_w: 0, icon_h: 0, icon_data: "")],
+        0,
+        st,
+        est,
+    )
     assert(ops.len() > 40)
     assert(status_ops(th, "", 600.0, 0xffffff, est).len() == 0)
     assert(status_ops(th, "https://a.b", 600.0, 0xffffff, est).len() > 2)

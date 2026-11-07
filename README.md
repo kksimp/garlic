@@ -34,6 +34,7 @@ Native macOS window (needs the SwiftUI host, ADR 0838): `../ail/tools/app-host/m
 | `css/` | CSS parser, selector matching and cascade (the properties text cells use) |
 | `page/` | text-cell layout, link numbering, boxes with roles, names and positions, the page model JSON, URL resolution (RFC 3986) |
 | `draw/` | the display list and colors both windows share |
+| `chrome/`, `favicon/` | the Chromium-style chrome (tab strip, toolbar, omnibox, menus) and the tabs' favicons (ICO decoder included) |
 | `gfx/` | pixel layout: box model, proportional text, flex, grid, tables, images; `--app --pixels` |
 | `--bench FILE [ROUNDS]` | page-load phases in milliseconds on a saved page: `ail build garlic.ail -o garlic && ./garlic --bench FILE [ROUNDS]` |
 | `garlic.ail` | fetching, history, find, the `std.app` window and the command line |
@@ -43,7 +44,7 @@ Native macOS window (needs the SwiftUI host, ADR 0838): `../ail/tools/app-host/m
 - Forms: click a field to type; Enter submits (GET/POST); clicking a select cycles its options.
 - Tabs: Cmd-T new, Cmd-W close, Ctrl-Tab next, Cmd-Shift-T reopens; each tab keeps its own page. Right-click a tab for its menu.
 - Omnibox: click or Cmd-L to edit, Enter opens a URL or a DuckDuckGo search (`b`, `y`, `g` prefixes pick Bing, Yahoo, Google), Escape restores the address.
-- Look: Chromium-style, dark by default; `--light` for the light look (also in the toolbar menu).
+- Look: Chromium-style, dark by default; `--light` for the light look (also in the toolbar menu). Tabs show the site's favicon (`<link rel="icon">` or `/favicon.ico`; ICO, PNG, GIF, JPEG), fetched once per icon address.
 - Find: Cmd-F or `/`, type, Enter scrolls to the match and highlights it; `n` finds the next.
 - `garlic --pixels-dump URL` prints the canvas, ops and image decode status.
 
