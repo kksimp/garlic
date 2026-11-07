@@ -41,7 +41,9 @@ Native macOS window (needs the SwiftUI host, ADR 0838): `../ail/tools/app-host/m
 ## Pixel mode: forms, tabs, find
 
 - Forms: click a field to type; Enter submits (GET/POST); clicking a select cycles its options.
-- Tabs: Cmd-T new, Cmd-W close, Ctrl-Tab next; each tab keeps its own page.
+- Tabs: Cmd-T new, Cmd-W close, Ctrl-Tab next, Cmd-Shift-T reopens; each tab keeps its own page. Right-click a tab for its menu.
+- Omnibox: click or Cmd-L to edit, Enter opens a URL or a DuckDuckGo search (`b`, `y`, `g` prefixes pick Bing, Yahoo, Google), Escape restores the address.
+- Look: Chromium-style, dark by default; `--light` for the light look (also in the toolbar menu).
 - Find: Cmd-F or `/`, type, Enter scrolls to the match and highlights it; `n` finds the next.
 - `garlic --pixels-dump URL` prints the canvas, ops and image decode status.
 

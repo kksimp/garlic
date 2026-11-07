@@ -191,8 +191,18 @@ thread's `std.app`: an AIL program holds state, `update(event)` and
 a pipe. Garlic keeps its fetch, parse, style and layout, and hands the host
 a display list.
 
-- **Nodes**: a column of a row (back, reload, a URL field) and a `Canvas`
-  that fills the window, then a status line.
+- **Nodes**: a column of two canvases: the chrome (`chrome` module) and the
+  page, which fills the window. The chrome is drawn Chromium-style (Kaleb,
+  2026-11-07: a familiar look for adoption; speed and agent features
+  differentiate): a tab strip whose shown tab flares into the toolbar,
+  back, forward, reload, a pill omnibox edited in AIL (caret, select-all,
+  host bright and path dimmed at rest), an Agent chip when `--attach` is on,
+  a kebab menu, an infobar for an agent's Allow / Deny, and the status as a
+  bubble over the page's bottom-left corner (the link under the pointer,
+  prompts, messages). Dark by default, `--light` for Chromium's light look.
+  No native field: three hosts would give three looks, and the omnibox needs
+  its own drawing for the dimmed path and, later, a suggestion dropdown.
+  Rejected: copying Chrome's assets (Google branding); the icons are stroked.
 - **First cut**: the page model's rows draw in a monospace font. The host
   reports its cell size in points, so `cols = width / cell_w` and a click
   at (x, y) is cell (x / cell_w, y / cell_h). Layout stays exactly the one
