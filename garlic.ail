@@ -2336,7 +2336,7 @@ fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
         hover_href: "",
         light: false,
         show_agent: false,
-        want: "",
+        want: "chrome",
         attached: false,
         bridge: attach.Bridge.new(),
         guard: Guard(allow: [], log: [], fixed: [], ok_once: false),
