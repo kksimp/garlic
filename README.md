@@ -44,7 +44,7 @@ Native macOS window (needs the SwiftUI host, ADR 0838): `../ail/tools/app-host/m
 - Forms: click a field to type; Enter submits (GET/POST); clicking a select cycles its options.
 - Tabs: Cmd-T new, Cmd-W close, Ctrl-Tab next, Cmd-Shift-T reopens; each tab keeps its own page. Right-click a tab for its menu.
 - Omnibox: click or Cmd-L to edit, Enter opens a URL or a DuckDuckGo search (`b`, `y`, `g` prefixes pick Bing, Yahoo, Google), Escape restores the address.
-- Look: Chromium-style, dark by default; `--light` for the light look (also in the toolbar menu). Tabs show the site's favicon (`<link rel="icon">` or `/favicon.ico`; ICO, PNG, GIF, JPEG), fetched once per icon address.
+- Look: Chromium-style, dark by default; `--light` for the light look (also in the toolbar menu). On macOS the tabs sit in the title bar beside the traffic lights (std.app.25); drag the empty strip to move the window, double-click it to zoom. Tabs show the site's favicon (`<link rel="icon">` or `/favicon.ico`; ICO, PNG, GIF, JPEG), fetched once per icon address.
 - Find: Cmd-F or `/`, type, Enter scrolls to the match and highlights it; `n` finds the next.
 - `garlic --pixels-dump URL` prints the canvas, ops and image decode status.
 

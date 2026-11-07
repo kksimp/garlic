@@ -2298,6 +2298,11 @@ struct Garlic
     hover_href str
     ## Chromium's light look instead of the dark one (`--light`).
     light bool
+    ## Edge mode (std.app.25): the room the host's window controls take, and
+    ## the `drag` / `zoom` lines queued for the host.
+    inset_left float
+    inset_top float
+    queue List[str]
     ## Whether the agent chip was clicked, so the status bubble tells what
     ## the attached agent did.
     show_agent bool
@@ -2344,6 +2349,9 @@ fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
         hover_y: -1.0,
         hover_href: "",
         light: false,
+        inset_left: 0.0,
+        inset_top: 0.0,
+        queue: [],
         show_agent: false,
         want: "chrome",
         attached: false,
@@ -2643,8 +2651,11 @@ fn Garlic.menu_pick(mut self, r int)
 
 ## A click on the chrome canvas.
 fn Garlic.chrome_click(mut self, ev app.Event)
-    h := chrome.hit(ev.x, ev.y, tabs.len(), strip_w, attached, pending != "")
+    h := chrome.hit(ev.x, ev.y, tabs.len(), strip_w, inset_left, attached, pending != "")
     menu_tab = -1
+    if h.kind == "none" and ev.y < chrome.STRIP_H and ev.text == "left"
+        ## The empty strip is the title bar: it moves the window (std.app.25).
+        queue.push(if ev.clicks == 2 then "\{\"v\":1,\"t\":\"zoom\"}" else "\{\"v\":1,\"t\":\"drag\"}")
     if h.kind != "omni" and omni.editing
         omni = chrome.omni(g.b.url)
     match h.kind
@@ -2715,6 +2726,7 @@ fn Garlic.chrome_node(self) app.Node
         agent: agent_chip(),
         ask: if pending != "" then "The agent wants to {asks}." else "",
         width: strip_w,
+        inset_left: inset_left,
     )
     app.canvas(
         "chrome",
@@ -2732,7 +2744,13 @@ impl app.App for Garlic
         icon_sent = icon_sent.union(icon_fresh)
         icon_fresh = {}
         match ev.kind
+            "start" =>
+                inset_left = ev.inset_left
+                inset_top = ev.inset_top
             "resize" =>
+                if ev.inset_left > 0.0 or ev.inset_top > 0.0
+                    inset_left = ev.inset_left
+                    inset_top = ev.inset_top
                 if ev.id == "chrome"
                     strip_w = ev.dx
                 elif ev.id == "page" or ev.id == ""
@@ -2828,6 +2846,14 @@ impl app.App for Garlic
 
     fn hover(self) bool
         true
+
+    fn edge(self) bool
+        true
+
+    fn lines(mut self) List[str]
+        sent := queue
+        queue = []
+        sent
 
     fn title(self) str
         "{g.b.pg.title} - Garlic"
@@ -4928,13 +4954,13 @@ fn fwd_slashes(p str) str
     a.new_tab()
     mut ev := app.event("click")
     ev.id = "chrome"
-    ev.x = chrome.tab_x(1, 3, a.strip_w) + 20.0
+    ev.x = chrome.tab_x(1, 3, a.strip_w, 0.0) + 20.0
     ev.y = 20.0
     ev.text = "other"
     a.update(ev)
     assert_eq(a.tabs.len(), 2)
     ev.text = "right"
-    ev.x = chrome.tab_x(0, 2, a.strip_w) + 20.0
+    ev.x = chrome.tab_x(0, 2, a.strip_w, 0.0) + 20.0
     a.update(ev)
     assert_eq(a.menu_tab, 0)
     ev.text = "left"
@@ -4943,6 +4969,33 @@ fn fwd_slashes(p str) str
     ev.x = a.menu_x + 5.0
     a.update(ev)
     assert_eq((a.tabs.len(), a.menu_tab), (1, -1))
+
+@test fn the_empty_strip_drags_the_window_and_tabs_start_right_of_the_controls()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut a := Garlic.new(b, 600.0, 300.0, 7.5, 15.0)
+    assert(a.edge())
+    mut start := app.event("start")
+    start.inset_left = 78.0
+    start.inset_top = 28.0
+    a.update(start)
+    assert_eq(a.inset_left, 78.0)
+    mut ev := app.event("click")
+    ev.id = "chrome"
+    ev.x = 40.0
+    ev.y = 20.0
+    ev.text = "left"
+    ev.clicks = 1
+    a.update(ev)
+    assert_eq(a.lines(), ["\{\"v\":1,\"t\":\"drag\"}"])
+    assert_eq(a.lines(), [])
+    ev.clicks = 2
+    a.update(ev)
+    assert_eq(a.lines(), ["\{\"v\":1,\"t\":\"zoom\"}"])
+    ev.x = chrome.tab_x(0, 1, a.strip_w, 78.0) + 20.0
+    ev.clicks = 1
+    ev.text = "other"
+    a.update(ev)
+    assert_eq(a.tabs.len(), 1)
 
 @test fn the_omnibox_takes_typing_and_opens_the_address()
     b := Browser.new("{testdata()}/index.html", 60, 12)
