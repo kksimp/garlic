@@ -2534,7 +2534,14 @@ fn Garlic.new_tab(mut self)
 ## The shown tab's page, or tab `k`'s, as the strip lists it.
 fn Garlic.item(self, k int) chrome.Item
     t := if k == cur then g else tabs[k]
-    mut it := chrome.Item(title: t.b.pg.title, url: t.b.url, icon: "", icon_w: 0, icon_h: 0, icon_data: "")
+    mut it := chrome.Item(
+        title: t.b.pg.title,
+        url: t.b.url,
+        icon: "",
+        icon_w: 0,
+        icon_h: 0,
+        icon_data: "",
+    )
     if bm := icons.get(t.icon)
         if bm.w > 0
             it.icon = t.icon

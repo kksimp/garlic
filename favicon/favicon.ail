@@ -144,18 +144,14 @@ fn dib(d List[int]) images.Bitmap?
             for x in 0..w
                 if d[r + x / 8].shr(7 - x % 8).bit_and(1) == 1
                     px[y * w + x] = px[y * w + x].bit_and(0xffffff)
-    images.Bitmap(w: w, h: h, data: app.bitmap_data(image.Rgba(width: w, height: h, px: px).bytes()))
+    images.Bitmap(w: w, h: h, data: app.bitmap_data(
+        image.Rgba(width: w, height: h, px: px).bytes(),
+    ))
 
 ## Fetches the icon for the page `d` at `url` unless `icons` already has
 ## its address: the decoded icon, or one of zero size when the site has
 ## none. Returns the address ("" when there is none to show).
-pub fn fetch(
-    d html.Doc,
-    url str,
-    cj jar.Jar,
-    o net.Options,
-    mut icons Map[str, images.Bitmap],
-) str
+pub fn fetch(d html.Doc, url str, cj jar.Jar, o net.Options, mut icons Map[str, images.Bitmap]) str
     at := url_of(d, page.base_of(d, url))
     if at == ""
         return ""

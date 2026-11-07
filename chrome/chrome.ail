@@ -759,7 +759,14 @@ pub fn status_ops(th Theme, msg str, h float, bg int, tw fn(str, float) float) L
     )
     ops := draw(
         th,
-        [Item(title: "Example", url: "https://example.com/x", icon: "", icon_w: 0, icon_h: 0, icon_data: "")],
+        [Item(
+            title: "Example",
+            url: "https://example.com/x",
+            icon: "",
+            icon_w: 0,
+            icon_h: 0,
+            icon_data: "",
+        )],
         0,
         st,
         est,
