@@ -375,12 +375,18 @@ fn arrow(mut ops List[app.Op], x float, y float, c int, back bool)
 fn reload_icon(mut ops List[app.Op], x float, y float, c int)
     cx := x + BTN / 2.0
     cy := y + BTN / 2.0
-    a0 := 0.0 - 1.1
-    arc(mut ops, cx, cy, 6.5, a0, 4.2, c, 2.0)
-    ax := cx + 6.5 * a0.cos()
-    ay := cy + 6.5 * a0.sin()
-    ops.push(line(ax - 4.5, ay - 1.0, ax + 1.0, ay + 1.0, c, 2.0))
-    ops.push(line(ax + 1.0, ay + 1.0, ax + 1.0, ay - 5.0, c, 2.0))
+    r := 6.5
+    ## Open at about one o'clock, drawn clockwise from four o'clock; the
+    ## arrow head sits at the end and points along the arc.
+    a0 := 0.35
+    a1 := a0 + 5.2
+    arc(mut ops, cx, cy, r, a0, a1, c, 2.0)
+    px := cx + r * a1.cos()
+    py := cy + r * a1.sin()
+    tx := 0.0 - a1.sin()
+    ty := a1.cos()
+    ops.push(line(px, py, px - 5.0 * tx + 4.0 * ty, py - 5.0 * ty - 4.0 * tx, c, 2.0))
+    ops.push(line(px, py, px - 5.0 * tx - 4.0 * ty, py - 5.0 * ty + 4.0 * tx, c, 2.0))
 
 ## The menu button: three dots.
 fn kebab(mut ops List[app.Op], x float, y float, c int, bg int)
@@ -526,6 +532,7 @@ pub fn draw(th Theme, items List[Item], cur int, st State, tw fn(str, float) flo
         ops.push(app.Op.Clip(x: ax + 28.0, y: OMNI_Y, w: AGENT_W - 36.0, h: OMNI_H))
         ops.push(txt(ax + 28.0, OMNI_Y + 9.0, st.agent, th.on_accent, true, 12.0))
         ops.push(app.Op.Unclip)
+    ops.push(app.draw_rect(0.0, H - 1.0, width, 1.0, mix(th.toolbar, th.sep, 0.5)))
     mx := width - MENU_BTN_W
     button_bg(mut ops, th, st, mx, BTN_Y, true)
     kebab(mut ops, mx, BTN_Y, th.dim, if hot(st, mx, BTN_Y) then th.hover else th.toolbar)
@@ -581,15 +588,10 @@ fn omnibox(mut ops List[app.Op], th Theme, st State, tw fn(str, float) float)
         )
     tx := OMNI_X + 40.0
     ty := OMNI_Y + 8.0
+    field_bg := if o.editing then (if th.is_light then th.toolbar else th.omni) else (if over then th.omni_hot else th.omni)
+    padlock(mut ops, OMNI_X + 14.0, OMNI_Y + 10.0, th.dim, field_bg)
     ops.push(app.Op.Clip(x: tx, y: OMNI_Y, w: (ow - 52.0).max(0.0), h: OMNI_H))
     if o.editing
-        padlock(
-            mut ops,
-            OMNI_X + 14.0,
-            OMNI_Y + 10.0,
-            th.dim,
-            if th.is_light then th.toolbar else th.omni,
-        )
         if o.text == ""
             ops.push(txt(tx, ty, "Search DuckDuckGo or type a URL", th.dim, false, 14.0))
         else
@@ -607,13 +609,6 @@ fn omnibox(mut ops List[app.Op], th Theme, st State, tw fn(str, float) float)
             cx := tx + tw(o.text.slice(0, o.cursor), 14.0)
             ops.push(app.draw_rect(cx, OMNI_Y + 8.0, 1.5, OMNI_H - 16.0, th.text))
     else
-        padlock(
-            mut ops,
-            OMNI_X + 14.0,
-            OMNI_Y + 10.0,
-            th.dim,
-            if over then th.omni_hot else th.omni,
-        )
         if o.text == ""
             ops.push(txt(tx, ty, "Search DuckDuckGo or type a URL", th.dim, false, 14.0))
         else
