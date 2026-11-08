@@ -4,9 +4,9 @@
 ## canvas element's `getContext`, `toDataURL` and `toBlob`. A 2D context
 ## takes every drawing call and keeps its state, but draws nothing: the
 ## page can't see pixels, so `getImageData` is transparent black and
-## `toDataURL` is a blank PNG. WebGL and WebGPU contexts are null, as on a
-## machine without graphics, so pages report them unsupported rather
-## than failing part way.
+## `toDataURL` is a blank PNG. WebGL contexts come from webgl.ail (WebGL 1;
+## `webgl2` and WebGPU are null, so pages report them unsupported rather
+## than failing part way).
 
 WEB_PRELUDE := r"""
 (function (g) {
@@ -242,3 +242,4 @@ WEB_PRELUDE := r"""
 ## Defines the web APIs of WEB_PRELUDE on the window.
 pub fn Vm.web_setup(mut self)
     run_script_text(WEB_PRELUDE)
+    webgl_setup()

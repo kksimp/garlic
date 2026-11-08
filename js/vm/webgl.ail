@@ -1,0 +1,544 @@
+## WebGL 1 for the page's canvas, written in JavaScript over the engine's
+## built-ins and run once per page after webapi.ail (it wraps the canvas
+## `getContext` defined there). A context keeps all of its state, validates
+## calls and sets `getError` as the WebGL 1.0 specification says, parses
+## shader sources (compile and link status, active attributes and uniforms,
+## uniform values) and holds buffers, textures, renderbuffers, framebuffers
+## and vertex array objects. It rasterizes nothing but `clear` into the
+## drawing buffer (`readPixels` sees it): draw calls validate, then do
+## nothing, and the window never shows a WebGL canvas. Parameters and the
+## extension list follow Chromium's (the same names in the same order);
+## the unmasked vendor and renderer say what this is: "Garlic". WebGL 2
+## (`webgl2`) is still null.
+##
+## The behaviour was checked against Chromium by running one script in both
+## (js/testdata/page/webgl.html).
+
+WEBGL_PRELUDE := r"""
+(function (g) {
+  var canvasProto = g.HTMLCanvasElement && HTMLCanvasElement.prototype;
+  if (!canvasProto || !canvasProto.getContext) return;
+  // WebGL 1: a context that keeps all of its state and validates like the
+  // real thing, and rasterizes nothing but `clear`.
+  var GL = __CONSTS__;
+  var DEF_TYPES = { float: 5126, vec2: 35664, vec3: 35665, vec4: 35666, int: 5124, ivec2: 35667, ivec3: 35668, ivec4: 35669, bool: 35670, bvec2: 35671, bvec3: 35672, bvec4: 35673, mat2: 35674, mat3: 35675, mat4: 35676, sampler2D: 35678, samplerCube: 35680 };
+  var TYPE_SIZE = { 5126: 1, 35664: 2, 35665: 3, 35666: 4, 5124: 1, 35667: 2, 35668: 3, 35669: 4, 35670: 1, 35671: 2, 35672: 3, 35673: 4, 35674: 4, 35675: 9, 35676: 16, 35678: 1, 35680: 1 };
+  var EXT_NAMES = ["ANGLE_instanced_arrays", "EXT_blend_minmax", "EXT_clip_control", "EXT_color_buffer_half_float", "EXT_depth_clamp", "EXT_disjoint_timer_query", "EXT_float_blend", "EXT_frag_depth", "EXT_polygon_offset_clamp", "EXT_shader_texture_lod", "EXT_texture_compression_bptc", "EXT_texture_compression_rgtc", "EXT_texture_filter_anisotropic", "EXT_texture_mirror_clamp_to_edge", "EXT_sRGB", "OES_element_index_uint", "OES_fbo_render_mipmap", "OES_standard_derivatives", "OES_texture_float", "OES_texture_float_linear", "OES_texture_half_float", "OES_texture_half_float_linear", "OES_vertex_array_object", "WEBGL_color_buffer_float", "WEBGL_compressed_texture_astc", "WEBGL_compressed_texture_etc", "WEBGL_compressed_texture_etc1", "WEBGL_compressed_texture_s3tc", "WEBGL_compressed_texture_s3tc_srgb", "WEBGL_debug_renderer_info", "WEBGL_debug_shaders", "WEBGL_depth_texture", "WEBGL_draw_buffers", "WEBGL_lose_context", "WEBGL_multi_draw", "WEBGL_polygon_mode"];
+  var EXT_CONSTS = {
+    ANGLE_instanced_arrays: { VERTEX_ATTRIB_ARRAY_DIVISOR_ANGLE: 35070 },
+    EXT_blend_minmax: { MIN_EXT: 32775, MAX_EXT: 32776 },
+    EXT_texture_filter_anisotropic: { TEXTURE_MAX_ANISOTROPY_EXT: 34046, MAX_TEXTURE_MAX_ANISOTROPY_EXT: 34047 },
+    OES_standard_derivatives: { FRAGMENT_SHADER_DERIVATIVE_HINT_OES: 35723 },
+    OES_texture_half_float: { HALF_FLOAT_OES: 36193 },
+    OES_vertex_array_object: { VERTEX_ARRAY_BINDING_OES: 34229 },
+    WEBGL_debug_renderer_info: { UNMASKED_VENDOR_WEBGL: 37445, UNMASKED_RENDERER_WEBGL: 37446 },
+    WEBGL_depth_texture: { UNSIGNED_INT_24_8_WEBGL: 34042 },
+    WEBGL_draw_buffers: { COLOR_ATTACHMENT0_WEBGL: 36064, DRAW_BUFFER0_WEBGL: 34853, MAX_COLOR_ATTACHMENTS_WEBGL: 36063, MAX_DRAW_BUFFERS_WEBGL: 34852 },
+    EXT_sRGB: { SRGB_EXT: 35904, SRGB_ALPHA_EXT: 35906, SRGB8_ALPHA8_EXT: 35907, FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING_EXT: 33296 },
+    WEBGL_compressed_texture_s3tc: { COMPRESSED_RGB_S3TC_DXT1_EXT: 33776, COMPRESSED_RGBA_S3TC_DXT1_EXT: 33777, COMPRESSED_RGBA_S3TC_DXT3_EXT: 33778, COMPRESSED_RGBA_S3TC_DXT5_EXT: 33779 }
+  };
+  var CAPS = [3042, 2884, 2929, 3024, 32823, 32926, 32928, 3089, 2960];
+  var NAMES = ["Buffer", "Texture", "Program", "Shader", "Framebuffer", "Renderbuffer"];
+  var illegal = function (n) { return function () { throw new TypeError("Failed to construct '" + n + "': Illegal constructor"); }; };
+  var CLS = {};
+  NAMES.concat(["UniformLocation", "ActiveInfo", "ShaderPrecisionFormat"]).forEach(function (n) {
+    var f = illegal("WebGL" + n);
+    var C = function () { return f(); };
+    Object.defineProperty(C, "name", { value: "WebGL" + n });
+    Object.defineProperty(C.prototype, Symbol.toStringTag, { value: "WebGL" + n, configurable: true });
+    CLS[n] = C; g["WebGL" + n] = C;
+  });
+  function mk(n, props) { var o = Object.create(CLS[n].prototype); for (var k in props) Object.defineProperty(o, k, { value: props[k], writable: true, enumerable: false, configurable: true }); return o; }
+  function WebGLContextEvent(type, init) { Event.call(this, type, init); this.statusMessage = (init && init.statusMessage) || ""; }
+  WebGLContextEvent.prototype = Object.create(Event.prototype); WebGLContextEvent.prototype.constructor = WebGLContextEvent;
+  g.WebGLContextEvent = WebGLContextEvent;
+
+  function WebGLRenderingContext() { throw new TypeError("Illegal constructor"); }
+  var P = WebGLRenderingContext.prototype;
+  Object.keys(GL).forEach(function (k) { Object.defineProperty(WebGLRenderingContext, k, { value: GL[k], enumerable: true }); Object.defineProperty(P, k, { value: GL[k], enumerable: true }); });
+  Object.defineProperty(P, Symbol.toStringTag, { value: "WebGLRenderingContext", configurable: true });
+  g.WebGLRenderingContext = WebGLRenderingContext;
+
+  function attribState() { return { enabled: false, size: 4, stride: 0, type: 5126, normalized: false, offset: 0, buffer: null, divisor: 0, cur: new Float32Array([0, 0, 0, 1]) }; }
+  function newVao() { var a = []; for (var i = 0; i < 16; i++) a.push(attribState()); return { attribs: a, element: null }; }
+
+  function create(canvas, attrs) {
+    var gl = Object.create(P);
+    var a = attrs || {};
+    var st = {
+      canvas: canvas, lost: false, err: 0, exts: {},
+      attrs: { alpha: a.alpha !== false, antialias: a.antialias !== false, depth: a.depth !== false, desynchronized: !!a.desynchronized, failIfMajorPerformanceCaveat: !!a.failIfMajorPerformanceCaveat, powerPreference: a.powerPreference === "low-power" || a.powerPreference === "high-performance" ? a.powerPreference : "default", premultipliedAlpha: a.premultipliedAlpha !== false, preserveDrawingBuffer: !!a.preserveDrawingBuffer, stencil: !!a.stencil, xrCompatible: !!a.xrCompatible },
+      caps: {}, buf: { 34962: null, 34963: null }, vao: newVao(), defVao: null, tex: [], unit: 0, fb: null, rb: null, prog: null,
+      blend: { color: new Float32Array(4), rgb: 32774, alpha: 32774, srcRgb: 1, dstRgb: 0, srcA: 1, dstA: 0 },
+      depth: { func: 513, mask: true, clear: 1, range: new Float32Array([0, 1]) },
+      sten: { clear: 0, func: 519, ref: 0, vmask: 4294967295, wmask: 4294967295, fail: 7680, zfail: 7680, zpass: 7680, bfunc: 519, bref: 0, bvmask: 4294967295, bwmask: 4294967295, bfail: 7680, bzfail: 7680, bzpass: 7680 },
+      cull: 1029, front: 2305, lineWidth: 1, polyF: 0, polyU: 0, covV: 1, covInv: false,
+      clearColor: new Float32Array(4), colorMask: [true, true, true, true],
+      vp: null, sc: null, pack: 4, unpack: 4, flipY: false, premul: false, colorspace: 37444, hint: 4352, pix: null
+    };
+    st.defVao = st.vao; st.caps[3024] = true;
+    for (var i = 0; i < 32; i++) st.tex.push({ 3553: null, 34067: null });
+    Object.defineProperty(gl, "_s", { value: st });
+    return gl;
+  }
+  function S(gl) { var s = gl && gl._s; if (!s) throw new TypeError("Illegal invocation"); return s; }
+  function err(s, e) { if (!s.err) s.err = e; }
+  function size(s) { return [s.canvas.width, s.canvas.height]; }
+  function vp(s) { return s.vp || [0, 0].concat(size(s)); }
+  function sc(s) { return s.sc || [0, 0].concat(size(s)); }
+  function own(s, o, n) { return o && o instanceof CLS[n] && o._s === s; }
+  function chk(s, o, n) { if (o === null || o === undefined) return true; if (!own(s, o, n)) { err(s, 1282); return false; } return true; }
+  function live(s) { return !s.lost; }
+
+  Object.defineProperty(P, "canvas", { get: function () { return S(this).canvas; }, enumerable: true, configurable: true });
+  Object.defineProperty(P, "drawingBufferWidth", { get: function () { return S(this).canvas.width; }, enumerable: true, configurable: true });
+  Object.defineProperty(P, "drawingBufferHeight", { get: function () { return S(this).canvas.height; }, enumerable: true, configurable: true });
+  Object.defineProperty(P, "drawingBufferColorSpace", { get: function () { return "srgb"; }, set: function () {}, enumerable: true, configurable: true });
+  Object.defineProperty(P, "unpackColorSpace", { get: function () { return "srgb"; }, set: function () {}, enumerable: true, configurable: true });
+
+  function def(name, fn) { Object.defineProperty(P, name, { value: function () { var s = S(this); if (s.lost) return undefined; return fn.apply(this, [s].concat(Array.prototype.slice.call(arguments))); }, writable: true, configurable: true, enumerable: true }); }
+
+  def("getContextAttributes", function (s) { var o = {}; for (var k in s.attrs) o[k] = s.attrs[k]; return o; });
+  Object.defineProperty(P, "getContextAttributes", { value: function () { var s = S(this); if (s.lost) return null; var o = {}; for (var k in s.attrs) o[k] = s.attrs[k]; return o; }, writable: true, configurable: true, enumerable: true });
+  Object.defineProperty(P, "isContextLost", { value: function () { return S(this).lost; }, writable: true, configurable: true, enumerable: true });
+  Object.defineProperty(P, "getError", { value: function () { var s = S(this); if (s.lost) { if (s.lostErr) { s.lostErr = false; return 37442; } return 0; } var e = s.err; s.err = 0; return e; }, writable: true, configurable: true, enumerable: true });
+  def("getSupportedExtensions", function () { return EXT_NAMES.slice(); });
+  def("getExtension", function (s, name) {
+    name = String(name);
+    var real = null;
+    for (var i = 0; i < EXT_NAMES.length; i++) if (EXT_NAMES[i].toLowerCase() === name.toLowerCase()) real = EXT_NAMES[i];
+    if (!real) return null;
+    if (!s.exts[real]) s.exts[real] = makeExt(this, s, real);
+    return s.exts[real];
+  });
+
+  function makeExt(gl, s, name) {
+    var o = {};
+    var k = EXT_CONSTS[name];
+    if (k) for (var p in k) Object.defineProperty(o, p, { value: k[p], enumerable: true });
+    var mf = function (n, f) { Object.defineProperty(o, n, { value: f, writable: true, enumerable: true, configurable: true }); };
+    if (name === "WEBGL_lose_context") {
+      mf("loseContext", function () {
+        if (s.lost) { err(s, 1282); return; }
+        s.lost = true; s.lostErr = true; s.restorable = true;
+        setTimeout(function () { var ev = new WebGLContextEvent("webglcontextlost", { cancelable: true }); s.canvas.dispatchEvent(ev); s.restoreOk = ev.defaultPrevented; }, 0);
+      });
+      mf("restoreContext", function () {
+        if (!s.lost || !s.restorable) { err(s, 1282); return; }
+        setTimeout(function () { if (!s.restoreOk) return; var n = create(s.canvas, s.attrs); var ns = n._s; for (var q in ns) s[q] = ns[q]; s.exts = {}; s.canvas.dispatchEvent(new WebGLContextEvent("webglcontextrestored")); }, 0);
+      });
+    } else if (name === "OES_vertex_array_object") {
+      mf("createVertexArrayOES", function () { return mk("Buffer", { _s: s, _vao: newVao(), _del: false, _vaoObj: true }); });
+      mf("deleteVertexArrayOES", function (v) { if (v && v._vaoObj) { v._del = true; if (s.vao === v._vao) s.vao = s.defVao; } });
+      mf("isVertexArrayOES", function (v) { return !!(v && v._vaoObj && !v._del && v._bound); });
+      mf("bindVertexArrayOES", function (v) { if (v === null || v === undefined) { s.vao = s.defVao; return; } if (!v._vaoObj || v._del) { err(s, 1282); return; } v._bound = true; s.vao = v._vao; s.vaoObj = v; });
+    } else if (name === "ANGLE_instanced_arrays") {
+      mf("drawArraysInstancedANGLE", function (m, f, c, n) { gl.drawArrays(m, f, c); if (n < 0) err(s, 1281); });
+      mf("drawElementsInstancedANGLE", function (m, c, t, off, n) { gl.drawElements(m, c, t, off); if (n < 0) err(s, 1281); });
+      mf("vertexAttribDivisorANGLE", function (i, d) { if (i >>> 0 >= 16) { err(s, 1281); return; } s.vao.attribs[i].divisor = d >>> 0; });
+    } else if (name === "WEBGL_draw_buffers") {
+      mf("drawBuffersWEBGL", function () {});
+    } else if (name === "WEBGL_debug_shaders") {
+      mf("getTranslatedShaderSource", function (sh) { return sh && sh._src || ""; });
+    } else if (name === "WEBGL_multi_draw") {
+      ["multiDrawArraysWEBGL", "multiDrawElementsWEBGL", "multiDrawArraysInstancedWEBGL", "multiDrawElementsInstancedWEBGL"].forEach(function (n) { mf(n, function () {}); });
+    }
+    Object.defineProperty(o, Symbol.toStringTag, { value: name.indexOf("EXT_") === 0 || name.indexOf("OES_") === 0 || name.indexOf("ANGLE_") === 0 || name.indexOf("WEBGL_") === 0 ? ({ ANGLE_instanced_arrays: "ANGLEInstancedArrays", EXT_blend_minmax: "EXTBlendMinMax", OES_vertex_array_object: "OESVertexArrayObject", WEBGL_lose_context: "WEBGLLoseContext", WEBGL_debug_renderer_info: "WEBGLDebugRendererInfo", WEBGL_draw_buffers: "WEBGLDrawBuffers", OES_standard_derivatives: "OESStandardDerivatives", OES_element_index_uint: "OESElementIndexUint", OES_texture_float: "OESTextureFloat", WEBGL_depth_texture: "WEBGLDepthTexture", EXT_texture_filter_anisotropic: "EXTTextureFilterAnisotropic" }[name] || name) : name, configurable: true });
+    return o;
+  }
+
+  // ---- state ----
+  def("enable", function (s, c) { if (CAPS.indexOf(c) < 0) return err(s, 1280); s.caps[c] = true; });
+  def("disable", function (s, c) { if (CAPS.indexOf(c) < 0) return err(s, 1280); s.caps[c] = false; });
+  def("isEnabled", function (s, c) { if (CAPS.indexOf(c) < 0) { err(s, 1280); return false; } return !!s.caps[c]; });
+  def("blendColor", function (s, r, g2, b, a) { s.blend.color = new Float32Array([r, g2, b, a]); });
+  var EQ = [32774, 32778, 32779];
+  def("blendEquation", function (s, m) { if (EQ.indexOf(m) < 0) return err(s, 1280); s.blend.rgb = s.blend.alpha = m; });
+  def("blendEquationSeparate", function (s, a, b) { if (EQ.indexOf(a) < 0 || EQ.indexOf(b) < 0) return err(s, 1280); s.blend.rgb = a; s.blend.alpha = b; });
+  def("blendFunc", function (s, a, b) { s.blend.srcRgb = s.blend.srcA = a; s.blend.dstRgb = s.blend.dstA = b; });
+  def("blendFuncSeparate", function (s, a, b, c, d) { s.blend.srcRgb = a; s.blend.dstRgb = b; s.blend.srcA = c; s.blend.dstA = d; });
+  def("cullFace", function (s, m) { if ([1028, 1029, 1032].indexOf(m) < 0) return err(s, 1280); s.cull = m; });
+  def("frontFace", function (s, m) { if (m !== 2304 && m !== 2305) return err(s, 1280); s.front = m; });
+  def("depthFunc", function (s, f) { if (f < 512 || f > 519) return err(s, 1280); s.depth.func = f; });
+  def("depthMask", function (s, m) { s.depth.mask = !!m; });
+  def("depthRange", function (s, n, f) { if (n > f) return err(s, 1281); s.depth.range = new Float32Array([Math.min(1, Math.max(0, n)), Math.min(1, Math.max(0, f))]); });
+  def("clearDepth", function (s, d) { s.depth.clear = Math.min(1, Math.max(0, d)); });
+  def("clearStencil", function (s, v) { s.sten.clear = v | 0; });
+  def("clearColor", function (s, r, g2, b, a) { s.clearColor = new Float32Array([r, g2, b, a]); });
+  def("colorMask", function (s, r, g2, b, a) { s.colorMask = [!!r, !!g2, !!b, !!a]; });
+  def("lineWidth", function (s, w) { if (!(w > 0)) return err(s, 1281); s.lineWidth = 1; });
+  def("polygonOffset", function (s, f, u) { s.polyF = f; s.polyU = u; });
+  def("sampleCoverage", function (s, v, i) { s.covV = Math.min(1, Math.max(0, v)); s.covInv = !!i; });
+  def("scissor", function (s, x, y, w, h) { if (w < 0 || h < 0) return err(s, 1281); s.sc = [x | 0, y | 0, w | 0, h | 0]; });
+  def("viewport", function (s, x, y, w, h) { if (w < 0 || h < 0) return err(s, 1281); s.vp = [x | 0, y | 0, w | 0, h | 0]; });
+  def("stencilFunc", function (s, f, r, m) { s.sten.func = s.sten.bfunc = f; s.sten.ref = s.sten.bref = r; s.sten.vmask = s.sten.bvmask = m >>> 0; });
+  def("stencilFuncSeparate", function (s, face, f, r, m) { if ([1028, 1029, 1032].indexOf(face) < 0) return err(s, 1280); if (face !== 1029) { s.sten.func = f; s.sten.ref = r; s.sten.vmask = m >>> 0; } if (face !== 1028) { s.sten.bfunc = f; s.sten.bref = r; s.sten.bvmask = m >>> 0; } });
+  def("stencilMask", function (s, m) { s.sten.wmask = s.sten.bwmask = m >>> 0; });
+  def("stencilMaskSeparate", function (s, face, m) { if ([1028, 1029, 1032].indexOf(face) < 0) return err(s, 1280); if (face !== 1029) s.sten.wmask = m >>> 0; if (face !== 1028) s.sten.bwmask = m >>> 0; });
+  def("stencilOp", function (s, a, b, c) { s.sten.fail = s.sten.bfail = a; s.sten.zfail = s.sten.bzfail = b; s.sten.zpass = s.sten.bzpass = c; });
+  def("stencilOpSeparate", function (s, face, a, b, c) { if ([1028, 1029, 1032].indexOf(face) < 0) return err(s, 1280); if (face !== 1029) { s.sten.fail = a; s.sten.zfail = b; s.sten.zpass = c; } if (face !== 1028) { s.sten.bfail = a; s.sten.bzfail = b; s.sten.bzpass = c; } });
+  def("hint", function (s, t, m) { if (t !== 33170 && t !== 35723) return err(s, 1280); if (m !== 4352 && m !== 4353 && m !== 4354) return err(s, 1280); if (t === 33170) s.hint = m; });
+  def("pixelStorei", function (s, p, v) {
+    if (p === 3333 || p === 3317) { if ([1, 2, 4, 8].indexOf(v) < 0) return err(s, 1281); if (p === 3333) s.pack = v; else s.unpack = v; }
+    else if (p === 37440) s.flipY = !!v; else if (p === 37441) s.premul = !!v; else if (p === 37443) s.colorspace = v;
+    else err(s, 1280);
+  });
+  def("finish", function () {});
+  def("flush", function () {});
+
+  def("getParameter", function (s, p) {
+    var f32 = function (a) { return new Float32Array(a); };
+    switch (p) {
+      case 32774: return s.blend.rgb; case 34877: return s.blend.alpha;
+      case 32968: return s.blend.dstRgb; case 32969: return s.blend.srcRgb; case 32970: return s.blend.dstA; case 32971: return s.blend.srcA;
+      case 32773: return f32(s.blend.color);
+      case 34964: return s.buf[34962]; case 34965: return s.vao.element;
+      case 2884: case 3042: case 3024: case 2960: case 2929: case 3089: case 32823: case 32926: case 32928: return !!s.caps[p];
+      case 2849: return s.lineWidth; case 33902: return f32([1, 1]); case 33901: return f32([1, 1023]);
+      case 2885: return s.cull; case 2886: return s.front;
+      case 2928: return s.depth.range; case 2930: return s.depth.mask; case 2931: return s.depth.clear; case 2932: return s.depth.func;
+      case 2961: return s.sten.clear; case 2962: return s.sten.func; case 2964: return s.sten.fail; case 2965: return s.sten.zfail; case 2966: return s.sten.zpass; case 2967: return s.sten.ref; case 2963: return s.sten.vmask; case 2968: return s.sten.wmask;
+      case 34816: return s.sten.bfunc; case 34817: return s.sten.bfail; case 34818: return s.sten.bzfail; case 34819: return s.sten.bzpass; case 36003: return s.sten.bref; case 36004: return s.sten.bvmask; case 36005: return s.sten.bwmask;
+      case 2978: return new Int32Array(vp(s)); case 3088: return new Int32Array(sc(s));
+      case 3106: return f32(s.clearColor); case 3107: return s.colorMask.slice();
+      case 3317: return s.unpack; case 3333: return s.pack;
+      case 3379: return 8192; case 3386: return new Int32Array([8192, 8192]); case 3408: return 4;
+      case 3410: case 3411: case 3412: case 3413: return 8; case 3414: return s.attrs.depth ? 24 : 0; case 3415: return s.attrs.stencil ? 8 : 0;
+      case 10752: return s.polyU; case 32824: return s.polyF; case 32873: return s.tex[s.unit][3553];
+      case 32936: return 1; case 32937: return s.attrs.antialias ? 4 : 0; case 32938: return s.covV; case 32939: return s.covInv;
+      case 34467: return new Uint32Array(0); case 33170: return s.hint;
+      case 34921: return 16; case 36347: return 4096; case 36348: return 31; case 35661: return 64; case 35660: return 32; case 34930: return 32; case 36349: return 4096;
+      case 35724: return "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)"; case 35725: return s.prog;
+      case 34068: return s.tex[s.unit][34067]; case 34076: return 16384; case 34016: return 33984 + s.unit;
+      case 35738: return 5121; case 35739: return 6408;
+      case 36006: return s.fb; case 36007: return s.rb; case 34024: return 8192;
+      case 37440: return s.flipY; case 37441: return s.premul; case 37443: return s.colorspace;
+      case 7936: return "WebKit"; case 7937: return "WebKit WebGL"; case 7938: return "WebGL 1.0 (OpenGL ES 2.0 Chromium)";
+      case 37445: if (s.exts.WEBGL_debug_renderer_info) return "Garlic"; break;
+      case 37446: if (s.exts.WEBGL_debug_renderer_info) return "Garlic Software Rasterizer"; break;
+      case 34047: if (s.exts.EXT_texture_filter_anisotropic) return 16; break;
+      case 35723: if (s.exts.OES_standard_derivatives) return s.derivHint || 4352; break;
+      case 34229: if (s.exts.OES_vertex_array_object) return s.vao === s.defVao ? null : s.vaoObj; break;
+      case 34852: case 36063: if (s.exts.WEBGL_draw_buffers) return 8; break;
+      case 34853: if (s.exts.WEBGL_draw_buffers) return 1029; break;
+    }
+    err(s, 1280); return null;
+  });
+
+  def("getShaderPrecisionFormat", function (s, st, pt) {
+    if (st !== 35633 && st !== 35632) return err(s, 1280);
+    var t = { 36336: [15, 15, 10], 36337: [15, 15, 10], 36338: [127, 127, 23], 36339: [15, 14, 0], 36340: [15, 14, 0], 36341: [31, 30, 0] }[pt];
+    if (!t) return err(s, 1280);
+    var o = Object.create(CLS.ShaderPrecisionFormat.prototype); o.rangeMin = t[0]; o.rangeMax = t[1]; o.precision = t[2]; return o;
+  });
+
+  // ---- buffers ----
+  function bufTarget(s, t) { if (t !== 34962 && t !== 34963) { err(s, 1280); return false; } return true; }
+  def("createBuffer", function (s) { return mk("Buffer", { _s: s, _del: false, _ever: false, _size: 0, _usage: 35044, _data: new Uint8Array(0) }); });
+  def("deleteBuffer", function (s, b) { if (!chk(s, b, "Buffer") || !b) return; b._del = true; if (s.buf[34962] === b) s.buf[34962] = null; if (s.vao.element === b) s.vao.element = null; s.vao.attribs.forEach(function (a) { if (a.buffer === b) a.buffer = null; }); });
+  def("isBuffer", function (s, b) { return own(s, b, "Buffer") && !b._del && b._ever; });
+  def("bindBuffer", function (s, t, b) { if (!bufTarget(s, t) || !chk(s, b, "Buffer")) return; if (b && b._del) return err(s, 1282); if (b) b._ever = true; if (t === 34962) s.buf[34962] = b || null; else s.vao.element = b || null; });
+  function bound(s, t) { return t === 34962 ? s.buf[34962] : s.vao.element; }
+  function bytes(d) { if (d instanceof ArrayBuffer) return new Uint8Array(d.slice(0)); if (ArrayBuffer.isView(d)) return new Uint8Array(d.buffer.slice(d.byteOffset, d.byteOffset + d.byteLength)); return null; }
+  def("bufferData", function (s, t, d, u) {
+    if (!bufTarget(s, t)) return;
+    if ([35040, 35044, 35048].indexOf(u) < 0) return err(s, 1280);
+    var b = bound(s, t); if (!b) return err(s, 1282);
+    if (typeof d === "number") { if (d < 0) return err(s, 1281); b._data = new Uint8Array(d); }
+    else if (d === null || d === undefined) return err(s, 1282);
+    else { var x = bytes(d); if (!x) return err(s, 1282); b._data = x; }
+    b._size = b._data.length; b._usage = u;
+  });
+  def("bufferSubData", function (s, t, off, d) {
+    if (!bufTarget(s, t)) return; var b = bound(s, t); if (!b) return err(s, 1282);
+    if (off < 0) return err(s, 1281); var x = bytes(d); if (!x) return err(s, 1282);
+    if (off + x.length > b._size) return err(s, 1281); b._data.set(x, off);
+  });
+  def("getBufferParameter", function (s, t, p) { if (!bufTarget(s, t)) return null; var b = bound(s, t); if (!b) { err(s, 1282); return null; } if (p === 34660) return b._size; if (p === 34661) return b._usage; err(s, 1280); return null; });
+
+  // ---- vertex attributes ----
+  function attribIdx(s, i) { if (i >>> 0 !== i || i >= 16) { err(s, 1281); return null; } return s.vao.attribs[i]; }
+  def("enableVertexAttribArray", function (s, i) { var a = attribIdx(s, i); if (a) a.enabled = true; });
+  def("disableVertexAttribArray", function (s, i) { var a = attribIdx(s, i); if (a) a.enabled = false; });
+  var TSZ = { 5120: 1, 5121: 1, 5122: 2, 5123: 2, 5126: 4 };
+  def("vertexAttribPointer", function (s, i, size, type, norm, stride, off) {
+    var a = attribIdx(s, i); if (!a) return;
+    if (!TSZ[type]) return err(s, 1280);
+    if (size < 1 || size > 4 || stride < 0 || stride > 255 || off < 0) return err(s, 1281);
+    if (stride % TSZ[type] || off % TSZ[type]) return err(s, 1280 + 2);
+    if (!s.buf[34962] && off !== 0) return err(s, 1282);
+    a.size = size; a.type = type; a.normalized = !!norm; a.stride = stride; a.offset = off; a.buffer = s.buf[34962];
+  });
+  [1, 2, 3, 4].forEach(function (n) {
+    def("vertexAttrib" + n + "f", function (s, i) { var a = attribIdx(s, i); if (!a) return; var v = [0, 0, 0, 1]; for (var k = 0; k < n; k++) v[k] = arguments[2 + k]; a.cur = new Float32Array(v); });
+    def("vertexAttrib" + n + "fv", function (s, i, arr) { var a = attribIdx(s, i); if (!a) return; if (!arr || arr.length < n) return err(s, 1281); var v = [0, 0, 0, 1]; for (var k = 0; k < n; k++) v[k] = arr[k]; a.cur = new Float32Array(v); });
+  });
+  def("getVertexAttrib", function (s, i, p) {
+    var a = attribIdx(s, i); if (!a) return null;
+    switch (p) {
+      case 34338: return a.enabled; case 34339: return a.size; case 34340: return a.stride; case 34341: return a.type; case 34922: return a.normalized;
+      case 34975: return a.buffer; case 34342: return new Float32Array(a.cur);
+      case 35070: if (s.exts.ANGLE_instanced_arrays) return a.divisor; break;
+    }
+    err(s, 1280); return null;
+  });
+  def("getVertexAttribOffset", function (s, i, p) { var a = attribIdx(s, i); if (!a) return null; if (p !== 34373) { err(s, 1280); return null; } return a.offset; });
+
+  // ---- shaders and programs ----
+  function strip(src) { return src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " "); }
+  function compile(sh) {
+    var src = strip(sh._src), log = "", n = (sh._src.split("\n").length);
+    if (/^\s*#\s*version\s+300/m.test(src)) log = "ERROR: 0:1: '#version' : version number not supported in WebGL 1.0\n";
+    else if (!/\bvoid\s+main\s*\(\s*(void)?\s*\)/.test(src)) log = "ERROR: 0:1: 'main' : function is not defined\n";
+    else {
+      var depth = 0, par = 0, ok = true;
+      for (var i = 0; i < src.length; i++) { var c = src[i]; if (c === "{") depth++; else if (c === "}") { depth--; if (depth < 0) ok = false; } else if (c === "(") par++; else if (c === ")") { par--; if (par < 0) ok = false; } }
+      if (!ok || depth !== 0 || par !== 0) log = "ERROR: 0:" + n + ": '' : syntax error\n";
+      else if (sh._type === 35632 && /\bfloat\b|\bvec[234]\b|\bmat[234]\b/.test(src) && !/\bprecision\s+(lowp|mediump|highp)\s+float\s*;/.test(src)) log = "ERROR: 0:1: 'float' : No precision specified for (float)\n";
+      else if (sh._type === 35633 && /\bgl_FragColor\b|\bgl_FragData\b/.test(src)) log = "ERROR: 0:1: 'gl_FragColor' : undeclared identifier\n";
+      else if (sh._type === 35632 && /\bgl_Position\b/.test(src)) log = "ERROR: 0:1: 'gl_Position' : undeclared identifier\n";
+    }
+    sh._log = log; sh._ok = !log;
+    sh._decls = log ? [] : decls(src);
+  }
+  function decls(src) {
+    var out = [], re = /\b(attribute|uniform|varying)\s+(?:(?:lowp|mediump|highp)\s+)?(\w+)\s+([^;{}]+);/g, m;
+    while ((m = re.exec(src))) {
+      m[3].split(",").forEach(function (nm) {
+        var q = /^\s*(\w+)\s*(?:\[\s*(\d+)\s*\])?\s*$/.exec(nm); if (!q) return;
+        var used = new RegExp("\\b" + q[1] + "\\b", "g"); var count = (src.match(used) || []).length;
+        out.push({ kind: m[1], type: DEF_TYPES[m[2]] || 0, tname: m[2], name: q[1], size: q[2] ? +q[2] : 1, arr: !!q[2], used: count > 1 });
+      });
+    }
+    return out;
+  }
+  def("createShader", function (s, t) { if (t !== 35633 && t !== 35632) { err(s, 1280); return null; } return mk("Shader", { _s: s, _type: t, _src: "", _ok: false, _log: "", _del: false, _decls: [], _progs: 0 }); });
+  def("shaderSource", function (s, sh, src) { if (!chk(s, sh, "Shader") || !sh) return err(s, 1282); sh._src = String(src); });
+  def("getShaderSource", function (s, sh) { if (!chk(s, sh, "Shader") || !sh) { err(s, 1282); return null; } return sh._src; });
+  def("compileShader", function (s, sh) { if (!chk(s, sh, "Shader") || !sh) return err(s, 1282); compile(sh); });
+  def("getShaderParameter", function (s, sh, p) { if (!chk(s, sh, "Shader") || !sh) { err(s, 1282); return null; } if (p === 35663) return sh._type; if (p === 35712) return sh._del; if (p === 35713) return sh._ok; err(s, 1280); return null; });
+  def("getShaderInfoLog", function (s, sh) { if (!chk(s, sh, "Shader") || !sh) { err(s, 1282); return null; } return sh._log; });
+  def("deleteShader", function (s, sh) { if (!chk(s, sh, "Shader") || !sh) return; sh._del = true; });
+  def("isShader", function (s, sh) { return own(s, sh, "Shader") && !sh._del; });
+  def("createProgram", function (s) { return mk("Program", { _s: s, _sh: [], _del: false, _ok: false, _log: "", _valid: false, _attrs: [], _unis: [], _bind: {}, _vals: {}, _locs: {} }); });
+  def("attachShader", function (s, p, sh) { if (!chk(s, p, "Program") || !chk(s, sh, "Shader") || !p || !sh) return err(s, 1282); if (p._sh.indexOf(sh) >= 0 || p._sh.some(function (x) { return x._type === sh._type; })) return err(s, 1282); p._sh.push(sh); });
+  def("detachShader", function (s, p, sh) { if (!chk(s, p, "Program") || !chk(s, sh, "Shader") || !p || !sh) return err(s, 1282); var i = p._sh.indexOf(sh); if (i < 0) return err(s, 1282); p._sh.splice(i, 1); });
+  def("getAttachedShaders", function (s, p) { if (!chk(s, p, "Program") || !p) { err(s, 1282); return null; } return p._sh.slice(); });
+  def("bindAttribLocation", function (s, p, i, n) { if (!chk(s, p, "Program") || !p) return err(s, 1282); if (i >>> 0 !== i || i >= 16) return err(s, 1281); if (/^gl_/.test(n)) return err(s, 1281); p._bind[n] = i; });
+  def("linkProgram", function (s, p) {
+    if (!chk(s, p, "Program") || !p) return err(s, 1282);
+    var v = p._sh.filter(function (x) { return x._type === 35633; })[0], f = p._sh.filter(function (x) { return x._type === 35632; })[0];
+    p._ok = false; p._attrs = []; p._unis = []; p._locs = {}; p._vals = {};
+    if (!v || !f) { p._log = "ERROR: Must have a compiled vertex shader and fragment shader attached.\n"; return; }
+    if (!v._ok || !f._ok) { p._log = "ERROR: Must have a compiled vertex shader and fragment shader attached.\n"; return; }
+    var vv = {}; v._decls.forEach(function (d) { if (d.kind === "varying") vv[d.name] = d; });
+    for (var i = 0; i < f._decls.length; i++) { var d = f._decls[i]; if (d.kind === "varying" && d.used && !vv[d.name]) { p._log = "ERROR: Varyings with the same name but different type, or statically used varyings in fragment shader are not declared in vertex shader: " + d.name + "\n"; return; } }
+    var taken = {}; for (var k in p._bind) taken[p._bind[k]] = true;
+    var next = 0;
+    v._decls.forEach(function (d) { if (d.kind === "attribute" && d.used) { var loc = p._bind[d.name]; if (loc === undefined) { while (taken[next]) next++; loc = next; taken[next] = true; } p._attrs.push({ name: d.name, type: d.type, size: d.size, loc: loc }); } });
+    var seen = {};
+    v._decls.concat(f._decls).forEach(function (d) { if (d.kind === "uniform" && d.used && !seen[d.name]) { seen[d.name] = 1; p._unis.push({ name: d.name + (d.arr ? "[0]" : ""), base: d.name, type: d.type, size: d.size, arr: d.arr }); } });
+    p._unis.forEach(function (u) { p._vals[u.base] = u.type === 35670 ? false : (TYPE_SIZE[u.type] > 1 && u.type !== 5124 ? new Float32Array(TYPE_SIZE[u.type] * u.size) : 0); });
+    p._ok = true; p._log = "";
+  });
+  def("getProgramParameter", function (s, p, n) {
+    if (!chk(s, p, "Program") || !p) { err(s, 1282); return null; }
+    switch (n) { case 35712: return p._del; case 35714: return p._ok; case 35715: return p._valid; case 35717: return p._sh.length; case 35721: return p._attrs.length; case 35718: return p._unis.length; }
+    err(s, 1280); return null;
+  });
+  def("getProgramInfoLog", function (s, p) { if (!chk(s, p, "Program") || !p) { err(s, 1282); return null; } return p._log; });
+  def("validateProgram", function (s, p) { if (!chk(s, p, "Program") || !p) return err(s, 1282); p._valid = p._ok; });
+  def("deleteProgram", function (s, p) { if (!chk(s, p, "Program") || !p) return; p._del = true; if (s.prog === p) s.prog = null; });
+  def("isProgram", function (s, p) { return own(s, p, "Program") && !p._del; });
+  def("useProgram", function (s, p) { if (!chk(s, p, "Program")) return; if (p && (p._del || !p._ok)) return err(s, 1282); s.prog = p || null; });
+  def("getAttribLocation", function (s, p, n) { if (!chk(s, p, "Program") || !p) { err(s, 1282); return -1; } if (!p._ok) { err(s, 1282); return -1; } var a = p._attrs.filter(function (x) { return x.name === n; })[0]; return a ? a.loc : -1; });
+  def("getActiveAttrib", function (s, p, i) { if (!chk(s, p, "Program") || !p) { err(s, 1282); return null; } var a = p._attrs[i]; if (!a) { err(s, 1281); return null; } return info(a.name, a.type, a.size); });
+  def("getActiveUniform", function (s, p, i) { if (!chk(s, p, "Program") || !p) { err(s, 1282); return null; } var a = p._unis[i]; if (!a) { err(s, 1281); return null; } return info(a.name, a.type, a.size); });
+  function info(n, t, z) { var o = Object.create(CLS.ActiveInfo.prototype); o.name = n; o.type = t; o.size = z; return o; }
+  def("getUniformLocation", function (s, p, name) {
+    if (!chk(s, p, "Program") || !p) { err(s, 1282); return null; }
+    if (!p._ok) { err(s, 1282); return null; }
+    name = String(name);
+    var m = /^(\w+)(?:\[(\d+)\])?$/.exec(name); if (!m) return null;
+    var u = p._unis.filter(function (x) { return x.base === m[1]; })[0]; if (!u) return null;
+    var idx = m[2] === undefined ? 0 : +m[2]; if (idx >= u.size || (m[2] !== undefined && !u.arr)) return null;
+    var key = m[1] + "[" + idx + "]";
+    if (!p._locs[key]) p._locs[key] = mk("UniformLocation", { _s: s, _p: p, _u: u, _i: idx });
+    return p._locs[key];
+  });
+  function uloc(s, loc, nf, kind) {
+    if (loc === null) return null;
+    if (!own(s, loc, "UniformLocation")) { err(s, 1282); return null; }
+    if (!s.prog || loc._p !== s.prog) { err(s, 1282); return null; }
+    return loc;
+  }
+  function setU(s, loc, v, comps, isInt) {
+    var u = loc._u, per = TYPE_SIZE[u.type];
+    if (u.type === 35678 || u.type === 35680 || u.type === 5124 || u.type === 35670) { if (comps !== 1 || (u.type !== 35670 && !isInt && u.type !== 35670)) { if (!(comps === 1)) return err(s, 1282); } }
+    if (comps !== per && !(u.type === 35670 && comps === 1)) return err(s, 1282);
+    if ((u.type === 5124 || u.type === 35678 || u.type === 35680) && !isInt) return err(s, 1282);
+    if (u.type === 35678 || u.type === 35680) { if (v[0] < 0 || v[0] >= 64) return err(s, 1281); }
+    var cur = s.prog._vals[u.base];
+    if (u.type === 35670 && comps === 1) { s.prog._vals[u.base] = !!v[0]; return; }
+    if (per === 1) { s.prog._vals[u.base] = v[0]; return; }
+    var arr = cur; for (var i = 0; i < per && i < v.length; i++) arr[loc._i * per + i] = v[i];
+  }
+  [1, 2, 3, 4].forEach(function (n) {
+    ["f", "i"].forEach(function (t) {
+      def("uniform" + n + t, function (s, loc) { loc = uloc(s, loc); if (!loc) return; var v = []; for (var k = 0; k < n; k++) v.push(arguments[2 + k]); setU(s, loc, v, n, t === "i"); });
+      def("uniform" + n + t + "v", function (s, loc, arr) { loc = uloc(s, loc); if (!loc) return; if (!arr || arr.length === undefined) return err(s, 1282); if (arr.length < n || arr.length % n) return err(s, 1281); setU(s, loc, Array.prototype.slice.call(arr, 0, n), n, t === "i"); });
+    });
+  });
+  [2, 3, 4].forEach(function (n) {
+    def("uniformMatrix" + n + "fv", function (s, loc, tr, arr) { loc = uloc(s, loc); if (!loc) return; if (tr) return err(s, 1281); if (!arr || arr.length === undefined) return err(s, 1282); if (arr.length < n * n || arr.length % (n * n)) return err(s, 1281); setU(s, loc, Array.prototype.slice.call(arr, 0, n * n), n * n, false); });
+  });
+  def("getUniform", function (s, p, loc) {
+    if (!chk(s, p, "Program") || !p || !own(s, loc, "UniformLocation") || loc._p !== p) { err(s, 1282); return null; }
+    var v = p._vals[loc._u.base], per = TYPE_SIZE[loc._u.type];
+    if (v instanceof Float32Array) return v.slice(loc._i * per, loc._i * per + per);
+    return v;
+  });
+
+  // ---- textures ----
+  function texTarget(s, t) { if (t !== 3553 && t !== 34067) { err(s, 1280); return null; } return s.tex[s.unit][t]; }
+  def("createTexture", function (s) { return mk("Texture", { _s: s, _del: false, _ever: false, _levels: {}, _p: { 10241: 9986, 10240: 9729, 10242: 10497, 10243: 10497, 34046: 1 } }); });
+  def("deleteTexture", function (s, t) { if (!chk(s, t, "Texture") || !t) return; t._del = true; s.tex.forEach(function (u) { for (var k in u) if (u[k] === t) u[k] = null; }); });
+  def("isTexture", function (s, t) { return own(s, t, "Texture") && !t._del && t._ever; });
+  def("activeTexture", function (s, u) { if (u < 33984 || u >= 33984 + 32) return err(s, 1280); s.unit = u - 33984; });
+  def("bindTexture", function (s, t, tex) { if (t !== 3553 && t !== 34067) return err(s, 1280); if (!chk(s, tex, "Texture")) return; if (tex && tex._del) return err(s, 1282); if (tex) { if (tex._target && tex._target !== t) return err(s, 1282); tex._target = t; tex._ever = true; if (t === 34067) tex._p[10241] = 9986; } s.tex[s.unit][t] = tex || null; });
+  var FMT = [6406, 6407, 6408, 6409, 6410];
+  var TYP = [5121, 33635, 32819, 32820, 5126, 36193, 34042, 5123, 5125];
+  function srcDims(src) { if (src && src.naturalWidth !== undefined) return [src.naturalWidth, src.naturalHeight]; if (src && src.videoWidth !== undefined) return [src.videoWidth, src.videoHeight]; if (src && src.width !== undefined) return [src.width, src.height]; return null; }
+  def("texImage2D", function (s, target, level, ifmt) {
+    var a = arguments, w, h, fmt, type;
+    if (a.length >= 10) { w = a[4]; h = a[5]; fmt = a[7]; type = a[8]; var pix = a[9]; if (w < 0 || h < 0 || a[6] !== 0) return err(s, 1281); }
+    else if (a.length === 7) { var d = srcDims(a[6]); fmt = a[4]; type = a[5]; if (!d || a[6] === null) return err(s, 1282); w = d[0]; h = d[1]; }
+    else return err(s, 1282);
+    var t = target === 3553 ? 3553 : (target >= 34069 && target <= 34074 ? 34067 : 0);
+    if (!t) return err(s, 1280);
+    var tex = s.tex[s.unit][t]; if (!tex) return err(s, 1282);
+    if (level < 0 || level > 13) return err(s, 1281);
+    if (FMT.indexOf(ifmt) < 0 || FMT.indexOf(fmt) < 0 || TYP.indexOf(type) < 0) return err(s, 1280);
+    if (ifmt !== fmt) return err(s, 1282);
+    if (w > 8192 || h > 8192) return err(s, 1281);
+    if (t === 34067 && w !== h) return err(s, 1281);
+    tex._levels[target + ":" + level] = { w: w, h: h, fmt: ifmt, type: type };
+  });
+  def("texSubImage2D", function (s, target, level) {
+    var t = target === 3553 ? 3553 : (target >= 34069 && target <= 34074 ? 34067 : 0); if (!t) return err(s, 1280);
+    var tex = s.tex[s.unit][t]; if (!tex) return err(s, 1282);
+    var l = tex._levels[target + ":" + level]; if (!l) return err(s, 1282);
+    var a = arguments, x = a[3], y = a[4], w, h;
+    if (a.length >= 10) { w = a[5]; h = a[6]; } else { var d = srcDims(a[7]); if (!d) return err(s, 1282); w = d[0]; h = d[1]; }
+    if (x < 0 || y < 0 || x + w > l.w || y + h > l.h) return err(s, 1281);
+  });
+  def("copyTexImage2D", function (s, target, level, fmt, x, y, w, h) { var t = target === 3553 ? 3553 : (target >= 34069 && target <= 34074 ? 34067 : 0); if (!t) return err(s, 1280); var tex = s.tex[s.unit][t]; if (!tex) return err(s, 1282); if (w < 0 || h < 0) return err(s, 1281); tex._levels[target + ":" + level] = { w: w, h: h, fmt: fmt, type: 5121 }; });
+  def("copyTexSubImage2D", function (s, target) { var t = target === 3553 ? 3553 : (target >= 34069 && target <= 34074 ? 34067 : 0); if (!t) return err(s, 1280); if (!s.tex[s.unit][t]) return err(s, 1282); });
+  def("compressedTexImage2D", function (s) { err(s, 1280); });
+  def("compressedTexSubImage2D", function (s) { err(s, 1280); });
+  def("generateMipmap", function (s, t) { var tex = texTarget(s, t); if (tex === null && (t === 3553 || t === 34067)) return err(s, 1282); });
+  def("texParameteri", function (s, t, p, v) { var tex = texTarget(s, t); if (tex === null) { if (t === 3553 || t === 34067) err(s, 1282); return; }
+    if (p === 34046) { if (!s.exts.EXT_texture_filter_anisotropic) return err(s, 1280); tex._p[p] = v; return; }
+    var ok = { 10240: [9728, 9729], 10241: [9728, 9729, 9984, 9985, 9986, 9987], 10242: [33071, 33648, 10497], 10243: [33071, 33648, 10497] }[p];
+    if (!ok) return err(s, 1280); if (ok.indexOf(v) < 0) return err(s, 1280); tex._p[p] = v; });
+  def("texParameterf", function (s, t, p, v) { this.texParameteri(t, p, v); });
+  def("getTexParameter", function (s, t, p) { var tex = texTarget(s, t); if (tex === null) { if (t === 3553 || t === 34067) err(s, 1282); return null; } if (!(p in tex._p)) { err(s, 1280); return null; } return tex._p[p]; });
+
+  // ---- renderbuffers and framebuffers ----
+  def("createRenderbuffer", function (s) { return mk("Renderbuffer", { _s: s, _del: false, _ever: false, _w: 0, _h: 0, _fmt: 32854 }); });
+  def("deleteRenderbuffer", function (s, r) { if (!chk(s, r, "Renderbuffer") || !r) return; r._del = true; if (s.rb === r) s.rb = null; });
+  def("isRenderbuffer", function (s, r) { return own(s, r, "Renderbuffer") && !r._del && r._ever; });
+  def("bindRenderbuffer", function (s, t, r) { if (t !== 36161) return err(s, 1280); if (!chk(s, r, "Renderbuffer")) return; if (r) { if (r._del) return err(s, 1282); r._ever = true; } s.rb = r || null; });
+  def("renderbufferStorage", function (s, t, f, w, h) { if (t !== 36161) return err(s, 1280); if ([32854, 32856, 36194, 33189, 36168, 34041].indexOf(f) < 0) return err(s, 1280); if (!s.rb) return err(s, 1282); if (w < 0 || h < 0 || w > 8192 || h > 8192) return err(s, 1281); s.rb._w = w; s.rb._h = h; s.rb._fmt = f; });
+  def("getRenderbufferParameter", function (s, t, p) { if (t !== 36161) { err(s, 1280); return null; } var r = s.rb; if (!r) { err(s, 1282); return null; } switch (p) { case 36162: return r._w; case 36163: return r._h; case 36164: return r._fmt; case 36176: case 36177: case 36178: case 36179: return r._fmt === 32854 ? 8 : (r._fmt === 36194 ? [5, 6, 5, 0][p - 36176] : 0); case 36180: return r._fmt === 33189 ? 16 : 0; case 36181: return r._fmt === 36168 ? 8 : 0; } err(s, 1280); return null; });
+  def("createFramebuffer", function (s) { return mk("Framebuffer", { _s: s, _del: false, _ever: false, _att: {} }); });
+  def("deleteFramebuffer", function (s, f) { if (!chk(s, f, "Framebuffer") || !f) return; f._del = true; if (s.fb === f) s.fb = null; });
+  def("isFramebuffer", function (s, f) { return own(s, f, "Framebuffer") && !f._del && f._ever; });
+  def("bindFramebuffer", function (s, t, f) { if (t !== 36160) return err(s, 1280); if (!chk(s, f, "Framebuffer")) return; if (f) { if (f._del) return err(s, 1282); f._ever = true; } s.fb = f || null; });
+  var ATT = [36064, 36096, 36128, 33306];
+  def("framebufferTexture2D", function (s, t, a, tt, tex, lvl) { if (t !== 36160) return err(s, 1280); if (ATT.indexOf(a) < 0) return err(s, 1280); if (!s.fb) return err(s, 1282); if (!chk(s, tex, "Texture")) return; if (lvl !== 0) return err(s, 1281); s.fb._att[a] = tex ? { kind: "tex", obj: tex, target: tt } : null; });
+  def("framebufferRenderbuffer", function (s, t, a, rt, rb) { if (t !== 36160 || rt !== 36161) return err(s, 1280); if (ATT.indexOf(a) < 0) return err(s, 1280); if (!s.fb) return err(s, 1282); if (!chk(s, rb, "Renderbuffer")) return; s.fb._att[a] = rb ? { kind: "rb", obj: rb } : null; });
+  function fbStatus(s) {
+    var f = s.fb; if (!f) return 36053;
+    var any = false;
+    for (var k in f._att) { var a = f._att[k]; if (!a) continue; any = true; var o = a.obj; var w = a.kind === "tex" ? (o._levels[3553 + ":0"] || {}).w : o._w, h = a.kind === "tex" ? (o._levels[3553 + ":0"] || {}).h : o._h; if (!w || !h) return 36054; }
+    return any ? 36053 : 36055;
+  }
+  def("checkFramebufferStatus", function (s, t) { if (t !== 36160) { err(s, 1280); return 0; } return fbStatus(s); });
+  def("getFramebufferAttachmentParameter", function (s, t, a, p) {
+    if (t !== 36160) { err(s, 1280); return null; } if (!s.fb) { err(s, 1282); return null; } if (ATT.indexOf(a) < 0) { err(s, 1280); return null; }
+    var at = s.fb._att[a];
+    if (p === 36048) return at ? (at.kind === "tex" ? 5890 : 36161) : 0;
+    if (!at) { if (p === 36049) { err(s, 1280); return null; } err(s, 1280); return null; }
+    if (p === 36049) return at.obj; if (p === 36050 && at.kind === "tex") return 0; if (p === 36051 && at.kind === "tex") return 0;
+    err(s, 1280); return null;
+  });
+
+  // ---- drawing ----
+  function fb(s) { var n = size(s), w = n[0], h = n[1]; if (!s.pix || s.pix.w !== w || s.pix.h !== h) s.pix = { w: w, h: h, d: new Uint8Array(w * h * 4) }; return s.pix; }
+  def("clear", function (s, mask) {
+    if (mask & ~(16384 | 256 | 1024)) return err(s, 1281);
+    var st = fbStatus(s); if (st !== 36053) return err(s, 1286);
+    if (s.fb || !(mask & 16384)) return;
+    var p = fb(s), c = s.clearColor, pm = s.attrs.premultipliedAlpha;
+    var v = [c[0], c[1], c[2], c[3]].map(function (x) { return Math.round(Math.min(1, Math.max(0, x)) * 255); });
+    if (!s.attrs.alpha) v[3] = 255;
+    var r = sc(s), x0 = Math.max(0, r[0]), y0 = Math.max(0, r[1]), x1 = Math.min(p.w, r[0] + r[2]), y1 = Math.min(p.h, r[1] + r[3]);
+    if (!s.caps[3089]) { x0 = 0; y0 = 0; x1 = p.w; y1 = p.h; }
+    for (var y = y0; y < y1; y++) for (var x = x0; x < x1; x++) { var o = (y * p.w + x) * 4; for (var k = 0; k < 4; k++) if (s.colorMask[k]) p.d[o + k] = v[k]; }
+  });
+  def("readPixels", function (s, x, y, w, h, fmt, type, dst) {
+    if (fmt !== 6408 || type !== 5121) { if (FMT.indexOf(fmt) < 0 || TYP.indexOf(type) < 0) return err(s, 1280); return err(s, 1282); }
+    if (w < 0 || h < 0) return err(s, 1281);
+    if (!dst) return err(s, 1282);
+    if (!(dst instanceof Uint8Array)) return err(s, 1282);
+    if (fbStatus(s) !== 36053) return err(s, 1286);
+    var row = Math.ceil(w * 4 / s.pack) * s.pack, need = row * (h - 1) + w * 4;
+    if (h === 0 || w === 0) return; if (dst.length < need) return err(s, 1282);
+    var p = fb(s);
+    for (var j = 0; j < h; j++) for (var i = 0; i < w; i++) {
+      var sx = x + i, sy = y + j, o = j * row + i * 4;
+      if (s.fb || sx < 0 || sy < 0 || sx >= p.w || sy >= p.h) { dst[o] = dst[o + 1] = dst[o + 2] = dst[o + 3] = 0; continue; }
+      var q = ((p.h - 1 - sy) * 0 + sy) * p.w * 4 + sx * 4;
+      dst[o] = p.d[q]; dst[o + 1] = p.d[q + 1]; dst[o + 2] = p.d[q + 2]; dst[o + 3] = p.d[q + 3];
+    }
+  });
+  function drawChecks(s) {
+    if (!s.prog) { err(s, 1282); return false; }
+    if (fbStatus(s) !== 36053) { err(s, 1286); return false; }
+    return true;
+  }
+  def("drawArrays", function (s, mode, first, count) {
+    if (mode < 0 || mode > 6) return err(s, 1280);
+    if (first < 0 || count < 0) return err(s, 1281);
+    if (!drawChecks(s)) return;
+  });
+  def("drawElements", function (s, mode, count, type, off) {
+    if (mode < 0 || mode > 6) return err(s, 1280);
+    if (type !== 5121 && type !== 5123 && !(type === 5125 && s.exts.OES_element_index_uint)) return err(s, 1280);
+    if (count < 0 || off < 0) return err(s, 1281);
+    if (off % (type === 5121 ? 1 : type === 5123 ? 2 : 4)) return err(s, 1282);
+    if (!s.vao.element) return err(s, 1282);
+    if (!drawChecks(s)) return;
+  });
+
+  // ---- canvas hook ----
+  var prevGet = canvasProto.getContext;
+  canvasProto.getContext = function (kind, attrs) {
+    var k = String(kind);
+    if (k === "webgl" || k === "experimental-webgl") {
+      if (this._ctxKind && this._ctxKind !== "webgl") return null;
+      if (!this._gl) { Object.defineProperty(this, "_gl", { value: create(this, attrs), enumerable: false }); Object.defineProperty(this, "_ctxKind", { value: "webgl", enumerable: false }); }
+      return this._gl;
+    }
+    if (this._ctxKind && (k === "2d" || k === "webgl2" || k === "bitmaprenderer")) return null;
+    var r = prevGet.apply(this, arguments);
+    if (r && k === "2d") Object.defineProperty(this, "_ctxKind", { value: "2d", enumerable: false });
+    return r;
+  };
+})(this);
+"""
+
+## Defines `WebGLRenderingContext` and its objects, and the `webgl` context of the canvas.
+pub fn Vm.webgl_setup(mut self)
+    run_script_text(WEBGL_PRELUDE)

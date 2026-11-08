@@ -377,8 +377,11 @@ it comes later for speed, and these frames will move onto it).
 - `Intl` knows one locale, en-US, and local time is UTC, so
   `Intl.DateTimeFormat().resolvedOptions().timeZone` is "UTC".
 - A canvas 2D context keeps its state and draws nothing (webapi.ail):
-  `getImageData` is transparent black and `toDataURL` a blank PNG. WebGL
-  and WebGPU contexts are null. Streams, `Worker`, `WebAssembly`, media
+  `getImageData` is transparent black and `toDataURL` a blank PNG. A
+  `webgl` context (webgl.ail, WebGL 1) keeps its state and validates like
+  Chromium's but rasterizes nothing except `clear`: draw calls do nothing
+  and the window never shows it. `webgl2` and WebGPU contexts are null.
+  Streams, `Worker`, `WebAssembly`, media
   devices, geolocation and service workers are missing: pages that
   feature-test them report them unsupported.
 - BigInt literals (`10n`).
