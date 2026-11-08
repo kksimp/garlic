@@ -1035,9 +1035,9 @@ fn Browser.pump(mut self)
         relayout()
 
 ## Gives the page's scripts the layout's element boxes, so they can measure.
-fn Browser.measure(mut self, boxes List[gfx.Box], scroll float)
+fn Browser.measure(mut self, boxes List[gfx.Box], top float)
     mut s := js else return
-    s.measure([[b.node.to_float(), b.x, b.y, b.w, b.h] for b in boxes], scroll)
+    s.measure([[b.node.to_float(), b.x, b.y, b.w, b.h] for b in boxes], top)
     js = s
 
 ## Remembers what the page logged and requested, for the page model.

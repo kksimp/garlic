@@ -1093,6 +1093,11 @@ pub fn Vm.dom_native(
         return make_event_as(iface, to_string(arg_at(args, 0))?, arg_at(args, 1))
     if m == "illegal"
         name := to_string(get(new_target, "name") else Value.Str("")) else ""
+        if name == "DOMException"
+            # `new DOMException(message, name)` (WebIDL §2.8.1).
+            msg := if arg_at(args, 0) != Undef then to_string(arg_at(args, 0))? else ""
+            kind := if arg_at(args, 1) != Undef then to_string(arg_at(args, 1))? else "Error"
+            return dom_exception(kind, msg).value
         return type_error(if name == "" then "Illegal constructor" else "Failed to construct '{name}': Illegal constructor")
     if m == "Image"
         # `new Image(width, height)` (HTML §4.8.4.1).

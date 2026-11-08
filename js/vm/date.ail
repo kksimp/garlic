@@ -252,7 +252,7 @@ fn parse_text_date(s str)(float, bool)
     mut local := true
     mut offset := 0
     for w in words
-        if MONTHS.contains(w.slice(0, 3)) and w.chars().len() >= 3
+        if w.chars().len() >= 3 and MONTHS.contains(w.slice(0, 3))
             month = MONTHS.index_of(w.slice(0, 3)) else -1
         elif w.contains(":")
             clock = w

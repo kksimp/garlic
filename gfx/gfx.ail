@@ -1640,7 +1640,8 @@ fn Ctx.shift_boxes(mut self, o0 int, dy float)
 
 ## Drops the element boxes recorded from operation `o0` on.
 fn Ctx.drop_boxes(mut self, o0 int)
-    boxes = [b for b in boxes if b.at < o0]
+    kept := [b for b in boxes if b.at < o0]
+    boxes = kept
 
 ## Moves the operations and hit boxes from `o0` and `h0` on down by `dy`.
 fn Ctx.lower(mut self, o0 int, h0 int, dy float)
@@ -2345,19 +2346,19 @@ fn Ctx.grid_areas(
         cols.push(1.0)
         autos.push(false)
     ## Each item's box: [row0, row1, col0, col1]; unplaced ones get new rows.
-    mut boxes := List[List[int]]()
+    mut cells := List[List[int]]()
     mut extra := areas.len()
     for it in items
         name := (self.element_style(it).get("grid-area") else "").trim()
         b := if d.nodes[it].kind == Element and name != "" then area_box(areas, name) else []
         if b.len() == 0
-            boxes.push([extra, extra, 0, ncols - 1])
+            cells.push([extra, extra, 0, ncols - 1])
             extra += 1
         else
-            boxes.push(b)
+            cells.push(b)
     ## Content-sized tracks take the widest item that sits in them alone.
     for k in 0..items.len()
-        b := boxes[k]
+        b := cells[k]
         if b[2] == b[3] and autos[b[2]] and d.nodes[items[k]].kind == Element
             cs2 := self.element_style(items[k])
             cst := text_style(d.nodes[items[k]].tag, cs2, st)
@@ -2390,9 +2391,9 @@ fn Ctx.grid_areas(
     for r in 0..extra
         mut order := List[int]()
         for k in 0..items.len()
-            if boxes[k][0] == r
+            if cells[k][0] == r
                 mut pos := 0
-                while pos < order.len() and boxes[order[pos]][2] <= boxes[k][2]
+                while pos < order.len() and cells[order[pos]][2] <= cells[k][2]
                     pos += 1
                 order.insert(pos, k)
         if order.len() > 0
@@ -2400,7 +2401,7 @@ fn Ctx.grid_areas(
             mut ws := List[float]()
             mut os := List[float]()
             for k in order
-                b := boxes[k]
+                b := cells[k]
                 mut span := gap * (b[3] - b[2]).to_float()
                 for c in b[2]..b[3] + 1
                     span += widths[c]
