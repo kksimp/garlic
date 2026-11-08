@@ -168,12 +168,12 @@ fn vp8_avg2(a int, b int) int
 ## The 4x4 inverse DCT of `co[base..base + 16]` added to the pixels at
 ## `(x0, y0)` of `pl` (section 14.3).
 fn vp8_idct_add(co List[int], base int, mut pl List[int], stride int, x0 int, y0 int)
-    mut any := false
+    mut nonzero := false
     for k in 0..16
         if co[base + k] != 0
-            any = true
+            nonzero = true
             break
-    if not any
+    if not nonzero
         return
     mut t := [0 for _ in 0..16]
     for i in 0..4
