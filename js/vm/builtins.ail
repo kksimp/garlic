@@ -50,6 +50,8 @@ pub fn new_vm() Vm
         timer_seq: 0,
         microtasks: [],
         started_scripts: Set[int](),
+        ce_upgrading: [],
+        ce_upgraded: Set[int](),
         host_requests: [],
         external_scripts: {},
         cookies: {},
@@ -300,6 +302,7 @@ fn Vm.setup(mut self)
     getter(set_proto, "size", "Set.prototype.size")
     weak_setup()
     bin_setup()
+    intl_setup()
     reflect_setup()
     map_ctor.props["length"] = hidden(Num(0.0))
     set_ctor.props["length"] = hidden(Num(0.0))
@@ -313,7 +316,7 @@ fn Vm.setup(mut self)
     methods(
         obj_of(proto_of("Date")) else object_proto,
         "Date.prototype",
-        "getTime:0 valueOf:0 toISOString:0 toJSON:1 getFullYear:0 getMonth:0 getDate:0 getDay:0 getHours:0 getMinutes:0 getSeconds:0 getMilliseconds:0 getUTCFullYear:0 getUTCMonth:0 getUTCDate:0 getUTCDay:0 getUTCHours:0 getUTCMinutes:0 getUTCSeconds:0 getUTCMilliseconds:0 getTimezoneOffset:0 setTime:1 toString:0 toUTCString:0 setFullYear:3 setMonth:2 setDate:1 setHours:4 setMinutes:3 setSeconds:2 setMilliseconds:1 setUTCFullYear:3 setUTCMonth:2 setUTCDate:1 setUTCHours:4 setUTCMinutes:3 setUTCSeconds:2 setUTCMilliseconds:1",
+        "getTime:0 valueOf:0 toISOString:0 toJSON:1 getFullYear:0 getMonth:0 getDate:0 getDay:0 getHours:0 getMinutes:0 getSeconds:0 getMilliseconds:0 getUTCFullYear:0 getUTCMonth:0 getUTCDate:0 getUTCDay:0 getUTCHours:0 getUTCMinutes:0 getUTCSeconds:0 getUTCMilliseconds:0 getTimezoneOffset:0 setTime:1 toString:0 toUTCString:0 toLocaleString:0 toLocaleDateString:0 toLocaleTimeString:0 toDateString:0 toTimeString:0 setFullYear:3 setMonth:2 setDate:1 setHours:4 setMinutes:3 setSeconds:2 setMilliseconds:1 setUTCFullYear:3 setUTCMonth:2 setUTCDate:1 setUTCHours:4 setUTCMinutes:3 setUTCSeconds:2 setUTCMilliseconds:1",
     )
 
     math := plain()
@@ -370,7 +373,7 @@ pub fn native_is_ctor(name str) bool
     match name
         "Object" | "Function" | "Array" | "String" | "Number" | "Boolean" | "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError" | "URIError" | "AggregateError" | "Map" | "Set" | "Proxy" | "proxy" | "WeakMap" | "WeakSet" | "WeakRef" | "FinalizationRegistry" | "IntersectionObserver" | "ResizeObserver" | "PerformanceObserver" | "RegExp" | "Date" | "Promise" | "dom.Event" | "dom.MutationObserver" | "dom.illegal" | "dom.URL" | "dom.URLSearchParams" | "dom.Image" | "dom.abort.new.AbortController" =>
             true
-        _ => name.starts_with("bin.new.")
+        _ => name.starts_with("bin.new.") or name.starts_with("intl.new.")
 
 ## Run the native function `name`. `new_target` is Undef for a plain call.
 pub fn Vm.native(
@@ -388,6 +391,8 @@ pub fn Vm.native(
         return symbol_native(name, this_val, args, new_target)
     if name == "proxy"
         return proxy_call(f, this_val, args, new_target)
+    if name == "dom.illegal" and is_obj(new_target) and new_target != Value.Obj(f)
+        return ce_construct(new_target)
     if name == "Proxy"
         return proxy_new(args, new_target)
     if m := name.strip_prefix("Reflect.")
@@ -410,6 +415,8 @@ pub fn Vm.native(
         return dom_native(m, this_val, args, new_target)
     if m := name.strip_prefix("bin.")
         return bin_native(m, this_val, args, new_target)
+    if m := name.strip_prefix("intl.")
+        return intl_native(m, this_val, args, new_target)
     if m := name.strip_prefix("Array.prototype.")
         return array_method(m, this_val, args)
     if m := name.strip_prefix("String.prototype.")
