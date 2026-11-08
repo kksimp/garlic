@@ -378,9 +378,16 @@ it comes later for speed, and these frames will move onto it).
   `Intl.DateTimeFormat().resolvedOptions().timeZone` is "UTC".
 - A canvas 2D context keeps its state and draws nothing (webapi.ail):
   `getImageData` is transparent black and `toDataURL` a blank PNG. WebGL
-  and WebGPU contexts are null. Streams, `Worker`, `WebAssembly`, media
-  devices, geolocation and service workers are missing: pages that
-  feature-test them report them unsupported.
+  and WebGPU contexts are null. Streams, `Worker`, `WebAssembly`,
+  geolocation and service workers are missing: pages that feature-test
+  them report them unsupported.
+- Media (mediaapi.ail): `navigator.mediaDevices`, `MediaStream`,
+  `RTCPeerConnection` (SDP offer/answer, signalling states, data channels,
+  transceivers) and `AudioContext`/`OfflineAudioContext` with the common
+  nodes exist, but no capture or network-media host is behind them. There
+  are no devices, `getUserMedia` rejects with NotFoundError, peer
+  connections gather no candidates and never connect, and audio renders
+  silence. A host can supply `globalThis.__mediaHost`.
 - BigInt literals (`10n`).
 - Regular expression pattern syntax (§22.2.1): the literal's body and flags
   are checked, and the pattern is checked when the regex engine compiles it.
