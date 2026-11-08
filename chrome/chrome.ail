@@ -421,12 +421,12 @@ fn globe(mut ops List[app.Op], x float, y float, c int, bg int)
     disc(mut ops, x + 1.5, y + 1.5, 13.0, bg, c)
     ops.push(line(x + 2.0, y + 8.0, x + 14.0, y + 8.0, c, 1.0))
     ops.push(line(x + 8.0, y + 2.0, x + 8.0, y + 14.0, c, 1.0))
-    arc(mut ops, x + 8.0, y + 8.0, 6.0, 0.0 - 1.57, 1.57, c, 1.0)
+    arc(mut ops, x + 8.0, y + 8.0, 6.0, 0.0 - 1.57, 1.57, c, 1.0, 12)
 
 ## A padlock, 12 points high, its top-left at (x, y).
 fn padlock(mut ops List[app.Op], x float, y float, c int, bg int)
     round(mut ops, x, y + 5.0, 10.0, 7.0, 1.5, c, bg)
-    arc(mut ops, x + 5.0, y + 4.5, 3.0, 3.14, 6.28, c, 1.5)
+    arc(mut ops, x + 5.0, y + 4.5, 3.0, 3.14, 6.28, c, 1.5, 12)
 
 ## The spark of the agent chip: a four-point star.
 fn spark(mut ops List[app.Op], cx float, cy float, c int)
