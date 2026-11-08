@@ -2012,7 +2012,7 @@ fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
         area_w: w,
         area_h: h,
         pixel: false,
-        scene: gfx.Scene(ops: [], hits: [], height: 0.0, bg: 0xffffff, probes: [], bits: {}),
+        scene: gfx.Scene(ops: [], hits: [], boxes: [], height: 0.0, bg: 0xffffff, probes: [], bits: {}),
         scene_stamp: -1,
         scene_w: 0.0,
         scene_url: "",
