@@ -4792,6 +4792,15 @@ fn pixels(src str, width float) gfx.Scene
     assert(tall[0].y > 20.0)
     assert(s.boxes.len() >= 3)
 
+@test fn the_pixel_layout_records_a_box_for_every_inline_element()
+    ## Font-fingerprinting scripts measure spans, so inline elements need
+    ## boxes too: the span starts after "a " and is narrower than its line.
+    s := pixels("<p>a <span style=\"font-family: Foo, serif\">bb</span> c</p>", 400.0)
+    spans := [b for b in s.boxes if b.x > 8.0 and b.w > 0.0 and b.w < 100.0]
+    assert_eq(spans.len(), 1)
+    assert(spans[0].h >= 10.0)
+    assert(spans[0].x + spans[0].w < 384.0)
+
 @test fn the_pixel_layout_stacks_blocks_with_margins_and_wraps_words()
     s := pixels("<h1>Hi</h1><p>one two</p>", 400.0)
     t := pixel_text(s.ops)

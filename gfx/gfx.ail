@@ -456,6 +456,9 @@ struct St
     underline bool
     mono bool
     serif bool
+    ## The CSS `font-family` list in force, "" for the default face; the
+    ## host measures and draws in its first installed family (std.app.28).
+    family str
     pre bool
     align str
     lh float
@@ -633,6 +636,7 @@ fn text_style(tag str, cs Map[str, str], parent St) St
             st.mono = true
         else
             st.serif = first_family_is_serif(low)
+        st.family = if low.contains("var(") or low.contains("inherit") then "" else ff.trim()
     if tt := cs.get("text-transform")
         st.upper = tt == "uppercase"
     if ws := cs.get("white-space")
@@ -886,6 +890,8 @@ fn rounded(x float, y float, w float, h float, r float, fill int) List[draw.Op]
 ## a form control.
 struct Atom
     kind int
+    ## The innermost inline element the atom belongs to, or -1.
+    elem int
     text str
     w float
     h float
@@ -920,6 +926,12 @@ struct Ctx
     ops List[draw.Op]
     hits List[Hit]
     boxes List[Box]
+    ## Inline elements' extents so far: x0, y0, x1, y1 and the ops index
+    ## of the first atom, by node; `inline_elem` is the one being laid out,
+    ## `inline_parent` each one's enclosing inline element.
+    inline_boxes Map[int, List[float]]
+    inline_elem int
+    inline_parent Map[int, int]
     atoms List[Atom]
     ## The next line starts here, and the margin still owed above it.
     y float
@@ -1076,11 +1088,13 @@ fn Ctx.tw(mut self, text str, size float, bold bool, italic bool, font str) floa
     if text != "" and not probed.contains(key)
         probed.add(key)
         probes.push(Probe(text, size, bold, italic, font))
-    text_width(text, size, bold, font == "mono")
+    low := font.to_lower()
+    text_width(text, size, bold, font == "mono" or low.contains("mono") or low.contains("courier"))
 
 fn Ctx.word_atom(mut self, text str, st St) Atom
     Atom(
         kind: WORD,
+        elem: inline_elem,
         text,
         w: tw(text, st.size, st.bold, st.italic, font_of(st)),
         h: st.size * st.lh,
@@ -1095,6 +1109,7 @@ fn Ctx.word_atom(mut self, text str, st St) Atom
 fn Ctx.space_atom(mut self, st St) Atom
     Atom(
         kind: SPACE,
+        elem: inline_elem,
         text: " ",
         w: tw(" ", st.size, st.bold, st.italic, font_of(st)),
         h: st.size * st.lh,
@@ -1109,6 +1124,7 @@ fn Ctx.space_atom(mut self, st St) Atom
 fn Ctx.break_atom(mut self, st St) Atom
     Atom(
         kind: BREAK,
+        elem: inline_elem,
         text: "",
         w: 0.0,
         h: st.size * st.lh,
@@ -1174,8 +1190,20 @@ fn Ctx.avail(self, x float, w float, top float, bottom float)(float, float)
                 left = fmax(left, f.x + f.w)
     (left, fmax(right - left, 40.0))
 
-## The host font family a style is drawn in.
+## The host font a style is drawn in: its `font-family` list when the page
+## set one (the host measures and draws in the first installed family,
+## std.app.28), else the generic face.
 fn font_of(st St) str
+    if HOST_FAMILIES and st.family != ""
+        return st.family
+    generic_of(st)
+
+## Whether the pinned ail's hosts take a `font-family` list (std.app.28,
+## ADR 1005); until then only the generic faces are sent.
+HOST_FAMILIES := false
+
+## The generic host face of a style: `mono`, `serif` or `sans`.
+fn generic_of(st St) str
     if st.mono
         return "mono"
     if st.serif then "serif" else "sans"
@@ -1278,6 +1306,11 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
             underline: false,
         ))
         marker = ""
+    mut nx := cx
+    for a in line
+        if a.elem >= 0 and a.kind != BREAK
+            self.note_inline(a.elem, nx, y + asc - atom_asc(a), a.w, a.h)
+        nx += a.w
     mut k := 0
     while k < line.len()
         a := line[k]
@@ -1389,6 +1422,7 @@ fn Ctx.image_atom(mut self, id int, cs Map[str, str], st St, avail float) Atom?
         iw = avail
     Atom(
         kind: IMAGE,
+        elem: inline_elem,
         text: "",
         w: iw,
         h: ih,
@@ -1440,6 +1474,7 @@ fn Ctx.control_atom(mut self, id int, st St) Atom?
         edge = 0x0a84ff
     Atom(
         kind: CONTROL,
+        elem: inline_elem,
         text: label,
         w,
         h: st.size * 1.6,
@@ -1479,14 +1514,22 @@ fn Ctx.svg_atom(mut self, id int, cs Map[str, str], st St, avail float) Atom?
         bm := svg.render(d, id, w.round().to_int().max(1), h.round().to_int().max(1), st.color) else
             return none
         svgs[key] = bm
-    Atom(kind: IMAGE, text: "", w, h, size: st.size, st, src: key, fill: 0, edge: 0, node: -1)
+    Atom(kind: IMAGE, elem: inline_elem, text: "", w, h, size: st.size, st, src: key, fill: 0, edge: 0, node: -1)
 
-## Adds element `id`'s inline content to the pending atoms.
+## Adds element `id`'s inline content to the pending atoms, noting which
+## inline element each atom belongs to.
 fn Ctx.inline(mut self, id int, parent St, avail float)
-    n := d.nodes[id]
-    if n.kind == Text
-        add_text(n.text, parent)
+    if d.nodes[id].kind == Text
+        add_text(d.nodes[id].text, parent)
         return
+    saved := inline_elem
+    inline_parent[id] = saved
+    inline_elem = id
+    self.inline_element(id, parent, avail)
+    inline_elem = saved
+
+fn Ctx.inline_element(mut self, id int, parent St, avail float)
+    n := d.nodes[id]
     if n.kind != Element or not visible(id)
         return
     cs := element_style(id)
@@ -1637,11 +1680,37 @@ fn Ctx.shift_boxes(mut self, o0 int, dy float)
         b := boxes[k]
         if b.at >= o0
             boxes[k] = Box(node: b.node, x: b.x, y: b.y + dy, w: b.w, h: b.h, at: b.at)
+    for id in inline_boxes.keys()
+        r := inline_boxes[id]
+        if r[4] >= o0.to_float()
+            inline_boxes[id] = [r[0], r[1] + dy, r[2], r[3] + dy, r[4]]
 
 ## Drops the element boxes recorded from operation `o0` on.
 fn Ctx.drop_boxes(mut self, o0 int)
     kept := [b for b in boxes if b.at < o0]
     boxes = kept
+    gone := [id for id in inline_boxes.keys() if inline_boxes[id][4] >= o0.to_float()]
+    for id in gone
+        inline_boxes.remove(id)
+
+## Widens inline element `id` and its enclosing inline elements to cover
+## the rectangle an atom of theirs was placed at.
+fn Ctx.note_inline(mut self, id int, x float, y0 float, w float, h float)
+    mut e := id
+    while e >= 0
+        if r := inline_boxes.get(e)
+            inline_boxes[e] = [fmin(r[0], x), fmin(r[1], y0), fmax(r[2], x + w), fmax(r[3], y0 + h), r[4]]
+        else
+            inline_boxes[e] = [x, y0, x + w, y0 + h, ops.len().to_float()]
+        e = inline_parent.get(e) else -1
+
+## The inline elements' boxes, for the scene.
+fn Ctx.inline_box_list(self) List[Box]
+    mut out := List[Box]()
+    for id in inline_boxes.keys()
+        r := inline_boxes[id]
+        out.push(Box(node: id, x: r[0], y: r[1], w: r[2] - r[0], h: r[3] - r[1], at: r[4].to_int()))
+    out
 
 ## Moves the operations and hit boxes from `o0` and `h0` on down by `dy`.
 fn Ctx.lower(mut self, o0 int, h0 int, dy float)
@@ -2496,6 +2565,7 @@ pub fn layout_measured(
         underline: false,
         mono: false,
         serif: false,
+        family: "",
         pre: false,
         align: "left",
         lh: 1.3,
@@ -2514,6 +2584,9 @@ pub fn layout_measured(
         ops: [],
         hits: [],
         boxes: [],
+        inline_boxes: {},
+        inline_elem: -1,
+        inline_parent: {},
         atoms: [],
         y: 0.0,
         pend: 0.0,
@@ -2540,10 +2613,12 @@ pub fn layout_measured(
     )
     c.block(0, base, 0.0, width)
     c.settle()
+    mut all_boxes := c.boxes
+    all_boxes.extend(c.inline_box_list())
     Scene(
         ops: c.ops,
         hits: c.hits,
-        boxes: c.boxes,
+        boxes: all_boxes,
         height: c.y,
         bg: c.canvas,
         probes: c.probes,

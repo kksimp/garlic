@@ -362,6 +362,8 @@ pub fn Vm.lookup(mut self, name str, env ref Env) Value ! Thrown
             if has_property(o, name)
                 return get_from(o, name, e.object)
         e = e.parent else break
+    if n := named_element(name)
+        return n
     return reference_error("{name} is not defined")
 
 ## `typeof name`: "undefined" for a name that isn't declared (§13.5.3.1).
@@ -373,7 +375,7 @@ pub fn Vm.is_declared(self, name str, env ref Env) bool
         if o := obj_of(e.object)
             if has_property(o, name)
                 return true
-        e = e.parent else return false
+        e = e.parent else return named_element_id(name) >= 0
     false
 
 ## Assign to a name (§9.1.1.1.5 SetMutableBinding).

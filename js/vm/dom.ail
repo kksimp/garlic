@@ -105,6 +105,26 @@ fn Vm.rect_of(self, id int) List[float]
         return [0.0, 0.0, 0.0, 0.0]
     [0.0, 0.0, (text.chars().len().to_float() * 8.0).round(), 18.0]
 
+## The Window's named properties (HTML §7.3.3): a bare name that is no
+## variable finds the element with that `id`, or an `embed`, `form`, `img`
+## or `object` with that `name`. browserleaks reads `iecomp`, a div's id.
+pub fn Vm.named_element_id(self, name str) int
+    if name == "" or dom.len() == 0
+        return -1
+    for e in elements_under(0)
+        if (attr_of(e, "id") else "") == name
+            return e
+        tag := dom[e].tag
+        if (tag == "embed" or tag == "form" or tag == "img" or tag == "object") and (attr_of(e, "name") else "") == name
+            return e
+    -1
+
+pub fn Vm.named_element(mut self, name str) Value?
+    e := named_element_id(name)
+    if e < 0
+        return none
+    node_value(e)
+
 ## A new empty document: node 0.
 pub fn Vm.dom_reset(mut self)
     dom = [DomNode(kind: 9, tag: "#document", attrs: [], text: "", parent: -1, children: [])]

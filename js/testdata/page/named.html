@@ -1,0 +1,7 @@
+<!DOCTYPE html><html><body><div id="iecomp">x</div><form name="order"></form><p id="box"></p><script>
+const log = (...a) => console.log(a.join(" "));
+log(typeof iecomp, iecomp.id, iecomp.tagName, order.tagName, typeof nothere);
+try { nothere; } catch (e) { log(e.name, e.message); }
+let box = 3;
+log(box);
+</script></body></html>
