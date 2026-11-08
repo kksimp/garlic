@@ -2386,16 +2386,16 @@ fn Gui.column_at(self, px float, line (float, float))(float, float)
 ## when either already has one at the join, nor before closing punctuation
 ## or after an opening bracket (the layout drops the spaces between runs,
 ## and its estimated widths cannot tell a word gap from none).
-fn needs_space(prev str, next str) bool
-    if prev == "" or next == ""
+fn needs_space(before str, after str) bool
+    if before == "" or after == ""
         return false
-    if prev.ends_with(" ") or next.starts_with(" ")
+    if before.ends_with(" ") or after.starts_with(" ")
         return false
-    first := next.slice(0, 1)
-    last := prev.slice(prev.chars().len() - 1, prev.chars().len())
-    if ")],.;:!?'".contains(first)
+    head := after.slice(0, 1)
+    tail := before.slice(before.chars().len() - 1, before.chars().len())
+    if ")],.;:!?'".contains(head)
         return false
-    if "([".contains(last)
+    if "([".contains(tail)
         return false
     true
 
