@@ -353,7 +353,17 @@ fn disc(mut ops List[app.Op], x float, y float, d float, c int, bg int)
 
 ## An arc of a circle at (cx, cy) with radius `r` from angle `a0` to `a1`
 ## (radians, clockwise on the flipped canvas), as short strokes.
-fn arc(mut ops List[app.Op], cx float, cy float, r float, a0 float, a1 float, c int, w float, steps int)
+fn arc(
+    mut ops List[app.Op],
+    cx float,
+    cy float,
+    r float,
+    a0 float,
+    a1 float,
+    c int,
+    w float,
+    steps int,
+)
     for i in 0..steps
         t0 := a0 + (a1 - a0) * i.to_float() / steps.to_float()
         t1 := a0 + (a1 - a0) * (i + 1).to_float() / steps.to_float()
