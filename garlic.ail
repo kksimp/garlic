@@ -1934,8 +1934,11 @@ struct Gui
     scene_w float
     scene_url str
     scene_edit int
-    ## The text found by the last find-in-page, drawn highlighted.
+    ## The text found by the last find-in-page, drawn highlighted; the
+    ## match shown (0-based) and how many there are.
     found str
+    find_k int
+    find_n int
     top float
     ## Pictures whose pixels went to the host in an earlier view, and those
     ## that go with this one: the host keeps a picture by address, so later
@@ -1966,6 +1969,8 @@ fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
         scene_url: "",
         scene_edit: -1,
         found: "",
+        find_k: 0,
+        find_n: 0,
         top: 0.0,
         sent: {},
         fresh: {},
@@ -2182,6 +2187,7 @@ fn Gui.marked(self) List[draw.Op]
         return scene.ops
     want := found.to_lower()
     mut out := List[draw.Op]()
+    mut i := 0
     for op in scene.ops
         match op
             Str(x, y, t, font, size, fg, bold, _, _) =>
@@ -2194,8 +2200,9 @@ fn Gui.marked(self) List[draw.Op]
                     y: y,
                     w: gfx.text_width(found, size, bold, font == "mono"),
                     h: size * 1.3,
-                    color: 0xffe066,
+                    color: if i == find_k then 0xff9632 else 0xffe066,
                 ))
+                i += 1
                 out.push(op)
             Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => out.push(op)
     out
@@ -2203,8 +2210,18 @@ fn Gui.marked(self) List[draw.Op]
 ## Scrolls to the next line of the page with `needle` in it (case does not
 ## matter), wrapping round, and highlights the matches.
 fn Gui.find_text(mut self, needle str)
+    self.find_step(needle, 1)
+
+## Moves the find-in-page match: `dir` 1 is the next and -1 the previous,
+## wrapping round; 0, or a new `needle`, picks the first match at or below
+## the top of the view. The page scrolls only when the match is off it.
+fn Gui.find_step(mut self, needle str, dir int)
+    anew := needle != found or dir == 0
+    was := find_k
     found = needle
     b.last_find = needle
+    find_n = 0
+    find_k = 0
     if needle == ""
         return
     want := needle.to_lower()
@@ -2214,15 +2231,34 @@ fn Gui.find_text(mut self, needle str)
             Str(_, y, t, _, _, _, _, _, _) => if t.to_lower().contains(want)
                 ys.push(y)
             Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => ys = ys
+    find_n = ys.len()
     if ys.len() == 0
         b.message = "`{needle}` not found"
         return
-    mut pick := ys[0]
-    for y in ys
-        if y > top + 24.0 and pick <= top + 24.0
-            pick = y
-    top = (pick - 40.0).max(0.0).min((scene.height - area_h).max(0.0))
+    if anew
+        mut picked := false
+        for i in 0..ys.len()
+            if not picked and ys[i] >= top - 1.0
+                find_k = i
+                picked = true
+    else
+        find_k = (was + dir + ys.len()) % ys.len()
+    y := ys[find_k]
+    if y < top or y > top + area_h - 40.0
+        top = (y - 40.0).max(0.0).min((scene.height - area_h).max(0.0))
     b.message = "found `{needle}` ({ys.len()} matches)"
+
+## The text run drawn under point (`x`, `y`) of the page, "" for none.
+fn Gui.text_at(self, x float, y float) str
+    mut hit := ""
+    for op in scene.ops
+        match op
+            Str(ox, oy, t, font, size, _, bold, _, _) =>
+                w := gfx.text_width(t, size, bold, font == "mono")
+                if x >= ox and x < ox + w and y >= oy and y < oy + size * 1.3
+                    hit = t
+            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => hit = hit
+    hit
 
 ## What the page area shows, as drawing operations.
 fn Gui.display(self) List[draw.Op]
@@ -2288,9 +2324,23 @@ struct Garlic
     ## chrome canvas's width.
     menu_tab int
     menu_x float
+    menu_y float
     strip_w float
+    ## The page menu (`menu_tab` -3, a right-click on the page): the link
+    ## and the text run under the pointer, "" for none.
+    menu_href str
+    menu_text str
     ## The omnibox: the address shown, or the text being typed.
     omni chrome.Omni
+    ## The pages shown so far in any tab, oldest first, for the omnibox's
+    ## dropdown; `pick_row` is the dropdown row the arrow keys chose, -1 for the
+    ## typed text.
+    history List[chrome.Suggestion]
+    pick_row int
+    ## The find bar (Cmd-F): whether it shows, and its text; `find.editing`
+    ## says the keys go to it rather than the page.
+    finding bool
+    find chrome.Omni
     ## The pointer over the chrome (`hover_x` below 0 when away) and the
     ## link under it on the page.
     hover_x float
@@ -2328,6 +2378,12 @@ struct Garlic
     seconds int
     next_watch int
     jobs List[attach.Job]
+    ## A load the window shows a spinner for before doing it on the next
+    ## event (`open:URL`, `back`, `forward`, `reload`; "" for none), and the
+    ## inbox that brings that event (`has_inbox` says `run` gave one).
+    load_next str
+    has_inbox bool
+    inbox app.Inbox
     ## Favicons by address (zero size for a site without one), and which
     ## ones the host already holds (`icon_fresh` goes with this view).
     icons Map[str, images.Bitmap]
@@ -2343,8 +2399,18 @@ fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
         closed: [],
         menu_tab: -1,
         menu_x: 0.0,
+        menu_y: 0.0,
+        menu_href: "",
+        menu_text: "",
         strip_w: w,
         omni: chrome.omni(b.url),
+        history: [],
+        pick_row: -1,
+        finding: false,
+        find: chrome.omni(""),
+        load_next: "",
+        has_inbox: false,
+        inbox: app.new_inbox(),
         hover_x: -1.0,
         hover_y: -1.0,
         hover_href: "",
@@ -2549,6 +2615,7 @@ fn Garlic.item(self, k int) chrome.Item
         icon_w: 0,
         icon_h: 0,
         icon_data: "",
+        loading: k == cur and load_next != "",
     )
     if bm := icons.get(t.icon)
         if bm.w > 0
@@ -2619,6 +2686,17 @@ fn Garlic.menu_rows(self) List[str]
         rows.push(if g.ids then "Hide node ids" else "Show node ids")
         rows.push(if light then "Dark theme" else "Light theme")
         return rows
+    if menu_tab == -3
+        mut rows := List[str]()
+        if menu_href != ""
+            rows.push("Open link in new tab")
+            rows.push("Copy link address")
+        if menu_text != ""
+            rows.push("Copy text")
+        rows.push("Back")
+        rows.push("Forward")
+        rows.push("Reload")
+        return rows
     if menu_tab < 0
         return []
     mut rows := ["Close tab"]
@@ -2643,8 +2721,13 @@ fn Garlic.menu_pick(mut self, r int)
         "Close tabs to the right" => close_right(k)
         "Reopen closed tab" => reopen()
         "New tab" => new_tab()
-        "Find in page" => g.b.prompt = Find("")
-        "Reload" => g.b.reload()
+        "Find in page" => open_find()
+        "Open link in new tab" => open_in_new_tab(menu_href)
+        "Copy link address" => queue.push(app.clipboard(menu_href))
+        "Copy text" => queue.push(app.clipboard(menu_text))
+        "Back" => start_load("back")
+        "Forward" => start_load("forward")
+        "Reload" => start_load("reload")
         "Show node ids" | "Hide node ids" => g.ids = not g.ids
         "Light theme" | "Dark theme" => light = not light
         _ => menu_tab = -1
@@ -2664,14 +2747,15 @@ fn Garlic.chrome_click(mut self, ev app.Event)
             if ev.text == "right"
                 menu_tab = h.k
                 menu_x = ev.x.min((strip_w - chrome.MENU_W).max(0.0))
+                menu_y = 0.0
             elif ev.text == "other"
                 close_at(h.k)
             else
                 switch(h.k)
         "close" => close_at(h.k)
-        "back" => g.b.go_back()
-        "forward" => g.b.go_forward()
-        "reload" => g.b.reload()
+        "back" => start_load("back")
+        "forward" => start_load("forward")
+        "reload" => start_load("reload")
         "omni" =>
             if not omni.editing
                 omni.start()
@@ -2680,6 +2764,7 @@ fn Garlic.chrome_click(mut self, ev app.Event)
         "menu" =>
             menu_tab = -2
             menu_x = (strip_w - chrome.MENU_W - 8.0).max(0.0)
+            menu_y = 0.0
         "allow" => decide(true)
         "deny" => decide(false)
         _ => menu_tab = -1
@@ -2710,6 +2795,129 @@ fn Garlic.agent_line(self) str
         return ""
     "Agent attached at {where}: {calls} calls so far; {watches.len()} watches, {events.len()} unread changes"
 
+## A click on the page: a link shows the spinner first (`start_load`);
+## anything else is `Gui.click`.
+fn Garlic.page_click(mut self, x float, y float)
+    if g.pixel
+        if h := g.scene.hit_at(x, y + g.top)
+            if h.node < 0 and h.href != ""
+                start_load("open:{h.href}")
+                return
+    g.click(x, y)
+
+## Starts a load: with an inbox the tab shows its spinner and the load runs
+## on the `load` event this posts, so the host draws the spinner first;
+## headless, the load runs now.
+fn Garlic.start_load(mut self, what str)
+    load_next = what
+    if has_inbox
+        inbox.post(app.external("load", what))
+    else
+        do_load()
+
+## Does the load `start_load` queued.
+fn Garlic.do_load(mut self)
+    what := load_next
+    load_next = ""
+    if what.starts_with("open:")
+        g.open(what.slice(5, what.chars().len()))
+    elif what == "back"
+        g.b.go_back()
+    elif what == "forward"
+        g.b.go_forward()
+    elif what == "reload"
+        g.b.reload()
+
+## The omnibox dropdown's rows for what is typed (none while it shows the
+## address as it is).
+fn Garlic.suggestions(self) List[chrome.Suggestion]
+    if not omni.editing or omni.all
+        return []
+    chrome.suggestions(omni.text, history)
+
+## Adds the shown page to the history when it is new there (an `http(s)`
+## page with a title), keeping the last 500.
+fn Garlic.remember(mut self)
+    u := g.b.url
+    if not u.starts_with("http") or g.b.pg.title == ""
+        return
+    if last := history.last()
+        if last.url == u
+            return
+    history.push(chrome.Suggestion(title: g.b.pg.title, url: u))
+    if history.len() > 500
+        history = [history[i] for i in 1..history.len()]
+
+## Copies what Cmd-C means here: the omnibox's text while it is edited, the
+## find bar's while it has the keys, else the link under the pointer.
+fn Garlic.copy(mut self)
+    text := if omni.editing then omni.text else (if finding and find.editing then find.text else hover_href)
+    if text != ""
+        queue.push(app.clipboard(text))
+
+## Opens the page menu at (x, y): what a right-click on a Chromium page
+## shows, for the link and text under the pointer.
+fn Garlic.page_menu(mut self, x float, y float)
+    menu_href = ""
+    if h := g.scene.hit_at(x, y + g.top)
+        menu_href = h.href
+    menu_text = g.text_at(x, y + g.top)
+    menu_tab = -3
+    menu_x = x.min((g.area_w - chrome.MENU_W).max(0.0))
+    menu_y = y
+
+## Opens `url` in a new tab behind the shown one, as Chromium's menu does.
+fn Garlic.open_in_new_tab(mut self, url str)
+    was := cur
+    new_tab()
+    g.open(url)
+    switch(was)
+    omni = chrome.omni(g.b.url)
+    want = ""
+
+## Opens the find bar with the last text selected (Cmd-F, or the menu); in
+## the text layout it is the `/` prompt instead.
+fn Garlic.open_find(mut self)
+    if not g.pixel
+        g.b.prompt = Find("")
+        return
+    finding = true
+    find = chrome.omni(g.found)
+    find.start()
+    want = "page"
+
+## Closes the find bar and drops the highlights (Escape, or its cross).
+fn Garlic.close_find(mut self)
+    finding = false
+    find = chrome.omni("")
+    g.found = ""
+    g.find_n = 0
+    g.b.message = ""
+
+## A key while the find bar has the keys: Return steps to the next match
+## (Shift-Return the previous), Escape closes, and typing searches as it
+## goes.
+fn Garlic.find_key(mut self, key str, meta bool, shift bool)
+    before := find.text
+    match find.key(key, meta, shift)
+        "open" =>
+            find.editing = true
+            g.find_step(find.text, if shift then -1 else 1)
+        "cancel" => close_find()
+        _ => if find.text != before
+            g.find_step(find.text, 0)
+
+## A click on the find bar: `up`, `down`, `close` or `text`.
+fn Garlic.find_click(mut self, what str)
+    match what
+        "up" => g.find_step(find.text, -1)
+        "down" => g.find_step(find.text, 1)
+        "close" => close_find()
+        _ =>
+            find.editing = true
+            find.all = false
+            want = "page"
+
 ## The look: Chromium's, dark unless `--light`.
 fn Garlic.theme(self) chrome.Theme
     if light then chrome.light() else chrome.dark()
@@ -2736,6 +2944,10 @@ fn Garlic.chrome_node(self) app.Node
     )
 
 impl app.App for Garlic
+    fn attach(mut self, box app.Inbox)
+        has_inbox = true
+        inbox = box
+
     fn update(mut self, ev app.Event)
         want = ""
         g.b.pump()
@@ -2759,14 +2971,31 @@ impl app.App for Garlic
                 if ev.id == "chrome"
                     chrome_click(ev)
                 else
-                    r := chrome.menu_hit(ev.x, ev.y, menu_rows().len(), menu_x, 0.0)
+                    r := chrome.menu_hit(ev.x, ev.y, menu_rows().len(), menu_x, menu_y)
                     if omni.editing
                         omni = chrome.omni(g.b.url)
-                    if r >= 0
+                    fh := if finding then chrome.find_hit(ev.x, ev.y, g.area_w) else ""
+                    sr := if omni.editing then chrome.suggest_hit(
+                        ev.x,
+                        ev.y,
+                        suggestions().len(),
+                        strip_w,
+                        attached,
+                    ) else -1
+                    if sr >= 0
+                        row := suggestions()[sr]
+                        omni = chrome.omni(g.b.url)
+                        start_load("open:{if row.url == "" then row.title else row.url}")
+                    elif r >= 0
                         menu_pick(r)
+                    elif fh != ""
+                        find_click(fh)
+                    elif ev.text == "right" and g.pixel
+                        page_menu(ev.x, ev.y)
                     else
                         menu_tab = -1
-                        g.click(ev.x, ev.y)
+                        find.editing = false
+                        page_click(ev.x, ev.y)
             "scroll" =>
                 if ev.id != "chrome"
                     g.scroll(ev.dy)
@@ -2786,30 +3015,49 @@ impl app.App for Garlic
             "paste" =>
                 if omni.editing
                     omni.insert(ev.text)
+                elif finding and find.editing
+                    find.insert(ev.text)
+                    g.find_step(find.text, 0)
             "key" =>
-                if omni.editing
+                if omni.editing and not ev.meta and (ev.text == "down" or ev.text == "up")
+                    n := suggestions().len()
+                    if n > 0
+                        pick_row = if ev.text
+                            == "down" then (pick_row + 2) % (n + 1) - 1 else (pick_row + n + 1) % (n + 1) - 1
+                elif omni.editing
                     and (not ev.meta or ev.text == "a" or ev.text == "left" or ev.text == "right")
+                    rows := suggestions()
                     match omni.key(ev.text, ev.meta, ev.shift)
-                        "open" => g.open(omni.text)
+                        "open" => start_load("open:{if pick_row >= 0 and pick_row < rows.len() and rows[pick_row].url != "" then rows[pick_row].url else omni.text}")
                         "cancel" => omni = chrome.omni(g.b.url)
-                        _ => menu_tab = menu_tab
+                        _ => pick_row = -1
+                elif finding and ev.meta and (ev.text == "g" or ev.text == "G")
+                    g.find_step(find.text, if ev.shift then -1 else 1)
+                elif finding
+                    and find.editing
+                    and (not ev.meta or ev.text == "a" or ev.text == "left" or ev.text == "right")
+                    find_key(ev.text, ev.meta, ev.shift)
                 elif ev.meta and ev.shift and (ev.text == "t" or ev.text == "T")
                     reopen()
                 elif ev.text == "escape" and menu_tab != -1
                     menu_tab = -1
+                elif ev.text == "escape" and finding
+                    close_find()
                 elif (ev.meta and ev.text == "l") or (ev.text == "g" and g.b.reading())
                     omni.start()
                     want = "chrome"
                 elif ev.meta and ev.text == "r"
-                    g.b.reload()
+                    start_load("reload")
                 elif ev.meta and ev.text == "["
-                    g.b.go_back()
+                    start_load("back")
                 elif ev.meta and ev.text == "]"
-                    g.b.go_forward()
+                    start_load("forward")
                 elif ev.meta and ev.text == "i"
                     g.ids = not g.ids
                 elif ev.meta and ev.text == "f"
-                    g.b.prompt = Find("")
+                    open_find()
+                elif ev.meta and ev.text == "c"
+                    copy()
                 elif ev.meta and ev.text == "t"
                     new_tab()
                 elif ev.meta and ev.text == "w"
@@ -2819,7 +3067,9 @@ impl app.App for Garlic
                 else
                     g.key(ev.text, ev.alt, ev.shift)
             "external" =>
-                if ev.id == "mcp"
+                if ev.id == "load"
+                    do_load()
+                elif ev.id == "mcp"
                     agent_call(ev.text)
                 elif ev.id == "tick"
                     tick()
@@ -2832,6 +3082,8 @@ impl app.App for Garlic
         g.refresh()
         if not omni.editing
             omni = chrome.omni(g.b.url)
+            pick_row = -1
+        remember()
         if g.pixel
             g.icon = favicon.fetch(g.b.doc, g.b.url, g.b.cj, image_options(), mut icons)
             if g.icon != "" and not icon_sent.contains(g.icon)
@@ -2841,7 +3093,27 @@ impl app.App for Garlic
         ## A canvas of 0 by 0 fills the window; the host reports its size.
         mut page_ops := [to_app(op, g) for op in g.display()]
         page_ops.extend(chrome.status_ops(theme(), bubble(), g.area_h, g.scene.bg, sans_w))
-        page_ops.extend(chrome.menu_ops(theme(), menu_rows(), menu_x, 0.0, g.scene.bg, -1))
+        page_ops.extend(chrome.menu_ops(theme(), menu_rows(), menu_x, menu_y, g.scene.bg, -1))
+        if omni.editing
+            page_ops.extend(chrome.suggest_ops(
+                theme(),
+                suggestions(),
+                pick_row,
+                strip_w,
+                attached,
+                g.scene.bg,
+                sans_w,
+            ))
+        if finding
+            page_ops.extend(chrome.find_ops(
+                theme(),
+                find,
+                g.find_k,
+                g.find_n,
+                g.area_w,
+                g.scene.bg,
+                sans_w,
+            ))
         app.column([chrome_node(), app.canvas("page", 0.0, 0.0, page_ops)])
 
     fn hover(self) bool
@@ -4604,6 +4876,93 @@ fn flat(s gfx.Scene) List[str]
     assert_eq(g.found, "SECOND")
     assert(g.b.message.contains("found"))
     assert(g.marked().len() > g.scene.ops.len())
+
+@test fn the_find_bar_searches_as_you_type_and_steps_through_the_matches()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut a := Garlic.new(b, 400.0, 60.0, 7.5, 15.0)
+    a.g.pixel = true
+    a.update(resized(400.0, 60.0))
+    mut f := app.key("f")
+    f.meta = true
+    a.update(f)
+    assert(a.finding and a.find.editing)
+    for c in "second".chars()
+        a.update(app.key("{c}"))
+    assert_eq(a.find.text, "second")
+    assert(a.g.find_n >= 1)
+    assert_eq(a.g.find_k, 0)
+    a.update(app.key("enter"))
+    assert(a.finding and a.find.editing)
+    assert_eq(a.g.find_k, 1 % a.g.find_n)
+    a.view()
+    a.update(app.key("escape"))
+    assert(not a.finding and a.g.found == "")
+
+@test fn cmd_c_and_the_page_menu_copy_through_the_clipboard_line()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut a := Garlic.new(b, 400.0, 300.0, 7.5, 15.0)
+    a.g.pixel = true
+    a.update(resized(400.0, 300.0))
+    mut f := app.key("f")
+    f.meta = true
+    a.update(f)
+    for ch in "second".chars()
+        a.update(app.key("{ch}"))
+    mut c := app.key("c")
+    c.meta = true
+    a.update(c)
+    assert_eq(a.lines(), [app.clipboard("second")])
+    assert_eq(a.lines(), [])
+    a.update(app.key("escape"))
+    mut ev := clicked(20.0, 20.0)
+    ev.text = "right"
+    a.update(ev)
+    assert_eq(a.menu_tab, -3)
+    rows := a.menu_rows()
+    assert(rows.contains("Reload") and rows.contains("Back"))
+    if rows.contains("Copy text")
+        a.menu_pick(rows.index_of("Copy text") else 0)
+        assert_eq(a.lines().len(), 1)
+
+@test fn a_load_shows_the_spinner_until_the_load_event_arrives()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut a := Garlic.new(b, 400.0, 300.0, 7.5, 15.0)
+    a.g.pixel = true
+    a.update(resized(400.0, 300.0))
+    a.attach(app.new_inbox())
+    mut r := app.key("r")
+    r.meta = true
+    a.update(r)
+    assert(a.item(0).loading)
+    a.update(app.external("load", "reload"))
+    assert(not a.item(0).loading)
+
+@test fn the_omnibox_dropdown_offers_history_and_the_arrows_pick_a_row()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut a := Garlic.new(b, 600.0, 300.0, 7.5, 15.0)
+    a.g.pixel = true
+    a.update(resized(600.0, 300.0))
+    a.history.push(chrome.Suggestion(title: "AIL", url: "https://ail.dev/"))
+    mut l := app.key("l")
+    l.meta = true
+    a.update(l)
+    assert(a.omni.editing)
+    for c in "ail".chars()
+        a.update(app.key("{c}"))
+    rows := a.suggestions()
+    assert_eq(rows.len(), 2)
+    assert_eq(a.pick_row, -1)
+    a.update(app.key("down"))
+    assert_eq(a.pick_row, 0)
+    a.update(app.key("down"))
+    assert_eq(a.pick_row, 1)
+    a.update(app.key("down"))
+    assert_eq(a.pick_row, -1)
+    a.update(app.key("up"))
+    assert_eq(a.pick_row, 1)
+    a.view()
+    a.update(app.key("escape"))
+    assert_eq(a.suggestions().len(), 0)
 
 @test fn max_age_is_read_from_cache_control()
     assert_eq(max_age("public, max-age=60"), 60)

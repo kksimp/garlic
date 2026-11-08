@@ -17,6 +17,8 @@ pub struct Item
     pub icon_w int
     pub icon_h int
     pub icon_data str
+    ## Whether the page is loading: a spinner takes the favicon's place.
+    pub loading bool
 
 ## The colours of the chrome; `dark()` and `light()` are Chromium's.
 pub struct Theme
@@ -367,6 +369,10 @@ fn arc(mut ops List[app.Op], cx float, cy float, r float, a0 float, a1 float, c 
 
 # ---- Icons -------------------------------------------------------------------
 
+## Chromium's loading spinner: three quarters of a ring, centred on (cx, cy).
+fn spinner(mut ops List[app.Op], cx float, cy float, c int)
+    arc(mut ops, cx, cy, 6.0, 0.0 - 1.2, 3.5, c, 2.0)
+
 ## A left or right arrow in a 28 point box at (x, y).
 fn arrow(mut ops List[app.Op], x float, y float, c int, back bool)
     cx := x + BTN / 2.0
@@ -505,6 +511,8 @@ pub fn draw(th Theme, items List[Item], cur int, st State, tw fn(str, float) flo
                 ph: items[k].icon_h,
                 data: items[k].icon_data,
             ))
+        elif items[k].loading
+            spinner(mut ops, x0 + 18.0, TAB_TOP + 17.0, th.accent)
         else
             globe(mut ops, x0 + 10.0, TAB_TOP + 9.0, th.dim, bg)
         title := if items[k].title == "" then "New tab" else items[k].title
@@ -697,7 +705,218 @@ pub fn status_ops(th Theme, msg str, h float, bg int, tw fn(str, float) float) L
     ops.push(txt(8.0, h - 18.0, msg, th.text, false, 12.0))
     ops
 
+FIND_W := 360.0
+FIND_H := 40.0
+FIND_BTN := 32.0
+
+## The find bar's left edge on a page `width` wide: it hangs from the
+## toolbar at the right, as Chromium's does.
+fn find_x(width float) float
+    (width - FIND_W - 16.0).max(0.0)
+
+## The find bar: a card under the toolbar at the right with the text typed
+## (`o`), the match shown and the count (`k` of `n`, Chromium's `1/5`, or
+## `0/0`), then previous, next and close.
+pub fn find_ops(
+    th Theme,
+    o Omni,
+    k int,
+    n int,
+    width float,
+    bg int,
+    tw fn(str, float) float,
+) List[app.Op]
+    mut ops := List[app.Op]()
+    x := find_x(width)
+    ops.push(app.Op.Shade(x: x + 1.0, y: 2.0, w: FIND_W, h: FIND_H, color: 0x000000, alpha: 0.25))
+    round(mut ops, x, 0.0 - 8.0, FIND_W, FIND_H + 8.0, 8.0, th.toolbar, bg)
+    ops.push(app.draw_rect(x, 0.0, FIND_W, 1.0, mix(th.toolbar, th.sep, 0.5)))
+    tx := x + 16.0
+    ty := 12.0
+    count := if o.text == "" then "" else "{k + 1}/{n}"
+    sep_x := x + FIND_W - 3.0 * FIND_BTN - 12.0
+    cw := tw(count, 12.0)
+    ops.push(app.Op.Clip(x: tx, y: 0.0, w: (sep_x - cw - 24.0 - tx).max(0.0), h: FIND_H))
+    if o.text == ""
+        ops.push(txt(tx, ty, "Find in page", th.dim, false, 14.0))
+    else
+        if o.all and o.editing
+            ops.push(app.Op.Shade(
+                x: tx - 1.0,
+                y: 6.0,
+                w: tw(o.text, 14.0) + 2.0,
+                h: FIND_H - 12.0,
+                color: th.accent,
+                alpha: 0.35,
+            ))
+        ops.push(txt(tx, ty, o.text, th.text, false, 14.0))
+    if o.editing and not o.all
+        cx := tx + tw(o.text.slice(0, o.cursor), 14.0)
+        ops.push(app.draw_rect(cx, 8.0, 1.5, FIND_H - 16.0, th.text))
+    ops.push(app.Op.Unclip)
+    if count != ""
+        ops.push(txt(
+            sep_x - cw - 12.0,
+            ty + 1.0,
+            count,
+            if n == 0 then 0xd93025 else th.dim,
+            false,
+            12.0,
+        ))
+    ops.push(line(sep_x, 8.0, sep_x, FIND_H - 8.0, th.sep, 1.0))
+    c := if n == 0 then th.dim else th.text
+    bx := sep_x + 6.0
+    chevron(mut ops, bx + FIND_BTN / 2.0, FIND_H / 2.0, c, true)
+    chevron(mut ops, bx + FIND_BTN * 1.5, FIND_H / 2.0, c, false)
+    cross(mut ops, bx + FIND_BTN * 2.5, FIND_H / 2.0, th.text)
+    ops
+
+## A chevron pointing up (`up`) or down, centred on (cx, cy).
+fn chevron(mut ops List[app.Op], cx float, cy float, c int, up bool)
+    d := if up then 2.5 else 0.0 - 2.5
+    ops.push(line(cx - 5.0, cy + d, cx, cy - d, c, 1.5))
+    ops.push(line(cx, cy - d, cx + 5.0, cy + d, c, 1.5))
+
+## What a click at (x, y) on a page `width` wide hits in the find bar:
+## `text`, `up`, `down`, `close`, or "" outside it.
+pub fn find_hit(x float, y float, width float) str
+    x0 := find_x(width)
+    if y < 0.0 or y >= FIND_H or x < x0 or x >= x0 + FIND_W
+        return ""
+    bx := x0 + FIND_W - 3.0 * FIND_BTN - 6.0
+    if x < bx
+        return "text"
+    match ((x - bx) / FIND_BTN).floor().to_int()
+        0 => "up"
+        1 => "down"
+        _ => "close"
+
+SUG_ROW := 36.0
+SUG_MAX := 6
+
+## One row of the omnibox's dropdown: a page from the history, or the
+## typed text itself (`url` "" for a search).
+pub struct Suggestion
+    pub title str
+    pub url str
+
+## The omnibox dropdown over the page: the typed text first, then the
+## history pages that match, `hot_row` highlighted (-1 for none). The page
+## canvas starts right under the toolbar, so it hangs from y 0.
+pub fn suggest_ops(
+    th Theme,
+    rows List[Suggestion],
+    hot_row int,
+    width float,
+    agent bool,
+    bg int,
+    tw fn(str, float) float,
+) List[app.Op]
+    mut ops := List[app.Op]()
+    if rows.len() == 0
+        return ops
+    w := omni_w(width.max(1.0), agent)
+    h := rows.len().to_float() * SUG_ROW + 8.0
+    ops.push(app.Op.Shade(x: OMNI_X + 2.0, y: 3.0, w: w, h: h, color: 0x000000, alpha: 0.25))
+    round(mut ops, OMNI_X, 0.0 - 8.0, w, h + 8.0, 8.0, th.menu, bg)
+    for r in 0..rows.len()
+        ry := r.to_float() * SUG_ROW
+        if r == hot_row
+            ops.push(app.draw_rect(OMNI_X, ry, w, SUG_ROW, th.menu_hot))
+        s := rows[r]
+        if s.url == ""
+            ops.push(txt(OMNI_X + 40.0, ry + 10.0, s.title, th.menu_text, false, 14.0))
+            ops.push(txt(
+                OMNI_X + 40.0 + tw(s.title, 14.0),
+                ry + 10.0,
+                " - DuckDuckGo Search",
+                th.dim,
+                false,
+                14.0,
+            ))
+            spark(mut ops, OMNI_X + 20.0, ry + SUG_ROW / 2.0, th.dim)
+        else
+            globe(
+                mut ops,
+                OMNI_X + 12.0,
+                ry + 10.0,
+                th.dim,
+                if r == hot_row then th.menu_hot else th.menu,
+            )
+            hp := pretty(s.url)
+            ops.push(app.Op.Clip(x: OMNI_X + 40.0, y: ry, w: (w - 48.0).max(0.0), h: SUG_ROW))
+            lead := if s.title == "" then "" else "{s.title} - "
+            ops.push(txt(OMNI_X + 40.0, ry + 10.0, lead, th.menu_text, false, 14.0))
+            ops.push(txt(
+                OMNI_X + 40.0 + tw(lead, 14.0),
+                ry + 10.0,
+                "{hp.0}{hp.1}",
+                th.dim,
+                false,
+                14.0,
+            ))
+            ops.push(app.Op.Unclip)
+    ops
+
+## Which row of a dropdown of `n` rows a click at (x, y) on the page lands
+## on, or -1.
+pub fn suggest_hit(x float, y float, n int, width float, agent bool) int
+    if n == 0 or x < OMNI_X or x >= OMNI_X + omni_w(width.max(1.0), agent) or y < 0.0
+        return -1
+    row := (y / SUG_ROW).floor().to_int()
+    if row < n then row else -1
+
+## The dropdown's rows for `typed`: the text itself first (a URL, or a
+## search), then up to `SUG_MAX` history pages whose address or title
+## contains it (case does not matter), newest first; none for empty text.
+pub fn suggestions(typed str, history List[Suggestion]) List[Suggestion]
+    t := typed.trim()
+    mut rows := List[Suggestion]()
+    if t == ""
+        return rows
+    rows.push(Suggestion(title: t, url: ""))
+    want := t.to_lower()
+    mut seen := Set[str]()
+    mut k := history.len()
+    while k > 0 and rows.len() <= SUG_MAX
+        k -= 1
+        h := history[k]
+        if seen.contains(h.url)
+            continue
+        if h.url.to_lower().contains(want) or h.title.to_lower().contains(want)
+            seen.add(h.url)
+            rows.push(h)
+    rows
+
 # ---- Tests -----------------------------------------------------------------------------
+
+@test fn find_bar_clicks_land_on_the_text_the_arrows_and_the_close()
+    w := 800.0
+    x0 := w - FIND_W - 16.0
+    assert_eq(find_hit(x0 + 40.0, 20.0, w), "text")
+    assert_eq(find_hit(x0 + FIND_W - 90.0, 20.0, w), "up")
+    assert_eq(find_hit(x0 + FIND_W - 58.0, 20.0, w), "down")
+    assert_eq(find_hit(x0 + FIND_W - 20.0, 20.0, w), "close")
+    assert_eq(find_hit(x0 - 10.0, 20.0, w), "")
+    assert_eq(find_hit(x0 + 40.0, 50.0, w), "")
+    ops := find_ops(dark(), omni("ale"), 0, 3, w, 0x202124, est)
+    assert(ops.len() > 10)
+
+@test fn the_dropdown_lists_the_typed_text_then_matching_history_newest_first()
+    hist := [
+        Suggestion(title: "AIL", url: "https://ail.dev/"),
+        Suggestion(title: "Garlic", url: "https://github.com/kksimp/garlic"),
+        Suggestion(title: "AIL docs", url: "https://ail.dev/docs"),
+    ]
+    rows := suggestions("ail", hist)
+    assert_eq(rows.len(), 3)
+    assert_eq(rows[0], Suggestion(title: "ail", url: ""))
+    assert_eq(rows[1].url, "https://ail.dev/docs")
+    assert_eq(suggestions("", hist).len(), 0)
+    assert_eq(suggest_hit(OMNI_X + 10.0, 40.0, 3, 800.0, false), 1)
+    assert_eq(suggest_hit(OMNI_X + 10.0, 200.0, 3, 800.0, false), -1)
+    assert_eq(suggest_hit(10.0, 10.0, 3, 800.0, false), -1)
+    assert(suggest_ops(dark(), rows, 1, 800.0, false, 0x202124, est).len() > 6)
 
 @test fn clicks_land_on_the_tab_its_x_the_plus_and_the_toolbar()
     w := 800.0
@@ -778,6 +997,7 @@ pub fn status_ops(th Theme, msg str, h float, bg int, tw fn(str, float) float) L
             icon_w: 0,
             icon_h: 0,
             icon_data: "",
+            loading: false,
         )],
         0,
         st,
