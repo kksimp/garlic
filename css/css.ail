@@ -34,6 +34,10 @@ pub struct Compound
     pub attrs List[AttrTest]
     pub pseudos List[str]
     pub nots List[Neg]
+    ## `:is()` and `:where()`: each group needs one of its tests to hold.
+    pub groups List[List[Neg]]
+    ## The specificity `:is()` adds (the most specific argument).
+    pub group_weight int
 
 ## `[name]` (`op` empty) or `[name op value]` with `op` one of `=`, `~=`,
 ## `|=`, `^=`, `$=`, `*=`.
@@ -146,6 +150,50 @@ USED := {
     "list-style-type",
     "font-family",
     "color-scheme",
+    "min-width",
+    "max-height",
+    "overflow",
+    "overflow-x",
+    "overflow-y",
+    "opacity",
+    "flex-shrink",
+    "flex-flow",
+    "align-self",
+    "order",
+    "row-gap",
+    "grid-column",
+    "object-fit",
+    "aspect-ratio",
+    "vertical-align",
+    "inset",
+    "inline-size",
+    "block-size",
+    "min-inline-size",
+    "max-inline-size",
+    "min-block-size",
+    "max-block-size",
+    "padding-block-start",
+    "padding-block-end",
+    "inset-inline-start",
+    "inset-inline-end",
+    "inset-block-start",
+    "inset-block-end",
+}
+
+## The logical properties Garlic reads under their physical names.
+ALIASES := {
+    "inline-size": "width",
+    "block-size": "height",
+    "min-inline-size": "min-width",
+    "max-inline-size": "max-width",
+    "min-block-size": "min-height",
+    "max-block-size": "max-height",
+    "padding-block-start": "padding-top",
+    "padding-block-end": "padding-bottom",
+    "inset-inline-start": "left",
+    "inset-inline-end": "right",
+    "inset-block-start": "top",
+    "inset-block-end": "bottom",
 }
 
 ## Removes `/* ... */` comments.
@@ -392,9 +440,10 @@ pub fn declarations(body str) List[Decl]
     mut out := List[Decl]()
     for part in body.split(";")
         colon := part.find(":") else continue
-        name := part.slice(0, colon).trim().to_lower()
+        raw_name := part.slice(0, colon).trim().to_lower()
+        name := ALIASES.get(raw_name) else raw_name
         ## Custom properties (`--x`) are kept for `var()` in the layout.
-        if not USED.contains(name) and not name.starts_with("--")
+        if not USED.contains(raw_name) and not name.starts_with("--")
             continue
         mut value := part.slice(colon + 1, part.chars().len()).trim()
         mut important := false
@@ -418,10 +467,9 @@ fn list_style_type(v str) str
     "disc"
 
 ## Parses one complex selector, or none when Garlic doesn't support it
-## (pseudo-elements, dynamic pseudo-classes such as `:hover`, `:is`,
-## `:where`, `:has`), so the rule is dropped. Selectors Level 4: type,
+## (pseudo-elements, dynamic pseudo-classes such as `:hover`, `:has`), so the rule is dropped. Selectors Level 4: type,
 ## `*`, `#id`, `.class` (with `\` escapes), `[attr]` and its operators,
-## `:not()`, `:first-child`, `:nth-child()` and kin, `:empty`, `:checked`,
+## `:not()`, `:is()`, `:where()` (lists of compounds), `:first-child`, `:nth-child()` and kin, `:empty`, `:checked`,
 ## `:disabled`, `:enabled`, `:link`, and the ` `, `>`, `+`, `~` combinators.
 pub fn selector(text str) Selector?
     t := text.trim().replace(":root", "html")
@@ -471,7 +519,7 @@ pub fn selector(text str) Selector?
         return none
     mut spec := 0
     for p in parts
-        spec += simple_weight(p.tag, p.ids, p.classes, p.attrs, p.pseudos)
+        spec += simple_weight(p.tag, p.ids, p.classes, p.attrs, p.pseudos) + p.group_weight
         for ng in p.nots
             spec += simple_weight(ng.tag, ng.ids, ng.classes, ng.attrs, ng.pseudos)
     Selector(parts, comb, specificity: spec)
@@ -548,23 +596,35 @@ fn add_pseudo(mut c Compound, name str, arg str) bool
         compact := arg.replace(" ", "").to_lower()
         c.pseudos.push("{name}({compact})")
         return true
-    if name == "not"
-        inner := arg.trim()
-        for bad in [",", " ", ">", "+", "~"]
-            if inner.contains(bad)
+    if name == "not" or name == "is" or name == "where" or name == "matches" or name == "-webkit-any"
+        mut group := List[Neg]()
+        mut top := 0
+        for part in split_top(arg)
+            inner := part.trim()
+            if inner == ""
                 return false
-        if inner == ""
-            return false
-        n := compound(inner) else return false
-        if n.nots.len() > 0
-            return false
-        c.nots.push(Neg(
-            tag: n.tag,
-            ids: n.ids,
-            classes: n.classes,
-            attrs: n.attrs,
-            pseudos: n.pseudos,
-        ))
+            for bad in [" ", ">", "+", "~"]
+                if inner.contains(bad)
+                    return false
+            n := compound(inner) else return false
+            if n.nots.len() > 0 or n.groups.len() > 0
+                return false
+            one := Neg(
+                tag: n.tag,
+                ids: n.ids,
+                classes: n.classes,
+                attrs: n.attrs,
+                pseudos: n.pseudos,
+            )
+            top = top.max(simple_weight(one.tag, one.ids, one.classes, one.attrs, one.pseudos))
+            if name == "not"
+                c.nots.push(one)
+            else
+                group.push(one)
+        if name != "not"
+            c.groups.push(group)
+            if name != "where"
+                c.group_weight += top
         return true
     false
 
@@ -593,7 +653,7 @@ fn nth_ab(arg str) List[int]
 
 ## Parses a compound selector such as `a.nav#top[href]:not(.x)`.
 fn compound(word str) Compound?
-    mut c := Compound(tag: "", ids: [], classes: [], attrs: [], pseudos: [], nots: [])
+    mut c := Compound(tag: "", ids: [], classes: [], attrs: [], pseudos: [], nots: [], groups: [], group_weight: 0)
     cs := word.chars()
     mut i := 0
     mut kind := 't'
@@ -783,6 +843,14 @@ fn matches_compound(d html.Doc, id int, c Compound) bool
         return false
     for ng in c.nots
         if simple_ok(d, id, ng.tag, ng.ids, ng.classes, ng.attrs, ng.pseudos)
+            return false
+    for group in c.groups
+        mut found := false
+        for ng in group
+            if simple_ok(d, id, ng.tag, ng.ids, ng.classes, ng.attrs, ng.pseudos)
+                found = true
+                break
+        if not found
             return false
     true
 

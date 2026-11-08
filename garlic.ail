@@ -462,13 +462,15 @@ fn refresh_target(d html.Doc, url str, scripting bool) str?
             return target
     none
 
-## At most this many linked style sheets are fetched per page.
-MAX_SHEETS := 8
+## At most this many distinct linked style sheets are fetched per page
+## (GitHub's home page links 18 theme sheets before its layout ones).
+MAX_SHEETS := 48
 
 ## The page's linked style sheets, fetched and parsed in document order.
 fn linked_sheets(d html.Doc, url str, mut cj jar.Jar, mut cache Map[str, Cached]) css.Sheet
-    mut all := css.parse("", 0)
+    mut rules := List[css.Rule]()
     mut n := 0
+    mut seen := Set[str]()
     for l in d.all("link")
         rel := (d.attr(l, "rel") else "").to_lower().split(" ")
         media := (d.attr(l, "media") else "").trim()
@@ -480,13 +482,22 @@ fn linked_sheets(d html.Doc, url str, mut cj jar.Jar, mut cache Map[str, Cached]
         href := d.attr(l, "href") else continue
         if n == MAX_SHEETS
             break
+        sheet_url := page.resolve(page.base_of(d, url), href)
+        key := "{media}|{sheet_url}"
+        if seen.contains(key)
+            continue
+        seen.add(key)
         n += 1
-        all = css.concat(all, css.parse_in(
-            fetch_text(page.resolve(page.base_of(d, url), href), url, mut cj, mut cache),
-            0,
-            media,
-        ))
-    all
+        one := css.parse_in(fetch_text(sheet_url, url, mut cj, mut cache), 0, media)
+        base := rules.len()
+        for r in one.rules
+            rules.push(css.Rule(
+                selector: r.selector,
+                decls: r.decls,
+                order: base + r.order,
+                media: r.media,
+            ))
+    css.index(rules)
 
 ## The bytes of a `data:` URL's payload (RFC 2397): base64 or %-escapes.
 fn data_bytes(url str) bytes
