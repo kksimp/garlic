@@ -172,6 +172,8 @@ pub fn Vm.net_deliver(mut self, id int, json str)
         .replace("\r", "\\r")
     run_script_text("__netDeliver({id}, \"{lit}\")")
 
-## Defines `fetch`, `Headers`, `Response` and `XMLHttpRequest` on the window.
+## Defines `fetch`, `Headers`, `Response` and `XMLHttpRequest` on the
+## window, then the web APIs of webapi.ail, which build on them.
 pub fn Vm.net_setup(mut self)
     run_script_text(NET_PRELUDE)
+    web_setup()

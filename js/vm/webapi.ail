@@ -1,0 +1,211 @@
+## Web APIs written in JavaScript over the engine's built-ins, run once
+## per page after the network prelude (netapi.ail): `Blob`, `File`,
+## `FileReader`, `FormData`, `Request`, `URL.createObjectURL`, and the
+## canvas element's `getContext`, `toDataURL` and `toBlob`. A 2D context
+## takes every drawing call and keeps its state, but draws nothing: the
+## page can't see pixels, so `getImageData` is transparent black and
+## `toDataURL` is a blank PNG. WebGL and WebGPU contexts are null, as on a
+## machine without graphics, so pages report them unsupported rather
+## than failing part way.
+
+WEB_PRELUDE := r"""
+(function (g) {
+  function partText(p) {
+    if (p instanceof Blob) return p._text;
+    if (p instanceof ArrayBuffer) return new TextDecoder().decode(new Uint8Array(p));
+    if (ArrayBuffer.isView(p)) return new TextDecoder().decode(new Uint8Array(p.buffer, p.byteOffset, p.byteLength));
+    return String(p);
+  }
+  function Blob(parts, options) {
+    var text = "";
+    if (parts !== undefined) {
+      if (parts === null || typeof parts[Symbol.iterator] !== "function") throw new TypeError("Failed to construct 'Blob': The provided value cannot be converted to a sequence.");
+      for (var p of parts) text += partText(p);
+    }
+    Object.defineProperty(this, "_text", { value: text, enumerable: false });
+    this.size = new TextEncoder().encode(text).length;
+    this.type = options && options.type !== undefined ? String(options.type).toLowerCase() : "";
+  }
+  Blob.prototype.text = function () { return Promise.resolve(this._text); };
+  Blob.prototype.arrayBuffer = function () { return Promise.resolve(new TextEncoder().encode(this._text).buffer); };
+  Blob.prototype.bytes = function () { return Promise.resolve(new TextEncoder().encode(this._text)); };
+  Blob.prototype.slice = function (start, end, type) {
+    var n = this._text.length;
+    start = start === undefined ? 0 : (start < 0 ? Math.max(n + start, 0) : Math.min(start, n));
+    end = end === undefined ? n : (end < 0 ? Math.max(n + end, 0) : Math.min(end, n));
+    return new Blob([this._text.slice(start, end)], { type: type === undefined ? "" : type });
+  };
+  Blob.prototype.stream = function () { throw new TypeError("Blob.prototype.stream is not supported yet"); };
+  Object.defineProperty(Blob.prototype, Symbol.toStringTag, { value: "Blob", configurable: true });
+  g.Blob = Blob;
+
+  function File(parts, name, options) {
+    Blob.call(this, parts, options);
+    this.name = String(name);
+    this.lastModified = options && options.lastModified !== undefined ? Number(options.lastModified) : Date.now();
+    this.webkitRelativePath = "";
+  }
+  File.prototype = Object.create(Blob.prototype);
+  File.prototype.constructor = File;
+  Object.defineProperty(File.prototype, Symbol.toStringTag, { value: "File", configurable: true });
+  g.File = File;
+
+  function FileReader() {
+    this.readyState = 0; this.result = null; this.error = null; this._l = {};
+    this.onloadstart = null; this.onprogress = null; this.onload = null; this.onabort = null; this.onerror = null; this.onloadend = null;
+  }
+  FileReader.EMPTY = 0; FileReader.LOADING = 1; FileReader.DONE = 2;
+  FileReader.prototype.addEventListener = function (t, f) { (this._l[t] = this._l[t] || []).push(f); };
+  FileReader.prototype.removeEventListener = function (t, f) { var a = this._l[t]; if (a) { var i = a.indexOf(f); if (i >= 0) a.splice(i, 1); } };
+  FileReader.prototype._fire = function (t) {
+    var ev = { type: t, target: this, currentTarget: this, loaded: this.result === null ? 0 : 1, total: 1, lengthComputable: true };
+    var h = this["on" + t]; if (typeof h === "function") h.call(this, ev);
+    var a = (this._l[t] || []).slice(); for (var i = 0; i < a.length; i++) a[i].call(this, ev);
+  };
+  FileReader.prototype._read = function (blob, make) {
+    if (!(blob instanceof Blob)) throw new TypeError("Failed to execute 'readAsText' on 'FileReader': parameter 1 is not of type 'Blob'.");
+    if (this.readyState === 1) throw new DOMException("The object is already busy reading Blobs.", "InvalidStateError");
+    var self = this;
+    this.readyState = 1; this.result = null; this.error = null;
+    setTimeout(function () {
+      if (self.readyState !== 1) return;
+      self.result = make(blob); self.readyState = 2;
+      self._fire("loadstart"); self._fire("progress"); self._fire("load"); self._fire("loadend");
+    }, 0);
+  };
+  FileReader.prototype.readAsText = function (b) { this._read(b, function (b) { return b._text; }); };
+  function base64Of(text) { var bytes = new TextEncoder().encode(text), s = ""; for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]); return btoa(s); }
+  FileReader.prototype.readAsDataURL = function (b) { this._read(b, function (b) { return "data:" + (b.type || "application/octet-stream") + ";base64," + base64Of(b._text); }); };
+  FileReader.prototype.readAsArrayBuffer = function (b) { this._read(b, function (b) { return new TextEncoder().encode(b._text).buffer; }); };
+  FileReader.prototype.readAsBinaryString = function (b) { this._read(b, function (b) { return b._text; }); };
+  FileReader.prototype.abort = function () { if (this.readyState === 1) { this.readyState = 2; this.result = null; this._fire("abort"); this._fire("loadend"); } };
+  g.FileReader = FileReader;
+
+  function FormData(form) {
+    this._e = [];
+    if (form && form.elements) {
+      for (var i = 0; i < form.elements.length; i++) {
+        var el = form.elements[i];
+        if (!el.name || el.disabled) continue;
+        var t = (el.type || "").toLowerCase();
+        if ((t === "checkbox" || t === "radio") && !el.checked) continue;
+        if (t === "submit" || t === "button" || t === "reset" || t === "file") continue;
+        this._e.push([el.name, el.value]);
+      }
+    }
+  }
+  function entryValue(v, name) { return v instanceof Blob ? (v instanceof File && name === undefined ? v : new File([v], name === undefined ? (v.name || "blob") : name, { type: v.type })) : String(v); }
+  FormData.prototype.append = function (k, v, name) { this._e.push([String(k), entryValue(v, name)]); };
+  FormData.prototype.set = function (k, v, name) { k = String(k); var val = entryValue(v, name); var kept = false, out = []; for (var i = 0; i < this._e.length; i++) { if (this._e[i][0] === k) { if (!kept) { out.push([k, val]); kept = true; } } else out.push(this._e[i]); } if (!kept) out.push([k, val]); this._e = out; };
+  FormData.prototype.get = function (k) { k = String(k); for (var i = 0; i < this._e.length; i++) if (this._e[i][0] === k) return this._e[i][1]; return null; };
+  FormData.prototype.getAll = function (k) { k = String(k); var out = []; for (var i = 0; i < this._e.length; i++) if (this._e[i][0] === k) out.push(this._e[i][1]); return out; };
+  FormData.prototype.has = function (k) { return this.get(k) !== null; };
+  FormData.prototype["delete"] = function (k) { k = String(k); this._e = this._e.filter(function (e) { return e[0] !== k; }); };
+  FormData.prototype.forEach = function (f, t) { var a = this._e.slice(); for (var i = 0; i < a.length; i++) f.call(t, a[i][1], a[i][0], this); };
+  FormData.prototype.keys = function () { return this._e.map(function (e) { return e[0]; })[Symbol.iterator](); };
+  FormData.prototype.values = function () { return this._e.map(function (e) { return e[1]; })[Symbol.iterator](); };
+  FormData.prototype.entries = function () { return this._e.map(function (e) { return [e[0], e[1]]; })[Symbol.iterator](); };
+  FormData.prototype[Symbol.iterator] = FormData.prototype.entries;
+  Object.defineProperty(FormData.prototype, Symbol.toStringTag, { value: "FormData", configurable: true });
+  g.FormData = FormData;
+
+  function Request(input, init) {
+    init = init || {};
+    var from = input instanceof Request ? input : null;
+    this.url = from ? from.url : new URL(String(input), g.location ? g.location.href : undefined).href;
+    this.method = String(init.method || (from ? from.method : "GET")).toUpperCase();
+    this.headers = new Headers(init.headers || (from ? from.headers : undefined));
+    this.mode = init.mode || (from ? from.mode : "cors");
+    this.credentials = init.credentials || (from ? from.credentials : "same-origin");
+    this.cache = init.cache || "default"; this.redirect = init.redirect || "follow"; this.referrer = "about:client";
+    this.referrerPolicy = init.referrerPolicy || ""; this.integrity = init.integrity || ""; this.keepalive = !!init.keepalive;
+    this.signal = init.signal || (g.AbortSignal && AbortSignal.abort ? new AbortController().signal : null);
+    this.destination = ""; this.isHistoryNavigation = false; this.isReloadNavigation = false;
+    var body = init.body !== undefined ? init.body : (from ? from._body : null);
+    if (body !== null && body !== undefined && (this.method === "GET" || this.method === "HEAD")) throw new TypeError("Failed to construct 'Request': Request with GET/HEAD method cannot have body.");
+    Object.defineProperty(this, "_body", { value: body === undefined ? null : body, enumerable: false, writable: true });
+    this.bodyUsed = false;
+  }
+  Request.prototype.clone = function () { return new Request(this); };
+  Request.prototype.text = function () { this.bodyUsed = true; var b = this._body; return b instanceof Blob ? b.text() : Promise.resolve(b === null ? "" : (b instanceof FormData ? "" : String(b))); };
+  Request.prototype.json = function () { return this.text().then(JSON.parse); };
+  Request.prototype.arrayBuffer = function () { return this.text().then(function (t) { return new TextEncoder().encode(t).buffer; }); };
+  Request.prototype.blob = function () { return this.text().then(function (t) { return new Blob([t]); }); };
+  Request.prototype.formData = function () { var b = this._body; return Promise.resolve(b instanceof FormData ? b : new FormData()); };
+  Object.defineProperty(Request.prototype, Symbol.toStringTag, { value: "Request", configurable: true });
+  g.Request = Request;
+
+  var objectUrls = {}, urlSeq = 0;
+  URL.createObjectURL = function (b) { var u = "blob:" + (g.location ? g.location.origin : "null") + "/" + (++urlSeq) + "-" + Math.random().toString(16).slice(2); objectUrls[u] = b; return u; };
+  URL.revokeObjectURL = function (u) { delete objectUrls[String(u)]; };
+
+  // Canvas: a context that keeps its state and draws nothing.
+  var BLANK_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+  function ImageData(w, h) {
+    if (w instanceof Uint8ClampedArray) { this.data = w; this.width = h; this.height = arguments[2]; }
+    else { this.width = w; this.height = h; this.data = new Uint8ClampedArray(w * h * 4); }
+    this.colorSpace = "srgb";
+  }
+  g.ImageData = ImageData;
+  function TextMetrics(w) { this.width = w; this.actualBoundingBoxLeft = 0; this.actualBoundingBoxRight = w; this.fontBoundingBoxAscent = 9; this.fontBoundingBoxDescent = 2; this.actualBoundingBoxAscent = 7; this.actualBoundingBoxDescent = 2; this.emHeightAscent = 8; this.emHeightDescent = 2; this.hangingBaseline = 6; this.alphabeticBaseline = 0; this.ideographicBaseline = -2; }
+  g.TextMetrics = TextMetrics;
+  function CanvasRenderingContext2D(canvas) {
+    this.canvas = canvas;
+    this.fillStyle = "#000000"; this.strokeStyle = "#000000"; this.lineWidth = 1; this.lineCap = "butt"; this.lineJoin = "miter"; this.miterLimit = 10;
+    this.lineDashOffset = 0; this.font = "10px sans-serif"; this.textAlign = "start"; this.textBaseline = "alphabetic"; this.direction = "ltr";
+    this.globalAlpha = 1; this.globalCompositeOperation = "source-over"; this.imageSmoothingEnabled = true; this.imageSmoothingQuality = "low";
+    this.shadowBlur = 0; this.shadowColor = "rgba(0, 0, 0, 0)"; this.shadowOffsetX = 0; this.shadowOffsetY = 0; this.filter = "none";
+    this.letterSpacing = "0px"; this.wordSpacing = "0px"; this.fontKerning = "auto"; this.fontStretch = "normal"; this.fontVariantCaps = "normal"; this.textRendering = "auto";
+    this._dash = []; this._stack = [];
+  }
+  var noop = ["clearRect", "fillRect", "strokeRect", "beginPath", "closePath", "moveTo", "lineTo", "bezierCurveTo", "quadraticCurveTo", "arc", "arcTo", "ellipse", "rect", "roundRect",
+    "fill", "stroke", "clip", "fillText", "strokeText", "drawImage", "putImageData", "scale", "rotate", "translate", "transform", "setTransform", "resetTransform", "drawFocusIfNeeded", "reset"];
+  noop.forEach(function (n) { CanvasRenderingContext2D.prototype[n] = function () {}; });
+  CanvasRenderingContext2D.prototype.save = function () { var s = {}; for (var k in this) if (k !== "canvas" && k !== "_stack" && this.hasOwnProperty(k)) s[k] = this[k]; this._stack.push(s); };
+  CanvasRenderingContext2D.prototype.restore = function () { var s = this._stack.pop(); if (s) for (var k in s) this[k] = s[k]; };
+  CanvasRenderingContext2D.prototype.measureText = function (t) { return new TextMetrics(String(t).length * (parseFloat(this.font) || 10) * 0.5); };
+  CanvasRenderingContext2D.prototype.getImageData = function (x, y, w, h) { return new ImageData(Math.max(1, w | 0), Math.max(1, h | 0)); };
+  CanvasRenderingContext2D.prototype.createImageData = function (w, h) { return w instanceof ImageData ? new ImageData(w.width, w.height) : new ImageData(Math.max(1, w | 0), Math.max(1, h | 0)); };
+  CanvasRenderingContext2D.prototype.isPointInPath = function () { return false; };
+  CanvasRenderingContext2D.prototype.isPointInStroke = function () { return false; };
+  CanvasRenderingContext2D.prototype.setLineDash = function (d) { this._dash = Array.prototype.slice.call(d); };
+  CanvasRenderingContext2D.prototype.getLineDash = function () { return this._dash.slice(); };
+  CanvasRenderingContext2D.prototype.getTransform = function () { return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0, is2D: true, isIdentity: true }; };
+  CanvasRenderingContext2D.prototype.getContextAttributes = function () { return { alpha: true, colorSpace: "srgb", desynchronized: false, willReadFrequently: false }; };
+  function gradient() { return { addColorStop: function () {} }; }
+  CanvasRenderingContext2D.prototype.createLinearGradient = gradient;
+  CanvasRenderingContext2D.prototype.createRadialGradient = gradient;
+  CanvasRenderingContext2D.prototype.createConicGradient = gradient;
+  CanvasRenderingContext2D.prototype.createPattern = function () { return { setTransform: function () {} }; };
+  Object.defineProperty(CanvasRenderingContext2D.prototype, Symbol.toStringTag, { value: "CanvasRenderingContext2D", configurable: true });
+  g.CanvasRenderingContext2D = CanvasRenderingContext2D;
+  function Path2D() {}
+  noop.forEach(function (n) { Path2D.prototype[n] = function () {}; });
+  Path2D.prototype.addPath = function () {};
+  g.Path2D = Path2D;
+
+  var canvasProto = g.HTMLCanvasElement && HTMLCanvasElement.prototype;
+  if (canvasProto) {
+    canvasProto.getContext = function (kind) {
+      kind = String(kind);
+      if (kind === "2d") { if (!this._ctx) Object.defineProperty(this, "_ctx", { value: new CanvasRenderingContext2D(this), enumerable: false }); return this._ctx; }
+      return null;
+    };
+    canvasProto.toDataURL = function () { return BLANK_PNG; };
+    canvasProto.toBlob = function (cb, type) { setTimeout(function () { cb(new Blob([""], { type: type || "image/png" })); }, 0); };
+    canvasProto.captureStream = function () { throw new DOMException("Canvas capture is not supported.", "NotSupportedError"); };
+    canvasProto.transferControlToOffscreen = function () { throw new DOMException("Offscreen canvas is not supported.", "NotSupportedError"); };
+    ["width", "height"].forEach(function (p) {
+      Object.defineProperty(canvasProto, p, {
+        get: function () { var v = parseInt(this.getAttribute(p), 10); return isNaN(v) ? (p === "width" ? 300 : 150) : v; },
+        set: function (v) { this.setAttribute(p, String(Math.max(0, v | 0))); },
+        configurable: true, enumerable: true
+      });
+    });
+  }
+})(this);
+"""
+
+## Defines the web APIs of WEB_PRELUDE on the window.
+pub fn Vm.web_setup(mut self)
+    run_script_text(WEB_PRELUDE)

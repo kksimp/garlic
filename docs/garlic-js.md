@@ -376,9 +376,11 @@ it comes later for speed, and these frames will move onto it).
 - Import maps and `<link rel=modulepreload>`; module workers.
 - `Intl` knows one locale, en-US, and local time is UTC, so
   `Intl.DateTimeFormat().resolvedOptions().timeZone` is "UTC".
-- Canvas contexts, `Blob`, `FormData`, `FileReader`, streams, `Worker`,
-  `WebAssembly`, media devices, geolocation and service workers: pages that
-  feature-test them see them missing, as the compatibility sites report.
+- A canvas 2D context keeps its state and draws nothing (webapi.ail):
+  `getImageData` is transparent black and `toDataURL` a blank PNG. WebGL
+  and WebGPU contexts are null. Streams, `Worker`, `WebAssembly`, media
+  devices, geolocation and service workers are missing: pages that
+  feature-test them report them unsupported.
 - BigInt literals (`10n`).
 - Regular expression pattern syntax (§22.2.1): the literal's body and flags
   are checked, and the pattern is checked when the regex engine compiles it.
