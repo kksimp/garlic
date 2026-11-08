@@ -688,6 +688,7 @@ fn serve_page(
             ## engine, which goes on with the imports waiting for it.
             want := mods.remove_at(0)
             src := module_source(want, at, mut cj)
+            out.net.push(if src != none then "GET {want} (module)" else "GET {want} (module, failed)")
             more = live.module(mut d, want, src else "", src != none, 1000.0)
         elif asks.len() > 0
             ask := asks.remove_at(0)

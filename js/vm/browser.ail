@@ -60,6 +60,8 @@ fn Vm.element_interfaces(mut self)
         parent := if name == "HTMLAudioElement"
             or name == "HTMLVideoElement" then "HTMLMediaElement" else "HTMLElement"
         p := sub_interface(name, parent)
+        if name == "HTMLImageElement"
+            methods(p, "dom.img", "decode:0")
         if name == "HTMLIFrameElement"
             getter(p, "contentWindow", "dom.frame.contentWindow")
             getter(p, "contentDocument", "dom.frame.contentDocument")
