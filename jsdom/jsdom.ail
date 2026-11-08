@@ -64,7 +64,8 @@ pub struct Session
 
 ## Run the scripts of `d` (the page at `url`): inline ones, and external ones
 ## whose source is in `scripts` by resolved URL. `cookies` are the page's
-## cookies by name and `now_ms` the time (ms since 1970). Timers run for
+## cookies by name, `now_ms` the time (ms since 1970) and `zone` the local
+## time zone of `Date` ("UTC" or an IANA name). Timers run for
 ## `budget_ms` of virtual time; `max_steps` caps the work (0 for no cap).
 pub fn run(
     mut d html.Doc,
@@ -75,7 +76,7 @@ pub fn run(
     budget_ms float,
     max_steps int,
 ) Outcome
-    s := start(mut d, url, scripts, cookies, now_ms, budget_ms, max_steps)
+    s := start(mut d, url, scripts, cookies, now_ms, "UTC", budget_ms, max_steps)
     s.1
 
 ## Like `run`, and keeps the engine for `Session.click`, `Session.input`
@@ -86,6 +87,7 @@ pub fn start(
     scripts Map[str, str],
     cookies Map[str, str],
     now_ms float,
+    zone str,
     budget_ms float,
     max_steps int,
 )(Session, Outcome)
@@ -93,6 +95,7 @@ pub fn start(
     machine.trace = true
     machine.step_limit = max_steps
     machine.clock_ms = now_ms
+    machine.zone = zone
     machine.cookies = cookies
     machine.dom_setup()
     machine.net_setup()

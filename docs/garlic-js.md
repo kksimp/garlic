@@ -374,8 +374,11 @@ it comes later for speed, and these frames will move onto it).
   frames of the bootstrap interpreter, whose limit is 10,000. A bytecode
   compiler for the whole interpreter will remove this.
 - Import maps and `<link rel=modulepreload>`; module workers.
-- `Intl` knows one locale, en-US, and local time is UTC, so
-  `Intl.DateTimeFormat().resolvedOptions().timeZone` is "UTC".
+- `Intl` knows one locale, en-US. Local time is the system zone in the
+  app (`Vm.zone`, offsets from std.tz) and UTC in tests and `jsdom.run`.
+  Zone names are IANA names: `Date.prototype.toString` ends in
+  "(America/New_York)" and `timeZoneName: "short"` gives "GMT-5", where
+  Chrome writes "Eastern Standard Time" and "EST".
 - A canvas 2D context keeps its state and draws nothing (webapi.ail):
   `getImageData` is transparent black and `toDataURL` a blank PNG. WebGL
   and WebGPU contexts are null. Streams, `Worker`, `WebAssembly`, media

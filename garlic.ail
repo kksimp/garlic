@@ -13,6 +13,7 @@ use std.proc
 use std.net.jar
 use std.compress
 use std.time
+use std.tz
 use std.app
 use std.screen
 use html
@@ -70,6 +71,8 @@ struct Browser
     message str
     ## The page's console lines and requests since it loaded (the last `LOG_KEEP` of each).
     console_log List[str]
+    ## The local time zone pages see: "UTC", or the system zone in the app.
+    zone str
     ## Text scripts put on the clipboard, until the host takes it.
     clips List[str]
     net_log List[str]
@@ -633,6 +636,7 @@ fn load_doc(
                 scripts,
                 cj.for_script(at),
                 now,
+                zone,
                 1000.0,
                 5000000,
             )
@@ -914,6 +918,7 @@ fn Browser.empty(url str, width int, height int) Browser
         back: [],
         message: "",
         console_log: [],
+        zone: "UTC",
         clips: [],
         net_log: [],
         trail: [],
@@ -2843,8 +2848,10 @@ fn Garlic.switch(mut self, k int)
 ## Opens an empty tab and shows it.
 fn Garlic.new_tab(mut self)
     tabs[cur] = g
+    mut fresh := Browser.empty("", g.b.width, g.b.height)
+    fresh.zone = g.b.zone
     mut fresh_gui := Gui.new(
-        Browser.empty("", g.b.width, g.b.height),
+        fresh,
         g.area_w,
         g.area_h,
         g.cell_w,
@@ -3713,9 +3720,12 @@ fn main() !
     height := (flag(args, "--height") else "32").to_int() else 32
     if args.contains("--serve")
         mut srv := Browser.empty("about:blank", width, height)
+        srv.zone = tz.system()
         srv.serve((flag(args, "--allow") else "*").split(","))
         return
-    mut b := Browser.new(cli_target(target_of(args)), width, height)
+    mut b := Browser.empty(cli_target(target_of(args)), width, height)
+    b.zone = tz.system()
+    b.load(b.url, "GET", "")
     b.viewport_only = args.contains("--viewport")
     b.diff = args.contains("--diff")
     b.budget = (flag(args, "--budget") else "0").to_int() else 0

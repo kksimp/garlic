@@ -1,0 +1,11 @@
+<!DOCTYPE html><html><body><script>
+const t = new Date("2026-01-01T12:00:00Z");
+console.log(t.getHours(), t.getTimezoneOffset(), new Date("2026-01-01T12:00:00").getTime() === t.getTime());
+console.log(Intl.DateTimeFormat().resolvedOptions().timeZone, Intl.supportedValuesOf("timeZone").join(","));
+const ny = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "numeric", timeZoneName: "short" });
+console.log(ny.format(t), ny.resolvedOptions().timeZone);
+console.log(new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "full" }).format(t));
+console.log(t.toLocaleString("en-US", { timeZone: "UTC" }), t.toLocaleTimeString("en-US", { timeZone: "Europe/Berlin" }));
+try { new Intl.DateTimeFormat("en-US", { timeZone: "Mars/Olympus" }); } catch (e) { console.log(e.name, e.message); }
+console.log(Date.parse("Thu Jan 01 2026 07:00:00 GMT-0500 (Eastern Standard Time)") === t.getTime(), Date.parse("Thu, 01 Jan 2026 12:00:00 GMT") === t.getTime());
+</script></body></html>
