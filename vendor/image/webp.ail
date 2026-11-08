@@ -1,7 +1,7 @@
 ## WebP decoding (the container, VP8L lossless, lossy VP8 with an ALPH alpha
 ## plane, and animation), written from the WebP container and lossless
 ## bitstream specifications. `webp` gives the picture; for an animation, the
-## first fimg on the canvas. `webp_frames` gives every fimg composited on
+## first frame on the canvas. `webp_frames` gives every fimg composited on
 ## the canvas, with its duration. The lossy path is in `vp8.ail`.
 
 # ---- little-endian fields and chunks ----
@@ -563,7 +563,7 @@ fn wp_still(d List[int], chunks List[WpChunk]) Rgba ! ImageError
             return img
     Bad(why: "WebP without an image chunk")
 
-## A decoded animation fimg on the canvas, shown for `ms` milliseconds.
+## A decoded animation frame on the canvas, shown for `ms` milliseconds.
 pub struct WebpFrame
     pub img Rgba
     pub ms int
@@ -584,7 +584,7 @@ fn wp_blend(src int, dst int) int
         out = out.bit_or(v.min(255).shl(8 * k))
     out
 
-## Every fimg of a WebP, composited on the canvas (a still is one fimg).
+## Every frame of a WebP, composited on the canvas (a still is one frame).
 pub fn webp_frames(d List[int]) List[WebpFrame] ! ImageError
     if d.len() < 20 or not wp_tag(d, 0, "RIFF") or not wp_tag(d, 8, "WEBP")
         return Bad(why: "no WebP header")
@@ -619,7 +619,7 @@ pub fn webp_frames(d List[int]) List[WebpFrame] ! ImageError
         sub := wp_chunks(d, c.at + 16, c.at + c.size)
         fimg := wp_still(d, sub)?
         if fimg.width != fw or fimg.height != fh
-            return Bad(why: "WebP fimg size")
+            return Bad(why: "WebP frame size")
         if prev_bg
             for y in 0..prev_h
                 for x in 0..prev_w
@@ -642,7 +642,7 @@ pub fn webp_frames(d List[int]) List[WebpFrame] ! ImageError
         return Bad(why: "WebP animation without frames")
     out
 
-## The picture of a WebP (the first fimg of an animation).
+## The picture of a WebP (the first frame of an animation).
 pub fn webp(d List[int]) Rgba ! ImageError
     frames := webp_frames(d)?
     frames[0].img
