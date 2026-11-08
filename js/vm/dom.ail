@@ -115,7 +115,8 @@ pub fn Vm.named_element_id(self, name str) int
         if (attr_of(e, "id") else "") == name
             return e
         tag := dom[e].tag
-        if (tag == "embed" or tag == "form" or tag == "img" or tag == "object") and (attr_of(e, "name") else "") == name
+        if (tag == "embed" or tag == "form" or tag == "img" or tag == "object")
+            and (attr_of(e, "name") else "") == name
             return e
     -1
 
