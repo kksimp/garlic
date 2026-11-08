@@ -2,6 +2,7 @@
 ## Garlic's page model id for id, and a log of every change scripts make,
 ## which Garlic replays through its own tree so that agents see it.
 use syntax
+use image
 
 ## A node. `kind` is the DOM nodeType: 1 element, 3 text, 8 comment,
 ## 9 document. `tag` is the lower-case tag name, or "#text", "#comment",
@@ -144,9 +145,60 @@ pub fn Vm.set_attr(mut self, id int, name str, value str)
         if dom[id].attrs[i].name == name
             dom[id].attrs[i].value = value
             dom_log("set_attr", id, -1, -1, name, value)
+            if recording and name == "src" and dom[id].tag == "img"
+                img_settle_later(id, value)
             return
     dom[id].attrs.push(DomAttr(name: name, value: value))
     dom_log("set_attr", id, -1, -1, name, value)
+    if recording and name == "src" and dom[id].tag == "img"
+        img_settle_later(id, value)
+
+## An image a script pointed at `src` settles on the next turn of the event
+## loop (HTML §4.8.4.3.5 "update the image data" runs in parallel): a `data:`
+## picture loads when its header decodes, else errors; any other address is
+## taken as loading, since the browser fetches it when it draws the page.
+## Pages that wait for `onload`/`onerror` to detect a format (WebP, AVIF)
+## get an answer instead of waiting for ever.
+fn Vm.img_settle_later(mut self, id int, src str)
+    timer_seq += 1
+    timers.push(Timer(
+        id: timer_seq,
+        due: clock_ms,
+        seq: timer_seq,
+        callback: native_fn("dom.img.settle", "", 0),
+        args: [node_value(id), Value.Str(src)],
+        every: 0.0,
+        level: 0,
+    ))
+
+fn Vm.img_settle(mut self, args List[Value]) Value ! Thrown
+    id := node_id(arg_at(args, 0)) else return Undef
+    src := to_string(arg_at(args, 1))?
+    if (attr_of(id, "src") else "") != src
+        return Undef
+    mut ok := true
+    mut size := [0, 0]
+    if src.starts_with("data:")
+        ok = false
+        if raw := data_image_bytes(src)
+            size = image.dims(raw)
+            ok = size[0] > 0 and size[1] > 0
+    o := obj_of(node_value(id)) else return Undef
+    o.props["complete"] = data(Value.Bool(true))
+    o.props["naturalWidth"] = data(Value.Num(size[0].to_float()))
+    o.props["naturalHeight"] = data(Value.Num(size[1].to_float()))
+    fire(id, if ok then "load" else "error", false)
+    Undef
+
+## The bytes of a base64 `data:` image URL, or none.
+fn data_image_bytes(src str) List[int]?
+    comma := src.find(",") else return none
+    meta := src.slice(5, comma).to_lower()
+    if not meta.ends_with(";base64")
+        return none
+    payload := src.slice(comma + 1, src.chars().len())
+    raw := bytes.from_base64(payload) else return none
+    [v.to_int() for v in raw.to_list()]
 
 ## The attribute changed behind `el.style`: its declarations follow.
 fn Vm.refresh_style(mut self, id int, text str)
@@ -965,6 +1017,10 @@ pub fn Vm.dom_native(
         return params_method(p, this_val, args)
     if p := m.strip_prefix("uad.")
         return ua_data_method(p, this_val, args)
+    if m == "img.settle"
+        return img_settle(args)
+    if m == "img.decode"
+        return Value.Obj(promise_resolve(Undef))
     if p := m.strip_prefix("plugins.")
         o := obj_of(this_val) else return type_error("Illegal invocation")
         if o.class != "PluginArray" and o.class != "MimeTypeArray"

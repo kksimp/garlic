@@ -688,6 +688,7 @@ fn serve_page(
             ## engine, which goes on with the imports waiting for it.
             want := mods.remove_at(0)
             src := module_source(want, at, mut cj)
+            out.net.push(if src != none then "GET {want} (module)" else "GET {want} (module, failed)")
             more = live.module(mut d, want, src else "", src != none, 1000.0)
         elif asks.len() > 0
             ask := asks.remove_at(0)
@@ -997,6 +998,19 @@ fn Browser.close_sockets(mut self)
 
 ## Delivers what the page's open sockets have received (the host calls this
 ## as events arrive), and shows what the page did with it.
+## Once a second (the GUI's tick) the page's own clock moves on: timers due
+## by then run, and what they changed is drawn, as a page keeps running in
+## Chrome after it loads. A page with no timer waiting and no socket open
+## costs nothing. Before this, a page's `setTimeout` chains only ran while a
+## WebSocket was open or an agent asked for `wait:idle`, so a test that
+## finished through a timer showed its "working" state for ever.
+fn Browser.advance(mut self)
+    s := js else return
+    if s.pending() == 0 and socks.len() == 0
+        return
+    if settle()
+        return
+
 fn Browser.pump(mut self)
     if socks.len() == 0
         return
@@ -2784,6 +2798,7 @@ fn watched_text(url str) str
 ## notes what changed.
 fn Garlic.tick(mut self)
     seconds += 1
+    g.b.advance()
     due := [j for j in jobs if j.due <= seconds]
     jobs = [j for j in jobs if j.due > seconds]
     for j in due

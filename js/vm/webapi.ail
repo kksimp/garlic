@@ -184,6 +184,39 @@ WEB_PRELUDE := r"""
   Path2D.prototype.addPath = function () {};
   g.Path2D = Path2D;
 
+  // Storage and media feature probes answer honestly instead of being absent.
+  var nav = g.navigator;
+  if (nav && !("storage" in nav)) {
+    var storageManager = {
+      estimate: function () { return Promise.resolve({ quota: 10737418240, usage: 0, usageDetails: {} }); },
+      persist: function () { return Promise.resolve(false); },
+      persisted: function () { return Promise.resolve(false); },
+      getDirectory: function () { return Promise.reject(new DOMException("Origin private file system is not supported.", "SecurityError")); }
+    };
+    Object.defineProperty(storageManager, Symbol.toStringTag, { value: "StorageManager", configurable: true });
+    Object.defineProperty(Object.getPrototypeOf(nav), "storage", { get: function () { return storageManager; }, configurable: true, enumerable: true });
+  }
+  if (nav && !("mediaCapabilities" in nav)) {
+    var caps = {
+      decodingInfo: function (c) {
+        if (!c || !c.type) return Promise.reject(new TypeError("Failed to execute 'decodingInfo' on 'MediaCapabilities': required member type is undefined."));
+        return Promise.resolve({ supported: false, smooth: false, powerEfficient: false, configuration: c });
+      },
+      encodingInfo: function (c) { return Promise.resolve({ supported: false, smooth: false, powerEfficient: false, configuration: c }); }
+    };
+    Object.defineProperty(caps, Symbol.toStringTag, { value: "MediaCapabilities", configurable: true });
+    Object.defineProperty(Object.getPrototypeOf(nav), "mediaCapabilities", { get: function () { return caps; }, configurable: true, enumerable: true });
+  }
+  if (!g.createImageBitmap) {
+    g.createImageBitmap = function (source) {
+      if (source instanceof Blob) return Promise.reject(new DOMException("The source image could not be decoded.", "InvalidStateError"));
+      var w = source && source.naturalWidth ? source.naturalWidth : (source && source.width) || 0;
+      var h = source && source.naturalHeight ? source.naturalHeight : (source && source.height) || 0;
+      if (!w || !h) return Promise.reject(new DOMException("The source image could not be decoded.", "InvalidStateError"));
+      return Promise.resolve({ width: w, height: h, close: function () {} });
+    };
+  }
+
   var canvasProto = g.HTMLCanvasElement && HTMLCanvasElement.prototype;
   if (canvasProto) {
     canvasProto.getContext = function (kind) {
