@@ -353,8 +353,7 @@ fn disc(mut ops List[app.Op], x float, y float, d float, c int, bg int)
 
 ## An arc of a circle at (cx, cy) with radius `r` from angle `a0` to `a1`
 ## (radians, clockwise on the flipped canvas), as short strokes.
-fn arc(mut ops List[app.Op], cx float, cy float, r float, a0 float, a1 float, c int, w float)
-    steps := 12
+fn arc(mut ops List[app.Op], cx float, cy float, r float, a0 float, a1 float, c int, w float, steps int)
     for i in 0..steps
         t0 := a0 + (a1 - a0) * i.to_float() / steps.to_float()
         t1 := a0 + (a1 - a0) * (i + 1).to_float() / steps.to_float()
@@ -371,7 +370,7 @@ fn arc(mut ops List[app.Op], cx float, cy float, r float, a0 float, a1 float, c 
 
 ## Chromium's loading spinner: three quarters of a ring, centred on (cx, cy).
 fn spinner(mut ops List[app.Op], cx float, cy float, c int)
-    arc(mut ops, cx, cy, 6.0, 0.0 - 1.2, 3.5, c, 2.0)
+    arc(mut ops, cx, cy, 6.0, 0.0 - 1.2, 3.5, c, 2.0, 16)
 
 ## A left or right arrow in a 28 point box at (x, y).
 fn arrow(mut ops List[app.Op], x float, y float, c int, back bool)
@@ -389,17 +388,15 @@ fn reload_icon(mut ops List[app.Op], x float, y float, c int)
     cx := x + BTN / 2.0
     cy := y + BTN / 2.0
     r := 6.5
-    ## Open at about one o'clock, drawn clockwise from four o'clock; the
-    ## arrow head sits at the end and points along the arc.
-    a0 := 0.35
-    a1 := a0 + 5.2
-    arc(mut ops, cx, cy, r, a0, a1, c, 2.0)
+    ## Chromium's: a ring open at the top right, drawn clockwise from about
+    ## two o'clock round to twelve, where a small head points clockwise.
+    a0 := 0.0 - 0.55
+    a1 := 0.0 - 1.57 + 6.28
+    arc(mut ops, cx, cy, r, a0, a1, c, 2.0, 24)
     px := cx + r * a1.cos()
     py := cy + r * a1.sin()
-    tx := 0.0 - a1.sin()
-    ty := a1.cos()
-    ops.push(line(px, py, px - 5.0 * tx + 4.0 * ty, py - 5.0 * ty - 4.0 * tx, c, 2.0))
-    ops.push(line(px, py, px - 5.0 * tx - 4.0 * ty, py - 5.0 * ty + 4.0 * tx, c, 2.0))
+    ops.push(line(px + 0.5, py, px - 3.5, py - 3.5, c, 2.0))
+    ops.push(line(px + 0.5, py, px - 3.5, py + 3.5, c, 2.0))
 
 ## The menu button: three dots.
 fn kebab(mut ops List[app.Op], x float, y float, c int, bg int)
