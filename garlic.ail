@@ -2332,6 +2332,11 @@ struct Garlic
     menu_text str
     ## The omnibox: the address shown, or the text being typed.
     omni chrome.Omni
+    ## The pages shown so far in any tab, oldest first, for the omnibox's
+    ## dropdown; `pick` is the dropdown row the arrow keys chose, -1 for the
+    ## typed text.
+    history List[chrome.Suggestion]
+    pick int
     ## The find bar (Cmd-F): whether it shows, and its text; `find.editing`
     ## says the keys go to it rather than the page.
     finding bool
@@ -2399,6 +2404,8 @@ fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
         menu_text: "",
         strip_w: w,
         omni: chrome.omni(b.url),
+        history: [],
+        pick: -1,
         finding: false,
         find: chrome.omni(""),
         load_next: "",
@@ -2821,6 +2828,26 @@ fn Garlic.do_load(mut self)
     elif what == "reload"
         g.b.reload()
 
+## The omnibox dropdown's rows for what is typed (none while it shows the
+## address as it is).
+fn Garlic.suggestions(self) List[chrome.Suggestion]
+    if not omni.editing or omni.all
+        return []
+    chrome.suggestions(omni.text, history)
+
+## Adds the shown page to the history when it is new there (an `http(s)`
+## page with a title), keeping the last 500.
+fn Garlic.remember(mut self)
+    u := g.b.url
+    if not u.starts_with("http") or g.b.pg.title == ""
+        return
+    if last := history.last()
+        if last.url == u
+            return
+    history.push(chrome.Suggestion(title: g.b.pg.title, url: u))
+    if history.len() > 500
+        history = [history[i] for i in 1..history.len()]
+
 ## Copies what Cmd-C means here: the omnibox's text while it is edited, the
 ## find bar's while it has the keys, else the link under the pointer.
 fn Garlic.copy(mut self)
@@ -2948,7 +2975,12 @@ impl app.App for Garlic
                     if omni.editing
                         omni = chrome.omni(g.b.url)
                     fh := if finding then chrome.find_hit(ev.x, ev.y, g.area_w) else ""
-                    if r >= 0
+                    sr := if omni.editing then chrome.suggest_hit(ev.x, ev.y, suggestions().len(), strip_w, attached) else -1
+                    if sr >= 0
+                        row := suggestions()[sr]
+                        omni = chrome.omni(g.b.url)
+                        start_load("open:{if row.url == "" then row.title else row.url}")
+                    elif r >= 0
                         menu_pick(r)
                     elif fh != ""
                         find_click(fh)
@@ -2981,12 +3013,17 @@ impl app.App for Garlic
                     find.insert(ev.text)
                     g.find_step(find.text, 0)
             "key" =>
-                if omni.editing
+                if omni.editing and not ev.meta and (ev.text == "down" or ev.text == "up")
+                    n := suggestions().len()
+                    if n > 0
+                        pick = if ev.text == "down" then (pick + 2) % (n + 1) - 1 else (pick + n + 1) % (n + 1) - 1
+                elif omni.editing
                     and (not ev.meta or ev.text == "a" or ev.text == "left" or ev.text == "right")
+                    rows := suggestions()
                     match omni.key(ev.text, ev.meta, ev.shift)
-                        "open" => start_load("open:{omni.text}")
+                        "open" => start_load("open:{if pick >= 0 and pick < rows.len() and rows[pick].url != "" then rows[pick].url else omni.text}")
                         "cancel" => omni = chrome.omni(g.b.url)
-                        _ => menu_tab = menu_tab
+                        _ => pick = -1
                 elif finding and ev.meta and (ev.text == "g" or ev.text == "G")
                     g.find_step(find.text, if ev.shift then -1 else 1)
                 elif finding and find.editing
@@ -3037,6 +3074,8 @@ impl app.App for Garlic
         g.refresh()
         if not omni.editing
             omni = chrome.omni(g.b.url)
+            pick = -1
+        remember()
         if g.pixel
             g.icon = favicon.fetch(g.b.doc, g.b.url, g.b.cj, image_options(), mut icons)
             if g.icon != "" and not icon_sent.contains(g.icon)
@@ -3047,6 +3086,8 @@ impl app.App for Garlic
         mut page_ops := [to_app(op, g) for op in g.display()]
         page_ops.extend(chrome.status_ops(theme(), bubble(), g.area_h, g.scene.bg, sans_w))
         page_ops.extend(chrome.menu_ops(theme(), menu_rows(), menu_x, menu_y, g.scene.bg, -1))
+        if omni.editing
+            page_ops.extend(chrome.suggest_ops(theme(), suggestions(), pick, strip_w, attached, g.scene.bg, sans_w))
         if finding
             page_ops.extend(chrome.find_ops(theme(), find, g.find_k, g.find_n, g.area_w, g.scene.bg, sans_w))
         app.column([chrome_node(), app.canvas("page", 0.0, 0.0, page_ops)])
@@ -4871,6 +4912,33 @@ fn flat(s gfx.Scene) List[str]
     assert(a.item(0).loading)
     a.update(app.external("load", "reload"))
     assert(not a.item(0).loading)
+
+@test fn the_omnibox_dropdown_offers_history_and_the_arrows_pick_a_row()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut a := Garlic.new(b, 600.0, 300.0, 7.5, 15.0)
+    a.g.pixel = true
+    a.update(resized(600.0, 300.0))
+    a.history.push(chrome.Suggestion(title: "AIL", url: "https://ail.dev/"))
+    mut l := app.key("l")
+    l.meta = true
+    a.update(l)
+    assert(a.omni.editing)
+    for c in "ail".chars()
+        a.update(app.key("{c}"))
+    rows := a.suggestions()
+    assert_eq(rows.len(), 2)
+    assert_eq(a.pick, -1)
+    a.update(app.key("down"))
+    assert_eq(a.pick, 0)
+    a.update(app.key("down"))
+    assert_eq(a.pick, 1)
+    a.update(app.key("down"))
+    assert_eq(a.pick, -1)
+    a.update(app.key("up"))
+    assert_eq(a.pick, 1)
+    a.view()
+    a.update(app.key("escape"))
+    assert_eq(a.suggestions().len(), 0)
 
 @test fn max_age_is_read_from_cache_control()
     assert_eq(max_age("public, max-age=60"), 60)
