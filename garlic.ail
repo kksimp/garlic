@@ -2393,9 +2393,9 @@ fn needs_space(prev str, next str) bool
         return false
     first := next.slice(0, 1)
     last := prev.slice(prev.chars().len() - 1, prev.chars().len())
-    if [")", "]", ",", ".", ";", ":", "!", "?", "'", "\u{2019}"].contains(first)
+    if ")],.;:!?'".contains(first)
         return false
-    if ["(", "[", "\u{2018}", "\u{201c}"].contains(last) or last == "\""
+    if "([".contains(last)
         return false
     true
 
