@@ -19,13 +19,13 @@ pub fn default_path() str
 pub fn load(path str) List[chrome.Suggestion]
     text := fs.read_text(path) else return []
     mut out := List[chrome.Suggestion]()
-    for line in text.split("\n")
-        if line == ""
+    for row in text.split("\n")
+        if row == ""
             continue
-        at := line.find("\t") else
-            out.push(chrome.Suggestion(title: "", url: line))
+        at := row.find("\t") else
+            out.push(chrome.Suggestion(title: "", url: row))
             continue
-        out.push(chrome.Suggestion(title: line.slice(at + 1, line.chars().len()), url: line.slice(0, at)))
+        out.push(chrome.Suggestion(title: row.slice(at + 1, row.chars().len()), url: row.slice(0, at)))
     out
 
 ## Adds one visit to the file at `path`, trimming it when it is long; `all`
