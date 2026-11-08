@@ -4730,7 +4730,7 @@ fn pixels(src str, width float) gfx.Scene
     assert_eq(gfx.length("calc(100% - 2em)", 10.0, 200.0), 180.0)
     assert_eq(gfx.length("calc((1px + 3px) * 2)", 10.0, 0.0), 8.0)
     assert_eq(gfx.number("calc(1.5 / 1)"), 1.5)
-    assert_eq(gfx.number("calc(2.5 / 2.25)") > 1.1, true)
+    assert_eq((gfx.number("calc(2.5 / 2.25)") else 0.0) > 1.1, true)
     assert_eq(gfx.number("calc(0.25rem * 4)"), none)
     assert_eq(gfx.color("light-dark(#eee, #222)"), 0x222222)
     assert_eq(gfx.color("light-dark(rgb(1, 2, 3), #fff)"), 0xffffff)
@@ -4741,8 +4741,7 @@ fn pixels(src str, width float) gfx.Scene
 @test fn unitless_calc_line_heights_and_block_margins_keep_rows_apart()
     ## Tailwind 4 writes `line-height: calc(1.5 / 1)`: a number, not 1.5px.
     rules := css.parse(
-        "h3 \{ line-height: calc(1.5 / 1); margin: 0 }"
-            + " .row \{ margin-block-start: 8px; line-height: calc(1.25 / 0.875) }",
+        "h3 \{ line-height: calc(1.5 / 1); margin: 0 } .row \{ margin-block-start: 8px; line-height: calc(1.25 / 0.875) }",
         0,
     )
     s := gfx.layout(html.parse("<h3>Graphics</h3><div class=row>WebGL</div>"), "https://x.test/", 400.0, rules)
