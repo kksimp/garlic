@@ -19,6 +19,8 @@ pub struct Outcome
     pub changes int
     ## What scripts assigned to `document.cookie`, in order.
     pub cookies List[str]
+    ## What scripts wrote with `navigator.clipboard.writeText`, in order.
+    pub clips List[str]
     ## Module sources the page wants (static imports it could not find, and
     ## `import()` targets), by the address the engine uses; answer each with
     ## `Session.module`.
@@ -123,6 +125,7 @@ fn Session.collect(mut self, mut d html.Doc) Outcome
         mods: [],
         changes: 0,
         cookies: [],
+        clips: [],
         asks: [],
         sockets: [],
         net: [],
@@ -145,6 +148,8 @@ fn Session.collect(mut self, mut d html.Doc) Outcome
             out.sockets.push(SockOp(op: r.method, id: r.node, url: r.url, text: r.text))
         if r.kind == "cookie"
             out.cookies.push(r.text)
+        if r.kind == "clipboard"
+            out.clips.push(r.text)
     requests = machine.host_requests.len()
     out
 

@@ -381,6 +381,14 @@ it comes later for speed, and these frames will move onto it).
   and WebGPU contexts are null. Streams, `Worker`, `WebAssembly`, media
   devices, geolocation and service workers are missing: pages that
   feature-test them report them unsupported.
+- Platform APIs (platform.ail): `navigator.clipboard.writeText` and
+  `write` go to the system clipboard; `readText` and `read` are refused
+  (NotAllowedError), as Chrome does without the permission.
+  `navigator.share` rejects with AbortError, as when the user closes the
+  share sheet. `navigator.wakeLock.request` gives a sentinel the page can
+  release, but Garlic does not keep the screen awake. IndexedDB is
+  complete enough for stores, indexes, key ranges and cursors, but lives
+  in memory for the life of the page: nothing is written to disk yet.
 - BigInt literals (`10n`).
 - Regular expression pattern syntax (§22.2.1): the literal's body and flags
   are checked, and the pattern is checked when the regex engine compiles it.

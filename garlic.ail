@@ -70,6 +70,8 @@ struct Browser
     message str
     ## The page's console lines and requests since it loaded (the last `LOG_KEEP` of each).
     console_log List[str]
+    ## Text scripts put on the clipboard, until the host takes it.
+    clips List[str]
     net_log List[str]
     ## The steps done since the page was opened, as `flows` replays them, and where flows are kept.
     trail List[str]
@@ -619,6 +621,7 @@ fn load_doc(
             mods: [],
             changes: 0,
             cookies: [],
+            clips: [],
             asks: [],
             sockets: [],
             net: [],
@@ -713,6 +716,7 @@ fn serve_page(
         out.console.extend(more.console)
         out.net.extend(more.net)
         out.cookies.extend(more.cookies)
+        out.clips.extend(more.clips)
         out.changes += more.changes
         asks.extend(more.asks)
         ops.extend(more.sockets)
@@ -731,6 +735,7 @@ fn quiet() jsdom.Outcome
         mods: [],
         changes: 0,
         cookies: [],
+        clips: [],
         asks: [],
         sockets: [],
         net: [],
@@ -783,6 +788,7 @@ fn deliver_received(
             more := live.ws_event(mut d, id, ev.kind, ev.text, ev.code, 1000.0)
             out.console.extend(more.console)
             out.cookies.extend(more.cookies)
+            out.clips.extend(more.clips)
             out.changes += more.changes + 1
             out.asks.extend(more.asks)
             out.sockets.extend(more.sockets)
@@ -908,6 +914,7 @@ fn Browser.empty(url str, width int, height int) Browser
         back: [],
         message: "",
         console_log: [],
+        clips: [],
         net_log: [],
         trail: [],
         flows_file: flows.default_path(),
@@ -1024,6 +1031,7 @@ fn Browser.pump(mut self)
 ## Remembers what the page logged and requested, for the page model.
 fn Browser.record(mut self, out jsdom.Outcome)
     console_log.extend(out.console)
+    clips.extend(out.clips)
     net_log.extend(out.net)
     if console_log.len() > LOG_KEEP
         console_log = console_log[console_log.len() - LOG_KEEP..]
@@ -3392,6 +3400,9 @@ impl app.App for Garlic
         true
 
     fn lines(mut self) List[str]
+        for text in g.b.clips
+            queue.push(app.clipboard(text))
+        g.b.clips = []
         sent := queue
         queue = []
         sent
@@ -5364,6 +5375,13 @@ fn flat(s gfx.Scene) List[str]
     b.act("click", "{node_with(b, "button", "id", "go")}")
     assert_eq(b.pg.title, "Results")
     assert(b.url.ends_with("/result.html?q=hello"))
+
+@test fn a_script_clipboard_write_reaches_the_host_clipboard_line()
+    mut b := Browser.new("{testdata()}/clipboard.html", 80, 30)
+    assert_eq(b.clips, ["from the page"])
+    mut a := Garlic.new(b, 800.0, 600.0, 8.0, 16.0)
+    assert_eq(a.lines(), [app.clipboard("from the page")])
+    assert_eq(a.lines(), [])
 
 @test fn typing_fires_focus_key_input_and_change_events_and_enter_can_be_cancelled()
     mut b := Browser.new("{testdata()}/keys.html", 80, 30)

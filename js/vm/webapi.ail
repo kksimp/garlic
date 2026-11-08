@@ -242,3 +242,4 @@ WEB_PRELUDE := r"""
 ## Defines the web APIs of WEB_PRELUDE on the window.
 pub fn Vm.web_setup(mut self)
     run_script_text(WEB_PRELUDE)
+    platform_setup()
