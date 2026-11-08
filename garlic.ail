@@ -4755,7 +4755,12 @@ fn pixels(src str, width float) gfx.Scene
         "h3 \{ line-height: calc(1.5 / 1); margin: 0 } .row \{ margin-block-start: 8px; line-height: calc(1.25 / 0.875) }",
         0,
     )
-    s := gfx.layout(html.parse("<h3>Graphics</h3><div class=row>WebGL</div>"), "https://x.test/", 400.0, rules)
+    s := gfx.layout(
+        html.parse("<h3>Graphics</h3><div class=row>WebGL</div>"),
+        "https://x.test/",
+        400.0,
+        rules,
+    )
     assert_eq(pixel_text(s.ops).len(), 2)
     assert(s.height >= 50.0)
 
