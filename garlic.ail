@@ -1271,7 +1271,12 @@ fn Browser.activate(mut self, id int)
         return
     match b.role
         "link" => follow(b.link)
-        "button" => submit(id)
+        "button" =>
+            # Only a submit button inside a form submits (HTML §4.10.6); a
+            # `type=button` the page's scripts handle does nothing more.
+            kind := (doc.attr(id, "type") else "submit").to_lower()
+            if (kind == "submit" or kind == "") and doc.enclosing(id, "form") != none
+                submit(id)
         "checkbox" | "radio" => check(id)
         _ => message = "use select:{id}=OPTION to choose an option"
 
