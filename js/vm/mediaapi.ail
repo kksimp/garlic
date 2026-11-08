@@ -25,6 +25,25 @@ MEDIA_PRELUDE := r"""
     for (var i = 0; i < 32; i++) s += Math.floor(Math.random() * 16).toString(16);
     return s.slice(0, 8) + "-" + s.slice(8, 12) + "-" + s.slice(12, 16) + "-" + s.slice(16, 20) + "-" + s.slice(20);
   }
+  // EventTarget's own constructor is "Illegal" for plain objects here, so
+  // these objects carry their own listener table behind the same interface.
+  function ET() { Object.defineProperty(this, "_ls", { value: {}, enumerable: false }); }
+  ET.prototype = Object.create(EventTarget.prototype, { constructor: { value: ET, writable: true, configurable: true } });
+  ET.prototype.addEventListener = function (t, f, o) {
+    var l = this._ls[t] || (this._ls[t] = []);
+    if (f && l.indexOf(f) < 0) l.push(f);
+  };
+  ET.prototype.removeEventListener = function (t, f) {
+    var l = this._ls[t], i = l ? l.indexOf(f) : -1;
+    if (i >= 0) l.splice(i, 1);
+  };
+  ET.prototype.dispatchEvent = function (e) {
+    var l = (this._ls[e.type] || []).slice();
+    for (var i = 0; i < l.length; i++) {
+      if (typeof l[i] === "function") l[i].call(this, e); else if (l[i] && typeof l[i].handleEvent === "function") l[i].handleEvent(e);
+    }
+    return !e.defaultPrevented;
+  };
   function fire(target, type, init) {
     var e = new Event(type, init);
     if (init) for (var k in init) if (k !== "bubbles" && k !== "cancelable" && k !== "composed") e[k] = init[k];
@@ -37,13 +56,13 @@ MEDIA_PRELUDE := r"""
 
   // ---- MediaStreamTrack and MediaStream ----
   function MediaStreamTrack(kind, label, settings) {
-    EventTarget.call(this);
+    ET.call(this);
     this.kind = kind; this.id = uuid(); this.label = label || ""; this.enabled = true;
     this.muted = false; this.readyState = "live"; this.contentHint = "";
     this._settings = settings || {};
     this.onended = null; this.onmute = null; this.onunmute = null;
   }
-  MediaStreamTrack.prototype = Object.create(EventTarget.prototype, { constructor: { value: MediaStreamTrack, writable: true, configurable: true } });
+  MediaStreamTrack.prototype = Object.create(ET.prototype, { constructor: { value: MediaStreamTrack, writable: true, configurable: true } });
   MediaStreamTrack.prototype.stop = function () {
     if (this.readyState === "ended") return;
     this.readyState = "ended";
@@ -57,7 +76,7 @@ MEDIA_PRELUDE := r"""
   g.MediaStreamTrack = MediaStreamTrack;
 
   function MediaStream(arg) {
-    EventTarget.call(this);
+    ET.call(this);
     this.id = uuid(); this.active = true; this._tracks = [];
     this.onaddtrack = null; this.onremovetrack = null; this.onactive = null; this.oninactive = null;
     if (arg instanceof MediaStream) arg.getTracks().forEach(function (t) { this._tracks.push(t); }, this);
@@ -66,7 +85,7 @@ MEDIA_PRELUDE := r"""
       if (this._tracks.indexOf(t) < 0) this._tracks.push(t);
     }, this);
   }
-  MediaStream.prototype = Object.create(EventTarget.prototype, { constructor: { value: MediaStream, writable: true, configurable: true } });
+  MediaStream.prototype = Object.create(ET.prototype, { constructor: { value: MediaStream, writable: true, configurable: true } });
   MediaStream.prototype.getTracks = function () { return this._tracks.slice(); };
   MediaStream.prototype.getAudioTracks = function () { return this._tracks.filter(function (t) { return t.kind === "audio"; }); };
   MediaStream.prototype.getVideoTracks = function () { return this._tracks.filter(function (t) { return t.kind === "video"; }); };
@@ -93,8 +112,8 @@ MEDIA_PRELUDE := r"""
   g.InputDeviceInfo = InputDeviceInfo;
 
   function notFound() { return new DOMException("Requested device not found", "NotFoundError"); }
-  function MediaDevices() { EventTarget.call(this); this.ondevicechange = null; }
-  MediaDevices.prototype = Object.create(EventTarget.prototype, { constructor: { value: MediaDevices, writable: true, configurable: true } });
+  function MediaDevices() { ET.call(this); this.ondevicechange = null; }
+  MediaDevices.prototype = Object.create(ET.prototype, { constructor: { value: MediaDevices, writable: true, configurable: true } });
   MediaDevices.prototype.enumerateDevices = function () {
     var granted = !!(g.__mediaHost && g.__mediaHost.granted);
     return Promise.resolve(hostDevices().map(function (d) {
@@ -163,7 +182,7 @@ MEDIA_PRELUDE := r"""
   g.RTCIceCandidate = RTCIceCandidate;
 
   function RTCDataChannel(label, init, pc) {
-    EventTarget.call(this);
+    ET.call(this);
     init = init || {};
     this.label = label; this.ordered = init.ordered !== false; this.maxPacketLifeTime = init.maxPacketLifeTime == null ? null : init.maxPacketLifeTime;
     this.maxRetransmits = init.maxRetransmits == null ? null : init.maxRetransmits; this.protocol = init.protocol || "";
@@ -172,7 +191,7 @@ MEDIA_PRELUDE := r"""
     this.onopen = null; this.onclose = null; this.onclosing = null; this.onerror = null; this.onmessage = null; this.onbufferedamountlow = null;
     Object.defineProperty(this, "_pc", { value: pc, enumerable: false });
   }
-  RTCDataChannel.prototype = Object.create(EventTarget.prototype, { constructor: { value: RTCDataChannel, writable: true, configurable: true } });
+  RTCDataChannel.prototype = Object.create(ET.prototype, { constructor: { value: RTCDataChannel, writable: true, configurable: true } });
   RTCDataChannel.prototype.send = function () {
     if (this.readyState !== "open") throw new DOMException("RTCDataChannel.readyState is not 'open'", "InvalidStateError");
   };
@@ -217,7 +236,7 @@ MEDIA_PRELUDE := r"""
   g.RTCRtpTransceiver = RTCRtpTransceiver;
 
   function RTCPeerConnection(config) {
-    EventTarget.call(this);
+    ET.call(this);
     config = config || {};
     this._config = config;
     this.signalingState = "stable"; this.iceConnectionState = "new"; this.iceGatheringState = "new"; this.connectionState = "new";
@@ -228,7 +247,7 @@ MEDIA_PRELUDE := r"""
     this._tx = []; this._channels = []; this._closed = false; this._sid = String(Math.floor(Math.random() * 9e18)); this._ver = 1; this._midN = 0;
     this._ufrag = uuid().slice(0, 4); this._pwd = uuid().replace(/-/g, "").slice(0, 24);
   }
-  RTCPeerConnection.prototype = Object.create(EventTarget.prototype, { constructor: { value: RTCPeerConnection, writable: true, configurable: true } });
+  RTCPeerConnection.prototype = Object.create(ET.prototype, { constructor: { value: RTCPeerConnection, writable: true, configurable: true } });
   RTCPeerConnection.generateCertificate = function () { return Promise.reject(new DOMException("Certificate generation is not supported.", "NotSupportedError")); };
   function closedCheck(pc) { if (pc._closed) throw new DOMException("The RTCPeerConnection's signalingState is 'closed'.", "InvalidStateError"); }
   function setSignaling(pc, s) { if (pc.signalingState !== s) { pc.signalingState = s; fire(pc, "signalingstatechange"); } }
@@ -403,12 +422,12 @@ MEDIA_PRELUDE := r"""
   g.AudioParam = AudioParam;
 
   function AudioNode(ctx, ins, outs) {
-    EventTarget.call(this);
+    ET.call(this);
     Object.defineProperty(this, "context", { value: ctx, enumerable: true });
     this.numberOfInputs = ins; this.numberOfOutputs = outs; this.channelCount = 2; this.channelCountMode = "max"; this.channelInterpretation = "speakers";
     Object.defineProperty(this, "_to", { value: [], enumerable: false });
   }
-  AudioNode.prototype = Object.create(EventTarget.prototype, { constructor: { value: AudioNode, writable: true, configurable: true } });
+  AudioNode.prototype = Object.create(ET.prototype, { constructor: { value: AudioNode, writable: true, configurable: true } });
   AudioNode.prototype.connect = function (dest) { this._to.push(dest); return dest; };
   AudioNode.prototype.disconnect = function () { this._to.length = 0; };
   tag(AudioNode, "AudioNode");
@@ -465,14 +484,14 @@ MEDIA_PRELUDE := r"""
   g.AudioBuffer = AudioBuffer;
 
   function BaseAudioContext(rate) {
-    EventTarget.call(this);
+    ET.call(this);
     this.sampleRate = rate; this.state = "suspended"; this.onstatechange = null;
     this.destination = new g.AudioDestinationNode(this);
     this.listener = { positionX: new AudioParam(this, 0), positionY: new AudioParam(this, 0), positionZ: new AudioParam(this, 0) };
     this.audioWorklet = { addModule: function () { return Promise.reject(new DOMException("AudioWorklet is not supported.", "NotSupportedError")); } };
     Object.defineProperty(this, "_t0", { value: performance.now(), enumerable: false, writable: true });
   }
-  BaseAudioContext.prototype = Object.create(EventTarget.prototype, { constructor: { value: BaseAudioContext, writable: true, configurable: true } });
+  BaseAudioContext.prototype = Object.create(ET.prototype, { constructor: { value: BaseAudioContext, writable: true, configurable: true } });
   Object.defineProperty(BaseAudioContext.prototype, "currentTime", { get: function () { return this.state === "running" ? (performance.now() - this._t0) / 1000 : 0; }, configurable: true, enumerable: true });
   [["createGain", "GainNode"], ["createOscillator", "OscillatorNode"], ["createBiquadFilter", "BiquadFilterNode"], ["createDynamicsCompressor", "DynamicsCompressorNode"],
    ["createDelay", "DelayNode"], ["createStereoPanner", "StereoPannerNode"], ["createConstantSource", "ConstantSourceNode"], ["createWaveShaper", "WaveShaperNode"],
