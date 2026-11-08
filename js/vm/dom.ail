@@ -548,7 +548,7 @@ pub fn Vm.dom_setup(mut self)
     methods(
         element_proto,
         "dom",
-        "getAttribute:1 setAttribute:2 removeAttribute:1 replaceChildren:0 normalize:0 hasAttribute:1 toggleAttribute:1 getAttributeNames:0 getElementsByTagName:1 getElementsByClassName:1 querySelector:1 querySelectorAll:1 closest:1 matches:1 remove:0 append:0 prepend:0 before:0 after:0 replaceWith:0 click:0 focus:0 blur:0 submit:0 reset:0 select:0 getBoundingClientRect:0 getClientRects:0 insertAdjacentHTML:2 insertAdjacentElement:2 insertAdjacentText:2 scrollIntoView:0 animate:0 requestSubmit:0 checkValidity:0 attachShadow:1",
+        "getAttribute:1 setAttribute:2 removeAttribute:1 getAttributeNS:2 setAttributeNS:3 removeAttributeNS:2 hasAttributeNS:2 replaceChildren:0 normalize:0 hasAttribute:1 toggleAttribute:1 getAttributeNames:0 getElementsByTagName:1 getElementsByClassName:1 querySelector:1 querySelectorAll:1 closest:1 matches:1 remove:0 append:0 prepend:0 before:0 after:0 replaceWith:0 click:0 focus:0 blur:0 submit:0 reset:0 select:0 getBoundingClientRect:0 getClientRects:0 insertAdjacentHTML:2 insertAdjacentElement:2 insertAdjacentText:2 scrollIntoView:0 animate:0 requestSubmit:0 checkValidity:0 attachShadow:1",
     )
     html_element := object("Object", Obj(element_proto))
     protos["HTMLElement"] = Obj(html_element)
@@ -615,6 +615,7 @@ pub fn Vm.dom_setup(mut self)
         p := obj_of(proto_of(name)) else continue
         interface(name, p)
     element_interfaces()
+    sub_interface("DocumentFragment", "Node")
 
     event_proto := object("Object", object_proto)
     protos["Event"] = Obj(event_proto)
@@ -1537,6 +1538,10 @@ fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
                 style_objs.remove(id)
             ce_attr_changed(id, name, old, value)
             Undef
+        "getAttributeNS" => return node_method("getAttribute", id, [a1])?
+        "setAttributeNS" => return node_method("setAttribute", id, [a1, arg_at(args, 2)])?
+        "removeAttributeNS" => return node_method("removeAttribute", id, [a1])?
+        "hasAttributeNS" => return node_method("hasAttribute", id, [a1])?
         "removeAttribute" =>
             name := to_string(a0)?.to_lower()
             old := attr_of(id, name)
