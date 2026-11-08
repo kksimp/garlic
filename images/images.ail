@@ -44,6 +44,16 @@ pub fn prefetch(
     for id in d.all("img")
         src := d.attr(id, "src") else continue
         if src.starts_with("data:")
+            # A `data:` picture is its own bytes; the URL is its key.
+            if sizes.contains(src)
+                continue
+            raw := data_image(src) else
+                sizes[src] = [0, 0]
+                continue
+            sizes[src] = image.dims(raw)
+            if sizes[src][0] * sizes[src][1] <= MAX_PIXELS
+                px := image.decode(raw) else continue
+                bits[src] = Bitmap(w: px.width, h: px.height, data: app.bitmap_data(px.bytes()))
             continue
         at := page.resolve(url, src)
         if sizes.contains(at)
@@ -58,6 +68,18 @@ pub fn prefetch(
         if sizes[at][0] * sizes[at][1] <= MAX_PIXELS
             px := image.decode(raw) else continue
             bits[at] = Bitmap(w: px.width, h: px.height, data: app.bitmap_data(px.bytes()))
+
+## The bytes of a base64 `data:` image URL (RFC 2397), or none.
+pub fn data_image(src str) List[int]?
+    comma := src.find(",") else return none
+    meta := src.slice(5, comma).to_lower()
+    if not meta.ends_with(";base64")
+        return none
+    payload := src.slice(comma + 1, src.chars().len())
+    if payload.chars().len() > MAX_BYTES
+        return none
+    raw := bytes.from_base64(payload) else return none
+    [v.to_int() for v in raw.to_list()]
 
 ## The bytes of the picture at `at`, or none.
 pub fn load(at str, base net.Options, from str, cj jar.Jar) List[int]?
