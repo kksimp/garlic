@@ -2352,7 +2352,7 @@ fn Gui.line_at(self, py float)(float, float)
 ## The horizontal extent of the column of text at `px` on the line
 ## `line`: the runs on that line chained from the one under (or nearest)
 ## `px` with gaps under 48 points, as one paragraph's words are.
-fn Gui.column_at(self, px float, line (float, float)) (float, float)
+fn Gui.column_at(self, px float, line (float, float))(float, float)
     mut runs := List[(float, float)]()
     for op in scene.ops
         match op
