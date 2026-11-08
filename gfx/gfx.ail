@@ -1843,7 +1843,14 @@ fn Ctx.clip_ops(mut self, o0 int, h0 int, limit float)
     mut box_kept := List[Box]()
     for b in boxes
         if b.at < o0 or b.y < limit
-            box_kept.push(Box(node: b.node, x: b.x, y: b.y, w: b.w, h: b.h, at: b.at.min(ops.len())))
+            box_kept.push(Box(
+                node: b.node,
+                x: b.x,
+                y: b.y,
+                w: b.w,
+                h: b.h,
+                at: b.at.min(ops.len()),
+            ))
     boxes = box_kept
 
 fn Ctx.block(mut self, id int, parent St, x float, w float)
@@ -1908,7 +1915,11 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
     mut slot := -1
     mut top := y + pend
     positioned := bx.pos == "relative" or bx.pos == "absolute" or bx.pos == "fixed"
-    boxed := bx.boxed() or bx.padded() or bx.height != none or positioned or (bx.clips and bx.max_height != none)
+    boxed := bx.boxed()
+        or bx.padded()
+        or bx.height != none
+        or positioned
+        or (bx.clips and bx.max_height != none)
     if boxed
         settle()
         top = y

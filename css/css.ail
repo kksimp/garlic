@@ -596,7 +596,11 @@ fn add_pseudo(mut c Compound, name str, arg str) bool
         compact := arg.replace(" ", "").to_lower()
         c.pseudos.push("{name}({compact})")
         return true
-    if name == "not" or name == "is" or name == "where" or name == "matches" or name == "-webkit-any"
+    if name == "not"
+        or name == "is"
+        or name == "where"
+        or name == "matches"
+        or name == "-webkit-any"
         mut group := List[Neg]()
         mut top := 0
         for part in split_top(arg)
@@ -653,7 +657,16 @@ fn nth_ab(arg str) List[int]
 
 ## Parses a compound selector such as `a.nav#top[href]:not(.x)`.
 fn compound(word str) Compound?
-    mut c := Compound(tag: "", ids: [], classes: [], attrs: [], pseudos: [], nots: [], groups: [], group_weight: 0)
+    mut c := Compound(
+        tag: "",
+        ids: [],
+        classes: [],
+        attrs: [],
+        pseudos: [],
+        nots: [],
+        groups: [],
+        group_weight: 0,
+    )
     cs := word.chars()
     mut i := 0
     mut kind := 't'
