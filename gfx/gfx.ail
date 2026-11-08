@@ -2540,7 +2540,15 @@ pub fn layout_measured(
     )
     c.block(0, base, 0.0, width)
     c.settle()
-    Scene(ops: c.ops, hits: c.hits, boxes: c.boxes, height: c.y, bg: c.canvas, probes: c.probes, bits: c.svgs)
+    Scene(
+        ops: c.ops,
+        hits: c.hits,
+        boxes: c.boxes,
+        height: c.y,
+        bg: c.canvas,
+        probes: c.probes,
+        bits: c.svgs,
+    )
 
 ## The link or control under point (`x`, `y`) of the page, if any.
 pub fn Scene.hit_at(self, x float, y float) Hit?
