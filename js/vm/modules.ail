@@ -145,7 +145,9 @@ fn Vm.import_table(mut self, o Value, base str) Map[str, str]
         addr := str_of(v) else continue
         if k == ""
             continue
-        out[k] = if addr.contains("://") or addr.starts_with("data:") or addr.starts_with("blob:") then addr else resolve_against(base, addr)
+        out[k] = if addr.contains("://")
+            or addr.starts_with("data:")
+            or addr.starts_with("blob:") then addr else resolve_against(base, addr)
     out
 
 ## A page's `<script type=importmap>` (HTML §8.1.5): parsed once, merged into

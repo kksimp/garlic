@@ -365,7 +365,7 @@ fn bt_group(mut p BtParse) int
 
 ## `{n}`, `{n,}` or `{n,m}` at the cursor: (1, n, m) with m -1 for no limit
 ## and the cursor moved past it, or (0, 0, 0) for a literal `{`.
-fn bt_braces(mut p BtParse) (int, int, int)
+fn bt_braces(mut p BtParse)(int, int, int)
     mut k := 1
     mut lo := 0
     mut nd := 0

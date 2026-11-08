@@ -88,8 +88,15 @@ fn Vm.regexp_parts(mut self, v Value) RegexParts ! Thrown
         # Lookaround and backreferences need the backtracking engine.
         bp := bt_compile(src, fl)
         if bp.failed != ""
-            return throw_error("SyntaxError", "Invalid regular expression: /{src}/{fl}: {err.message}")
-        return RegexParts(o: o, re: Matcher(re: none, bt: bp), global: fl.contains('g') or fl.contains('y'))
+            return throw_error(
+                "SyntaxError",
+                "Invalid regular expression: /{src}/{fl}: {err.message}",
+            )
+        return RegexParts(
+            o: o,
+            re: Matcher(re: none, bt: bp),
+            global: fl.contains('g') or fl.contains('y'),
+        )
     RegexParts(o: o, re: Matcher(re: re, bt: none), global: fl.contains('g') or fl.contains('y'))
 
 ## A compiled pattern: std.regex when it can run it, else the backtracker.
