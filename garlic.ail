@@ -2944,9 +2944,9 @@ fn Garlic.chrome_node(self) app.Node
     )
 
 impl app.App for Garlic
-    fn attach(mut self, inbox app.Inbox)
+    fn attach(mut self, box app.Inbox)
         has_inbox = true
-        self.inbox = inbox
+        inbox = box
 
     fn update(mut self, ev app.Event)
         want = ""
