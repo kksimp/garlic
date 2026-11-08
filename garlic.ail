@@ -2382,6 +2382,23 @@ fn Gui.column_at(self, px float, line (float, float))(float, float)
                 grew = true
     (lo, hi)
 
+## Whether a space goes between two runs of one line in copied text: not
+## when either already has one at the join, nor before closing punctuation
+## or after an opening bracket (the layout drops the spaces between runs,
+## and its estimated widths cannot tell a word gap from none).
+fn needs_space(prev str, next str) bool
+    if prev == "" or next == ""
+        return false
+    if prev.ends_with(" ") or next.starts_with(" ")
+        return false
+    first := next.slice(0, 1)
+    last := prev.slice(prev.chars().len() - 1, prev.chars().len())
+    if [")", "]", ",", ".", ";", ":", "!", "?", "'", "\u{2019}"].contains(first)
+        return false
+    if ["(", "[", "\u{2018}", "\u{201c}"].contains(last) or last == "\""
+        return false
+    true
+
 ## The character of `t` at `dx` points from its start (its length past the end).
 fn char_at(t str, size float, bold bool, mono bool, dx float) int
     n := t.chars().len()
@@ -2400,30 +2417,28 @@ fn Gui.selection(self) str
     mut parts := List[str]()
     mut last_top := 0.0
     mut last_bottom := 0.0
-    mut last_end := 0.0
+    mut last_piece := ""
     mut k := 0
     for op in scene.ops
         k += 1
         match op
-            Str(x, y, t, font, size, _, bold, _, _) =>
+            Str(_, y, t, _, size, _, _, _, _) =>
                 if span := sel.get(k - 1)
-                    mono := font == "mono"
                     piece := t.slice(span.0, span.1)
                     mid := y + size * 0.65
-                    start := x + gfx.text_width(t.slice(0, span.0), size, bold, mono)
                     if parts.len() > 0
                         ## A run whose middle falls within the last run's box
                         ## (a superscript, a smaller word) stays on its line,
                         ## with a space only where the page leaves a gap.
                         if mid >= last_top and mid <= last_bottom
-                            if start > last_end + 2.0
+                            if needs_space(last_piece, piece)
                                 parts.push(" ")
                         else
                             parts.push("\n")
                     parts.push(piece)
                     last_top = y
                     last_bottom = y + size * 1.3
-                    last_end = start + gfx.text_width(piece, size, bold, mono)
+                    last_piece = piece
             Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => k = k
     parts.join("")
 
