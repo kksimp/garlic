@@ -2292,6 +2292,10 @@ fn Gui.selected(self) Map[int, (int, int)]
     ax := if top_first then sel_x0 else sel_x1
     by := if top_first then sel_y1 else sel_y0
     bx := if top_first then sel_x1 else sel_x0
+    ## The lines the drag starts and ends on, as the runs under those points
+    ## have them, so a superscript of the line above is not swept in.
+    a_line := self.line_at(ay)
+    b_line := self.line_at(by)
     mut k := 0
     for op in scene.ops
         k += 1
@@ -2299,12 +2303,12 @@ fn Gui.selected(self) Map[int, (int, int)]
             Str(x, y, t, font, size, _, bold, _, _) =>
                 h := size * 1.3
                 mid := y + h / 2.0
-                if mid < ay - h / 2.0 or mid > by + h / 2.0
+                if mid < a_line.0 - 2.0 or mid > b_line.1 + 2.0
                     continue
                 n := t.chars().len()
                 mono := font == "mono"
-                first := (mid - ay).abs() <= h / 2.0
-                last := (mid - by).abs() <= h / 2.0
+                first := mid <= a_line.1 + 2.0
+                last := mid >= b_line.0 - 2.0
                 mut from := 0
                 mut to := n
                 if first
@@ -2319,6 +2323,23 @@ fn Gui.selected(self) Map[int, (int, int)]
                     out[k - 1] = (from, to)
             Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => k = k
     out
+
+## The top and bottom of the text line at height `py` of the page: the
+## tallest run whose box holds `py`, else the run nearest to it.
+fn Gui.line_at(self, py float) (float, float)
+    mut best := (py, py)
+    mut best_d := 1.0e9
+    for op in scene.ops
+        match op
+            Str(_, y, _, _, size, _, _, _, _) =>
+                h := size * 1.3
+                inside := py >= y and py <= y + h
+                d := if inside then 0.0 - h else (y + h / 2.0 - py).abs()
+                if d < best_d
+                    best_d = d
+                    best = (y, y + h)
+            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => best = best
+    best
 
 ## The character of `t` at `dx` points from its start (its length past the end).
 fn char_at(t str, size float, bold bool, mono bool, dx float) int
@@ -2336,18 +2357,23 @@ fn Gui.selection(self) str
     if sel.len() == 0
         return ""
     mut parts := List[str]()
-    mut last_y := 0.0 - 1.0e9
+    mut last_top := 0.0
+    mut last_bottom := 0.0
     mut k := 0
     for op in scene.ops
         k += 1
         match op
-            Str(_, y, t, _, _, _, _, _, _) =>
+            Str(_, y, t, _, size, _, _, _, _) =>
                 if span := sel.get(k - 1)
                     piece := t.slice(span.0, span.1)
+                    mid := y + size * 0.65
                     if parts.len() > 0
-                        parts.push(if (y - last_y).abs() > 1.0 then "\n" else " ")
+                        ## A run whose middle falls within the last run's box
+                        ## (a superscript, a smaller word) stays on its line.
+                        parts.push(if mid >= last_top and mid <= last_bottom then " " else "\n")
                     parts.push(piece)
-                    last_y = y
+                    last_top = y
+                    last_bottom = y + size * 1.3
             Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => k = k
     parts.join("")
 
