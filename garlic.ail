@@ -2296,6 +2296,11 @@ fn Gui.selected(self) Map[int, (int, int)]
     ## have them, so a superscript of the line above is not swept in.
     a_line := self.line_at(ay)
     b_line := self.line_at(by)
+    ## The column the drag runs through: text in other columns at the same
+    ## heights (a contents list, an infobox) is not selected.
+    ca := self.column_at(ax, a_line)
+    cb := self.column_at(bx, b_line)
+    col := (ca.0.min(cb.0), ca.1.max(cb.1))
     mut k := 0
     for op in scene.ops
         k += 1
@@ -2304,6 +2309,9 @@ fn Gui.selected(self) Map[int, (int, int)]
                 h := size * 1.3
                 mid := y + h / 2.0
                 if mid < a_line.0 - 2.0 or mid > b_line.1 + 2.0
+                    continue
+                w := gfx.text_width(t, size, bold, font == "mono")
+                if x + w < col.0 - 2.0 or x > col.1 + 2.0
                     continue
                 n := t.chars().len()
                 mono := font == "mono"
@@ -2341,6 +2349,39 @@ fn Gui.line_at(self, py float)(float, float)
             Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => best = best
     best
 
+## The horizontal extent of the column of text at `px` on the line
+## `line`: the runs on that line chained from the one under (or nearest)
+## `px` with gaps under 48 points, as one paragraph's words are.
+fn Gui.column_at(self, px float, line (float, float)) (float, float)
+    mut runs := List[(float, float)]()
+    for op in scene.ops
+        match op
+            Str(x, y, t, font, size, _, bold, _, _) =>
+                mid := y + size * 0.65
+                if mid >= line.0 - 2.0 and mid <= line.1 + 2.0
+                    runs.push((x, x + gfx.text_width(t, size, bold, font == "mono")))
+            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => runs = runs
+    if runs.len() == 0
+        return (px, px)
+    mut seed := runs[0]
+    mut best := 1.0e9
+    for r in runs
+        d := if px >= r.0 and px <= r.1 then 0.0 else (r.0 - px).abs().min((r.1 - px).abs())
+        if d < best
+            best = d
+            seed = r
+    mut lo := seed.0
+    mut hi := seed.1
+    mut grew := true
+    while grew
+        grew = false
+        for r in runs
+            if r.1 >= lo - 48.0 and r.0 <= hi + 48.0 and (r.0 < lo or r.1 > hi)
+                lo = lo.min(r.0)
+                hi = hi.max(r.1)
+                grew = true
+    (lo, hi)
+
 ## The character of `t` at `dx` points from its start (its length past the end).
 fn char_at(t str, size float, bold bool, mono bool, dx float) int
     n := t.chars().len()
@@ -2359,21 +2400,30 @@ fn Gui.selection(self) str
     mut parts := List[str]()
     mut last_top := 0.0
     mut last_bottom := 0.0
+    mut last_end := 0.0
     mut k := 0
     for op in scene.ops
         k += 1
         match op
-            Str(_, y, t, _, size, _, _, _, _) =>
+            Str(x, y, t, font, size, _, bold, _, _) =>
                 if span := sel.get(k - 1)
+                    mono := font == "mono"
                     piece := t.slice(span.0, span.1)
                     mid := y + size * 0.65
+                    start := x + gfx.text_width(t.slice(0, span.0), size, bold, mono)
                     if parts.len() > 0
                         ## A run whose middle falls within the last run's box
-                        ## (a superscript, a smaller word) stays on its line.
-                        parts.push(if mid >= last_top and mid <= last_bottom then " " else "\n")
+                        ## (a superscript, a smaller word) stays on its line,
+                        ## with a space only where the page leaves a gap.
+                        if mid >= last_top and mid <= last_bottom
+                            if start > last_end + 2.0
+                                parts.push(" ")
+                        else
+                            parts.push("\n")
                     parts.push(piece)
                     last_top = y
                     last_bottom = y + size * 1.3
+                    last_end = start + gfx.text_width(piece, size, bold, mono)
             Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => k = k
     parts.join("")
 
