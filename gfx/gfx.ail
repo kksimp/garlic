@@ -2131,7 +2131,11 @@ fn Ctx.row(
     if aligns.len() > 0
         for k in 0..items.len()
             mode := aligns[k]
-            dy := if mode == "center" then (tall - heights[k]) / 2.0 elif mode == "end" then tall - heights[k] else 0.0
+            mut dy := 0.0
+            if mode == "center"
+                dy = (tall - heights[k]) / 2.0
+            elif mode == "end"
+                dy = tall - heights[k]
             if dy > 0.5
                 shift_boxes(spans[k].0, dy)
                 for o in spans[k].0..spans[k].1
@@ -2344,7 +2348,10 @@ fn Ctx.flex(mut self, id int, st St, cs Map[str, str], x float, w float, min_h f
     jraw := (cs.get("justify-content") else "flex-start").trim()
     mut justify := if w >= SHRINK_W then "flex-start" else jraw
     if rev
-        justify = if justify == "flex-start" or justify == "start" then "flex-end" elif justify == "flex-end" or justify == "end" then "flex-start" else justify
+        if justify == "flex-start" or justify == "start"
+            justify = "flex-end"
+        elif justify == "flex-end" or justify == "end"
+            justify = "flex-start"
     wrap := flex_wraps(cs)
     cont_align := (cs.get("align-items") else "").trim()
     mut bases := List[float]()
@@ -2547,7 +2554,11 @@ fn Ctx.flex_col(mut self, id int, st St, cs Map[str, str], x float, w float)
             continue
         kind := align_kind(want)
         cw := fmin(self.item_width(it, st), w)
-        off := if kind == "center" then (w - cw) / 2.0 elif kind == "end" then w - cw else 0.0
+        mut off := 0.0
+        if kind == "center"
+            off = (w - cw) / 2.0
+        elif kind == "end"
+            off = w - cw
         self.block(it, st, x + off, cw)
 
 ## One grid track: positive for `Nfr`, negative for a fixed length, none for
