@@ -1,0 +1,329 @@
+## Web Workers (HTML §10.2), the page's side and the worker's side, written
+## in JavaScript over one native hook, `__hostWorker(op, id, text)`, which
+## turns into a "worker" host request. The browser (jsdom/workers.ail) runs
+## each worker in its own engine on its own thread; the two sides only swap
+## strings, so a message is encoded here (the structured clone, §2.7) and
+## decoded by the engine that receives it.
+##
+## On the page: `new Worker(url, options)` gets the script (a blob: or data:
+## address from memory, any other through `fetch`, same origin only), then
+## asks the browser to start it ("start"); `postMessage` ("post") and
+## `terminate` ("stop") follow. The browser answers through `__workerEvent`.
+## In the worker: `postMessage` ("out") and `close` ("close"); the browser
+## hands what the page posted to `__workerDeliver`, and what a `fetch` in the
+## worker got to `net_deliver`. The worker's `fetch` goes through the page's.
+##
+## Not yet: module workers, `importScripts`, shared and service workers,
+## transfer of buffers (they are copied), nested workers and `MessageChannel`.
+
+## The structured clone: `__sc.encode(value)` is a JSON string, `__sc.decode`
+## the value again. Cycles and shared references survive; functions, symbols
+## and DOM nodes throw a DataCloneError.
+CLONE_PRELUDE := r"""
+(function (g) {
+  var TYPED = { Int8Array: 1, Uint8Array: 1, Uint8ClampedArray: 1, Int16Array: 1, Uint16Array: 1, Int32Array: 1, Uint32Array: 1, Float32Array: 1, Float64Array: 1, BigInt64Array: 1, BigUint64Array: 1, DataView: 1 };
+  function b64(buf) { var u = new Uint8Array(buf), s = ""; for (var i = 0; i < u.length; i++) s += String.fromCharCode(u[i]); return btoa(s); }
+  function unb64(t) { var s = atob(t), u = new Uint8Array(s.length); for (var i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u.buffer; }
+  function cannot(v) { return new DOMException((typeof v === "function" ? String(v) : "#<Object>") + " could not be cloned.", "DataCloneError"); }
+  function encode(value) {
+    var nodes = [], seen = new Map();
+    function ref(v) {
+      switch (typeof v) {
+        case "undefined": return { u: 1 };
+        case "boolean": case "string": return v;
+        case "number":
+          if (v !== v) return { n: "NaN" };
+          if (v === Infinity) return { n: "Inf" };
+          if (v === -Infinity) return { n: "-Inf" };
+          if (v === 0 && 1 / v < 0) return { n: "-0" };
+          return v;
+        case "bigint": return { b: String(v) };
+        case "symbol": throw new DOMException("Symbol() could not be cloned.", "DataCloneError");
+        case "function": throw cannot(v);
+      }
+      if (v === null) return null;
+      return { o: node(v) };
+    }
+    function pairs(v, n) {
+      var keys = Object.keys(v);
+      for (var i = 0; i < keys.length; i++) n.p.push([keys[i], ref(v[keys[i]])]);
+    }
+    function node(v) {
+      if (seen.has(v)) return seen.get(v);
+      var i = nodes.length, n;
+      seen.set(v, i);
+      nodes.push(null);
+      var tag = Object.prototype.toString.call(v);
+      if (g.Node && v instanceof g.Node) throw cannot(v);
+      if (Array.isArray(v)) { n = { k: "a", l: v.length, p: [] }; nodes[i] = n; pairs(v, n); }
+      else if (v instanceof Date) { n = { k: "d", t: v.getTime() }; nodes[i] = n; }
+      else if (v instanceof RegExp) { n = { k: "r", s: v.source, f: v.flags }; nodes[i] = n; }
+      else if (v instanceof Map) { n = { k: "m", e: [] }; nodes[i] = n; v.forEach(function (val, key) { n.e.push([ref(key), ref(val)]); }); }
+      else if (v instanceof Set) { n = { k: "s", e: [] }; nodes[i] = n; v.forEach(function (val) { n.e.push(ref(val)); }); }
+      else if (v instanceof Error) { n = { k: "e", n: v.name, m: v.message, s: v.stack === undefined ? "" : String(v.stack) }; nodes[i] = n; }
+      else if (v instanceof ArrayBuffer) { n = { k: "ab", d: b64(v) }; nodes[i] = n; }
+      else if (ArrayBuffer.isView(v)) {
+        var t = tag.slice(8, -1);
+        n = { k: "ta", t: TYPED[t] ? t : "Uint8Array", b: 0, o: v.byteOffset, l: t === "DataView" ? v.byteLength : v.length };
+        nodes[i] = n;
+        n.b = node(v.buffer);
+      }
+      else if (g.Blob && v instanceof g.Blob) {
+        n = { k: "bl", x: v._text, t: v.type };
+        if (g.File && v instanceof g.File) { n.name = v.name; n.lm = v.lastModified; }
+        nodes[i] = n;
+      }
+      else if (tag === "[object Promise]" || tag === "[object WeakMap]" || tag === "[object WeakSet]" || tag === "[object WeakRef]") throw cannot(v);
+      else { n = { k: "o", p: [] }; nodes[i] = n; pairs(v, n); }
+      return i;
+    }
+    var top = ref(value);
+    return JSON.stringify({ r: top, n: nodes });
+  }
+  function decode(text) {
+    var d = JSON.parse(text), made = [];
+    function val(r) {
+      if (r === null || typeof r !== "object") return r;
+      if ("o" in r) return obj(r.o);
+      if ("u" in r) return undefined;
+      if ("b" in r) return BigInt(r.b);
+      return r.n === "NaN" ? NaN : (r.n === "Inf" ? Infinity : (r.n === "-Inf" ? -Infinity : -0));
+    }
+    function fill(o, n) { for (var j = 0; j < n.p.length; j++) o[n.p[j][0]] = val(n.p[j][1]); }
+    function obj(i) {
+      if (made[i] !== undefined) return made[i];
+      var n = d.n[i], o;
+      switch (n.k) {
+        case "a": o = new Array(n.l); made[i] = o; fill(o, n); break;
+        case "o": o = {}; made[i] = o; fill(o, n); break;
+        case "d": o = new Date(n.t); made[i] = o; break;
+        case "r": o = new RegExp(n.s, n.f); made[i] = o; break;
+        case "m": o = new Map(); made[i] = o; for (var a = 0; a < n.e.length; a++) o.set(val(n.e[a][0]), val(n.e[a][1])); break;
+        case "s": o = new Set(); made[i] = o; for (var b = 0; b < n.e.length; b++) o.add(val(n.e[b])); break;
+        case "e":
+          var C = (typeof g[n.n] === "function" && /Error$/.test(n.n)) ? g[n.n] : Error;
+          o = new C(n.m); made[i] = o;
+          try { Object.defineProperty(o, "stack", { value: n.s, writable: true, configurable: true, enumerable: false }); } catch (e) {}
+          break;
+        case "ab": o = unb64(n.d); made[i] = o; break;
+        case "ta": o = n.t === "DataView" ? new DataView(obj(n.b), n.o, n.l) : new g[n.t](obj(n.b), n.o, n.l); made[i] = o; break;
+        case "bl": o = n.name !== undefined ? new g.File([n.x], n.name, { type: n.t, lastModified: n.lm }) : new g.Blob([n.x], { type: n.t }); made[i] = o; break;
+      }
+      return o;
+    }
+    return val(d.r);
+  }
+  Object.defineProperty(g, "__sc", { value: { encode: encode, decode: decode }, enumerable: false });
+})(this);
+"""
+
+## The page's `Worker`.
+WORKER_PRELUDE := r"""
+(function (g) {
+  var hook = g.__hostWorker;
+  try { delete g.__hostWorker; } catch (e) {}
+  var sc = g.__sc;
+  var workers = {}, seq = 0;
+  function event(type, target, props) {
+    var ev = { type: type, target: target, currentTarget: target, defaultPrevented: false, bubbles: false, cancelable: false, timeStamp: Date.now(),
+      preventDefault: function () {}, stopPropagation: function () {}, stopImmediatePropagation: function () {} };
+    for (var k in props) ev[k] = props[k];
+    return ev;
+  }
+  function fire(w, type, props) {
+    var ev = event(type, w, props);
+    var h = w["on" + type];
+    if (typeof h === "function") { try { h.call(w, ev); } catch (e) { console.error("Uncaught " + e); } }
+    var list = (w._l[type] || []).slice();
+    for (var i = 0; i < list.length; i++) { try { list[i].call(w, ev); } catch (e) { console.error("Uncaught " + e); } }
+  }
+  function dataUrlText(u) {
+    var comma = u.indexOf(",");
+    if (comma < 0) return null;
+    var head = u.slice(5, comma), body = u.slice(comma + 1);
+    if (/;base64$/i.test(head)) {
+      var bin = atob(decodeURIComponent(body)), bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return new TextDecoder().decode(bytes);
+    }
+    return decodeURIComponent(body);
+  }
+  function Worker(url, options) {
+    if (!(this instanceof Worker)) throw new TypeError("Failed to construct 'Worker': Please use the 'new' operator, this DOM object constructor cannot be called as a function.");
+    if (arguments.length < 1) throw new TypeError("Failed to construct 'Worker': 1 argument required, but only 0 present.");
+    var self = this;
+    this._id = ++seq; this._l = {}; this._q = []; this._started = false; this._dead = false;
+    this.onmessage = null; this.onerror = null; this.onmessageerror = null;
+    var name = options && options.name !== undefined ? String(options.name).replace(/\n/g, " ") : "";
+    var abs;
+    try { abs = new URL(String(url), g.location.href).href; }
+    catch (e) { throw new DOMException("Failed to construct 'Worker': Script at '" + url + "' cannot be accessed from origin '" + g.location.origin + "'.", "SecurityError"); }
+    var scheme = abs.slice(0, abs.indexOf(":")).toLowerCase();
+    var origin = g.location.origin;
+    if ((scheme === "http" || scheme === "https") && new URL(abs).origin !== origin)
+      throw new DOMException("Failed to construct 'Worker': Script at '" + abs + "' cannot be accessed from origin '" + origin + "'.", "SecurityError");
+    if (scheme !== "http" && scheme !== "https" && scheme !== "blob" && scheme !== "data" && scheme !== "file")
+      throw new DOMException("Failed to construct 'Worker': Script at '" + abs + "' cannot be accessed from origin '" + origin + "'.", "SecurityError");
+    workers[this._id] = this;
+    function go(src) {
+      if (self._dead) return;
+      hook("start", self._id, name + "\n" + abs + "\n" + g.location.href + "\n" + src);
+      self._started = true;
+      for (var i = 0; i < self._q.length; i++) hook("post", self._id, self._q[i]);
+      self._q = [];
+    }
+    function fail(msg) {
+      setTimeout(function () { if (!self._dead) { self._dead = true; delete workers[self._id]; fire(self, "error", { message: msg, filename: abs, lineno: 0, colno: 0, error: null }); } }, 0);
+    }
+    if (scheme === "blob") {
+      var b = g.__blobFor && g.__blobFor(abs);
+      if (!b) fail("Failed to load worker script: " + abs);
+      else setTimeout(function () { go(b._text); }, 0);
+    } else if (scheme === "data") {
+      var text = null;
+      try { text = dataUrlText(abs); } catch (e) {}
+      if (text === null) fail("Failed to load worker script: " + abs);
+      else setTimeout(function () { go(text); }, 0);
+    } else {
+      g.fetch(abs).then(function (r) {
+        if (!r.ok) { fail("Failed to load worker script: " + abs + " (" + r.status + ")"); return; }
+        return r.text().then(go);
+      }, function () { fail("Failed to load worker script: " + abs); });
+    }
+  }
+  Worker.prototype.postMessage = function (message, transfer) {
+    if (arguments.length < 1) throw new TypeError("Failed to execute 'postMessage' on 'Worker': 1 argument required, but only 0 present.");
+    var data = sc.encode(message);
+    if (this._dead) return;
+    if (this._started) hook("post", this._id, data); else this._q.push(data);
+  };
+  Worker.prototype.terminate = function () {
+    if (this._dead) return;
+    this._dead = true; delete workers[this._id];
+    if (this._started) hook("stop", this._id, "");
+  };
+  Worker.prototype.addEventListener = function (t, f) { if (typeof f !== "function") return; var a = this._l[t] = this._l[t] || []; if (a.indexOf(f) < 0) a.push(f); };
+  Worker.prototype.removeEventListener = function (t, f) { var a = this._l[t]; if (a) { var i = a.indexOf(f); if (i >= 0) a.splice(i, 1); } };
+  Worker.prototype.dispatchEvent = function (ev) { fire(this, ev.type, ev); return true; };
+  Object.defineProperty(Worker.prototype, Symbol.toStringTag, { value: "Worker", configurable: true });
+  g.Worker = Worker;
+
+  Object.defineProperty(g, "__workerEvent", { value: function (id, kind, data) {
+    var w = workers[id]; if (!w) return;
+    if (kind === "message") {
+      var v;
+      try { v = sc.decode(data); } catch (e) { fire(w, "messageerror", { data: null, origin: "", lastEventId: "", source: null, ports: [] }); return; }
+      fire(w, "message", { data: v, origin: g.location.origin, lastEventId: "", source: null, ports: [] });
+    } else if (kind === "error") {
+      fire(w, "error", { message: data, filename: "", lineno: 0, colno: 0, error: null });
+    } else if (kind === "closed") {
+      w._dead = true; delete workers[id];
+    }
+  }, enumerable: false });
+
+  // A worker's fetch, made by the page for it: `reply` goes back to the worker.
+  Object.defineProperty(g, "__workerFetch", { value: function (id, rid, method, url, type, body) {
+    function answer(o) { hook("net", id, rid + "\u0001" + JSON.stringify(o)); }
+    var init = { method: method };
+    if (type) init.headers = { "content-type": type };
+    if (body && method !== "GET" && method !== "HEAD") init.body = body;
+    g.fetch(url, init).then(function (r) {
+      var hs = {};
+      r.headers.forEach(function (v, k) { hs[k] = v; });
+      return r.text().then(function (t) { answer({ status: r.status, statusText: r.statusText, url: r.url, headers: hs, body: t }); });
+    }, function () { answer({ error: true }); });
+  }, enumerable: false });
+})(this);
+"""
+
+## The worker's global scope, run in a fresh engine after the clone code,
+## `net_setup` and the DOM setup (whose page-only globals it hides).
+## `__workerBoot(name, url)` runs once the scope is ready.
+SCOPE_PRELUDE := r"""
+(function (g) {
+  var hook = g.__hostWorker;
+  try { delete g.__hostWorker; } catch (e) {}
+  var sc = g.__sc;
+  ["window", "top", "parent", "frames", "opener", "localStorage", "sessionStorage", "alert", "confirm", "prompt", "open", "focus", "blur",
+   "getComputedStyle", "matchMedia", "scrollTo", "scrollBy", "scroll", "requestIdleCallback", "XMLHttpRequest", "Worker", "WebSocket"].forEach(function (k) {
+    try { delete g[k]; } catch (e) {}
+  });
+  var listeners = {}, closing = false;
+  g.onmessage = null; g.onmessageerror = null; g.onerror = null;
+  g.postMessage = function (message, transfer) {
+    if (arguments.length < 1) throw new TypeError("Failed to execute 'postMessage' on 'DedicatedWorkerGlobalScope': 1 argument required, but only 0 present.");
+    var data = sc.encode(message);
+    if (!closing) hook("out", 0, data);
+  };
+  g.close = function () { if (!closing) { closing = true; hook("close", 0, ""); } };
+  g.importScripts = function () {
+    if (arguments.length === 0) return;
+    throw new DOMException("Failed to execute 'importScripts' on 'WorkerGlobalScope': importScripts is not supported yet.", "NetworkError");
+  };
+  g.addEventListener = function (t, f) { if (typeof f !== "function") return; var a = listeners[t] = listeners[t] || []; if (a.indexOf(f) < 0) a.push(f); };
+  g.removeEventListener = function (t, f) { var a = listeners[t]; if (a) { var i = a.indexOf(f); if (i >= 0) a.splice(i, 1); } };
+  function fire(type, ev) {
+    var h = g["on" + type];
+    if (typeof h === "function") h.call(g, ev);
+    var list = (listeners[type] || []).slice();
+    for (var i = 0; i < list.length; i++) list[i].call(g, ev);
+  }
+  g.dispatchEvent = function (ev) { fire(ev.type, ev); return true; };
+  function WorkerGlobalScope() { throw new TypeError("Illegal constructor"); }
+  function DedicatedWorkerGlobalScope() { throw new TypeError("Illegal constructor"); }
+  DedicatedWorkerGlobalScope.prototype = Object.create(WorkerGlobalScope.prototype);
+  g.WorkerGlobalScope = WorkerGlobalScope;
+  g.DedicatedWorkerGlobalScope = DedicatedWorkerGlobalScope;
+  Object.defineProperty(g, "__workerDeliver", { value: function (data) {
+    if (closing) return;
+    var ev = { type: "message", target: g, currentTarget: g, origin: "", lastEventId: "", source: null, ports: [], defaultPrevented: false,
+      preventDefault: function () {}, stopPropagation: function () {}, stopImmediatePropagation: function () {} };
+    try { ev.data = sc.decode(data); } catch (e) { ev.type = "messageerror"; ev.data = null; }
+    fire(ev.type, ev);
+  }, enumerable: false });
+  Object.defineProperty(g, "__workerBoot", { value: function (name) {
+    try { Object.defineProperty(g, "name", { value: name, writable: true, configurable: true, enumerable: true }); } catch (e) { try { g.name = name; } catch (e2) {} }
+  }, enumerable: false });
+})(this);
+"""
+
+## JavaScript string literal text for `s`, without the quotes.
+fn lit(s str) str
+    s
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\u{2028}", "\\u2028")
+        .replace("\u{2029}", "\\u2029")
+
+## Defines `Worker` on the page's window (after `net_setup`).
+pub fn Vm.worker_setup(mut self)
+    run_script_text(CLONE_PRELUDE)
+    run_script_text(WORKER_PRELUDE)
+
+## Makes this engine a dedicated worker's: `net_setup` and `dom_setup` must
+## have run. `name` is the `Worker` option, `url` the script's address.
+pub fn Vm.worker_scope_setup(mut self, name str)
+    run_script_text(CLONE_PRELUDE)
+    run_script_text(SCOPE_PRELUDE)
+    run_script_text("__workerBoot(\"{lit(name)}\")")
+
+## A message the page posted (encoded by the page's clone code), run through
+## the worker's `message` handlers.
+pub fn Vm.worker_deliver(mut self, payload str)
+    run_script_text("__workerDeliver(\"{lit(payload)}\")")
+
+## An event for the page's `Worker` number `id`: "message" (`payload` the
+## encoded data), "error" (`payload` the text) or "closed".
+pub fn Vm.worker_event(mut self, id int, kind str, payload str)
+    run_script_text("__workerEvent({id}, \"{kind}\", \"{lit(payload)}\")")
+
+## A `fetch` that worker `id` made, made by the page for it: request `rid`
+## with `packed` (content type, a newline, the body). The answer goes back
+## as a "net" worker request.
+pub fn Vm.worker_fetch(mut self, id int, rid int, method str, url str, packed str)
+    at := packed.find("\n") else -1
+    kind := if at < 0 then packed else packed.slice(0, at)
+    body := if at < 0 then "" else packed.slice(at + 1, packed.chars().len())
+    run_script_text("__workerFetch({id}, {rid}, \"{lit(method)}\", \"{lit(url)}\", \"{lit(kind)}\", \"{lit(body)}\")")

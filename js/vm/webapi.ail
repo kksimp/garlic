@@ -138,6 +138,7 @@ WEB_PRELUDE := r"""
   var objectUrls = {}, urlSeq = 0;
   URL.createObjectURL = function (b) { var u = "blob:" + (g.location ? g.location.origin : "null") + "/" + (++urlSeq) + "-" + Math.random().toString(16).slice(2); objectUrls[u] = b; return u; };
   URL.revokeObjectURL = function (u) { delete objectUrls[String(u)]; };
+  Object.defineProperty(g, "__blobFor", { value: function (u) { return objectUrls[String(u)]; }, enumerable: false });
 
   // Canvas: a context that keeps its state and draws nothing.
   var BLANK_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";

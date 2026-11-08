@@ -95,6 +95,8 @@ struct Browser
     reloading bool
     ## The page's open WebSockets by the number its scripts know them by.
     socks Map[int, ws.Sock]
+    ## The threads the page's Web Workers run on (all tabs share them).
+    workers jsdom.Pool
     ## Counts page layouts, so the pixel window knows when to lay out again.
     stamp int
     ## Pixel sizes of the page's pictures by address (`images.prefetch`).
@@ -570,6 +572,7 @@ fn load_doc(
     mut cj jar.Jar,
     mut cache Map[str, Cached],
     mut socks Map[int, ws.Sock],
+    pool jsdom.Pool,
 ) Loaded
     mut at := target
     mut m := method
@@ -632,6 +635,7 @@ fn load_doc(
                 now,
                 1000.0,
                 5000000,
+                pool,
             )
             mut live := ran.0
             out = serve_page(mut live, mut d, ran.1, at, mut cj, mut socks)
@@ -681,6 +685,7 @@ fn serve_page(
     out.mods = []
     mut work := 0
     mut polled := false
+    mut worked := false
     while work < MAX_REPLIES
         mut more := quiet()
         if mods.len() > 0
@@ -703,6 +708,10 @@ fn serve_page(
             more = deliver_received(mut live, mut d, mut socks, if work > 0 then 50 else 1)
             if more.changes == 0 and more.sockets.len() == 0 and more.asks.len() == 0
                 break
+        elif not worked and live.workers_live()
+            ## What the page's Web Workers sent since the last time.
+            worked = true
+            more = live.workers_poll(mut d, 1000.0)
         else
             break
         work += 1
@@ -719,6 +728,7 @@ fn serve_page(
         mods.extend(more.mods)
         if more.changes > 0 or more.asks.len() > 0 or more.sockets.len() > 0 or more.mods.len() > 0
             polled = false
+            worked = false
     out
 
 fn quiet() jsdom.Outcome
@@ -888,8 +898,18 @@ fn local_url(u str) str
     u.strip_prefix("file://local/") else u
 
 fn Browser.new(url str, width int, height int) Browser
+    Browser.with_pool(url, width, height, jsdom.no_pool())
+
+## `Browser.new` with the threads Web Workers run on.
+fn Browser.with_pool(url str, width int, height int, pool jsdom.Pool) Browser
     mut b := Browser.empty(url, width, height)
+    b.workers = pool
     b.load(url, "GET", "")
+    b
+
+fn Browser.with_workers(self, pool jsdom.Pool) Browser
+    mut b := self
+    b.workers = pool
     b
 
 ## A browser showing nothing yet, as a new tab does (`url` is only its label).
@@ -923,6 +943,7 @@ fn Browser.empty(url str, width int, height int) Browser
         refer: "",
         reloading: false,
         socks: {},
+        workers: jsdom.no_pool(),
         stamp: 0,
         sizes: {},
         kept: {},
@@ -981,6 +1002,7 @@ fn Browser.revisit(mut self, target str)
         doc = k.doc
         sheet = k.sheet
         pg = page.layout_with(doc, url, width, sheet)
+        stop_workers()
         js = none
         stamp += 1
         scroll_to(k.scroll)
@@ -996,6 +1018,12 @@ fn Browser.close_sockets(mut self)
         s.close(1001)
         socks.remove(id)
 
+## Stops the page's Web Workers (leaving the page does).
+fn Browser.stop_workers(mut self)
+    mut s := js else return
+    s.stop_workers()
+    js = s
+
 ## Delivers what the page's open sockets have received (the host calls this
 ## as events arrive), and shows what the page did with it.
 ## Once a second (the GUI's tick) the page's own clock moves on: timers due
@@ -1006,15 +1034,15 @@ fn Browser.close_sockets(mut self)
 ## finished through a timer showed its "working" state for ever.
 fn Browser.advance(mut self)
     s := js else return
-    if s.pending() == 0 and socks.len() == 0
+    if s.pending() == 0 and socks.len() == 0 and not s.workers_live()
         return
     if settle()
         return
 
 fn Browser.pump(mut self)
-    if socks.len() == 0
-        return
     mut s := js else return
+    if socks.len() == 0 and not s.workers_live()
+        return
     out := serve_page(mut s, mut doc, quiet(), url, mut cj, mut socks)
     js = s
     record(out)
@@ -1071,7 +1099,18 @@ fn Browser.reload(mut self)
 
 fn Browser.load(mut self, target str, method str, body str)
     close_sockets()
-    loaded := load_doc(target, method, body, refer, reloading, mut cj, mut cache, mut socks)
+    stop_workers()
+    loaded := load_doc(
+        target,
+        method,
+        body,
+        refer,
+        reloading,
+        mut cj,
+        mut cache,
+        mut socks,
+        workers,
+    )
     reloading = false
     refer = ""
     url = loaded.url
@@ -2831,7 +2870,7 @@ fn Garlic.switch(mut self, k int)
 fn Garlic.new_tab(mut self)
     tabs[cur] = g
     mut fresh_gui := Gui.new(
-        Browser.empty("", g.b.width, g.b.height),
+        Browser.empty("", g.b.width, g.b.height).with_workers(g.b.workers),
         g.area_w,
         g.area_h,
         g.cell_w,
@@ -2875,6 +2914,8 @@ fn Garlic.close_at(mut self, k int)
     if it.url != ""
         closed.push(it)
     tabs[cur] = g
+    mut dead := tabs[k]
+    dead.b.stop_workers()
     tabs.remove_at(k)
     if k < cur
         cur -= 1
@@ -3699,7 +3740,40 @@ fn main() !
         mut srv := Browser.empty("about:blank", width, height)
         srv.serve((flag(args, "--allow") else "*").split(","))
         return
-    mut b := Browser.new(cli_target(target_of(args)), width, height)
+    mut headless := false
+    for f in HEADLESS
+        if args.contains(f)
+            headless = true
+    inbox := app.new_inbox()
+    pool := jsdom.new_pool(inbox, not headless, jsdom.POOL_SIZE)
+    g := TaskGroup()
+    for slot in pool.slots
+        g.add(spawn worker_task(slot, pool.free, inbox, not headless))
+    run_cli(args, width, height, pool, inbox) else err
+        print("garlic: {err}")
+    pool.shutdown()
+    g.wait_all()?
+
+## The flags that print and exit instead of opening the window.
+HEADLESS := [
+    "--marks",
+    "--pixels-dump",
+    "--session",
+    "--print",
+    "--tables",
+    "--csv",
+    "--reader",
+    "--extract",
+    "--forms",
+    "--at",
+    "--where",
+    "--json",
+    "--links",
+]
+
+## What `garlic` does for its arguments once the pool of worker threads runs.
+fn run_cli(args List[str], width int, height int, pool jsdom.Pool, inbox app.Inbox) !
+    mut b := Browser.with_pool(cli_target(target_of(args)), width, height, pool)
     b.viewport_only = args.contains("--viewport")
     b.diff = args.contains("--diff")
     b.budget = (flag(args, "--budget") else "0").to_int() else 0
@@ -3762,6 +3836,7 @@ fn main() !
             args.contains("--attach"),
             flag(args, "--allow") else "",
             args.contains("--light"),
+            inbox,
         ) else err
             print("garlic: {err}")
 

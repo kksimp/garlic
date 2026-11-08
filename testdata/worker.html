@@ -1,0 +1,13 @@
+<!doctype html>
+<title>Web Workers</title>
+<body>
+<p id="out">waiting</p>
+<script>
+var src = "onmessage = function (e) { postMessage({ got: e.data, name: self.name, doc: typeof window }); };";
+var w = new Worker(URL.createObjectURL(new Blob([src])), { name: "echo" });
+w.onmessage = function (e) {
+  document.getElementById("out").textContent = "worker said " + JSON.stringify(e.data);
+  w.terminate();
+};
+w.postMessage({ n: 1, list: [1, 2, 3], when: new Date(0) });
+</script>

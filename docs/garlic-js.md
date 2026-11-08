@@ -36,7 +36,23 @@ did.
    top-level `await`, JSON modules (`with {type: "json"}`), and
    `<script type="module">` with defer order, `nomodule`, and a module map
    keyed by URL.
-6. **Later**: BigInt, import maps.
+6. **Web Workers** (dedicated, done): `new Worker(url, {name})` runs the
+   script in an engine of its own on a real thread
+   (`js/vm/workers.ail`, `jsdom/workers.ail`). The browser starts a pool of
+   8 threads; the page and a worker swap only strings (a structured clone
+   encoded as JSON), through a `Mutex` list each way and a token channel
+   that lets an idle worker sleep. The window is woken by an external
+   `worker` event, so a message shows at once. A worker has timers (on the
+   real clock), `postMessage`, `close`, `fetch` (made by the page for it)
+   and the clone types: primitives, BigInt, Date, RegExp, Map, Set, Error,
+   ArrayBuffer and views, Blob and File, plain objects with cycles. Not yet:
+   module workers, `importScripts`, buffer transfer, nested workers,
+   `MessageChannel`, `SharedWorker`, service workers. Pool threads are
+   spawned in `main` because the native subset cannot `spawn` from inside
+   the browser's structs; a page that wants a ninth worker gets an `error`
+   event. Check by hand: `ail run garlic.ail testdata/worker.html` shows
+   "worker said ..." after a moment.
+7. **Later**: BigInt, import maps.
 
 ## Layout
 
