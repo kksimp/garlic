@@ -302,7 +302,7 @@ fn Vm.after_insert(mut self, id int)
         mode := script_mode(s)
         if mode == "skip"
             continue
-        if mode == "module"
+        if mode == "module" or mode == "importmap"
             run_script_node(s, mode)
             continue
         if src := attr_of(s, "src")
@@ -325,6 +325,8 @@ fn Vm.script_mode(self, s int) str
     kind := (attr_of(s, "type") else "").to_lower().trim()
     if kind == "module"
         return "module"
+    if kind == "importmap"
+        return "importmap"
     if attr_of(s, "nomodule") != none
         return "skip"
     if kind == ""
@@ -337,6 +339,9 @@ fn Vm.script_mode(self, s int) str
 
 ## Run script element `s` of the given mode now.
 fn Vm.run_script_node(mut self, s int, mode str)
+    if mode == "importmap"
+        add_import_map(text_content(s))
+        return
     if mode == "module"
         if src := attr_of(s, "src")
             run_module_script(resolve_url(src))
@@ -466,6 +471,25 @@ pub fn Vm.dom_setup(mut self)
     for item in ["ELEMENT_NODE=1", "TEXT_NODE=3", "COMMENT_NODE=8", "DOCUMENT_NODE=9"]
         kv := item.split("=")
         constant(node_proto, kv[0], Num(string_to_number(kv[1])))
+    nf := object("Object", object_proto)
+    for item in [
+        "FILTER_ACCEPT=1",
+        "FILTER_REJECT=2",
+        "FILTER_SKIP=3",
+        "SHOW_ALL=4294967295",
+        "SHOW_ELEMENT=1",
+        "SHOW_ATTRIBUTE=2",
+        "SHOW_TEXT=4",
+        "SHOW_CDATA_SECTION=8",
+        "SHOW_PROCESSING_INSTRUCTION=64",
+        "SHOW_COMMENT=128",
+        "SHOW_DOCUMENT=256",
+        "SHOW_DOCUMENT_TYPE=512",
+        "SHOW_DOCUMENT_FRAGMENT=1024",
+    ]
+        kv := item.split("=")
+        constant(nf, kv[0], Num(string_to_number(kv[1])))
+    global_obj.props["NodeFilter"] = hidden(Obj(nf))
     element_proto := object("Object", Obj(node_proto))
     protos["Element"] = Obj(element_proto)
     for name in [
@@ -597,7 +621,7 @@ pub fn Vm.dom_setup(mut self)
     methods(
         event_proto,
         "dom.event",
-        "preventDefault:0 stopPropagation:0 stopImmediatePropagation:0 composedPath:0",
+        "preventDefault:0 stopPropagation:0 stopImmediatePropagation:0 composedPath:0 initEvent:3 initCustomEvent:4",
     )
     for name in ["Event"]
         c := obj_of(native_fn("dom.Event", name, 1)) else continue
@@ -1032,7 +1056,7 @@ pub fn Vm.dom_native(
     if p := m.strip_prefix("window.")
         return window_method(p, args)
     if p := m.strip_prefix("event.")
-        return event_method(p, this_val)
+        return event_method(p, this_val, args)
     if p := m.strip_prefix("style.")
         return style_method(p, this_val, args)
     if p := m.strip_prefix("classList.")
@@ -1887,8 +1911,17 @@ fn event_flag(ev Value, key str) bool
             return p.value == Bool(true)
     false
 
-fn Vm.event_method(mut self, m str, this_val Value) Value ! Thrown
+fn Vm.event_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
     match m
+        "initEvent" | "initCustomEvent" =>
+            # The legacy initialisers (DOM §2.6): type, bubbles, cancelable and,
+            # for CustomEvent, detail.
+            if o := obj_of(this_val)
+                o.props["type"] = data(Str(to_string(arg_at(args, 0))?))
+                o.props["bubbles"] = data(Bool(truthy(arg_at(args, 1))))
+                o.props["cancelable"] = data(Bool(truthy(arg_at(args, 2))))
+                if m == "initCustomEvent"
+                    o.props["detail"] = data(arg_at(args, 3))
         "preventDefault" =>
             if event_flag(this_val, "cancelable")
                 set_event_flag(this_val, "defaultPrevented", true)

@@ -1,0 +1,832 @@
+## A backtracking RegExp matcher (ECMA-262 §22.2) for the patterns std.regex
+## cannot run in linear time: lookahead, lookbehind and backreferences.
+## regexp.ail compiles a pattern with std.regex first and falls back to this
+## engine when that fails. It works on UTF-16 code units, like JavaScript.
+##
+## A pattern is parsed to a node tree, emitted as a small program, and run by
+## a backtracking machine with an explicit stack. Lookarounds run their
+## sub-program in a nested call. A step budget stops runaway patterns.
+
+OP_CHAR := 1
+OP_ANY := 2
+OP_CLASS := 3
+OP_SPLIT := 4
+OP_JMP := 5
+OP_SAVE := 6
+OP_ASSERT := 7
+OP_BACKREF := 8
+OP_LOOK := 9
+OP_MATCH := 10
+OP_MARK := 11
+OP_CHK := 12
+
+## Node kinds: 0 empty, 1 char, 2 any, 3 class, 4 sequence, 5 alternation,
+## 6 group, 7 repeat, 8 assertion, 9 lookaround, 10 backreference.
+struct BtNode
+    kind int
+    a int
+    b int
+    c int
+    kids List[int]
+
+struct BtInst
+    op int
+    a int
+    b int
+
+## A character class: ranges `los[i]..=his[i]`; a negative `los[i]` is a class
+## escape (-1 \d, -2 \D, -3 \w, -4 \W, -5 \s, -6 \S).
+struct BtClass
+    neg bool
+    los List[int]
+    his List[int]
+
+pub struct BtProg
+    code List[BtInst]
+    classes List[BtClass]
+    ncap int
+    nregs int
+    names Map[str, int]
+    icase bool
+    multi bool
+    dotall bool
+    failed str
+
+struct BtParse
+    cs List[int]
+    pos int
+    nodes List[BtNode]
+    classes List[BtClass]
+    code List[BtInst]
+    ncap int
+    total int
+    nregs int
+    names Map[str, int]
+    failed str
+
+## What a successful search found, in code units.
+pub struct BtCaps
+    start int
+    end int
+    groups List[str?]
+    named Map[str, str]
+
+struct BtFrame
+    pc int
+    pos int
+    caps List[int]
+    regs List[int]
+
+struct BtState
+    steps int
+    over bool
+
+# ------------------------------------------------------------ parsing
+
+fn bt_at(p BtParse, k int) int
+    i := p.pos + k
+    if i < p.cs.len()
+        return p.cs[i]
+    -1
+
+fn bt_node(mut p BtParse, kind int, a int, b int, c int, kids List[int]) int
+    p.nodes.push(BtNode(kind: kind, a: a, b: b, c: c, kids: kids))
+    p.nodes.len() - 1
+
+fn bt_fail(mut p BtParse, msg str) int
+    if p.failed == ""
+        p.failed = msg
+    -1
+
+fn bt_hexval(c int) int
+    if c >= 48 and c <= 57
+        return c - 48
+    if c >= 97 and c <= 102
+        return c - 87
+    if c >= 65 and c <= 70
+        return c - 55
+    -1
+
+## Exactly `n` hex digits at the cursor, or -1 (the cursor then stays).
+fn bt_hex(mut p BtParse, n int) int
+    mut v := 0
+    for i in 0..n
+        d := bt_hexval(bt_at(p, i))
+        if d < 0
+            return -1
+        v = v * 16 + d
+    p.pos += n
+    v
+
+## Count the groups and name the named ones, so that `\k<name>` and `\N` can
+## look ahead.
+fn bt_prescan(mut p BtParse)
+    mut i := 0
+    mut in_class := false
+    mut count := 0
+    while i < p.cs.len()
+        c := p.cs[i]
+        if c == 92
+            i += 2
+            continue
+        if in_class
+            if c == 93
+                in_class = false
+            i += 1
+            continue
+        if c == 91
+            in_class = true
+            i += 1
+            continue
+        if c == 40
+            nxt := if i + 1 < p.cs.len() then p.cs[i + 1] else -1
+            if nxt != 63
+                count += 1
+            elif i + 2 < p.cs.len() and p.cs[i + 2] == 60
+                after := if i + 3 < p.cs.len() then p.cs[i + 3] else -1
+                if after != 61 and after != 33
+                    count += 1
+                    mut name := List[int]()
+                    mut j := i + 3
+                    while j < p.cs.len() and p.cs[j] != 62
+                        name.push(p.cs[j])
+                        j += 1
+                    p.names[from_units(name)] = count
+        i += 1
+    p.total = count
+
+## The code a single-character escape means (the backslash is consumed).
+fn bt_esc_code(mut p BtParse) int
+    c := bt_at(p, 0)
+    p.pos += 1
+    if c == 110
+        return 10
+    if c == 114
+        return 13
+    if c == 116
+        return 9
+    if c == 118
+        return 11
+    if c == 102
+        return 12
+    if c == 48
+        return 0
+    if c == 120
+        hx := bt_hex(mut p, 2)
+        if hx >= 0
+            return hx
+        return 120
+    if c == 117
+        if bt_at(p, 0) == 123
+            mut k := 1
+            mut v := 0
+            while bt_hexval(bt_at(p, k)) >= 0
+                v = v * 16 + bt_hexval(bt_at(p, k))
+                k += 1
+            if k > 1 and bt_at(p, k) == 125
+                p.pos += k + 1
+                return v
+            return 117
+        u4 := bt_hex(mut p, 4)
+        if u4 < 0
+            return 117
+        if u4 >= 0xD800 and u4 <= 0xDBFF and bt_at(p, 0) == 92 and bt_at(p, 1) == 117
+            saved := p.pos
+            p.pos += 2
+            lo4 := bt_hex(mut p, 4)
+            if lo4 >= 0xDC00 and lo4 <= 0xDFFF
+                return 0x10000 + (u4 - 0xD800) * 0x400 + (lo4 - 0xDC00)
+            p.pos = saved
+        return u4
+    if c == 99
+        l := bt_at(p, 0)
+        if (l >= 65 and l <= 90) or (l >= 97 and l <= 122)
+            p.pos += 1
+            return l % 32
+        return 99
+    c
+
+## The class escape letter `c` stands for, or 0.
+fn bt_class_escape(c int) int
+    if c == 100
+        return -1
+    if c == 68
+        return -2
+    if c == 119
+        return -3
+    if c == 87
+        return -4
+    if c == 115
+        return -5
+    if c == 83
+        return -6
+    0
+
+fn bt_class_atom(mut p BtParse) int
+    c := bt_at(p, 0)
+    if c != 92
+        p.pos += 1
+        return c
+    p.pos += 1
+    e := bt_at(p, 0)
+    ce := bt_class_escape(e)
+    if ce != 0
+        p.pos += 1
+        return ce
+    if e == 98
+        p.pos += 1
+        return 8
+    if e == 45
+        p.pos += 1
+        return 45
+    bt_esc_code(mut p)
+
+fn bt_class(mut p BtParse) int
+    p.pos += 1
+    mut neg := false
+    if bt_at(p, 0) == 94
+        neg = true
+        p.pos += 1
+    mut los := List[int]()
+    mut his := List[int]()
+    while true
+        c := bt_at(p, 0)
+        if c < 0
+            return bt_fail(mut p, "Unterminated character class")
+        if c == 93
+            p.pos += 1
+            break
+        lo := bt_class_atom(mut p)
+        if lo >= 0 and bt_at(p, 0) == 45 and bt_at(p, 1) >= 0 and bt_at(p, 1) != 93
+            p.pos += 1
+            hi := bt_class_atom(mut p)
+            if hi < 0
+                los.push(lo)
+                his.push(lo)
+                los.push(45)
+                his.push(45)
+                los.push(hi)
+                his.push(hi)
+            else
+                if hi < lo
+                    return bt_fail(mut p, "Range out of order in character class")
+                los.push(lo)
+                his.push(hi)
+        else
+            los.push(lo)
+            his.push(lo)
+    p.classes.push(BtClass(neg: neg, los: los, his: his))
+    bt_node(mut p, 3, p.classes.len() - 1, 0, 0, [])
+
+fn bt_class_node(mut p BtParse, esc int) int
+    p.classes.push(BtClass(neg: false, los: [esc], his: [esc]))
+    bt_node(mut p, 3, p.classes.len() - 1, 0, 0, [])
+
+fn bt_escape(mut p BtParse) int
+    p.pos += 1
+    c := bt_at(p, 0)
+    if c < 0
+        return bt_fail(mut p, "\\ at end of pattern")
+    ce := bt_class_escape(c)
+    if ce != 0
+        p.pos += 1
+        return bt_class_node(mut p, ce)
+    if c == 98
+        p.pos += 1
+        return bt_node(mut p, 8, 2, 0, 0, [])
+    if c == 66
+        p.pos += 1
+        return bt_node(mut p, 8, 3, 0, 0, [])
+    if c >= 49 and c <= 57
+        mut k := 0
+        mut n := 0
+        while bt_at(p, k) >= 48 and bt_at(p, k) <= 57 and n < 100000
+            n = n * 10 + bt_at(p, k) - 48
+            k += 1
+        if n <= p.total
+            p.pos += k
+            return bt_node(mut p, 10, n, 0, 0, [])
+        p.pos += 1
+        return bt_node(mut p, 1, c, 0, 0, [])
+    if c == 107 and bt_at(p, 1) == 60
+        mut name := List[int]()
+        mut j := 2
+        while bt_at(p, j) >= 0 and bt_at(p, j) != 62
+            name.push(bt_at(p, j))
+            j += 1
+        idx := p.names.get(from_units(name)) else return bt_fail(mut p, "Invalid named reference")
+        p.pos += j + 1
+        return bt_node(mut p, 10, idx, 0, 0, [])
+    code := bt_esc_code(mut p)
+    bt_node(mut p, 1, code, 0, 0, [])
+
+fn bt_close(mut p BtParse) int
+    if bt_at(p, 0) != 41
+        return bt_fail(mut p, "Unterminated group")
+    p.pos += 1
+    0
+
+fn bt_group(mut p BtParse) int
+    p.pos += 1
+    if bt_at(p, 0) == 63
+        n1 := bt_at(p, 1)
+        if n1 == 58
+            p.pos += 2
+            inner_nc := bt_alt(mut p)
+            bt_close(mut p)
+            return bt_node(mut p, 6, 0, 0, 0, [inner_nc])
+        if n1 == 61 or n1 == 33
+            p.pos += 2
+            inner_la := bt_alt(mut p)
+            bt_close(mut p)
+            return bt_node(mut p, 9, if n1 == 61 then 0 else 1, 0, 0, [inner_la])
+        if n1 == 60
+            n2 := bt_at(p, 2)
+            if n2 == 61 or n2 == 33
+                p.pos += 3
+                inner_lb := bt_alt(mut p)
+                bt_close(mut p)
+                return bt_node(mut p, 9, if n2 == 61 then 2 else 3, 0, 0, [inner_lb])
+            mut k := 2
+            while bt_at(p, k) >= 0 and bt_at(p, k) != 62
+                k += 1
+            p.pos += k + 1
+            p.ncap += 1
+            idx_named := p.ncap
+            inner_named := bt_alt(mut p)
+            bt_close(mut p)
+            return bt_node(mut p, 6, idx_named, 0, 0, [inner_named])
+        return bt_fail(mut p, "Invalid group")
+    p.ncap += 1
+    idx := p.ncap
+    inner := bt_alt(mut p)
+    bt_close(mut p)
+    bt_node(mut p, 6, idx, 0, 0, [inner])
+
+## `{n}`, `{n,}` or `{n,m}` at the cursor: (1, n, m) with m -1 for no limit
+## and the cursor moved past it, or (0, 0, 0) for a literal `{`.
+fn bt_braces(mut p BtParse) (int, int, int)
+    mut k := 1
+    mut lo := 0
+    mut nd := 0
+    while bt_at(p, k) >= 48 and bt_at(p, k) <= 57
+        lo = lo * 10 + bt_at(p, k) - 48
+        if lo > 100000
+            lo = 100000
+        nd += 1
+        k += 1
+    if nd == 0
+        return (0, 0, 0)
+    mut hi := lo
+    if bt_at(p, k) == 44
+        k += 1
+        if bt_at(p, k) == 125
+            hi = -1
+        else
+            mut nd2 := 0
+            hi = 0
+            while bt_at(p, k) >= 48 and bt_at(p, k) <= 57
+                hi = hi * 10 + bt_at(p, k) - 48
+                if hi > 100000
+                    hi = 100000
+                nd2 += 1
+                k += 1
+            if nd2 == 0
+                return (0, 0, 0)
+    if bt_at(p, k) != 125
+        return (0, 0, 0)
+    p.pos += k + 1
+    (1, lo, hi)
+
+fn bt_term(mut p BtParse) int
+    c := bt_at(p, 0)
+    mut atom := -1
+    if c == 94
+        p.pos += 1
+        return bt_node(mut p, 8, 0, 0, 0, [])
+    if c == 36
+        p.pos += 1
+        return bt_node(mut p, 8, 1, 0, 0, [])
+    if c == 40
+        atom = bt_group(mut p)
+    elif c == 46
+        p.pos += 1
+        atom = bt_node(mut p, 2, 0, 0, 0, [])
+    elif c == 91
+        atom = bt_class(mut p)
+    elif c == 92
+        atom = bt_escape(mut p)
+    elif c == 42 or c == 43 or c == 63
+        return bt_fail(mut p, "Nothing to repeat")
+    else
+        p.pos += 1
+        atom = bt_node(mut p, 1, c, 0, 0, [])
+    if atom < 0 or p.failed != ""
+        return -1
+    q := bt_at(p, 0)
+    mut mn := 0
+    mut mx := -1
+    if q == 42
+        p.pos += 1
+    elif q == 43
+        p.pos += 1
+        mn = 1
+    elif q == 63
+        p.pos += 1
+        mx = 1
+    elif q == 123
+        ok, lo, hi := bt_braces(mut p)
+        if ok == 0
+            return atom
+        mn = lo
+        mx = hi
+        if mx >= 0 and mx < mn
+            return bt_fail(mut p, "numbers out of order in {} quantifier")
+    else
+        return atom
+    mut greedy := 1
+    if bt_at(p, 0) == 63
+        p.pos += 1
+        greedy = 0
+    bt_node(mut p, 7, mn, mx, greedy, [atom])
+
+fn bt_seq(mut p BtParse) int
+    mut items := List[int]()
+    while true
+        c := bt_at(p, 0)
+        if c < 0 or c == 124 or c == 41
+            break
+        t := bt_term(mut p)
+        if t < 0 or p.failed != ""
+            return -1
+        items.push(t)
+    bt_node(mut p, 4, 0, 0, 0, items)
+
+fn bt_alt(mut p BtParse) int
+    first := bt_seq(mut p)
+    mut alts := [first]
+    while bt_at(p, 0) == 124
+        p.pos += 1
+        nxt := bt_seq(mut p)
+        alts.push(nxt)
+    if alts.len() == 1
+        return first
+    bt_node(mut p, 5, 0, 0, 0, alts)
+
+# ------------------------------------------------------------ emitting
+
+fn bt_op(mut p BtParse, op int, a int, b int) int
+    p.code.push(BtInst(op: op, a: a, b: b))
+    p.code.len() - 1
+
+fn bt_emit(mut p BtParse, id int)
+    if p.code.len() > 200000
+        bt_fail(mut p, "Regular expression too large")
+        return
+    n := p.nodes[id]
+    if n.kind == 1
+        bt_op(mut p, OP_CHAR, n.a, 0)
+    elif n.kind == 2
+        bt_op(mut p, OP_ANY, 0, 0)
+    elif n.kind == 3
+        bt_op(mut p, OP_CLASS, n.a, 0)
+    elif n.kind == 4
+        for kid in n.kids
+            bt_emit(mut p, kid)
+    elif n.kind == 5
+        mut jumps := List[int]()
+        for i in 0..n.kids.len()
+            if i < n.kids.len() - 1
+                sp := bt_op(mut p, OP_SPLIT, 0, 0)
+                p.code[sp].a = sp + 1
+                bt_emit(mut p, n.kids[i])
+                jumps.push(bt_op(mut p, OP_JMP, 0, 0))
+                p.code[sp].b = p.code.len()
+            else
+                bt_emit(mut p, n.kids[i])
+        for j in jumps
+            p.code[j].a = p.code.len()
+    elif n.kind == 6
+        if n.a > 0
+            bt_op(mut p, OP_SAVE, 2 * n.a, 0)
+            bt_emit(mut p, n.kids[0])
+            bt_op(mut p, OP_SAVE, 2 * n.a + 1, 0)
+        else
+            bt_emit(mut p, n.kids[0])
+    elif n.kind == 7
+        for _ in 0..n.a
+            bt_emit(mut p, n.kids[0])
+        if n.b < 0
+            reg := p.nregs
+            p.nregs += 1
+            lp := bt_op(mut p, OP_SPLIT, 0, 0)
+            bt_op(mut p, OP_MARK, reg, 0)
+            bt_emit(mut p, n.kids[0])
+            bt_op(mut p, OP_CHK, reg, 0)
+            bt_op(mut p, OP_JMP, lp, 0)
+            lend := p.code.len()
+            if n.c == 1
+                p.code[lp].a = lp + 1
+                p.code[lp].b = lend
+            else
+                p.code[lp].a = lend
+                p.code[lp].b = lp + 1
+        else
+            mut splits := List[int]()
+            for _ in 0..(n.b - n.a)
+                splits.push(bt_op(mut p, OP_SPLIT, 0, 0))
+                bt_emit(mut p, n.kids[0])
+            oend := p.code.len()
+            for sp2 in splits
+                if n.c == 1
+                    p.code[sp2].a = sp2 + 1
+                    p.code[sp2].b = oend
+                else
+                    p.code[sp2].a = oend
+                    p.code[sp2].b = sp2 + 1
+    elif n.kind == 8
+        bt_op(mut p, OP_ASSERT, n.a, 0)
+    elif n.kind == 9
+        lk := bt_op(mut p, OP_LOOK, n.a, 0)
+        bt_emit(mut p, n.kids[0])
+        bt_op(mut p, OP_MATCH, 0, 0)
+        p.code[lk].b = p.code.len() - lk - 1
+    elif n.kind == 10
+        bt_op(mut p, OP_BACKREF, n.a, 0)
+
+## Parse and compile `pattern` with JavaScript `flags`. `failed` is set when
+## the pattern is not valid.
+pub fn bt_compile(pattern str, flags str) BtProg
+    mut p := BtParse(
+        cs: units(pattern),
+        pos: 0,
+        nodes: [],
+        classes: [],
+        code: [],
+        ncap: 0,
+        total: 0,
+        nregs: 0,
+        names: {},
+        failed: "",
+    )
+    bt_prescan(mut p)
+    root := bt_alt(mut p)
+    if p.failed == "" and p.pos < p.cs.len()
+        bt_fail(mut p, "Unmatched ')'")
+    if p.failed == ""
+        bt_emit(mut p, root)
+        bt_op(mut p, OP_MATCH, 0, 0)
+    BtProg(
+        code: p.code,
+        classes: p.classes,
+        ncap: p.ncap + 1,
+        nregs: p.nregs,
+        names: p.names,
+        icase: flags.contains('i'),
+        multi: flags.contains('m'),
+        dotall: flags.contains('s'),
+        failed: p.failed,
+    )
+
+# ------------------------------------------------------------ matching
+
+fn bt_fold(c int) int
+    if c >= 65 and c <= 90
+        return c + 32
+    if c < 128 or (c >= 0xD800 and c <= 0xDFFF)
+        return c
+    ch := char.from_code(c) else return c
+    low := "{ch}".to_lower().chars()
+    if low.len() == 1
+        return low[0].code()
+    c
+
+fn bt_word(c int) bool
+    (c >= 48 and c <= 57) or (c >= 65 and c <= 90) or (c >= 97 and c <= 122) or c == 95
+
+fn bt_space(c int) bool
+    (c >= 9 and c <= 13)
+        or c == 32
+        or c == 160
+        or c == 0x1680
+        or (c >= 0x2000 and c <= 0x200A)
+        or c == 0x2028
+        or c == 0x2029
+        or c == 0x202F
+        or c == 0x205F
+        or c == 0x3000
+        or c == 0xFEFF
+
+fn bt_newline(c int) bool
+    c == 10 or c == 13 or c == 0x2028 or c == 0x2029
+
+fn bt_class_has(cl BtClass, c int) bool
+    for i in 0..cl.los.len()
+        lo := cl.los[i]
+        if lo >= 0
+            if c >= lo and c <= cl.his[i]
+                return true
+        elif lo == -1
+            if c >= 48 and c <= 57
+                return true
+        elif lo == -2
+            if c < 48 or c > 57
+                return true
+        elif lo == -3
+            if bt_word(c)
+                return true
+        elif lo == -4
+            if not bt_word(c)
+                return true
+        elif lo == -5
+            if bt_space(c)
+                return true
+        elif lo == -6
+            if not bt_space(c)
+                return true
+    false
+
+fn bt_class_match(prog BtProg, ci int, c int) bool
+    cl := prog.classes[ci]
+    mut hit := bt_class_has(cl, c)
+    if not hit and prog.icase
+        hit = bt_class_has(cl, bt_fold(c))
+        if not hit and c >= 97 and c <= 122
+            hit = bt_class_has(cl, c - 32)
+    if cl.neg
+        return not hit
+    hit
+
+fn bt_same(prog BtProg, a int, b int) bool
+    a == b or (prog.icase and bt_fold(a) == bt_fold(b))
+
+fn bt_assert(prog BtProg, s List[int], pos int, kind int) bool
+    if kind == 0
+        return pos == 0 or (prog.multi and bt_newline(s[pos - 1]))
+    if kind == 1
+        return pos == s.len() or (prog.multi and bt_newline(s[pos]))
+    before := pos > 0 and bt_word(s[pos - 1])
+    after := pos < s.len() and bt_word(s[pos])
+    if kind == 2
+        return before != after
+    before == after
+
+## Run the program from `pc0` at `pos0`. With `target` >= 0 the match must
+## end there (lookbehind). Gives the capture slots, or none.
+fn bt_run(
+    prog BtProg,
+    s List[int],
+    pc0 int,
+    pos0 int,
+    target int,
+    caps0 List[int],
+    mut st BtState,
+) List[int]?
+    mut stack := List[BtFrame]()
+    mut pc := pc0
+    mut pos := pos0
+    mut caps := caps0
+    mut regs := List[int]()
+    for _ in 0..prog.nregs
+        regs.push(-1)
+    while true
+        st.steps += 1
+        if st.steps > 30000000
+            st.over = true
+            return none
+        mut ok := true
+        inst := prog.code[pc]
+        op := inst.op
+        if op == OP_MATCH
+            if target < 0 or pos == target
+                mut done := caps
+                done[1] = pos
+                return done
+            ok = false
+        elif op == OP_CHAR
+            if pos < s.len() and bt_same(prog, s[pos], inst.a)
+                pos += 1
+                pc += 1
+            else
+                ok = false
+        elif op == OP_ANY
+            if pos < s.len() and (prog.dotall or not bt_newline(s[pos]))
+                pos += 1
+                pc += 1
+            else
+                ok = false
+        elif op == OP_CLASS
+            if pos < s.len() and bt_class_match(prog, inst.a, s[pos])
+                pos += 1
+                pc += 1
+            else
+                ok = false
+        elif op == OP_SPLIT
+            stack.push(BtFrame(pc: inst.b, pos: pos, caps: caps, regs: regs))
+            pc = inst.a
+        elif op == OP_JMP
+            pc = inst.a
+        elif op == OP_SAVE
+            caps[inst.a] = pos
+            pc += 1
+        elif op == OP_ASSERT
+            if bt_assert(prog, s, pos, inst.a)
+                pc += 1
+            else
+                ok = false
+        elif op == OP_BACKREF
+            gs := caps[2 * inst.a]
+            ge := caps[2 * inst.a + 1]
+            if gs < 0 or ge < 0
+                pc += 1
+            else
+                glen := ge - gs
+                mut same := pos + glen <= s.len()
+                if same
+                    for k in 0..glen
+                        if not bt_same(prog, s[gs + k], s[pos + k])
+                            same = false
+                            break
+                if same
+                    pos += glen
+                    pc += 1
+                else
+                    ok = false
+        elif op == OP_LOOK
+            after_sub := pc + 1 + inst.b
+            if inst.a <= 1
+                ra := bt_run(prog, s, pc + 1, pos, -1, caps, mut st)
+                if st.over
+                    return none
+                if inst.a == 0
+                    if got := ra
+                        caps = got
+                        pc = after_sub
+                    else
+                        ok = false
+                else
+                    if ra == none
+                        pc = after_sub
+                    else
+                        ok = false
+            else
+                mut found := false
+                mut start := pos
+                while start >= 0 and not found
+                    rb := bt_run(prog, s, pc + 1, start, pos, caps, mut st)
+                    if st.over
+                        return none
+                    if got2 := rb
+                        found = true
+                        if inst.a == 2
+                            caps = got2
+                    start -= 1
+                if (inst.a == 2) == found
+                    pc = after_sub
+                else
+                    ok = false
+        elif op == OP_MARK
+            regs[inst.a] = pos
+            pc += 1
+        elif op == OP_CHK
+            if regs[inst.a] == pos
+                ok = false
+            else
+                pc += 1
+        else
+            ok = false
+        if not ok
+            fr := stack.pop() else return none
+            pc = fr.pc
+            pos = fr.pos
+            caps = fr.caps
+            regs = fr.regs
+    none
+
+## The first match at or after code unit `from`, with offsets in code units.
+pub fn bt_find(prog BtProg, text str, from int) BtCaps?
+    s := units(text)
+    mut st := BtState(steps: 0, over: false)
+    mut start := from
+    while start <= s.len()
+        mut caps0 := List[int]()
+        for _ in 0..(2 * prog.ncap)
+            caps0.push(-1)
+        got := bt_run(prog, s, 0, start, -1, caps0, mut st)
+        if st.over
+            return none
+        if res := got
+            mut groups := List[str?]()
+            for g in 1..prog.ncap
+                if res[2 * g] >= 0 and res[2 * g + 1] >= res[2 * g]
+                    groups.push(from_units(s[res[2 * g]..res[2 * g + 1]]))
+                else
+                    groups.push(none)
+            mut named := Map[str, str]()
+            for name, idx in prog.names
+                if idx >= 1 and idx < prog.ncap
+                    if hit := groups[idx - 1]
+                        named[name] = hit
+            return BtCaps(start: start, end: res[1], groups: groups, named: named)
+        start += 1
+    none

@@ -93,6 +93,11 @@ pub struct ModState
     failed Set[str]
     seq int
     inline_seq int
+    ## The page's import map (HTML §8.1.5): specifier prefix -> address, and
+    ## per-scope tables keyed by the scope's URL prefix.
+    imap Map[str, str]
+    iscope_keys List[str]
+    iscopes Map[str, Map[str, str]]
 
 pub fn new_mod_state() ref ModState
     ref ModState(
@@ -103,6 +108,9 @@ pub fn new_mod_state() ref ModState
         failed: Set[str](),
         seq: 0,
         inline_seq: 0,
+        imap: {},
+        iscope_keys: [],
+        iscopes: {},
     )
 
 ## The URL a module specifier means from the module at `base`, or "" for a
@@ -125,6 +133,79 @@ pub fn module_dep_urls(source str, base str) List[str]
         if u != "" and not out.contains(u)
             out.push(u)
     out
+
+## A specifier map's entries from the JSON object `o`, addresses resolved
+## against `base` (HTML §8.1.5.1 "sort and normalize a specifier map").
+fn Vm.import_table(mut self, o Value, base str) Map[str, str]
+    mut out := Map[str, str]()
+    jo := obj_of(o) else return out
+    for k in own_keys(jo)
+        v := get(o, k) else err
+            continue
+        addr := str_of(v) else continue
+        if k == ""
+            continue
+        out[k] = if addr.contains("://") or addr.starts_with("data:") or addr.starts_with("blob:") then addr else resolve_against(base, addr)
+    out
+
+## A page's `<script type=importmap>` (HTML §8.1.5): parsed once, merged into
+## the page's map. Text that is not a JSON object is ignored.
+pub fn Vm.add_import_map(mut self, source str)
+    root := json_parse(source, Undef) else err
+        return
+    if not is_obj(root)
+        return
+    base := location_href.split("#")[0]
+    ent := get(root, "imports") else err
+        return
+    for k, a in import_table(ent, base)
+        modules.imap[k] = a
+    sc := get(root, "scopes") else err
+        return
+    if sjo := obj_of(sc)
+        for k in own_keys(sjo)
+            sv := get(sc, k) else err
+                continue
+            prefix := resolve_against(base, k)
+            t := import_table(sv, base)
+            if not modules.iscopes.contains(prefix)
+                modules.iscope_keys.push(prefix)
+                modules.iscopes[prefix] = t
+            else
+                mut cur := modules.iscopes.get(prefix) else t
+                for k2, a2 in t
+                    cur[k2] = a2
+                modules.iscopes[prefix] = cur
+
+## `spec` looked up in one specifier map: an exact key, or the longest key
+## ending in "/" that prefixes it. "" when nothing matches.
+fn map_lookup(t Map[str, str], spec str) str
+    if hit := t.get(spec)
+        return hit
+    mut best := ""
+    for k, _ in t
+        if k.ends_with("/") and spec.starts_with(k) and k.len() > best.len()
+            best = k
+    if best == ""
+        return ""
+    rest := spec.strip_prefix(best) else ""
+    "{t.get(best) else ""}{rest}"
+
+## The URL a module specifier means from the module at `base`, through the
+## page's import map (HTML §8.1.3.3 "resolve a module specifier").
+pub fn Vm.module_specifier(self, spec str, base str) str
+    plain := specifier_url(spec, base)
+    key := if plain != "" then plain else spec
+    for pre in modules.iscope_keys.sorted(by: |p| -p.len())
+        if base == pre or (pre.ends_with("/") and base.starts_with(pre))
+            t := modules.iscopes.get(pre) else continue
+            hit := map_lookup(t, key)
+            if hit != ""
+                return hit
+    hit := map_lookup(modules.imap, key)
+    if hit != ""
+        return hit
+    plain
 
 fn mod_key(url str, kind str) str
     if kind == "" then url else "{kind}:{url}"
@@ -201,7 +282,7 @@ fn Vm.add_req(mut self, m ref ModRec, spec str, attrs List[syntax.ImportAttr]) i
     for i in 0..m.reqs.len()
         if m.reqs[i].spec == spec and m.reqs[i].kind == kind
             return i
-    u := specifier_url(spec, m.url)
+    u := module_specifier(spec, m.url)
     m.reqs.push(Req(spec: spec, url: u, key: mod_key(u, kind), kind: kind))
     m.reqs.len() - 1
 
@@ -709,7 +790,7 @@ pub fn Vm.import_expr(mut self, arg syntax.Expr?, opts syntax.Expr?, env ref Env
     mut base := location_href
     if is_declared("import.url", env)
         base = str_of(lookup("import.url", env)?) else location_href
-    url := specifier_url(spec, base)
+    url := module_specifier(spec, base)
     if url == ""
         reject_promise(promise, make_error(
             "TypeError",
@@ -752,7 +833,7 @@ pub fn Vm.module_native(mut self, m str, this_val Value, args List[Value]) Value
         "resolve" =>
             base := str_of(this_val) else ""
             spec := to_string(arg_at(args, 0))?
-            u := specifier_url(spec, base)
+            u := module_specifier(spec, base)
             if u == ""
                 return type_error("Failed to resolve module specifier \"{spec}\". Relative references must start with either \"/\", \"./\", or \"../\".")
             Str(u)
