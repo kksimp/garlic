@@ -7,9 +7,33 @@
 ## same code (§21.4.4.38-41).
 
 LOCALE := "en-US"
-INTL_KINDS := ["DateTimeFormat", "NumberFormat", "Collator", "PluralRules", "RelativeTimeFormat", "ListFormat", "DisplayNames"]
+
+INTL_KINDS := [
+    "DateTimeFormat",
+    "NumberFormat",
+    "Collator",
+    "PluralRules",
+    "RelativeTimeFormat",
+    "ListFormat",
+    "DisplayNames",
+]
+
 WEEKDAYS := ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-MONTH_NAMES := ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+
+MONTH_NAMES := [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+]
 
 ## What a date format shows. Each field is "" for absent, else the option's
 ## value ("numeric", "2-digit", "long", "short", "narrow").
@@ -126,7 +150,8 @@ fn date_part(p DateParts, f DateFmt) str
         if f.day != ""
             out = "{out} {num_field(p.date, f.day)}"
         if f.year != ""
-            out = if f.day != "" then "{out}, {num_field(p.year, f.year)}" else "{out} {num_field(p.year, f.year)}"
+            out = if f.day
+                != "" then "{out}, {num_field(p.year, f.year)}" else "{out} {num_field(p.year, f.year)}"
     else
         mut parts := List[str]()
         if f.month != ""
@@ -186,7 +211,10 @@ pub fn format_date(t float, f DateFmt) str
         return tm
     if tm == ""
         return d
-    textual := f.month == "long" or f.month == "short" or f.date_style == "full" or f.date_style == "long"
+    textual := f.month == "long"
+        or f.month == "short"
+        or f.date_style == "full"
+        or f.date_style == "long"
     if textual then "{d} at {tm}" else "{d}, {tm}"
 
 # ------------------------------------------------------------- numbers
@@ -232,7 +260,13 @@ fn Vm.num_format_options(mut self, options Value) NumFmt ! Thrown
         g := get(options, "useGrouping")?
         if g != Undef
             grouping = truthy(g) or (str_of(g) else "") != ""
-    NumFmt(style: style, currency: currency, min_frac: min_frac, max_frac: max_frac, grouping: grouping)
+    NumFmt(
+        style: style,
+        currency: currency,
+        min_frac: min_frac,
+        max_frac: max_frac,
+        grouping: grouping,
+    )
 
 ## Digits with en-US grouping.
 fn grouped(digits str, on bool) str
@@ -383,7 +417,10 @@ fn Vm.intl_new(mut self, kind str, args List[Value]) Value ! Thrown
             resolved.props["trailingZeroDisplay"] = data(Value.Str("auto"))
         "Collator" =>
             resolved.props["usage"] = data(Value.Str(str_or(str_option(options, "usage")?, "sort")))
-            resolved.props["sensitivity"] = data(Value.Str(str_or(str_option(options, "sensitivity")?, "variant")))
+            resolved.props["sensitivity"] = data(Value.Str(str_or(
+                str_option(options, "sensitivity")?,
+                "variant",
+            )))
             resolved.props["ignorePunctuation"] = data(Value.Bool(false))
             resolved.props["collation"] = data(Value.Str("default"))
             mut numeric := false
@@ -392,7 +429,10 @@ fn Vm.intl_new(mut self, kind str, args List[Value]) Value ! Thrown
             resolved.props["numeric"] = data(Value.Bool(numeric))
             resolved.props["caseFirst"] = data(Value.Str("false"))
         "PluralRules" =>
-            resolved.props["type"] = data(Value.Str(str_or(str_option(options, "type")?, "cardinal")))
+            resolved.props["type"] = data(Value.Str(str_or(
+                str_option(options, "type")?,
+                "cardinal",
+            )))
             resolved.props["minimumIntegerDigits"] = data(Value.Num(1.0))
             resolved.props["minimumFractionDigits"] = data(Value.Num(0.0))
             resolved.props["maximumFractionDigits"] = data(Value.Num(3.0))
@@ -400,10 +440,16 @@ fn Vm.intl_new(mut self, kind str, args List[Value]) Value ! Thrown
             resolved.props["roundingMode"] = data(Value.Str("halfExpand"))
         "RelativeTimeFormat" =>
             resolved.props["style"] = data(Value.Str(str_or(str_option(options, "style")?, "long")))
-            resolved.props["numeric"] = data(Value.Str(str_or(str_option(options, "numeric")?, "always")))
+            resolved.props["numeric"] = data(Value.Str(str_or(
+                str_option(options, "numeric")?,
+                "always",
+            )))
             resolved.props["numberingSystem"] = data(Value.Str("latn"))
         "ListFormat" =>
-            resolved.props["type"] = data(Value.Str(str_or(str_option(options, "type")?, "conjunction")))
+            resolved.props["type"] = data(Value.Str(str_or(
+                str_option(options, "type")?,
+                "conjunction",
+            )))
             resolved.props["style"] = data(Value.Str(str_or(str_option(options, "style")?, "long")))
         _ =>
             kind_opt := str_option(options, "type")?
@@ -411,7 +457,10 @@ fn Vm.intl_new(mut self, kind str, args List[Value]) Value ! Thrown
                 return type_error("Required option 'type' is missing")
             resolved.props["type"] = data(Value.Str(kind_opt))
             resolved.props["style"] = data(Value.Str(str_or(str_option(options, "style")?, "long")))
-            resolved.props["fallback"] = data(Value.Str(str_or(str_option(options, "fallback")?, "code")))
+            resolved.props["fallback"] = data(Value.Str(str_or(
+                str_option(options, "fallback")?,
+                "code",
+            )))
     o.props["{PRIVATE}resolved"] = hidden(Value.Obj(resolved))
     Value.Obj(o)
 
@@ -528,7 +577,11 @@ fn relative_text(v float, unit0 str, style str, numeric_auto bool) str?
             "second" => "now"
             "day" => "today"
             _ => "this {unit}"
-    if numeric_auto and unit != "second" and unit != "minute" and unit != "hour" and (v == 1.0 or v == -1.0)
+    if numeric_auto
+        and unit != "second"
+        and unit != "minute"
+        and unit != "hour"
+        and (v == 1.0 or v == -1.0)
         if unit == "day"
             return if v > 0.0 then "tomorrow" else "yesterday"
         return if v > 0.0 then "next {unit}" else "last {unit}"
@@ -568,7 +621,13 @@ fn list_text(items List[str], kind str, style str) str
     "{head}, {word} {items[n - 1]}"
 
 ## The Intl natives: "new.Kind", "Kind.method", "Intl.fn", "static.fn".
-pub fn Vm.intl_native(mut self, m str, this_val Value, args List[Value], new_target Value) Value ! Thrown
+pub fn Vm.intl_native(
+    mut self,
+    m str,
+    this_val Value,
+    args List[Value],
+    new_target Value,
+) Value ! Thrown
     if made := m.strip_prefix("new.")
         return intl_new(made, args)
     a0 := arg_at(args, 0)
@@ -590,8 +649,19 @@ pub fn Vm.intl_native(mut self, m str, this_val Value, args List[Value], new_tar
             "calendar" => array([Value.Str("gregory")])
             "numberingSystem" => array([Value.Str("latn")])
             "timeZone" => array([Value.Str("UTC")])
-            "currency" => array([Value.Str("EUR"), Value.Str("GBP"), Value.Str("JPY"), Value.Str("USD")])
-            "unit" => array([Value.Str("byte"), Value.Str("day"), Value.Str("hour"), Value.Str("minute"), Value.Str("second")])
+            "currency" => array([
+                Value.Str("EUR"),
+                Value.Str("GBP"),
+                Value.Str("JPY"),
+                Value.Str("USD"),
+            ])
+            "unit" => array([
+                Value.Str("byte"),
+                Value.Str("day"),
+                Value.Str("hour"),
+                Value.Str("minute"),
+                Value.Str("second"),
+            ])
             "collation" => array([Value.Str("default")])
             _ => return range_error("Invalid key : {key}")
     dot := m.find(".") else return type_error("Intl.{m} is not supported yet")
@@ -644,7 +714,12 @@ pub fn Vm.intl_native(mut self, m str, this_val Value, args List[Value], new_tar
                 return range_error("Value need to be finite number for Intl.RelativeTimeFormat.prototype.format()")
             unit := to_string(arg_at(args, 1))?
             auto := resolved_str(r, "numeric") == "auto"
-            text := relative_text(v, unit, resolved_str(r, "style"), auto) else return range_error("Invalid unit argument for format() '{unit}'")
+            text := relative_text(
+                v,
+                unit,
+                resolved_str(r, "style"),
+                auto,
+            ) else return range_error("Invalid unit argument for format() '{unit}'")
             if method == "formatToParts" then parts_of_text(text) else Value.Str(text)
         "ListFormat" =>
             mut items := List[str]()

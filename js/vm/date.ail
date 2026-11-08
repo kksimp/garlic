@@ -290,7 +290,9 @@ fn Vm.date_method(mut self, m str, this_val Value, args List[Value]) Value ! Thr
         if not is_finite(t)
             return Value.Str("Invalid Date")
         full := date_text(t)
-        return Value.Str(if m == "toDateString" then full.slice(0, 15) else full.slice(16, full.chars().len()))
+        return Value.Str(
+            if m == "toDateString" then full.slice(0, 15) else full.slice(16, full.chars().len()),
+        )
     if m == "toLocaleString" or m == "toLocaleDateString" or m == "toLocaleTimeString"
         if not is_finite(t)
             return Value.Str("Invalid Date")

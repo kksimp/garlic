@@ -971,7 +971,9 @@ pub fn Vm.dom_native(
             return type_error("Illegal invocation")
         if p == "refresh"
             return Undef
-        key := if p == "item" then "{to_number(arg_at(args, 0))?.to_int()}" else to_string(arg_at(args, 0))?
+        key := if p == "item" then "{to_number(arg_at(args, 0))?.to_int()}" else to_string(
+            arg_at(args, 0),
+        )?
         if found := o.props.get(key)
             return found.value
         return Null

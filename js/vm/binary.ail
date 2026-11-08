@@ -43,7 +43,10 @@ pub fn typed_names() List[str]
 ## A typed array object: a class named `...Array` other than `Array` and
 ## the DOM's PluginArray and MimeTypeArray.
 pub fn is_view(o ref JsObject) bool
-    o.class.ends_with("Array") and o.class != "Array" and o.class != "PluginArray" and o.class != "MimeTypeArray"
+    o.class.ends_with("Array")
+        and o.class != "Array"
+        and o.class != "PluginArray"
+        and o.class != "MimeTypeArray"
 
 fn round_even(f float) int
     r := f.floor()

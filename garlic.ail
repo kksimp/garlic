@@ -2960,7 +2960,8 @@ fn Garlic.menu_pick(mut self, r int)
         "Reload" => start_load("reload")
         "Show node ids" | "Hide node ids" => g.ids = not g.ids
         "Light theme" | "Dark theme" => light = not light
-        "About Garlic" => g.b.message = if build == "" then "Garlic (not run from a checkout)" else build
+        "About Garlic" => g.b.message = if build
+            == "" then "Garlic (not run from a checkout)" else build
         _ => menu_tab = -1
 
 ## A click on the chrome canvas.
