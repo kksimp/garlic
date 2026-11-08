@@ -575,6 +575,7 @@ fn load_doc(
     mut cj jar.Jar,
     mut cache Map[str, Cached],
     mut socks Map[int, ws.Sock],
+    zone str,
 ) Loaded
     mut at := target
     mut m := method
@@ -1084,7 +1085,7 @@ fn Browser.reload(mut self)
 
 fn Browser.load(mut self, target str, method str, body str)
     close_sockets()
-    loaded := load_doc(target, method, body, refer, reloading, mut cj, mut cache, mut socks)
+    loaded := load_doc(target, method, body, refer, reloading, mut cj, mut cache, mut socks, zone)
     reloading = false
     refer = ""
     url = loaded.url
