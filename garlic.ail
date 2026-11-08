@@ -3134,7 +3134,10 @@ impl app.App for Garlic
                 if ev.id != "chrome"
                     g.scroll(ev.dy)
             "down" =>
-                if ev.id != "chrome" and ev.text == "left" and g.pixel and menu_tab == -1
+                if ev.id != "chrome"
+                    and ev.text == "left"
+                    and g.pixel
+                    and menu_tab == -1
                     and (not finding or chrome.find_hit(ev.x, ev.y, g.area_w) == "")
                     and not omni.editing
                     g.press(ev.x, ev.y)
