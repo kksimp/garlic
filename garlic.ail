@@ -1034,6 +1034,12 @@ fn Browser.pump(mut self)
     if not js_went(out)
         relayout()
 
+## Gives the page's scripts the layout's element boxes, so they can measure.
+fn Browser.measure(mut self, boxes List[gfx.Box], scroll float)
+    mut s := js else return
+    s.measure([[b.node.to_float(), b.x, b.y, b.w, b.h] for b in boxes], scroll)
+    js = s
+
 ## Remembers what the page logged and requested, for the page model.
 fn Browser.record(mut self, out jsdom.Outcome)
     console_log.extend(out.console)
@@ -2071,6 +2077,7 @@ fn Gui.refresh(mut self)
             top = 0.0
             scene_url = b.url
     top = top.max(0.0).min((scene.height - area_h).max(0.0))
+    b.measure(scene.boxes, top)
     mark_fresh()
 
 ## Marks as fresh the decoded pictures the view will draw that the host
@@ -4768,6 +4775,14 @@ fn pixels(src str, width float) gfx.Scene
     )
     assert_eq(pixel_text(s.ops).len(), 2)
     assert(s.height >= 50.0)
+
+@test fn the_pixel_layout_records_a_box_for_every_block_element()
+    s := pixels("<p>Hi</p><div style=\"height: 40px\"></div>", 400.0)
+    tall := [b for b in s.boxes if b.h == 40.0]
+    assert_eq(tall.len(), 1)
+    assert_eq(tall[0].w, 384.0)
+    assert(tall[0].y > 20.0)
+    assert(s.boxes.len() >= 3)
 
 @test fn the_pixel_layout_stacks_blocks_with_margins_and_wraps_words()
     s := pixels("<h1>Hi</h1><p>one two</p>", 400.0)

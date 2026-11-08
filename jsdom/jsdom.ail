@@ -186,6 +186,13 @@ pub fn Session.idle(mut self, mut d html.Doc, budget_ms float) Outcome
         machine.clock_ms = until
     collect(mut d)
 
+## Hands the page's scripts the browser's layout: each box is a node id
+## and its x, y, width and height in page pixels; `scroll` is how far the
+## page is scrolled. `getBoundingClientRect` and `offsetWidth` answer from
+## them.
+pub fn Session.measure(mut self, boxes List[List[float]], scroll float)
+    machine.measure(boxes, scroll)
+
 ## How many timers the page still has waiting.
 pub fn Session.pending(self) int
     machine.timers.len()

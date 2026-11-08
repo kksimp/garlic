@@ -40,6 +40,8 @@ pub fn new_vm() Vm
         busy: Set[int](),
         clock_ms: 1767225600000.0,
         zone: "UTC",
+        rects: {},
+        scroll_y: 0.0,
         dom: [],
         mutations: [],
         recording: false,

@@ -65,6 +65,46 @@ pub struct Timer
     ## How deeply timers started by timers nest (HTML §8.6 step 12).
     pub level int
 
+## The browser's layout boxes (node, x, y, w, h) and scroll position, for
+## `getBoundingClientRect` and friends.
+pub fn Vm.measure(mut self, boxes List[List[float]], scroll float)
+    rects = {}
+    for b in boxes
+        rects[b[0].to_int()] = [b[1], b[2], b[3], b[4]]
+    scroll_y = scroll
+
+## A DOMRect of `id`'s border box, relative to the viewport.
+fn Vm.rect_value(mut self, id int) Value
+    b := rect_of(id)
+    r := plain()
+    left := b[0]
+    top := b[1] - scroll_y
+    for pair in [
+        ("x", left),
+        ("y", top),
+        ("top", top),
+        ("left", left),
+        ("right", left + b[2]),
+        ("bottom", top + b[3]),
+        ("width", b[2]),
+        ("height", b[3]),
+    ]
+        r.props[pair.0] = data(Num(pair.1))
+    Value.Obj(r)
+
+## The border box of `id`: the layout's, or, for an element the layout
+## gave no box (inline ones), an estimate from its text at 16px so that
+## measuring scripts see a size that grows with the text.
+fn Vm.rect_of(self, id int) List[float]
+    if r := rects.get(id)
+        return r
+    if id < 0 or id >= dom.len() or dom[id].kind != 1
+        return [0.0, 0.0, 0.0, 0.0]
+    text := text_content(id)
+    if text.trim() == ""
+        return [0.0, 0.0, 0.0, 0.0]
+    [0.0, 0.0, (text.chars().len().to_float() * 8.0).round(), 18.0]
+
 ## A new empty document: node 0.
 pub fn Vm.dom_reset(mut self)
     dom = [DomNode(kind: 9, tag: "#document", attrs: [], text: "", parent: -1, children: [])]
@@ -1287,7 +1327,8 @@ fn Vm.dom_get(mut self, p str, this_val Value) Value ! Thrown
                 if attr_of(opts[i], "selected") != none
                     return Value.Num(i.to_float())
             Value.Num(if opts.len() > 0 then 0.0 else -1.0)
-        "offsetWidth" | "offsetHeight" | "clientWidth" | "clientHeight" => Value.Num(0.0)
+        "offsetWidth" | "clientWidth" => Value.Num(rect_of(id)[2].round())
+        "offsetHeight" | "clientHeight" => Value.Num(rect_of(id)[3].round())
         "documentElement" => node_value(first_element(n.children, false))
         "head" | "body" =>
             for e in elements_under(0)
@@ -1613,12 +1654,8 @@ fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
             Undef
         "select" | "scrollIntoView" | "reset" | "animate" | "attachShadow" => Undef
         "checkValidity" => Value.Bool(true)
-        "getBoundingClientRect" =>
-            r := plain()
-            for k in ["x", "y", "top", "left", "right", "bottom", "width", "height"]
-                r.props[k] = data(Num(0.0))
-            Value.Obj(r)
-        "getClientRects" => array([])
+        "getBoundingClientRect" => rect_value(id)
+        "getClientRects" => if rect_of(id)[2] == 0.0 then array([]) else array([rect_value(id)])
         "insertAdjacentHTML" | "insertAdjacentText" | "insertAdjacentElement" =>
             pos := to_string(a0)?.to_lower()
             holder := dom_create("#fragment", 1, "")

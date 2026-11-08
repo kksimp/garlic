@@ -391,6 +391,13 @@ it comes later for speed, and these frames will move onto it).
   are no devices, `getUserMedia` rejects with NotFoundError, peer
   connections gather no candidates and never connect, and audio renders
   silence. A host can supply `globalThis.__mediaHost`.
+- Measurement: `getBoundingClientRect`, `getClientRects`, `offsetWidth`,
+  `offsetHeight`, `clientWidth` and `clientHeight` answer from the border
+  boxes of the app's last pixel layout (block-level elements only, handed
+  over after each layout, so a box read right after an insertion is the
+  one from before it). An inline element without a box, such as a span
+  used to measure a font, gets 8px per character by 18px; headless runs
+  and `jsdom.run` have no layout and see only that estimate.
 - Platform APIs (platform.ail): `navigator.clipboard.writeText` and
   `write` go to the system clipboard; `readText` and `read` are refused
   (NotAllowedError), as Chrome does without the permission.
