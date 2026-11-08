@@ -697,7 +697,90 @@ pub fn status_ops(th Theme, msg str, h float, bg int, tw fn(str, float) float) L
     ops.push(txt(8.0, h - 18.0, msg, th.text, false, 12.0))
     ops
 
+FIND_W := 360.0
+FIND_H := 40.0
+FIND_BTN := 32.0
+
+## The find bar's left edge on a page `width` wide: it hangs from the
+## toolbar at the right, as Chromium's does.
+fn find_x(width float) float
+    (width - FIND_W - 16.0).max(0.0)
+
+## The find bar: a card under the toolbar at the right with the text typed
+## (`o`), the match shown and the count (`k` of `n`, Chromium's `1/5`, or
+## `0/0`), then previous, next and close.
+pub fn find_ops(th Theme, o Omni, k int, n int, width float, bg int, tw fn(str, float) float) List[app.Op]
+    mut ops := List[app.Op]()
+    x := find_x(width)
+    ops.push(app.Op.Shade(x: x + 1.0, y: 2.0, w: FIND_W, h: FIND_H, color: 0x000000, alpha: 0.25))
+    round(mut ops, x, 0.0 - 8.0, FIND_W, FIND_H + 8.0, 8.0, th.toolbar, bg)
+    ops.push(app.draw_rect(x, 0.0, FIND_W, 1.0, mix(th.toolbar, th.sep, 0.5)))
+    tx := x + 16.0
+    ty := 12.0
+    count := if o.text == "" then "" else "{k + 1}/{n}"
+    sep_x := x + FIND_W - 3.0 * FIND_BTN - 12.0
+    cw := tw(count, 12.0)
+    ops.push(app.Op.Clip(x: tx, y: 0.0, w: (sep_x - cw - 24.0 - tx).max(0.0), h: FIND_H))
+    if o.text == ""
+        ops.push(txt(tx, ty, "Find in page", th.dim, false, 14.0))
+    else
+        if o.all and o.editing
+            ops.push(app.Op.Shade(
+                x: tx - 1.0,
+                y: 6.0,
+                w: tw(o.text, 14.0) + 2.0,
+                h: FIND_H - 12.0,
+                color: th.accent,
+                alpha: 0.35,
+            ))
+        ops.push(txt(tx, ty, o.text, th.text, false, 14.0))
+    if o.editing and not o.all
+        cx := tx + tw(o.text.slice(0, o.cursor), 14.0)
+        ops.push(app.draw_rect(cx, 8.0, 1.5, FIND_H - 16.0, th.text))
+    ops.push(app.Op.Unclip)
+    if count != ""
+        ops.push(txt(sep_x - cw - 12.0, ty + 1.0, count, if n == 0 then 0xd93025 else th.dim, false, 12.0))
+    ops.push(line(sep_x, 8.0, sep_x, FIND_H - 8.0, th.sep, 1.0))
+    c := if n == 0 then th.dim else th.text
+    bx := sep_x + 6.0
+    chevron(mut ops, bx + FIND_BTN / 2.0, FIND_H / 2.0, c, true)
+    chevron(mut ops, bx + FIND_BTN * 1.5, FIND_H / 2.0, c, false)
+    cross(mut ops, bx + FIND_BTN * 2.5, FIND_H / 2.0, th.text)
+    ops
+
+## A chevron pointing up (`up`) or down, centred on (cx, cy).
+fn chevron(mut ops List[app.Op], cx float, cy float, c int, up bool)
+    d := if up then 2.5 else 0.0 - 2.5
+    ops.push(line(cx - 5.0, cy + d, cx, cy - d, c, 1.5))
+    ops.push(line(cx, cy - d, cx + 5.0, cy + d, c, 1.5))
+
+## What a click at (x, y) on a page `width` wide hits in the find bar:
+## `text`, `up`, `down`, `close`, or "" outside it.
+pub fn find_hit(x float, y float, width float) str
+    x0 := find_x(width)
+    if y < 0.0 or y >= FIND_H or x < x0 or x >= x0 + FIND_W
+        return ""
+    bx := x0 + FIND_W - 3.0 * FIND_BTN - 6.0
+    if x < bx
+        return "text"
+    match ((x - bx) / FIND_BTN).floor().to_int()
+        0 => "up"
+        1 => "down"
+        _ => "close"
+
 # ---- Tests -----------------------------------------------------------------------------
+
+@test fn find_bar_clicks_land_on_the_text_the_arrows_and_the_close()
+    w := 800.0
+    x0 := w - FIND_W - 16.0
+    assert_eq(find_hit(x0 + 40.0, 20.0, w), "text")
+    assert_eq(find_hit(x0 + FIND_W - 90.0, 20.0, w), "up")
+    assert_eq(find_hit(x0 + FIND_W - 58.0, 20.0, w), "down")
+    assert_eq(find_hit(x0 + FIND_W - 20.0, 20.0, w), "close")
+    assert_eq(find_hit(x0 - 10.0, 20.0, w), "")
+    assert_eq(find_hit(x0 + 40.0, 50.0, w), "")
+    ops := find_ops(dark(), omni("ale"), 0, 3, w, 0x202124, est)
+    assert(ops.len() > 10)
 
 @test fn clicks_land_on_the_tab_its_x_the_plus_and_the_toolbar()
     w := 800.0
