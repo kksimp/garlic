@@ -422,7 +422,8 @@ fn str_or(v str, fallback str) str
 fn Vm.intl_this(mut self, v Value, kind str, m str) ref JsObject ! Thrown
     o := this_class(v, "Intl.{kind}", m)?
     p := o.props.get("{PRIVATE}resolved") else return type_error("Illegal invocation")
-    obj_of(p.value) else return type_error("Illegal invocation")
+    r := obj_of(p.value) else return type_error("Illegal invocation")
+    r
 
 fn resolved_str(r ref JsObject, key str) str
     p := r.props.get(key) else return ""
@@ -561,15 +562,15 @@ fn list_text(items List[str], kind str, style str) str
         _ => if style == "long" then "and" else "&"
     if n == 2
         return if word == "" then "{items[0]}, {items[1]}" else "{items[0]} {word} {items[1]}"
-    mut out := items.slice(0, n - 1).join(", ")
+    head := items[0..(n - 1)].join(", ")
     if word == ""
-        return "{out}, {items[n - 1]}"
-    "{out}, {word} {items[n - 1]}"
+        return "{head}, {items[n - 1]}"
+    "{head}, {word} {items[n - 1]}"
 
 ## The Intl natives: "new.Kind", "Kind.method", "Intl.fn", "static.fn".
 pub fn Vm.intl_native(mut self, m str, this_val Value, args List[Value], new_target Value) Value ! Thrown
-    if kind := m.strip_prefix("new.")
-        return intl_new(kind, args)
+    if made := m.strip_prefix("new.")
+        return intl_new(made, args)
     a0 := arg_at(args, 0)
     if m == "static.supportedLocalesOf" or m == "Intl.getCanonicalLocales"
         if is_nullish(a0)
@@ -642,8 +643,8 @@ pub fn Vm.intl_native(mut self, m str, this_val Value, args List[Value], new_tar
             if not is_finite(v)
                 return range_error("Value need to be finite number for Intl.RelativeTimeFormat.prototype.format()")
             unit := to_string(arg_at(args, 1))?
-            text := relative_text(v, unit, resolved_str(r, "style"), resolved_str(r, "numeric") == "auto") else
-                return range_error("Invalid unit argument for format() '{unit}'")
+            auto := resolved_str(r, "numeric") == "auto"
+            text := relative_text(v, unit, resolved_str(r, "style"), auto) else return range_error("Invalid unit argument for format() '{unit}'")
             if method == "formatToParts" then parts_of_text(text) else Value.Str(text)
         "ListFormat" =>
             mut items := List[str]()

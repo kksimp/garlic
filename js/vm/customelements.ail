@@ -148,9 +148,9 @@ fn Vm.ce_after_upgrade(mut self, id int, ctor Value) Value ! Thrown
 ## The class's `observedAttributes`, lower-cased.
 fn Vm.ce_observed(mut self, ctor Value) List[str] ! Thrown
     v := get(ctor, "observedAttributes")?
-    if is_nullish(v)
-        return []
     mut out := List[str]()
+    if is_nullish(v)
+        return out
     for x in iterate(v)?
         out.push(to_string(x)?.to_lower())
     out

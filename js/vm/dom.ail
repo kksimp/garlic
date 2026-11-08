@@ -831,23 +831,27 @@ fn Vm.ua_data_method(mut self, m str, this_val Value, args List[Value]) Value ! 
     if not is_nullish(hints)
         for h in iterate(hints)?
             hint := to_string(h)?
-            v := match hint
-                "architecture" => Value.Str("arm")
-                "bitness" => Value.Str("64")
-                "model" => Value.Str("")
-                "platformVersion" => Value.Str("15.0.0")
-                "uaFullVersion" => Value.Str("141.0.0.0")
-                "wow64" => Value.Bool(false)
-                "formFactors" => array([Value.Str("Desktop")])
-                "fullVersionList" =>
-                    array([
-                        hint_brand("Chromium", "141.0.0.0"),
-                        hint_brand("Not?A_Brand", "8.0.0.0"),
-                        hint_brand("Garlic", "0.1.0.0"),
-                    ])
-                _ => continue
+            v := hint_value(hint) else continue
             out.props[hint] = data(v)
     Value.Obj(promise_resolve(Value.Obj(out)))
+
+## The value of one high-entropy client hint, none for an unknown hint.
+fn Vm.hint_value(mut self, hint str) Value?
+    match hint
+        "architecture" => Value.Str("arm")
+        "bitness" => Value.Str("64")
+        "model" => Value.Str("")
+        "platformVersion" => Value.Str("15.0.0")
+        "uaFullVersion" => Value.Str("141.0.0.0")
+        "wow64" => Value.Bool(false)
+        "formFactors" => array([Value.Str("Desktop")])
+        "fullVersionList" =>
+            array([
+                hint_brand("Chromium", "141.0.0.0"),
+                hint_brand("Not?A_Brand", "8.0.0.0"),
+                hint_brand("Garlic", "0.1.0.0"),
+            ])
+        _ => none
 
 ## `structuredClone(value)` (HTML §2.7.5) for the types pages clone: plain
 ## objects, arrays, Date, Map, Set, RegExp, primitives and typed arrays'
