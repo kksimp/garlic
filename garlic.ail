@@ -2216,7 +2216,7 @@ fn Gui.find_text(mut self, needle str)
 ## wrapping round; 0, or a new `needle`, picks the first match at or below
 ## the top of the view. The page scrolls only when the match is off it.
 fn Gui.find_step(mut self, needle str, dir int)
-    fresh := needle != found or dir == 0
+    anew := needle != found or dir == 0
     was := find_k
     found = needle
     b.last_find = needle
@@ -2235,7 +2235,7 @@ fn Gui.find_step(mut self, needle str, dir int)
     if ys.len() == 0
         b.message = "`{needle}` not found"
         return
-    if fresh
+    if anew
         mut picked := false
         for i in 0..ys.len()
             if not picked and ys[i] >= top - 1.0

@@ -786,9 +786,9 @@ pub struct Suggestion
     pub url str
 
 ## The omnibox dropdown over the page: the typed text first, then the
-## history pages that match, `hot` highlighted (-1 for none). The page
+## history pages that match, `hot_row` highlighted (-1 for none). The page
 ## canvas starts right under the toolbar, so it hangs from y 0.
-pub fn suggest_ops(th Theme, rows List[Suggestion], hot int, width float, agent bool, bg int, tw fn(str, float) float) List[app.Op]
+pub fn suggest_ops(th Theme, rows List[Suggestion], hot_row int, width float, agent bool, bg int, tw fn(str, float) float) List[app.Op]
     mut ops := List[app.Op]()
     if rows.len() == 0
         return ops
@@ -798,7 +798,7 @@ pub fn suggest_ops(th Theme, rows List[Suggestion], hot int, width float, agent 
     round(mut ops, OMNI_X, 0.0 - 8.0, w, h + 8.0, 8.0, th.menu, bg)
     for r in 0..rows.len()
         ry := r.to_float() * SUG_ROW
-        if r == hot
+        if r == hot_row
             ops.push(app.draw_rect(OMNI_X, ry, w, SUG_ROW, th.menu_hot))
         s := rows[r]
         if s.url == ""
@@ -806,7 +806,7 @@ pub fn suggest_ops(th Theme, rows List[Suggestion], hot int, width float, agent 
             ops.push(txt(OMNI_X + 40.0 + tw(s.title, 14.0), ry + 10.0, " - DuckDuckGo Search", th.dim, false, 14.0))
             spark(mut ops, OMNI_X + 20.0, ry + SUG_ROW / 2.0, th.dim)
         else
-            globe(mut ops, OMNI_X + 12.0, ry + 10.0, th.dim, if r == hot then th.menu_hot else th.menu)
+            globe(mut ops, OMNI_X + 12.0, ry + 10.0, th.dim, if r == hot_row then th.menu_hot else th.menu)
             hp := pretty(s.url)
             ops.push(app.Op.Clip(x: OMNI_X + 40.0, y: ry, w: (w - 48.0).max(0.0), h: SUG_ROW))
             lead := if s.title == "" then "" else "{s.title} - "
