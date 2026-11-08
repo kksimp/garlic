@@ -3457,8 +3457,8 @@ fn app_main(b Browser, pixel bool, attached bool, sites str, light bool) !
 fn build_id() str
     head := (fs.read_text(".git/HEAD") else return "").trim()
     mut sha := head
-    if ref := head.strip_prefix("ref: ")
-        sha = (fs.read_text(".git/{ref}") else return "").trim()
+    if branch := head.strip_prefix("ref: ")
+        sha = (fs.read_text(".git/{branch}") else return "").trim()
     pin := (fs.read_text(".ail-version") else "").trim()
     short := if sha.chars().len() > 8 then sha.slice(0, 8) else sha
     pin_short := if pin.chars().len() > 8 then pin.slice(0, 8) else pin

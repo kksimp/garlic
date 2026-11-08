@@ -691,7 +691,8 @@ pub fn Vm.dom_setup(mut self)
             if e := obj_of(list.elems[i])
                 key := if parts[0] == "plugins" then "name" else "type"
                 if n := e.props.get(key)
-                    list.props[str_of(n.value) else "{i}"] = hidden(list.elems[i])
+                    named := str_of(n.value) else "{i}"
+                    list.props[named] = hidden(list.elems[i])
         methods(list, "dom.plugins", "item:1 namedItem:1 refresh:0")
         nav_proto.props[parts[0]] = data(Obj(list))
     navigator_surface(nav_proto)

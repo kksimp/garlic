@@ -92,11 +92,11 @@ pub fn Vm.date_format_options(mut self, m str, options Value) DateFmt ! Thrown
             f.second = "numeric"
     f
 
-fn two(n int) str
+fn two_digits(n int) str
     "{n}".pad_left(2, '0')
 
 fn num_field(n int, style str) str
-    if style == "2-digit" then two(n % 100) else "{n}"
+    if style == "2-digit" then two_digits(n % 100) else "{n}"
 
 ## The date part of a formatted date, "" when the format shows none.
 fn date_part(p DateParts, f DateFmt) str
@@ -105,7 +105,7 @@ fn date_part(p DateParts, f DateFmt) str
             "full" => "{WEEKDAYS[p.weekday]}, {MONTH_NAMES[p.month]} {p.date}, {p.year}"
             "long" => "{MONTH_NAMES[p.month]} {p.date}, {p.year}"
             "medium" => "{MONTH_NAMES[p.month].slice(0, 3)} {p.date}, {p.year}"
-            _ => "{p.month + 1}/{p.date}/{two(p.year % 100)}"
+            _ => "{p.month + 1}/{p.date}/{two_digits(p.year % 100)}"
     if not has_date(f)
         return ""
     mut weekday := ""
@@ -165,11 +165,11 @@ fn time_part(p DateParts, f DateFmt) str
             h = h % 12
             if h == 0
                 h = 12
-        out = if hour == "2-digit" or not f.hour12 then two(h) else "{h}"
+        out = if hour == "2-digit" or not f.hour12 then two_digits(h) else "{h}"
     if minute != ""
-        out = if out == "" then two(p.minutes) else "{out}:{two(p.minutes)}"
+        out = if out == "" then two_digits(p.minutes) else "{out}:{two_digits(p.minutes)}"
     if second != ""
-        out = if out == "" then two(p.seconds) else "{out}:{two(p.seconds)}"
+        out = if out == "" then two_digits(p.seconds) else "{out}:{two_digits(p.seconds)}"
     out = "{out}{suffix}"
     if zone == "long"
         out = "{out} Coordinated Universal Time"
