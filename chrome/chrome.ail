@@ -11,6 +11,12 @@ use std.app
 pub struct Item
     pub title str
     pub url str
+    ## The favicon: the host's bitmap id ("" for the stand-in globe), its
+    ## pixel size, and its data the first time it goes to the host.
+    pub icon str
+    pub icon_w int
+    pub icon_h int
+    pub icon_data str
 
 ## The colours of the chrome; `dark()` and `light()` are Chromium's.
 pub struct Theme
@@ -117,12 +123,13 @@ pub fn height(with_infobar bool) float
     if with_infobar then H + INFO_H else H
 
 ## A tab's width when `n` tabs share a strip `width` wide.
-pub fn tab_w(n int, width float) float
-    room := width - LEFT - PLUS_W - TAB_R - 24.0
+## `left` is the room the window controls take in edge mode (std.app.25).
+pub fn tab_w(n int, width float, left float) float
+    room := width - LEFT - left - PLUS_W - TAB_R - 24.0
     (room / n.max(1).to_float()).max(MIN_TAB_W).min(MAX_TAB_W)
 
-pub fn tab_x(k int, n int, width float) float
-    LEFT + k.to_float() * tab_w(n, width)
+pub fn tab_x(k int, n int, width float, left float) float
+    LEFT + left + k.to_float() * tab_w(n, width, left)
 
 ## The omnibox's left edge and width; `agent` leaves room for the chip.
 pub fn omni_w(width float, agent bool) float
@@ -136,18 +143,18 @@ fn in_btn(x float, y float, bx float, by float) bool
 BTN_Y := 54.0
 
 ## What a click at (x, y) on the chrome canvas landed on.
-pub fn hit(x float, y float, n int, width float, agent bool, with_infobar bool) Hit
+pub fn hit(x float, y float, n int, width float, left float, agent bool, with_infobar bool) Hit
     if y < STRIP_H
         if y < TAB_TOP
             return miss()
-        w := tab_w(n, width)
+        w := tab_w(n, width, left)
         for k in 0..n
-            x0 := tab_x(k, n, width)
+            x0 := tab_x(k, n, width, left)
             if x >= x0 and x < x0 + w
                 if x >= x0 + w - CLOSE_W - 12.0 and x < x0 + w - 8.0
                     return Hit(kind: "close", k: k)
                 return Hit(kind: "tab", k: k)
-        px := tab_x(n, n, width) + 6.0
+        px := tab_x(n, n, width, left) + 6.0
         if x >= px and x < px + PLUS_W
             return Hit(kind: "plus", k: 0)
         return miss()
@@ -441,6 +448,8 @@ pub struct State
     pub ask str
     ## The chrome canvas's width, as the host last reported it.
     pub width float
+    ## The room the window controls take at the top-left (std.app.25).
+    pub inset_left float
 
 ## Whether the hovered point is in the button at (bx, by).
 fn hot(st State, bx float, by float) bool
@@ -461,17 +470,19 @@ pub fn draw(th Theme, items List[Item], cur int, st State, tw fn(str, float) flo
         app.draw_rect(0.0, STRIP_H, width, TOOL_H, th.toolbar),
     ]
     n := items.len()
-    w := tab_w(n, width)
+    left := st.inset_left
+    w := tab_w(n, width, left)
     hover_tab := if st.hover_x >= 0.0 then hit(
         st.hover_x,
         st.hover_y,
         n,
         width,
+        left,
         st.agent != "",
         false,
     ) else miss()
     for k in 0..n
-        x0 := tab_x(k, n, width)
+        x0 := tab_x(k, n, width, left)
         shown := k == cur
         hovered := (hover_tab.kind == "tab" or hover_tab.kind == "close") and hover_tab.k == k
         if shown
@@ -483,7 +494,19 @@ pub fn draw(th Theme, items List[Item], cur int, st State, tw fn(str, float) flo
         bg := if shown then th.toolbar else (if hovered then th.tab_hover else th.frame)
         fg := if shown then th.text else th.dim
         close := shown or hovered or w >= 120.0
-        globe(mut ops, x0 + 10.0, TAB_TOP + 9.0, th.dim, bg)
+        if items[k].icon != ""
+            ops.push(app.Op.Bitmap(
+                x: x0 + 10.0,
+                y: TAB_TOP + 9.0,
+                w: 16.0,
+                h: 16.0,
+                id: items[k].icon,
+                pw: items[k].icon_w,
+                ph: items[k].icon_h,
+                data: items[k].icon_data,
+            ))
+        else
+            globe(mut ops, x0 + 10.0, TAB_TOP + 9.0, th.dim, bg)
         title := if items[k].title == "" then "New tab" else items[k].title
         room := w - 32.0 - (if close then CLOSE_W + 12.0 else 10.0)
         ops.push(app.Op.Clip(x: x0 + 32.0, y: TAB_TOP, w: room.max(0.0), h: TAB_H))
@@ -496,7 +519,7 @@ pub fn draw(th Theme, items List[Item], cur int, st State, tw fn(str, float) flo
                 disc(mut ops, cx - 8.0, cy - 8.0, 16.0, th.hover, bg)
             cross(mut ops, cx, cy, fg)
     ## The new-tab button.
-    px := tab_x(n, n, width) + 6.0
+    px := tab_x(n, n, width, left) + 6.0
     py := TAB_TOP + 3.0
     if hot(st, px, py)
         disc(mut ops, px, py, BTN, th.tab_hover, th.frame)
@@ -551,6 +574,7 @@ fn omnibox(mut ops List[app.Op], th Theme, st State, tw fn(str, float) float)
         st.hover_y,
         0,
         width,
+        st.inset_left,
         st.agent != "",
         false,
     ).kind == "omni"
@@ -677,24 +701,29 @@ pub fn status_ops(th Theme, msg str, h float, bg int, tw fn(str, float) float) L
 
 @test fn clicks_land_on_the_tab_its_x_the_plus_and_the_toolbar()
     w := 800.0
-    x0 := tab_x(1, 3, w)
-    assert_eq(hit(x0 + 30.0, 20.0, 3, w, false, false), Hit(kind: "tab", k: 1))
-    assert_eq(hit(x0 + tab_w(3, w) - 14.0, 20.0, 3, w, false, false), Hit(kind: "close", k: 1))
-    assert_eq(hit(tab_x(3, 3, w) + 10.0, 20.0, 3, w, false, false).kind, "plus")
-    assert_eq(hit(2.0, 20.0, 3, w, false, false).kind, "none")
-    assert_eq(hit(20.0, 66.0, 3, w, false, false).kind, "back")
-    assert_eq(hit(56.0, 66.0, 3, w, false, false).kind, "forward")
-    assert_eq(hit(92.0, 66.0, 3, w, false, false).kind, "reload")
-    assert_eq(hit(300.0, 66.0, 3, w, false, false).kind, "omni")
-    assert_eq(hit(w - 20.0, 66.0, 3, w, false, false).kind, "menu")
-    assert_eq(hit(w - 20.0, H + 20.0, 3, w, false, true).kind, "allow")
-    assert_eq(hit(w - 120.0, H + 20.0, 3, w, false, true).kind, "deny")
-    assert_eq(hit(w - 20.0, H + 20.0, 3, w, false, false).kind, "none")
+    x0 := tab_x(1, 3, w, 0.0)
+    assert_eq(hit(x0 + 30.0, 20.0, 3, w, 0.0, false, false), Hit(kind: "tab", k: 1))
+    assert_eq(
+        hit(x0 + tab_w(3, w, 0.0) - 14.0, 20.0, 3, w, 0.0, false, false),
+        Hit(kind: "close", k: 1),
+    )
+    assert_eq(hit(tab_x(3, 3, w, 0.0) + 10.0, 20.0, 3, w, 0.0, false, false).kind, "plus")
+    assert_eq(hit(2.0, 20.0, 3, w, 0.0, false, false).kind, "none")
+    assert_eq(hit(20.0, 66.0, 3, w, 0.0, false, false).kind, "back")
+    assert_eq(hit(56.0, 66.0, 3, w, 0.0, false, false).kind, "forward")
+    assert_eq(hit(92.0, 66.0, 3, w, 0.0, false, false).kind, "reload")
+    assert_eq(hit(300.0, 66.0, 3, w, 0.0, false, false).kind, "omni")
+    assert_eq(hit(w - 20.0, 66.0, 3, w, 0.0, false, false).kind, "menu")
+    assert_eq(hit(w - 20.0, H + 20.0, 3, w, 0.0, false, true).kind, "allow")
+    assert_eq(hit(w - 120.0, H + 20.0, 3, w, 0.0, false, true).kind, "deny")
+    assert_eq(hit(w - 20.0, H + 20.0, 3, w, 0.0, false, false).kind, "none")
 
 @test fn many_tabs_shrink_to_fit_the_strip()
-    assert(tab_w(20, 800.0) < tab_w(3, 800.0))
-    assert_eq(tab_w(1, 1200.0), MAX_TAB_W)
-    assert_eq(tab_w(40, 800.0), MIN_TAB_W)
+    assert(tab_w(20, 800.0, 0.0) < tab_w(3, 800.0, 0.0))
+    assert_eq(tab_w(1, 1200.0, 0.0), MAX_TAB_W)
+    assert_eq(tab_w(40, 800.0, 0.0), MIN_TAB_W)
+    assert_eq(tab_x(0, 1, 800.0, 78.0), LEFT + 78.0)
+    assert_eq(hit(40.0, 20.0, 1, 800.0, 78.0, false, false).kind, "none")
 
 @test fn the_omnibox_edits_like_a_text_field()
     mut o := omni("example.com")
@@ -738,8 +767,22 @@ pub fn status_ops(th Theme, msg str, h float, bg int, tw fn(str, float) float) L
         agent: "",
         ask: "",
         width: 800.0,
+        inset_left: 0.0,
     )
-    ops := draw(th, [Item(title: "Example", url: "https://example.com/x")], 0, st, est)
+    ops := draw(
+        th,
+        [Item(
+            title: "Example",
+            url: "https://example.com/x",
+            icon: "",
+            icon_w: 0,
+            icon_h: 0,
+            icon_data: "",
+        )],
+        0,
+        st,
+        est,
+    )
     assert(ops.len() > 40)
     assert(status_ops(th, "", 600.0, 0xffffff, est).len() == 0)
     assert(status_ops(th, "https://a.b", 600.0, 0xffffff, est).len() > 2)
