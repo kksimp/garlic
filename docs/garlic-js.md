@@ -374,8 +374,11 @@ it comes later for speed, and these frames will move onto it).
   frames of the bootstrap interpreter, whose limit is 10,000. A bytecode
   compiler for the whole interpreter will remove this.
 - Import maps and `<link rel=modulepreload>`; module workers.
-- `Intl` knows one locale, en-US, and local time is UTC, so
-  `Intl.DateTimeFormat().resolvedOptions().timeZone` is "UTC".
+- `Intl` knows one locale, en-US. Local time is the system zone in the
+  app (`Vm.zone`, offsets from std.tz) and UTC in tests and `jsdom.run`.
+  Zone names are IANA names: `Date.prototype.toString` ends in
+  "(America/New_York)" and `timeZoneName: "short"` gives "GMT-5", where
+  Chrome writes "Eastern Standard Time" and "EST".
 - A canvas 2D context keeps its state and draws nothing (webapi.ail):
   `getImageData` is transparent black and `toDataURL` a blank PNG. WebGL
   and WebGPU contexts are null. Streams, `Worker`, `WebAssembly`,
@@ -388,6 +391,21 @@ it comes later for speed, and these frames will move onto it).
   are no devices, `getUserMedia` rejects with NotFoundError, peer
   connections gather no candidates and never connect, and audio renders
   silence. A host can supply `globalThis.__mediaHost`.
+- Measurement: `getBoundingClientRect`, `getClientRects`, `offsetWidth`,
+  `offsetHeight`, `clientWidth` and `clientHeight` answer from the border
+  boxes of the app's last pixel layout (block-level elements only, handed
+  over after each layout, so a box read right after an insertion is the
+  one from before it). An inline element without a box, such as a span
+  used to measure a font, gets 8px per character by 18px; headless runs
+  and `jsdom.run` have no layout and see only that estimate.
+- Platform APIs (platform.ail): `navigator.clipboard.writeText` and
+  `write` go to the system clipboard; `readText` and `read` are refused
+  (NotAllowedError), as Chrome does without the permission.
+  `navigator.share` rejects with AbortError, as when the user closes the
+  share sheet. `navigator.wakeLock.request` gives a sentinel the page can
+  release, but Garlic does not keep the screen awake. IndexedDB is
+  complete enough for stores, indexes, key ranges and cursors, but lives
+  in memory for the life of the page: nothing is written to disk yet.
 - BigInt literals (`10n`).
 - Regular expression pattern syntax (§22.2.1): the literal's body and flags
   are checked, and the pattern is checked when the regex engine compiles it.

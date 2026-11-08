@@ -30,9 +30,16 @@ pub struct Vm
     pub busy Set[int]
     ## What Date.now() reads, in milliseconds since 1970: fixed, so runs repeat.
     pub clock_ms float
+    ## The local time zone of `Date` and `Intl`: "UTC" or an IANA name (date.ail).
+    pub zone str
     ## The page (dom.ail): its nodes by id, the log of changes scripts made,
     ## and whether changes are logged yet.
     pub dom List[DomNode]
+    ## Border boxes of elements from the browser's last layout, by node:
+    ## x, y, width, height in page pixels (dom.ail, `measure`).
+    pub rects Map[int, List[float]]
+    ## How far the page is scrolled, for viewport-relative rectangles.
+    pub scroll_y float
     pub mutations List[Mutation]
     pub recording bool
     pub node_objs Map[int, Value]

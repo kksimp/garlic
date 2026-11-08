@@ -13,6 +13,7 @@ use std.proc
 use std.net.jar
 use std.compress
 use std.time
+use std.tz
 use std.app
 use std.screen
 use html
@@ -70,6 +71,10 @@ struct Browser
     message str
     ## The page's console lines and requests since it loaded (the last `LOG_KEEP` of each).
     console_log List[str]
+    ## The local time zone pages see: "UTC", or the system zone in the app.
+    zone str
+    ## Text scripts put on the clipboard, until the host takes it.
+    clips List[str]
     net_log List[str]
     ## The steps done since the page was opened, as `flows` replays them, and where flows are kept.
     trail List[str]
@@ -570,6 +575,7 @@ fn load_doc(
     mut cj jar.Jar,
     mut cache Map[str, Cached],
     mut socks Map[int, ws.Sock],
+    zone str,
 ) Loaded
     mut at := target
     mut m := method
@@ -619,6 +625,7 @@ fn load_doc(
             mods: [],
             changes: 0,
             cookies: [],
+            clips: [],
             asks: [],
             sockets: [],
             net: [],
@@ -630,6 +637,7 @@ fn load_doc(
                 scripts,
                 cj.for_script(at),
                 now,
+                zone,
                 1000.0,
                 5000000,
             )
@@ -713,6 +721,7 @@ fn serve_page(
         out.console.extend(more.console)
         out.net.extend(more.net)
         out.cookies.extend(more.cookies)
+        out.clips.extend(more.clips)
         out.changes += more.changes
         asks.extend(more.asks)
         ops.extend(more.sockets)
@@ -731,6 +740,7 @@ fn quiet() jsdom.Outcome
         mods: [],
         changes: 0,
         cookies: [],
+        clips: [],
         asks: [],
         sockets: [],
         net: [],
@@ -783,6 +793,7 @@ fn deliver_received(
             more := live.ws_event(mut d, id, ev.kind, ev.text, ev.code, 1000.0)
             out.console.extend(more.console)
             out.cookies.extend(more.cookies)
+            out.clips.extend(more.clips)
             out.changes += more.changes + 1
             out.asks.extend(more.asks)
             out.sockets.extend(more.sockets)
@@ -908,6 +919,8 @@ fn Browser.empty(url str, width int, height int) Browser
         back: [],
         message: "",
         console_log: [],
+        zone: "UTC",
+        clips: [],
         net_log: [],
         trail: [],
         flows_file: flows.default_path(),
@@ -1021,9 +1034,16 @@ fn Browser.pump(mut self)
     if not js_went(out)
         relayout()
 
+## Gives the page's scripts the layout's element boxes, so they can measure.
+fn Browser.measure(mut self, boxes List[gfx.Box], top float)
+    mut s := js else return
+    s.measure([[b.node.to_float(), b.x, b.y, b.w, b.h] for b in boxes], top)
+    js = s
+
 ## Remembers what the page logged and requested, for the page model.
 fn Browser.record(mut self, out jsdom.Outcome)
     console_log.extend(out.console)
+    clips.extend(out.clips)
     net_log.extend(out.net)
     if console_log.len() > LOG_KEEP
         console_log = console_log[console_log.len() - LOG_KEEP..]
@@ -1071,7 +1091,7 @@ fn Browser.reload(mut self)
 
 fn Browser.load(mut self, target str, method str, body str)
     close_sockets()
-    loaded := load_doc(target, method, body, refer, reloading, mut cj, mut cache, mut socks)
+    loaded := load_doc(target, method, body, refer, reloading, mut cj, mut cache, mut socks, zone)
     reloading = false
     refer = ""
     url = loaded.url
@@ -1992,7 +2012,15 @@ fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
         area_w: w,
         area_h: h,
         pixel: false,
-        scene: gfx.Scene(ops: [], hits: [], height: 0.0, bg: 0xffffff, probes: [], bits: {}),
+        scene: gfx.Scene(
+            ops: [],
+            hits: [],
+            boxes: [],
+            height: 0.0,
+            bg: 0xffffff,
+            probes: [],
+            bits: {},
+        ),
         scene_stamp: -1,
         scene_w: 0.0,
         scene_url: "",
@@ -2057,6 +2085,7 @@ fn Gui.refresh(mut self)
             top = 0.0
             scene_url = b.url
     top = top.max(0.0).min((scene.height - area_h).max(0.0))
+    b.measure(scene.boxes, top)
     mark_fresh()
 
 ## Marks as fresh the decoded pictures the view will draw that the host
@@ -2835,13 +2864,9 @@ fn Garlic.switch(mut self, k int)
 ## Opens an empty tab and shows it.
 fn Garlic.new_tab(mut self)
     tabs[cur] = g
-    mut fresh_gui := Gui.new(
-        Browser.empty("", g.b.width, g.b.height),
-        g.area_w,
-        g.area_h,
-        g.cell_w,
-        g.cell_h,
-    )
+    mut fresh := Browser.empty("", g.b.width, g.b.height)
+    fresh.zone = g.b.zone
+    mut fresh_gui := Gui.new(fresh, g.area_w, g.area_h, g.cell_w, g.cell_h)
     fresh_gui.pixel = g.pixel
     fresh_gui.refresh()
     tabs.push(fresh_gui)
@@ -3392,6 +3417,9 @@ impl app.App for Garlic
         true
 
     fn lines(mut self) List[str]
+        for text in g.b.clips
+            queue.push(app.clipboard(text))
+        g.b.clips = []
         sent := queue
         queue = []
         sent
@@ -3702,9 +3730,12 @@ fn main() !
     height := (flag(args, "--height") else "32").to_int() else 32
     if args.contains("--serve")
         mut srv := Browser.empty("about:blank", width, height)
+        srv.zone = tz.system()
         srv.serve((flag(args, "--allow") else "*").split(","))
         return
-    mut b := Browser.new(cli_target(target_of(args)), width, height)
+    mut b := Browser.empty(cli_target(target_of(args)), width, height)
+    b.zone = tz.system()
+    b.load(b.url, "GET", "")
     b.viewport_only = args.contains("--viewport")
     b.diff = args.contains("--diff")
     b.budget = (flag(args, "--budget") else "0").to_int() else 0
@@ -4729,11 +4760,37 @@ fn pixels(src str, width float) gfx.Scene
     assert_eq(gfx.length("calc(0.25rem * 4)", 10.0, 0.0), 16.0)
     assert_eq(gfx.length("calc(100% - 2em)", 10.0, 200.0), 180.0)
     assert_eq(gfx.length("calc((1px + 3px) * 2)", 10.0, 0.0), 8.0)
+    assert_eq(gfx.number("calc(1.5 / 1)"), 1.5)
+    assert_eq((gfx.number("calc(2.5 / 2.25)") else 0.0) > 1.1, true)
+    assert_eq(gfx.number("calc(0.25rem * 4)"), none)
     assert_eq(gfx.color("light-dark(#eee, #222)"), 0x222222)
     assert_eq(gfx.color("light-dark(rgb(1, 2, 3), #fff)"), 0xffffff)
     assert_eq(gfx.color("#fff"), 0xffffff)
     assert_eq(gfx.color("rgb(255, 0, 0)"), 0xff0000)
     assert_eq(gfx.color("transparent"), none)
+
+@test fn unitless_calc_line_heights_and_block_margins_keep_rows_apart()
+    ## Tailwind 4 writes `line-height: calc(1.5 / 1)`: a number, not 1.5px.
+    rules := css.parse(
+        "h3 \{ line-height: calc(1.5 / 1); margin: 0 } .row \{ margin-block-start: 8px; line-height: calc(1.25 / 0.875) }",
+        0,
+    )
+    s := gfx.layout(
+        html.parse("<h3>Graphics</h3><div class=row>WebGL</div>"),
+        "https://x.test/",
+        400.0,
+        rules,
+    )
+    assert_eq(pixel_text(s.ops).len(), 2)
+    assert(s.height >= 50.0)
+
+@test fn the_pixel_layout_records_a_box_for_every_block_element()
+    s := pixels("<p>Hi</p><div style=\"height: 40px\"></div>", 400.0)
+    tall := [b for b in s.boxes if b.h == 40.0]
+    assert_eq(tall.len(), 1)
+    assert_eq(tall[0].w, 384.0)
+    assert(tall[0].y > 20.0)
+    assert(s.boxes.len() >= 3)
 
 @test fn the_pixel_layout_stacks_blocks_with_margins_and_wraps_words()
     s := pixels("<h1>Hi</h1><p>one two</p>", 400.0)
@@ -5351,6 +5408,13 @@ fn flat(s gfx.Scene) List[str]
     b.act("click", "{node_with(b, "button", "id", "go")}")
     assert_eq(b.pg.title, "Results")
     assert(b.url.ends_with("/result.html?q=hello"))
+
+@test fn a_script_clipboard_write_reaches_the_host_clipboard_line()
+    mut b := Browser.new("{testdata()}/clipboard.html", 80, 30)
+    assert_eq(b.clips, ["from the page"])
+    mut a := Garlic.new(b, 800.0, 600.0, 8.0, 16.0)
+    assert_eq(a.lines(), [app.clipboard("from the page")])
+    assert_eq(a.lines(), [])
 
 @test fn typing_fires_focus_key_input_and_change_events_and_enter_can_be_cancelled()
     mut b := Browser.new("{testdata()}/keys.html", 80, 30)
