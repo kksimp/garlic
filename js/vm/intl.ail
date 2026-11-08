@@ -101,7 +101,9 @@ pub fn Vm.date_format_options(mut self, m str, options Value) DateFmt ! Thrown
     f.time_zone_name = str_option(options, "timeZoneName")?
     f.zone = str_option(options, "timeZone")?
     if f.zone != ""
-        if f.zone.to_upper() == "UTC" or f.zone.to_upper() == "GMT" or f.zone.to_upper() == "ETC/UTC"
+        if f.zone.to_upper() == "UTC"
+            or f.zone.to_upper() == "GMT"
+            or f.zone.to_upper() == "ETC/UTC"
             f.zone = "UTC"
         elif tz.offset(f.zone, 0) == none
             return range_error("Invalid time zone specified: {f.zone}")
@@ -671,7 +673,12 @@ pub fn Vm.intl_native(
         return match key
             "calendar" => array([Value.Str("gregory")])
             "numberingSystem" => array([Value.Str("latn")])
-            "timeZone" => array(if zone == "UTC" or zone == "" then [Value.Str("UTC")] else [Value.Str("UTC"), Value.Str(zone)])
+            "timeZone" => array(
+                if zone == "UTC" or zone == "" then [Value.Str("UTC")] else [
+                    Value.Str("UTC"),
+                    Value.Str(zone),
+                ],
+            )
             "currency" => array([
                 Value.Str("EUR"),
                 Value.Str("GBP"),

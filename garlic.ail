@@ -2851,13 +2851,7 @@ fn Garlic.new_tab(mut self)
     tabs[cur] = g
     mut fresh := Browser.empty("", g.b.width, g.b.height)
     fresh.zone = g.b.zone
-    mut fresh_gui := Gui.new(
-        fresh,
-        g.area_w,
-        g.area_h,
-        g.cell_w,
-        g.cell_h,
-    )
+    mut fresh_gui := Gui.new(fresh, g.area_w, g.area_h, g.cell_w, g.cell_h)
     fresh_gui.pixel = g.pixel
     fresh_gui.refresh()
     tabs.push(fresh_gui)
