@@ -441,7 +441,7 @@ fn bt_term(mut p BtParse) int
         mn = lo
         mx = hi
         if mx >= 0 and mx < mn
-            return bt_fail(mut p, "numbers out of order in {} quantifier")
+            return bt_fail(mut p, "numbers out of order in quantifier")
     else
         return atom
     mut greedy := 1
