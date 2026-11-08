@@ -48,7 +48,7 @@ Native macOS window (needs the SwiftUI host, ADR 0838): `../ail/tools/app-host/m
 - Find: Cmd-F (or the menu) opens Chromium's find bar at the top right; it searches as you type, shows `k/n`, Enter or Cmd-G steps to the next match (Shift for the previous), Escape closes. The match shown is orange, the others yellow. In the text layout `/` prompts instead and `n` finds the next.
 - Omnibox dropdown: typing lists the text as a search or URL, then the pages from the history that match (kept across runs in `~/.garlic-history.txt`, or `$GARLIC_HISTORY`); Down and Up pick one, Enter opens it.
 - Loading: the tab shows Chromium's spinner in place of the favicon while a page loads.
-- Copy: Cmd-C copies the omnibox's text while you edit it, the find bar's text, or the link under the pointer (std.app.26). A right-click on the page opens Chromium's page menu: Open link in new tab, Copy link address, Copy text, Back, Forward, Reload.
+- Select and copy: drag over the page to select text (std.app.27); Cmd-C copies the selection, else the omnibox's text while you edit it, the find bar's text, or the link under the pointer (std.app.26); Escape clears the selection. A right-click on the page opens Chromium's page menu: Open link in new tab, Copy link address, Copy (the selection) or Copy text (the run under the pointer), Back, Forward, Reload.
 - `garlic --pixels-dump URL` prints the canvas, ops and image decode status.
 
 Network behaviour (cookies on redirects, the final address, gzip, sheets with cookie and Referer) is checked against a scripted site with `netcheck/check.sh` (`GARLIC=path` runs it against a native build).

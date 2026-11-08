@@ -1940,6 +1940,15 @@ struct Gui
     found str
     find_k int
     find_n int
+    ## Text selected by dragging (std.app.27), in page coordinates: the
+    ## anchor, the far end, whether a drag is on and whether it selected
+    ## anything (a press without a move selects nothing).
+    sel_x0 float
+    sel_y0 float
+    sel_x1 float
+    sel_y1 float
+    dragging bool
+    sel_on bool
     top float
     ## Pictures whose pixels went to the host in an earlier view, and those
     ## that go with this one: the host keeps a picture by address, so later
@@ -1972,6 +1981,12 @@ fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
         found: "",
         find_k: 0,
         find_n: 0,
+        sel_x0: 0.0,
+        sel_y0: 0.0,
+        sel_x1: 0.0,
+        sel_y1: 0.0,
+        dragging: false,
+        sel_on: false,
         top: 0.0,
         sent: {},
         fresh: {},
@@ -2184,14 +2199,30 @@ fn Gui.learn(mut self, runs List[app.Measure], widths List[float])
 
 ## The scene's operations with a highlight behind each `found` match.
 fn Gui.marked(self) List[draw.Op]
-    if found == ""
+    if found == "" and not sel_on
         return scene.ops
     want := found.to_lower()
+    sel := self.selected()
     mut out := List[draw.Op]()
     mut i := 0
+    mut k := 0
     for op in scene.ops
+        k += 1
         match op
             Str(x, y, t, font, size, fg, bold, _, _) =>
+                if span := sel.get(k - 1)
+                    mono := font == "mono"
+                    sx := x + gfx.text_width(t.slice(0, span.0), size, bold, mono)
+                    out.push(draw.Op.Rect(
+                        x: sx,
+                        y: y,
+                        w: gfx.text_width(t.slice(span.0, span.1), size, bold, mono),
+                        h: size * 1.3,
+                        color: 0xb3d4fc,
+                    ))
+                if found == ""
+                    out.push(op)
+                    continue
                 at := t.to_lower().find(want) else
                     out.push(op)
                     continue
@@ -2248,6 +2279,98 @@ fn Gui.find_step(mut self, needle str, dir int)
     if y < top or y > top + area_h - 40.0
         top = (y - 40.0).max(0.0).min((scene.height - area_h).max(0.0))
     b.message = "found `{needle}` ({ys.len()} matches)"
+
+## The runs the drag selected: by index in `scene.ops`, the characters
+## (from, to) of each. Lines are taken by their vertical middle; the first
+## and last lines are cut at the drag's x positions.
+fn Gui.selected(self) Map[int, (int, int)]
+    mut out := Map[int, (int, int)]()
+    if not sel_on
+        return out
+    top_first := sel_y0 < sel_y1 or (sel_y0 == sel_y1 and sel_x0 <= sel_x1)
+    ay := if top_first then sel_y0 else sel_y1
+    ax := if top_first then sel_x0 else sel_x1
+    by := if top_first then sel_y1 else sel_y0
+    bx := if top_first then sel_x1 else sel_x0
+    mut k := 0
+    for op in scene.ops
+        k += 1
+        match op
+            Str(x, y, t, font, size, _, bold, _, _) =>
+                h := size * 1.3
+                mid := y + h / 2.0
+                if mid < ay - h / 2.0 or mid > by + h / 2.0
+                    continue
+                n := t.chars().len()
+                mono := font == "mono"
+                first := (mid - ay).abs() <= h / 2.0
+                last := (mid - by).abs() <= h / 2.0
+                mut from := 0
+                mut to := n
+                if first
+                    from = char_at(t, size, bold, mono, ax - x)
+                if last
+                    to = char_at(t, size, bold, mono, bx - x)
+                if first and last and from > to
+                    tmp := from
+                    from = to
+                    to = tmp
+                if from < to
+                    out[k - 1] = (from, to)
+            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => k = k
+    out
+
+## The character of `t` at `dx` points from its start (its length past the end).
+fn char_at(t str, size float, bold bool, mono bool, dx float) int
+    n := t.chars().len()
+    if dx <= 0.0
+        return 0
+    for i in 1..(n + 1)
+        if gfx.text_width(t.slice(0, i), size, bold, mono) > dx
+            return i - 1
+    n
+
+## The selected text, runs joined, with a line break between lines.
+fn Gui.selection(self) str
+    sel := self.selected()
+    if sel.len() == 0
+        return ""
+    mut parts := List[str]()
+    mut last_y := 0.0 - 1.0e9
+    mut k := 0
+    for op in scene.ops
+        k += 1
+        match op
+            Str(_, y, t, _, _, _, _, _, _) =>
+                if span := sel.get(k - 1)
+                    piece := t.slice(span.0, span.1)
+                    if parts.len() > 0
+                        parts.push(if (y - last_y).abs() > 1.0 then "\n" else " ")
+                    parts.push(piece)
+                    last_y = y
+            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => k = k
+    parts.join("")
+
+## A press on the page starts a drag at (`x`, `y`) of the view and drops
+## the old selection; moves stretch it; the release ends it.
+fn Gui.press(mut self, x float, y float)
+    sel_x0 = x
+    sel_y0 = y + top
+    sel_x1 = sel_x0
+    sel_y1 = sel_y0
+    dragging = true
+    sel_on = false
+
+fn Gui.drag(mut self, x float, y float)
+    if not dragging
+        return
+    sel_x1 = x
+    sel_y1 = y + top
+    if (sel_x1 - sel_x0).abs() > 3.0 or (sel_y1 - sel_y0).abs() > 3.0
+        sel_on = true
+
+fn Gui.release(mut self)
+    dragging = false
 
 ## The text run drawn under point (`x`, `y`) of the page, "" for none.
 fn Gui.text_at(self, x float, y float) str
@@ -2696,7 +2819,9 @@ fn Garlic.menu_rows(self) List[str]
         if menu_href != ""
             rows.push("Open link in new tab")
             rows.push("Copy link address")
-        if menu_text != ""
+        if g.selection() != ""
+            rows.push("Copy")
+        elif menu_text != ""
             rows.push("Copy text")
         rows.push("Back")
         rows.push("Forward")
@@ -2730,6 +2855,7 @@ fn Garlic.menu_pick(mut self, r int)
         "Open link in new tab" => open_in_new_tab(menu_href)
         "Copy link address" => queue.push(app.clipboard(menu_href))
         "Copy text" => queue.push(app.clipboard(menu_text))
+        "Copy" => queue.push(app.clipboard(g.selection()))
         "Back" => start_load("back")
         "Forward" => start_load("forward")
         "Reload" => start_load("reload")
@@ -2858,7 +2984,8 @@ fn Garlic.remember(mut self)
 ## Copies what Cmd-C means here: the omnibox's text while it is edited, the
 ## find bar's while it has the keys, else the link under the pointer.
 fn Garlic.copy(mut self)
-    text := if omni.editing then omni.text else (if finding and find.editing then find.text else hover_href)
+    sel := g.selection()
+    text := if omni.editing then omni.text else (if finding and find.editing then find.text else (if sel != "" then sel else hover_href))
     if text != ""
         queue.push(app.clipboard(text))
 
@@ -3006,11 +3133,20 @@ impl app.App for Garlic
             "scroll" =>
                 if ev.id != "chrome"
                     g.scroll(ev.dy)
+            "down" =>
+                if ev.id != "chrome" and ev.text == "left" and g.pixel and menu_tab == -1
+                    and (not finding or chrome.find_hit(ev.x, ev.y, g.area_w) == "")
+                    and not omni.editing
+                    g.press(ev.x, ev.y)
+            "up" =>
+                if ev.id != "chrome"
+                    g.release()
             "move" =>
                 if ev.id == "chrome"
                     hover_x = ev.x
                     hover_y = ev.y
                 elif g.pixel
+                    g.drag(ev.x, ev.y)
                     hover_href = ""
                     if h := g.scene.hit_at(ev.x, ev.y + g.top)
                         hover_href = h.href
@@ -3050,6 +3186,8 @@ impl app.App for Garlic
                     menu_tab = -1
                 elif ev.text == "escape" and finding
                     close_find()
+                elif ev.text == "escape" and g.sel_on
+                    g.sel_on = false
                 elif (ev.meta and ev.text == "l") or (ev.text == "g" and g.b.reading())
                     omni.start()
                     want = "chrome"
@@ -4972,6 +5110,35 @@ fn flat(s gfx.Scene) List[str]
     a.view()
     a.update(app.key("escape"))
     assert_eq(a.suggestions().len(), 0)
+
+@test fn dragging_over_the_page_selects_text_that_cmd_c_copies()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut a := Garlic.new(b, 400.0, 300.0, 7.5, 15.0)
+    a.g.pixel = true
+    a.update(resized(400.0, 300.0))
+    mut d := clicked(0.0, 0.0)
+    d.kind = "down"
+    a.update(d)
+    assert(a.g.dragging and not a.g.sel_on)
+    mut m := app.event("move")
+    m.id = "page"
+    m.x = 390.0
+    m.y = 290.0
+    a.update(m)
+    assert(a.g.sel_on)
+    mut u := clicked(390.0, 290.0)
+    u.kind = "up"
+    a.update(u)
+    assert(not a.g.dragging and a.g.sel_on)
+    text := a.g.selection()
+    assert(text.contains("Garlic"))
+    assert(a.g.marked().len() > a.g.scene.ops.len())
+    mut c := app.key("c")
+    c.meta = true
+    a.update(c)
+    assert_eq(a.lines(), [app.clipboard(text)])
+    a.update(app.key("escape"))
+    assert(not a.g.sel_on)
 
 @test fn max_age_is_read_from_cache_control()
     assert_eq(max_age("public, max-age=60"), 60)
