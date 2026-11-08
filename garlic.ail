@@ -2975,7 +2975,13 @@ impl app.App for Garlic
                     if omni.editing
                         omni = chrome.omni(g.b.url)
                     fh := if finding then chrome.find_hit(ev.x, ev.y, g.area_w) else ""
-                    sr := if omni.editing then chrome.suggest_hit(ev.x, ev.y, suggestions().len(), strip_w, attached) else -1
+                    sr := if omni.editing then chrome.suggest_hit(
+                        ev.x,
+                        ev.y,
+                        suggestions().len(),
+                        strip_w,
+                        attached,
+                    ) else -1
                     if sr >= 0
                         row := suggestions()[sr]
                         omni = chrome.omni(g.b.url)
@@ -3016,7 +3022,8 @@ impl app.App for Garlic
                 if omni.editing and not ev.meta and (ev.text == "down" or ev.text == "up")
                     n := suggestions().len()
                     if n > 0
-                        pick_row = if ev.text == "down" then (pick_row + 2) % (n + 1) - 1 else (pick_row + n + 1) % (n + 1) - 1
+                        pick_row = if ev.text
+                            == "down" then (pick_row + 2) % (n + 1) - 1 else (pick_row + n + 1) % (n + 1) - 1
                 elif omni.editing
                     and (not ev.meta or ev.text == "a" or ev.text == "left" or ev.text == "right")
                     rows := suggestions()
@@ -3026,7 +3033,8 @@ impl app.App for Garlic
                         _ => pick_row = -1
                 elif finding and ev.meta and (ev.text == "g" or ev.text == "G")
                     g.find_step(find.text, if ev.shift then -1 else 1)
-                elif finding and find.editing
+                elif finding
+                    and find.editing
                     and (not ev.meta or ev.text == "a" or ev.text == "left" or ev.text == "right")
                     find_key(ev.text, ev.meta, ev.shift)
                 elif ev.meta and ev.shift and (ev.text == "t" or ev.text == "T")
@@ -3087,9 +3095,25 @@ impl app.App for Garlic
         page_ops.extend(chrome.status_ops(theme(), bubble(), g.area_h, g.scene.bg, sans_w))
         page_ops.extend(chrome.menu_ops(theme(), menu_rows(), menu_x, menu_y, g.scene.bg, -1))
         if omni.editing
-            page_ops.extend(chrome.suggest_ops(theme(), suggestions(), pick_row, strip_w, attached, g.scene.bg, sans_w))
+            page_ops.extend(chrome.suggest_ops(
+                theme(),
+                suggestions(),
+                pick_row,
+                strip_w,
+                attached,
+                g.scene.bg,
+                sans_w,
+            ))
         if finding
-            page_ops.extend(chrome.find_ops(theme(), find, g.find_k, g.find_n, g.area_w, g.scene.bg, sans_w))
+            page_ops.extend(chrome.find_ops(
+                theme(),
+                find,
+                g.find_k,
+                g.find_n,
+                g.area_w,
+                g.scene.bg,
+                sans_w,
+            ))
         app.column([chrome_node(), app.canvas("page", 0.0, 0.0, page_ops)])
 
     fn hover(self) bool
