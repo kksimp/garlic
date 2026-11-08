@@ -1,0 +1,64 @@
+## history: the pages shown so far, kept across runs for the omnibox's
+## dropdown. One line per visit, `URL<TAB>TITLE`, oldest first; the file
+## is trimmed to the last `KEEP` lines when it grows past twice that.
+
+use std.fs
+use std.env
+use chrome
+
+KEEP := 2000
+
+## Where the history is kept: `$GARLIC_HISTORY`, else `~/.garlic-history.txt`.
+pub fn default_path() str
+    if p := env.get("GARLIC_HISTORY")
+        if p != ""
+            return p
+    "{env.get("HOME") else "."}/.garlic-history.txt"
+
+## Every visit in the file at `path`, oldest first; none when it is missing.
+pub fn load(path str) List[chrome.Suggestion]
+    text := fs.read_text(path) else return []
+    mut out := List[chrome.Suggestion]()
+    for row in text.split("\n")
+        if row == ""
+            continue
+        at := row.find("\t") else
+            out.push(chrome.Suggestion(title: "", url: row))
+            continue
+        out.push(chrome.Suggestion(
+            title: row.slice(at + 1, row.chars().len()),
+            url: row.slice(0, at),
+        ))
+    out
+
+## Adds one visit to the file at `path`, trimming it when it is long; `all`
+## is the list in memory, which the trim follows.
+pub fn add(path str, all List[chrome.Suggestion])
+    if all.len() == 0
+        return
+    if all.len() > 2 * KEEP
+        kept := [all[i] for i in (all.len() - KEEP)..all.len()]
+        fs.write_text(path, [line(s) for s in kept].join("")) else return
+        return
+    fs.append_text(path, line(all[all.len() - 1])) else return
+
+## Deletes the file at `path` when there is one.
+fn wipe(path str)
+    fs.remove(path) else return
+
+fn line(s chrome.Suggestion) str
+    "{s.url.replace("\t", " ").replace("\n", " ")}\t{s.title.replace("\t", " ").replace("\n", " ")}\n"
+
+@test fn visits_round_trip_through_the_file()
+    path := "{env.get("TMPDIR") else "/tmp"}/garlic-history-test-{env.get("USER") else "x"}.txt"
+    wipe(path)
+    mut all := [chrome.Suggestion(title: "AIL", url: "https://ail.dev/")]
+    add(path, all)
+    all.push(chrome.Suggestion(title: "Tab\tbed", url: "https://ail.dev/docs"))
+    add(path, all)
+    got := load(path)
+    assert_eq(got.len(), 2)
+    assert_eq(got[0], all[0])
+    assert_eq(got[1], chrome.Suggestion(title: "Tab bed", url: "https://ail.dev/docs"))
+    wipe(path)
+    assert_eq(load(path).len(), 0)

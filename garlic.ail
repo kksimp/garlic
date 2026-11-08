@@ -23,6 +23,7 @@ use gfx
 use jsdom
 use images
 use favicon
+use history
 use attach
 use ws
 use look
@@ -1939,6 +1940,15 @@ struct Gui
     found str
     find_k int
     find_n int
+    ## Text selected by dragging (std.app.27), in page coordinates: the
+    ## anchor, the far end, whether a drag is on and whether it selected
+    ## anything (a press without a move selects nothing).
+    sel_x0 float
+    sel_y0 float
+    sel_x1 float
+    sel_y1 float
+    dragging bool
+    sel_on bool
     top float
     ## Pictures whose pixels went to the host in an earlier view, and those
     ## that go with this one: the host keeps a picture by address, so later
@@ -1971,6 +1981,12 @@ fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
         found: "",
         find_k: 0,
         find_n: 0,
+        sel_x0: 0.0,
+        sel_y0: 0.0,
+        sel_x1: 0.0,
+        sel_y1: 0.0,
+        dragging: false,
+        sel_on: false,
         top: 0.0,
         sent: {},
         fresh: {},
@@ -2183,14 +2199,30 @@ fn Gui.learn(mut self, runs List[app.Measure], widths List[float])
 
 ## The scene's operations with a highlight behind each `found` match.
 fn Gui.marked(self) List[draw.Op]
-    if found == ""
+    if found == "" and not sel_on
         return scene.ops
     want := found.to_lower()
+    sel := self.selected()
     mut out := List[draw.Op]()
     mut i := 0
+    mut k := 0
     for op in scene.ops
+        k += 1
         match op
             Str(x, y, t, font, size, fg, bold, _, _) =>
+                if span := sel.get(k - 1)
+                    mono := font == "mono"
+                    sx := x + gfx.text_width(t.slice(0, span.0), size, bold, mono)
+                    out.push(draw.Op.Rect(
+                        x: sx,
+                        y: y,
+                        w: gfx.text_width(t.slice(span.0, span.1), size, bold, mono),
+                        h: size * 1.3,
+                        color: 0xb3d4fc,
+                    ))
+                if found == ""
+                    out.push(op)
+                    continue
                 at := t.to_lower().find(want) else
                     out.push(op)
                     continue
@@ -2247,6 +2279,192 @@ fn Gui.find_step(mut self, needle str, dir int)
     if y < top or y > top + area_h - 40.0
         top = (y - 40.0).max(0.0).min((scene.height - area_h).max(0.0))
     b.message = "found `{needle}` ({ys.len()} matches)"
+
+## The runs the drag selected: by index in `scene.ops`, the characters
+## (from, to) of each. Lines are taken by their vertical middle; the first
+## and last lines are cut at the drag's x positions.
+fn Gui.selected(self) Map[int, (int, int)]
+    mut out := Map[int, (int, int)]()
+    if not sel_on
+        return out
+    top_first := sel_y0 < sel_y1 or (sel_y0 == sel_y1 and sel_x0 <= sel_x1)
+    ay := if top_first then sel_y0 else sel_y1
+    ax := if top_first then sel_x0 else sel_x1
+    by := if top_first then sel_y1 else sel_y0
+    bx := if top_first then sel_x1 else sel_x0
+    ## The lines the drag starts and ends on, as the runs under those points
+    ## have them, so a superscript of the line above is not swept in.
+    a_line := self.line_at(ay)
+    b_line := self.line_at(by)
+    ## The column the drag runs through: text in other columns at the same
+    ## heights (a contents list, an infobox) is not selected.
+    ca := self.column_at(ax, a_line)
+    cb := self.column_at(bx, b_line)
+    col := (ca.0.min(cb.0), ca.1.max(cb.1))
+    mut k := 0
+    for op in scene.ops
+        k += 1
+        match op
+            Str(x, y, t, font, size, _, bold, _, _) =>
+                h := size * 1.3
+                mid := y + h / 2.0
+                if mid < a_line.0 - 2.0 or mid > b_line.1 + 2.0
+                    continue
+                w := gfx.text_width(t, size, bold, font == "mono")
+                if x + w < col.0 - 2.0 or x > col.1 + 2.0
+                    continue
+                n := t.chars().len()
+                mono := font == "mono"
+                first := mid <= a_line.1 + 2.0
+                last := mid >= b_line.0 - 2.0
+                mut from := 0
+                mut to := n
+                if first
+                    from = char_at(t, size, bold, mono, ax - x)
+                if last
+                    to = char_at(t, size, bold, mono, bx - x)
+                if first and last and from > to
+                    tmp := from
+                    from = to
+                    to = tmp
+                if from < to
+                    out[k - 1] = (from, to)
+            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => k = k
+    out
+
+## The top and bottom of the text line at height `py` of the page: the
+## tallest run whose box holds `py`, else the run nearest to it.
+fn Gui.line_at(self, py float)(float, float)
+    mut best := (py, py)
+    mut best_d := 1.0e9
+    for op in scene.ops
+        match op
+            Str(_, y, _, _, size, _, _, _, _) =>
+                h := size * 1.3
+                inside := py >= y and py <= y + h
+                d := if inside then 0.0 - h else (y + h / 2.0 - py).abs()
+                if d < best_d
+                    best_d = d
+                    best = (y, y + h)
+            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => best = best
+    best
+
+## The horizontal extent of the column of text at `px` on the line
+## `line`: the runs on that line chained from the one under (or nearest)
+## `px` with gaps under 48 points, as one paragraph's words are.
+fn Gui.column_at(self, px float, line (float, float))(float, float)
+    mut runs := List[(float, float)]()
+    for op in scene.ops
+        match op
+            Str(x, y, t, font, size, _, bold, _, _) =>
+                mid := y + size * 0.65
+                if mid >= line.0 - 2.0 and mid <= line.1 + 2.0
+                    runs.push((x, x + gfx.text_width(t, size, bold, font == "mono")))
+            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => runs = runs
+    if runs.len() == 0
+        return (px, px)
+    mut seed := runs[0]
+    mut best := 1.0e9
+    for r in runs
+        d := if px >= r.0 and px <= r.1 then 0.0 else (r.0 - px).abs().min((r.1 - px).abs())
+        if d < best
+            best = d
+            seed = r
+    mut lo := seed.0
+    mut hi := seed.1
+    mut grew := true
+    while grew
+        grew = false
+        for r in runs
+            if r.1 >= lo - 48.0 and r.0 <= hi + 48.0 and (r.0 < lo or r.1 > hi)
+                lo = lo.min(r.0)
+                hi = hi.max(r.1)
+                grew = true
+    (lo, hi)
+
+## Whether a space goes between two runs of one line in copied text: not
+## when either already has one at the join, nor before closing punctuation
+## or after an opening bracket (the layout drops the spaces between runs,
+## and its estimated widths cannot tell a word gap from none).
+fn needs_space(before str, after str) bool
+    closers := ")],.;:!?'"
+    openers := "(["
+    if before == "" or after == ""
+        return false
+    if before.ends_with(" ") or after.starts_with(" ")
+        return false
+    n := before.chars().len()
+    head := after.slice(0, 1)
+    tail := before.slice(n - 1, n)
+    if closers.contains(head)
+        return false
+    if openers.contains(tail)
+        return false
+    true
+
+## The character of `t` at `dx` points from its start (its length past the end).
+fn char_at(t str, size float, bold bool, mono bool, dx float) int
+    n := t.chars().len()
+    if dx <= 0.0
+        return 0
+    for i in 1..(n + 1)
+        if gfx.text_width(t.slice(0, i), size, bold, mono) > dx
+            return i - 1
+    n
+
+## The selected text, runs joined, with a line break between lines.
+fn Gui.selection(self) str
+    sel := self.selected()
+    if sel.len() == 0
+        return ""
+    mut parts := List[str]()
+    mut last_top := 0.0
+    mut last_bottom := 0.0
+    mut last_piece := ""
+    mut k := 0
+    for op in scene.ops
+        k += 1
+        match op
+            Str(_, y, t, _, size, _, _, _, _) =>
+                if span := sel.get(k - 1)
+                    piece := t.slice(span.0, span.1)
+                    mid := y + size * 0.65
+                    if parts.len() > 0
+                        ## A run whose middle falls within the last run's box
+                        ## (a superscript, a smaller word) stays on its line,
+                        ## with a space only where the page leaves a gap.
+                        if mid >= last_top and mid <= last_bottom
+                            if needs_space(last_piece, piece)
+                                parts.push(" ")
+                        else
+                            parts.push("\n")
+                    parts.push(piece)
+                    last_top = y
+                    last_bottom = y + size * 1.3
+                    last_piece = piece
+            Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => k = k
+    parts.join("")
+
+## A press on the page starts a drag at (`x`, `y`) of the view and drops
+## the old selection; moves stretch it; the release ends it.
+fn Gui.press(mut self, x float, y float)
+    sel_x0 = x
+    sel_y0 = y + top
+    sel_x1 = sel_x0
+    sel_y1 = sel_y0
+    dragging = true
+    sel_on = false
+
+fn Gui.drag(mut self, x float, y float)
+    if not dragging
+        return
+    sel_x1 = x
+    sel_y1 = y + top
+    if (sel_x1 - sel_x0).abs() > 3.0 or (sel_y1 - sel_y0).abs() > 3.0
+        sel_on = true
+
+fn Gui.release(mut self)
+    dragging = false
 
 ## The text run drawn under point (`x`, `y`) of the page, "" for none.
 fn Gui.text_at(self, x float, y float) str
@@ -2332,11 +2550,14 @@ struct Garlic
     menu_text str
     ## The omnibox: the address shown, or the text being typed.
     omni chrome.Omni
-    ## The pages shown so far in any tab, oldest first, for the omnibox's
+    ## The pages shown so far in any tab (this run and earlier ones), oldest
+    ## first, for the omnibox's
     ## dropdown; `pick_row` is the dropdown row the arrow keys chose, -1 for the
     ## typed text.
-    history List[chrome.Suggestion]
+    visits List[chrome.Suggestion]
     pick_row int
+    ## The file the history is kept in across runs, "" to keep none (tests).
+    history_file str
     ## The find bar (Cmd-F): whether it shows, and its text; `find.editing`
     ## says the keys go to it rather than the page.
     finding bool
@@ -2404,8 +2625,9 @@ fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
         menu_text: "",
         strip_w: w,
         omni: chrome.omni(b.url),
-        history: [],
+        visits: [],
         pick_row: -1,
+        history_file: "",
         finding: false,
         find: chrome.omni(""),
         load_next: "",
@@ -2691,7 +2913,9 @@ fn Garlic.menu_rows(self) List[str]
         if menu_href != ""
             rows.push("Open link in new tab")
             rows.push("Copy link address")
-        if menu_text != ""
+        if g.selection() != ""
+            rows.push("Copy")
+        elif menu_text != ""
             rows.push("Copy text")
         rows.push("Back")
         rows.push("Forward")
@@ -2725,6 +2949,7 @@ fn Garlic.menu_pick(mut self, r int)
         "Open link in new tab" => open_in_new_tab(menu_href)
         "Copy link address" => queue.push(app.clipboard(menu_href))
         "Copy text" => queue.push(app.clipboard(menu_text))
+        "Copy" => queue.push(app.clipboard(g.selection()))
         "Back" => start_load("back")
         "Forward" => start_load("forward")
         "Reload" => start_load("reload")
@@ -2833,7 +3058,7 @@ fn Garlic.do_load(mut self)
 fn Garlic.suggestions(self) List[chrome.Suggestion]
     if not omni.editing or omni.all
         return []
-    chrome.suggestions(omni.text, history)
+    chrome.suggestions(omni.text, visits)
 
 ## Adds the shown page to the history when it is new there (an `http(s)`
 ## page with a title), keeping the last 500.
@@ -2841,17 +3066,20 @@ fn Garlic.remember(mut self)
     u := g.b.url
     if not u.starts_with("http") or g.b.pg.title == ""
         return
-    if last := history.last()
+    if last := visits.last()
         if last.url == u
             return
-    history.push(chrome.Suggestion(title: g.b.pg.title, url: u))
-    if history.len() > 500
-        history = [history[i] for i in 1..history.len()]
+    visits.push(chrome.Suggestion(title: g.b.pg.title, url: u))
+    if history_file != ""
+        history.add(history_file, visits)
+    if visits.len() > 5000
+        visits = [visits[i] for i in 1..visits.len()]
 
 ## Copies what Cmd-C means here: the omnibox's text while it is edited, the
 ## find bar's while it has the keys, else the link under the pointer.
 fn Garlic.copy(mut self)
-    text := if omni.editing then omni.text else (if finding and find.editing then find.text else hover_href)
+    sel := g.selection()
+    text := if omni.editing then omni.text else (if finding and find.editing then find.text else (if sel != "" then sel else hover_href))
     if text != ""
         queue.push(app.clipboard(text))
 
@@ -2999,11 +3227,23 @@ impl app.App for Garlic
             "scroll" =>
                 if ev.id != "chrome"
                     g.scroll(ev.dy)
+            "down" =>
+                if ev.id != "chrome"
+                    and ev.text == "left"
+                    and g.pixel
+                    and menu_tab == -1
+                    and (not finding or chrome.find_hit(ev.x, ev.y, g.area_w) == "")
+                    and not omni.editing
+                    g.press(ev.x, ev.y)
+            "up" =>
+                if ev.id != "chrome"
+                    g.release()
             "move" =>
                 if ev.id == "chrome"
                     hover_x = ev.x
                     hover_y = ev.y
                 elif g.pixel
+                    g.drag(ev.x, ev.y)
                     hover_href = ""
                     if h := g.scene.hit_at(ev.x, ev.y + g.top)
                         hover_href = h.href
@@ -3043,6 +3283,8 @@ impl app.App for Garlic
                     menu_tab = -1
                 elif ev.text == "escape" and finding
                     close_find()
+                elif ev.text == "escape" and g.sel_on
+                    g.sel_on = false
                 elif (ev.meta and ev.text == "l") or (ev.text == "g" and g.b.reading())
                     omni.start()
                     want = "chrome"
@@ -3193,6 +3435,8 @@ fn app_main(b Browser, pixel bool, attached bool, sites str, light bool) !
     mut a := Garlic.new(b, GUI_W, GUI_H, GUI_CELL_W, GUI_CELL_H)
     a.g.pixel = pixel
     a.light = light
+    a.history_file = history.default_path()
+    a.visits = history.load(a.history_file)
     a.g.refresh()
     if attached
         attached_main(mut a, sites)?
@@ -4942,7 +5186,7 @@ fn flat(s gfx.Scene) List[str]
     mut a := Garlic.new(b, 600.0, 300.0, 7.5, 15.0)
     a.g.pixel = true
     a.update(resized(600.0, 300.0))
-    a.history.push(chrome.Suggestion(title: "AIL", url: "https://ail.dev/"))
+    a.visits.push(chrome.Suggestion(title: "AIL", url: "https://ail.dev/"))
     mut l := app.key("l")
     l.meta = true
     a.update(l)
@@ -4963,6 +5207,35 @@ fn flat(s gfx.Scene) List[str]
     a.view()
     a.update(app.key("escape"))
     assert_eq(a.suggestions().len(), 0)
+
+@test fn dragging_over_the_page_selects_text_that_cmd_c_copies()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut a := Garlic.new(b, 400.0, 300.0, 7.5, 15.0)
+    a.g.pixel = true
+    a.update(resized(400.0, 300.0))
+    mut d := clicked(0.0, 0.0)
+    d.kind = "down"
+    a.update(d)
+    assert(a.g.dragging and not a.g.sel_on)
+    mut m := app.event("move")
+    m.id = "page"
+    m.x = 390.0
+    m.y = 290.0
+    a.update(m)
+    assert(a.g.sel_on)
+    mut u := clicked(390.0, 290.0)
+    u.kind = "up"
+    a.update(u)
+    assert(not a.g.dragging and a.g.sel_on)
+    text := a.g.selection()
+    assert(text.contains("Garlic"))
+    assert(a.g.marked().len() > a.g.scene.ops.len())
+    mut c := app.key("c")
+    c.meta = true
+    a.update(c)
+    assert_eq(a.lines(), [app.clipboard(text)])
+    a.update(app.key("escape"))
+    assert(not a.g.sel_on)
 
 @test fn max_age_is_read_from_cache_control()
     assert_eq(max_age("public, max-age=60"), 60)
