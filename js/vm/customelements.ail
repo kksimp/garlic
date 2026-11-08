@@ -1,6 +1,11 @@
-## `customElements` (HTML Standard §4.13.4): the registry only. `define`
-## records the constructor and settles `whenDefined`; elements already in
-## the page are not upgraded and their callbacks never run.
+## `customElements` (HTML Standard §4.13.4): the registry, and upgrades.
+## `define` records the constructor, settles `whenDefined` and upgrades the
+## elements already in the page; an element made or inserted later is
+## upgraded then. An upgrade runs the class constructor with the element's
+## own object as `this` (HTMLElement's constructor hands it back, §4.13.5),
+## then attributeChangedCallback for each observed attribute present and
+## connectedCallback when the element is in the document. Removing an
+## upgraded element runs disconnectedCallback.
 
 CE_DEF := "\u{0}#ce:"
 CE_WAIT := "\u{0}#cw:"
@@ -27,6 +32,10 @@ fn Vm.custom_native(mut self, m str, this_val Value, args List[Value]) Value ! T
         p := reg.props.get("{CE_DEF}{name}") else return Undef
         return p.value
     if m == "customElements.upgrade"
+        if root := node_id(a0)
+            ce_upgrade(root)
+            for e in elements_under(root)
+                ce_upgrade(e)
         return Undef
     if not valid_element_name(name)
         return dom_exception("SyntaxError", "\"{name}\" is not a valid custom element name")
@@ -51,6 +60,9 @@ fn Vm.custom_native(mut self, m str, this_val Value, args List[Value]) Value ! T
         if w := reg.props.get("{CE_WAIT}{name}")
             if p := obj_of(w.value)
                 resolve_promise(p, ctor)
+        for e in elements_under(0)
+            if dom[e].tag == name
+                ce_upgrade(e)
         return Undef
     type_error("{m} is not supported yet")
 
@@ -63,3 +75,140 @@ fn Vm.custom_setup(mut self)
         "CustomElementRegistry",
         Value.Obj(proto),
     )))
+
+## The page's registry object.
+fn Vm.ce_registry(self) ref JsObject?
+    p := global_obj.props.get("customElements") else return none
+    obj_of(p.value)
+
+## The constructor defined for element name `name`.
+pub fn Vm.ce_definition(self, name str) Value?
+    reg := ce_registry() else return none
+    p := reg.props.get("{CE_DEF}{name}") else return none
+    p.value
+
+## The element name `ctor` was defined for.
+fn Vm.ce_name_of(self, ctor Value) str?
+    reg := ce_registry() else return none
+    for k in reg.props.keys()
+        if name := k.strip_prefix(CE_DEF)
+            if reg.props[k].value == ctor
+                return name
+    none
+
+## HTMLElement's constructor reached through a class (`super()` in a
+## derived constructor, or `new`): the element being upgraded, else a new
+## element of the class's defined name (§4.13.5 HTML element constructors).
+pub fn Vm.ce_construct(mut self, new_target Value) Value ! Thrown
+    defined := ce_name_of(new_target)
+    mut id := -1
+    if ce_upgrading.len() > 0
+        top := ce_upgrading[ce_upgrading.len() - 1]
+        mut take := true
+        if n := defined
+            take = n == dom[top].tag
+        if take
+            ce_upgrading.remove_at(ce_upgrading.len() - 1)
+            id = top
+    if id < 0
+        name := defined else return type_error("Illegal constructor")
+        id = dom_create(name, 1, "")
+    o := obj_of(node_value(id)) else return type_error("Illegal constructor")
+    o.proto = get(new_target, "prototype")?
+    ce_upgraded.add(id)
+    Value.Obj(o)
+
+## Upgrade element `id` if its name is defined and it isn't upgraded yet.
+pub fn Vm.ce_upgrade(mut self, id int)
+    if ce_upgraded.contains(id) or dom[id].kind != 1
+        return
+    ctor := ce_definition(dom[id].tag) else return
+    ce_upgrading.push(id)
+    if v := construct(ctor, [], ctor)
+        v
+    else err
+        report_error(err)
+    if ce_upgrading.len() > 0 and ce_upgrading[ce_upgrading.len() - 1] == id
+        ce_upgrading.remove_at(ce_upgrading.len() - 1)
+    if not ce_upgraded.contains(id)
+        return
+    if r := ce_after_upgrade(id, ctor)
+        r
+    else err
+        report_error(err)
+    if connected(id)
+        ce_call(id, "connectedCallback", [])
+
+fn Vm.ce_after_upgrade(mut self, id int, ctor Value) Value ! Thrown
+    for name in ce_observed(ctor)?
+        if v := attr_of(id, name)
+            ce_call(id, "attributeChangedCallback", [Value.Str(name), Value.Null, Value.Str(v)])
+    Undef
+
+## The class's `observedAttributes`, lower-cased.
+fn Vm.ce_observed(mut self, ctor Value) List[str] ! Thrown
+    v := get(ctor, "observedAttributes")?
+    if is_nullish(v)
+        return []
+    mut out := List[str]()
+    for x in iterate(v)?
+        out.push(to_string(x)?.to_lower())
+    out
+
+## Run the element's reaction `method` if its class has one; an error is
+## reported as an uncaught error, as Chrome reports it.
+fn Vm.ce_call(mut self, id int, method str, args List[Value])
+    if not ce_upgraded.contains(id)
+        return
+    if r := ce_invoke(node_value(id), method, args)
+        r
+    else err
+        report_error(err)
+
+fn Vm.ce_invoke(mut self, v Value, method str, args List[Value]) Value ! Thrown
+    f := get(v, method)?
+    if not is_callable(f)
+        return Undef
+    call(f, v, args)
+
+## `id` and its descendants were put into the document: upgrade the custom
+## elements among them, and tell the ones already upgraded.
+pub fn Vm.ce_connected(mut self, id int)
+    mut ids := [id]
+    ids.extend(elements_under(id))
+    for e in ids
+        if ce_upgraded.contains(e)
+            ce_call(e, "connectedCallback", [])
+        else
+            ce_upgrade(e)
+
+## `id` and its descendants left the document.
+pub fn Vm.ce_disconnected(mut self, id int)
+    mut ids := [id]
+    ids.extend(elements_under(id))
+    for e in ids
+        if ce_upgraded.contains(e)
+            ce_call(e, "disconnectedCallback", [])
+
+## An attribute of upgraded element `id` changed from `old` to `fresh`
+## (none for absent).
+pub fn Vm.ce_attr_changed(mut self, id int, name str, old str?, fresh str?)
+    if not ce_upgraded.contains(id)
+        return
+    ctor := ce_definition(dom[id].tag) else return
+    if r := ce_attr_reaction(id, ctor, name, old, fresh)
+        r
+    else err
+        report_error(err)
+
+fn Vm.ce_attr_reaction(mut self, id int, ctor Value, name str, old str?, fresh str?) Value ! Thrown
+    if not ce_observed(ctor)?.contains(name)
+        return Undef
+    mut before := Value.Null
+    if o := old
+        before = Value.Str(o)
+    mut after := Value.Null
+    if f := fresh
+        after = Value.Str(f)
+    ce_call(id, "attributeChangedCallback", [Value.Str(name), before, after])
+    Undef

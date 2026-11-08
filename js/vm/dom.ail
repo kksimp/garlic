@@ -97,10 +97,13 @@ pub fn Vm.dom_detach(mut self, id int)
     p := dom[id].parent
     if p < 0
         return
+    was_connected := recording and dom[id].kind == 1 and connected(id)
     if i := dom[p].children.index_of(id)
         dom[p].children.remove_at(i)
     dom[id].parent = -1
     dom_log("detach", id, p, -1, "", "")
+    if was_connected
+        ce_disconnected(id)
 
 pub fn Vm.dom_append(mut self, parent int, id int)
     dom_detach(id)
@@ -219,6 +222,8 @@ fn Vm.after_insert(mut self, id int)
             ))
         else
             run_script_text(text_content(s))
+    if dom[id].kind == 1
+        ce_connected(id)
 
 ## What a script element is (HTML §4.12.1.1): "classic", "module", or "skip"
 ## for data blocks, other languages, and `nomodule` scripts (which a browser
@@ -580,7 +585,7 @@ pub fn Vm.dom_setup(mut self)
     methods(
         global_obj,
         "dom.window",
-        "setTimeout:1 setInterval:1 clearTimeout:1 clearInterval:1 requestAnimationFrame:1 cancelAnimationFrame:1 queueMicrotask:1 requestIdleCallback:1 addEventListener:2 removeEventListener:2 dispatchEvent:1 getComputedStyle:1 matchMedia:1 alert:1 confirm:1 prompt:1 scrollTo:2 scrollBy:2 scroll:2 open:1 close:0 focus:0 blur:0 postMessage:1 atob:1 btoa:1 __hostFetch:3 __hostWs:3",
+        "setTimeout:1 setInterval:1 clearTimeout:1 clearInterval:1 requestAnimationFrame:1 cancelAnimationFrame:1 queueMicrotask:1 requestIdleCallback:1 structuredClone:1 addEventListener:2 removeEventListener:2 dispatchEvent:1 getComputedStyle:1 matchMedia:1 alert:1 confirm:1 prompt:1 scrollTo:2 scrollBy:2 scroll:2 open:1 close:0 focus:0 blur:0 postMessage:1 atob:1 btoa:1 __hostFetch:3 __hostWs:3",
     )
     global_obj.props["location"] = Prop(
         value: Undef,
@@ -634,10 +639,11 @@ pub fn Vm.dom_setup(mut self)
         hint_brand("Not?A_Brand", "8"),
         hint_brand("Garlic", "0"),
     ])
-    uad := plain()
+    uad := object("NavigatorUAData", object_proto)
     uad.props["brands"] = data(brands)
     uad.props["mobile"] = data(Bool(false))
     uad.props["platform"] = data(Str("macOS"))
+    methods(uad, "dom.uad", "getHighEntropyValues:1 toJSON:0")
     nav_proto.props["userAgentData"] = data(Obj(uad))
     nav_proto.props["languages"] = data(array([Value.Str("en-US"), Value.Str("en")]))
     for kv in ["cookieEnabled=1", "onLine=1", "webdriver=0", "pdfViewerEnabled=1"]
@@ -682,6 +688,11 @@ pub fn Vm.dom_setup(mut self)
         list.props["length"] = hidden(Num(list.elems.len().to_float()))
         for i in 0..list.elems.len()
             list.props["{i}"] = data(list.elems[i])
+            if e := obj_of(list.elems[i])
+                key := if parts[0] == "plugins" then "name" else "type"
+                if n := e.props.get(key)
+                    list.props[str_of(n.value) else "{i}"] = hidden(list.elems[i])
+        methods(list, "dom.plugins", "item:1 namedItem:1 refresh:0")
         nav_proto.props[parts[0]] = data(Obj(list))
     navigator_surface(nav_proto)
     methods(nav_proto, "dom.navigator", "sendBeacon:1 javaEnabled:0")
@@ -802,6 +813,74 @@ fn Vm.accessor_named(mut self, target ref JsObject, name str, native str)
 
 # ------------------------------------------------------------ dispatch
 
+## `navigator.userAgentData.toJSON()` and `getHighEntropyValues(hints)`
+## (User-Agent Client Hints §4.1): the low-entropy fields always, and each
+## requested hint, as Chrome on an Apple Silicon Mac answers.
+fn Vm.ua_data_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    uad := obj_of(this_val) else return type_error("Illegal invocation")
+    if uad.class != "NavigatorUAData"
+        return type_error("Illegal invocation")
+    out := plain()
+    for key in ["brands", "mobile", "platform"]
+        if p := uad.props.get(key)
+            out.props[key] = data(p.value)
+    if m == "toJSON"
+        return Value.Obj(out)
+    hints := arg_at(args, 0)
+    if not is_nullish(hints)
+        for h in iterate(hints)?
+            hint := to_string(h)?
+            v := match hint
+                "architecture" => Value.Str("arm")
+                "bitness" => Value.Str("64")
+                "model" => Value.Str("")
+                "platformVersion" => Value.Str("15.0.0")
+                "uaFullVersion" => Value.Str("141.0.0.0")
+                "wow64" => Value.Bool(false)
+                "formFactors" => array([Value.Str("Desktop")])
+                "fullVersionList" =>
+                    array([
+                        hint_brand("Chromium", "141.0.0.0"),
+                        hint_brand("Not?A_Brand", "8.0.0.0"),
+                        hint_brand("Garlic", "0.1.0.0"),
+                    ])
+                _ => continue
+            out.props[hint] = data(v)
+    Value.Obj(promise_resolve(Value.Obj(out)))
+
+## `structuredClone(value)` (HTML §2.7.5) for the types pages clone: plain
+## objects, arrays, Date, Map, Set, RegExp, primitives and typed arrays'
+## plain copies; a function or a DOM node can't be cloned.
+fn Vm.structured_clone(mut self, v Value, depth int) Value ! Thrown
+    if depth > 200
+        return range_error("Maximum call stack size exceeded")
+    o := obj_of(v) else return v
+    if is_callable(v) or o.class == "Node" or o.class == "Proxy" or o.class == "Window"
+        return dom_exception("DataCloneError", "{describe(v)} could not be cloned.")
+    c := object(o.class, o.proto)
+    c.prim = o.prim
+    if o.class == "Array"
+        c.proto = proto_of("Array")
+        for x in o.elems
+            c.elems.push(structured_clone(x, depth + 1)?)
+        return Value.Obj(c)
+    if o.class == "Map" or o.class == "Set"
+        for x in o.elems
+            c.elems.push(structured_clone(x, depth + 1)?)
+        return Value.Obj(c)
+    if o.class == "Date" or o.class == "RegExp"
+        for k in o.props.keys()
+            c.props[k] = o.props[k]
+        return Value.Obj(c)
+    c.proto = proto_of("Object")
+    for k in o.props.keys()
+        p := o.props[k]
+        if not p.enumerable or k.starts_with(PRIVATE)
+            continue
+        value := if p.accessor then get(v, k)? else p.value
+        c.props[k] = data(structured_clone(value, depth + 1)?)
+    Value.Obj(c)
+
 ## One `{brand, version}` entry of `navigator.userAgentData.brands`.
 fn Vm.hint_brand(mut self, brand str, version str) Value
     b := plain()
@@ -879,6 +958,18 @@ pub fn Vm.dom_native(
         return url_method(p, this_val)
     if p := m.strip_prefix("params.")
         return params_method(p, this_val, args)
+    if p := m.strip_prefix("uad.")
+        return ua_data_method(p, this_val, args)
+    if p := m.strip_prefix("plugins.")
+        o := obj_of(this_val) else return type_error("Illegal invocation")
+        if o.class != "PluginArray" and o.class != "MimeTypeArray"
+            return type_error("Illegal invocation")
+        if p == "refresh"
+            return Undef
+        key := if p == "item" then "{to_number(arg_at(args, 0))?.to_int()}" else to_string(arg_at(args, 0))?
+        if found := o.props.get(key)
+            return found.value
+        return Null
     if m == "URL"
         return make_url(args, new_target)
     if m == "URLSearchParams"
@@ -1275,7 +1366,9 @@ fn Vm.document_method(mut self, m str, args List[Value]) Value ! Thrown
             Null
         "createElement" | "createElementNS" =>
             tag := to_string(if m == "createElementNS" then arg_at(args, 1) else a0)?.to_lower()
-            node_value(dom_create(tag, 1, ""))
+            fresh := dom_create(tag, 1, "")
+            ce_upgrade(fresh)
+            node_value(fresh)
         "createTextNode" => node_value(dom_create("#text", 3, to_string(a0)?))
         "createComment" => node_value(dom_create("#comment", 8, to_string(a0)?))
         "createDocumentFragment" => node_value(dom_create("#fragment", 1, ""))
@@ -1302,20 +1395,30 @@ fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
                 return Value.Str(v)
             Null
         "setAttribute" =>
-            set_attr(id, to_string(a0)?.to_lower(), to_string(a1)?)
-            if to_string(a0)?.to_lower() == "style"
+            name := to_string(a0)?.to_lower()
+            value := to_string(a1)?
+            old := attr_of(id, name)
+            set_attr(id, name, value)
+            if name == "style"
                 style_objs.remove(id)
+            ce_attr_changed(id, name, old, value)
             Undef
         "removeAttribute" =>
-            remove_attr(id, to_string(a0)?.to_lower())
+            name := to_string(a0)?.to_lower()
+            old := attr_of(id, name)
+            remove_attr(id, name)
+            if old != none
+                ce_attr_changed(id, name, old, none)
             Undef
         "hasAttribute" => Value.Bool(attr_of(id, to_string(a0)?.to_lower()) != none)
         "toggleAttribute" =>
             name := to_string(a0)?.to_lower()
-            if attr_of(id, name) != none
+            if old := attr_of(id, name)
                 remove_attr(id, name)
+                ce_attr_changed(id, name, old, none)
                 return Value.Bool(false)
             set_attr(id, name, "")
+            ce_attr_changed(id, name, none, "")
             Value.Bool(true)
         "getAttributeNames" => array([Value.Str(a.name) for a in dom[id].attrs])
         "getElementsByTagName" =>
@@ -2305,6 +2408,7 @@ fn Vm.window_method(mut self, m str, args List[Value]) Value ! Thrown
         "queueMicrotask" =>
             microtasks.push(a0)
             Undef
+        "structuredClone" => structured_clone(a0, 0)
         "addEventListener" | "removeEventListener" | "dispatchEvent" => listener_method(m, -1, args)
         "getComputedStyle" =>
             id := node_id(a0) else return Value.Obj(plain())

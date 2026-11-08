@@ -32,17 +32,17 @@ fn civil_from_days(z0 int) Civil
 
 ## The parts of a time value: year, month 0-11, date, hours, minutes,
 ## seconds, milliseconds, weekday 0-6.
-struct DateParts
-    year int
-    month int
-    date int
-    hours int
-    minutes int
-    seconds int
-    ms int
-    weekday int
+pub struct DateParts
+    pub year int
+    pub month int
+    pub date int
+    pub hours int
+    pub minutes int
+    pub seconds int
+    pub ms int
+    pub weekday int
 
-fn parts_of(t float) DateParts
+pub fn parts_of(t float) DateParts
     days := (t / MS_PER_DAY).floor()
     in_day := (t - days * MS_PER_DAY).to_int()
     c := civil_from_days(days.to_int())
@@ -286,6 +286,16 @@ fn Vm.date_method(mut self, m str, this_val Value, args List[Value]) Value ! Thr
         return Value.Str(date_text(t))
     if m == "toUTCString"
         return Value.Str(utc_text(t))
+    if m == "toDateString" or m == "toTimeString"
+        if not is_finite(t)
+            return Value.Str("Invalid Date")
+        full := date_text(t)
+        return Value.Str(if m == "toDateString" then full.slice(0, 15) else full.slice(16, full.chars().len()))
+    if m == "toLocaleString" or m == "toLocaleDateString" or m == "toLocaleTimeString"
+        if not is_finite(t)
+            return Value.Str("Invalid Date")
+        opts := date_format_options(m, arg_at(args, 1))?
+        return Value.Str(format_date(t, opts))
     if m == "getTime" or m == "valueOf"
         return Value.Num(t)
     if m == "getTimezoneOffset"

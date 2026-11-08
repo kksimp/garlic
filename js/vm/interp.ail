@@ -57,6 +57,10 @@ pub struct Vm
     pub in_error bool
     pub microtasks List[Value]
     pub started_scripts Set[int]
+    ## Custom elements (customelements.ail): the nodes whose upgrade is
+    ## constructing them now, innermost last, and the nodes upgraded so far.
+    pub ce_upgrading List[int]
+    pub ce_upgraded Set[int]
     ## Requests for the browser: navigations, script fetches, dialogs.
     pub host_requests List[HostRequest]
     ## Sources of external scripts the browser already fetched, by URL.
