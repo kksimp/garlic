@@ -210,6 +210,16 @@ regex engine is written.
   and make the engine's per-node script objects live in Garlic's types;
   and diffing the trees after scripts ran, which loses order and node
   identity.
+- **Custom elements upgrade.** `customElements.define` upgrades the
+  elements of that name already in the page; `createElement` and
+  insertion upgrade new ones. An upgrade runs the class constructor with
+  the element's own object as `this`: `HTMLElement`'s constructor, reached
+  through `super()`, hands back the element being upgraded (or makes a new
+  one for a plain `new`), and sets its prototype to the class's. Then
+  `attributeChangedCallback` runs for each observed attribute present,
+  `connectedCallback` when the element is in the document, and
+  `disconnectedCallback` when it leaves (customelements.ail). Frameworks
+  that hydrate through an island element (Astro) need this to start at all.
 - **The browser decides.** Navigations (with method and body, so a script
   form submission can POST), external script fetches, `window.open`,
   cookies and dialogs are requests in `Vm.host_requests`; the engine does
@@ -364,6 +374,11 @@ it comes later for speed, and these frames will move onto it).
   frames of the bootstrap interpreter, whose limit is 10,000. A bytecode
   compiler for the whole interpreter will remove this.
 - Import maps and `<link rel=modulepreload>`; module workers.
+- `Intl` knows one locale, en-US, and local time is UTC, so
+  `Intl.DateTimeFormat().resolvedOptions().timeZone` is "UTC".
+- Canvas contexts, `Blob`, `FormData`, `FileReader`, streams, `Worker`,
+  `WebAssembly`, media devices, geolocation and service workers: pages that
+  feature-test them see them missing, as the compatibility sites report.
 - BigInt literals (`10n`).
 - Regular expression pattern syntax (§22.2.1): the literal's body and flags
   are checked, and the pattern is checked when the regex engine compiles it.
