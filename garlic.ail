@@ -139,7 +139,7 @@ fn options() net.Options
 ## The headers for a picture: any image type.
 fn image_options() net.Options
     mut o := options()
-    o.headers["accept"] = "image/png,image/jpeg,image/gif,*/*;q=0.5"
+    o.headers["accept"] = "image/webp,image/png,image/jpeg,image/gif,*/*;q=0.5"
     o.headers["accept-encoding"] = "identity"
     o
 

@@ -1,7 +1,7 @@
 ## Colour images for the browser: the `Rgba` bitmap and `decode`, which picks
-## the PNG, JPEG or GIF decoder from the first bytes (ADR 0512). Written from
-## the formats' specifications: PNG (RFC 2083, with Adam7), JPEG (T.81) and
-## GIF89a (first frame only).
+## the PNG, JPEG, GIF or WebP decoder from the first bytes (ADR 0512). Written
+## from the formats' specifications: PNG (RFC 2083, with Adam7), JPEG (T.81),
+## GIF89a (first frame only) and WebP (`webp.ail`, `vp8.ail`).
 
 ## Pixels row by row, `px[y * width + x]` as `0xAARRGGBB` (alpha 255 is opaque).
 pub struct Rgba
@@ -22,7 +22,7 @@ pub fn Rgba.bytes(self) List[int]
         out.push(p.shr(24).bit_and(255))
     out
 
-## The image `data` (PNG, JPEG or GIF by its first bytes) as colour.
+## The image `data` (PNG, JPEG, GIF or WebP by its first bytes) as colour.
 pub fn decode(data List[int]) Rgba ! ImageError
     if data.len() >= 8
         and data[0] == 0x89
@@ -34,10 +34,12 @@ pub fn decode(data List[int]) Rgba ! ImageError
         return jpeg_rgb(data)
     if data.len() >= 6 and data[0] == 0x47 and data[1] == 0x49 and data[2] == 0x46
         return gif(data)
-    Unsupported(what: "image data that is not PNG, JPEG or GIF")
+    if data.len() >= 12 and data[0] == 0x52 and data[1] == 0x49 and data[8] == 0x57 and data[9] == 0x45
+        return webp(data)
+    Unsupported(what: "image data that is not PNG, JPEG, GIF or WebP")
 
-## The `[width, height]` of a PNG, JPEG or GIF read from its header alone, or
-## `[0, 0]` when `data` is none of them. The browser sizes `<img>` with it
+## The `[width, height]` of a PNG, JPEG, GIF or WebP read from its header alone,
+## or `[0, 0]` when `data` is none of them. The browser sizes `<img>` with it
 ## without decoding the pixels.
 pub fn dims(data List[int]) List[int]
     n := data.len()
@@ -45,6 +47,8 @@ pub fn dims(data List[int]) List[int]
         return [be32(data, 16), be32(data, 20)]
     if n >= 10 and data[0] == 0x47 and data[1] == 0x49 and data[2] == 0x46
         return [data[6] + data[7] * 256, data[8] + data[9] * 256]
+    if n >= 30 and data[0] == 0x52 and data[1] == 0x49 and data[8] == 0x57
+        return webp_dims(data)
     if n >= 4 and data[0] == 0xff and data[1] == 0xd8
         mut i := 2
         while i + 9 < n
@@ -151,3 +155,43 @@ fn load(name str, ext str) List[int] ! fs.IoError
         got := dims(load(pair[0], pair[1])?)
         assert_eq(got, [37, 29])
     assert_eq(dims([1, 2, 3]), [0, 0])
+
+@test fn webp_lossless_decodes_exactly() !
+    for name in [
+        "webp_ll_rgb",
+        "webp_ll_rgb_m6",
+        "webp_ll_rgba",
+        "webp_ll_few_colors",
+        "webp_ll_two_colors",
+        "webp_ll_1x1",
+    ]
+        img := decode(load(name, "webp")?)?
+        assert_eq(off_by(img, name)?, [0, 0])
+
+@test fn webp_lossy_matches_libwebp() !
+    # The decoder uses libwebp's integer transforms, loop filter and fancy
+    # chroma upsampling, so the pixels are the same.
+    for name in [
+        "webp_lossy_q75",
+        "webp_lossy_q20",
+        "webp_lossy_q100",
+        "webp_lossy_alpha",
+        "webp_lossy_alpha_filtered",
+        "webp_lossy_150x70",
+        "webp_lossy_1x1",
+    ]
+        img := decode(load(name, "webp")?)?
+        assert_eq(off_by(img, name)?, [0, 0])
+
+@test fn webp_animation_frames_are_composited() !
+    for name in ["webp_anim_lossless", "webp_anim_lossy"]
+        frames := webp_frames(load(name, "webp")?)?
+        assert_eq(frames.len(), 3)
+        assert_eq([f.ms for f in frames], [40, 80, 120])
+        for i in 0..3
+            assert_eq(off_by(frames[i].img, "{name}_f{i}")?, [0, 0])
+
+@test fn webp_dims_reads_each_chunk_kind() !
+    for name in ["webp_ll_rgb", "webp_lossy_q75", "webp_lossy_alpha", "webp_anim_lossy"]
+        got := dims(load(name, "webp")?)
+        assert(got[0] >= 37 and got[1] >= 29)

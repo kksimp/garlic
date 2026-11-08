@@ -1,0 +1,941 @@
+## VP8 key-frame decoding for WebP's lossy mode (RFC 6386), the picture as
+## `0xAARRGGBB` with alpha 255. Chroma is upsampled with the same bilinear
+## 9-3-3-1 filter the libwebp decoder uses by default, and the YUV to RGB
+## conversion uses its fixed-point constants, so pixels match Chrome's.
+## Written from RFC 6386; the constant tables are in `vp8tab.ail`.
+
+## The boolean entropy decoder of section 7. `val` holds two bytes, `rng` is
+## the range (128..255 between calls), `nbits` the bits shifted since the last
+## byte was loaded. Past the end it reads zeros.
+struct Vp8Bits
+    data List[int]
+    pos int
+    stop int
+    val int
+    rng int
+    nbits int
+
+fn vp8_bits(data List[int], start int, stop int) Vp8Bits
+    a := if start < stop then data[start] else 0
+    b := if start + 1 < stop then data[start + 1] else 0
+    Vp8Bits(data: data, pos: start + 2, stop: stop, val: a * 256 + b, rng: 255, nbits: 0)
+
+fn Vp8Bits.bit(mut self, prob int) int
+    split := 1 + ((rng - 1) * prob).shr(8)
+    big := split.shl(8)
+    mut r := 0
+    if val >= big
+        r = 1
+        rng -= split
+        val -= big
+    else
+        rng = split
+    if rng < 128
+        s := VP8_NORM[rng]
+        rng = rng.shl(s)
+        val = val.shl(s)
+        nbits += s
+        if nbits >= 8
+            nbits -= 8
+            b := if pos < stop then data[pos] else 0
+            pos += 1
+            val = val.bit_or(b.shl(nbits))
+    r
+
+## An `n`-bit unsigned value, most significant bit first.
+fn Vp8Bits.lit(mut self, n int) int
+    mut v := 0
+    for _ in 0..n
+        v = v * 2 + bit(128)
+    v
+
+## An `n`-bit magnitude followed by a sign bit.
+fn Vp8Bits.signed(mut self, n int) int
+    v := lit(n)
+    if bit(128) == 1
+        return -v
+    v
+
+## Reads and drops `n` flag bits.
+fn Vp8Bits.skip_bits(mut self, n int)
+    for _ in 0..n
+        bit(128)
+
+## A flag followed by a signed `n`-bit value when it is set.
+fn Vp8Bits.opt_signed(mut self, n int) int
+    if bit(128) == 1
+        return signed(n)
+    0
+
+## The decoder state, to resume a token partition on a later macroblock row.
+fn Vp8Bits.save(self) List[int]
+    [pos, val, rng, nbits]
+
+fn Vp8Bits.restore(mut self, st List[int])
+    pos = st[0]
+    val = st[1]
+    rng = st[2]
+    nbits = st[3]
+
+fn Vp8Bits.large(mut self, probas List[int], p int) int
+    if bit(probas[p + 3]) == 0
+        if bit(probas[p + 4]) == 0
+            return 2
+        return 3 + bit(probas[p + 5])
+    if bit(probas[p + 6]) == 0
+        if bit(probas[p + 7]) == 0
+            return 5 + bit(159)
+        v := 7 + 2 * bit(165)
+        return v + bit(145)
+    bit1 := bit(probas[p + 8])
+    bit0 := bit(probas[p + 9 + bit1])
+    cat := 2 * bit1 + bit0
+    mut tab := VP8_CAT3
+    if cat == 1
+        tab = VP8_CAT4
+    elif cat == 2
+        tab = VP8_CAT5
+    elif cat == 3
+        tab = VP8_CAT6
+    mut v := 0
+    for pr in tab
+        v = v + v + bit(pr)
+    v + 3 + 8.shl(cat)
+
+## The coefficients of one block (section 13): writes the dequantised values
+## to `out[base + position]` and returns the index after the last non-zero
+## one. `typ` is the block type (0 Y after Y2, 1 Y2, 2 chroma, 3 Y with DC).
+fn Vp8Bits.coeffs(
+    mut self,
+    probas List[int],
+    typ int,
+    ctx int,
+    dq0 int,
+    dq1 int,
+    first int,
+    mut out List[int],
+    base int,
+) int
+    mut n := first
+    mut p := ((typ * 8 + VP8_BANDS[n]) * 3 + ctx) * 11
+    while n < 16
+        if bit(probas[p]) == 0
+            return n
+        while bit(probas[p + 1]) == 0
+            n += 1
+            p = (typ * 8 + VP8_BANDS[n]) * 33
+            if n == 16
+                return 16
+        nxt := (typ * 8 + VP8_BANDS[n + 1]) * 33
+        mut v := 1
+        if bit(probas[p + 2]) == 0
+            p = nxt + 11
+        else
+            v = large(probas, p)
+            p = nxt + 22
+        sv := if bit(128) == 1 then -v else v
+        out[base + VP8_ZIGZAG[n]] = sv * (if n > 0 then dq1 else dq0)
+        n += 1
+    16
+
+fn vp8_clip(v int) int
+    if v < 0
+        return 0
+    if v > 255
+        return 255
+    v
+
+fn vp8_sclip1(v int) int
+    if v < -128
+        return -128
+    if v > 127
+        return 127
+    v
+
+fn vp8_sclip2(v int) int
+    if v < -16
+        return -16
+    if v > 15
+        return 15
+    v
+
+fn vp8_avg3(a int, b int, c int) int
+    (a + 2 * b + c + 2).shr(2)
+
+fn vp8_avg2(a int, b int) int
+    (a + b + 1).shr(1)
+
+## The 4x4 inverse DCT of `co[base..base + 16]` added to the pixels at
+## `(x0, y0)` of `pl` (section 14.3).
+fn vp8_idct_add(co List[int], base int, mut pl List[int], stride int, x0 int, y0 int)
+    mut any := false
+    for k in 0..16
+        if co[base + k] != 0
+            any = true
+            break
+    if not any
+        return
+    mut t := [0 for _ in 0..16]
+    for i in 0..4
+        i0 := co[base + i]
+        i4 := co[base + 4 + i]
+        i8 := co[base + 8 + i]
+        i12 := co[base + 12 + i]
+        a := i0 + i8
+        b := i0 - i8
+        c := (i4 * 35468).shr(16) - (((i12 * 20091).shr(16)) + i12)
+        d := (((i4 * 20091).shr(16)) + i4) + (i12 * 35468).shr(16)
+        t[4 * i] = a + d
+        t[4 * i + 1] = b + c
+        t[4 * i + 2] = b - c
+        t[4 * i + 3] = a - d
+    for i in 0..4
+        dc := t[i] + 4
+        a := dc + t[8 + i]
+        b := dc - t[8 + i]
+        c := (t[4 + i] * 35468).shr(16) - (((t[12 + i] * 20091).shr(16)) + t[12 + i])
+        d := (((t[4 + i] * 20091).shr(16)) + t[4 + i]) + (t[12 + i] * 35468).shr(16)
+        at := (y0 + i) * stride + x0
+        pl[at] = vp8_clip(pl[at] + (a + d).shr(3))
+        pl[at + 1] = vp8_clip(pl[at + 1] + (b + c).shr(3))
+        pl[at + 2] = vp8_clip(pl[at + 2] + (b - c).shr(3))
+        pl[at + 3] = vp8_clip(pl[at + 3] + (a - d).shr(3))
+
+## The inverse Walsh-Hadamard transform of the Y2 block `dc` into the DC
+## coefficients of the 16 luma blocks (`co[16 * k]`).
+fn vp8_wht(dc List[int], mut co List[int])
+    mut t := [0 for _ in 0..16]
+    for i in 0..4
+        a0 := dc[i] + dc[12 + i]
+        a1 := dc[4 + i] + dc[8 + i]
+        a2 := dc[4 + i] - dc[8 + i]
+        a3 := dc[i] - dc[12 + i]
+        t[i] = a0 + a1
+        t[8 + i] = a0 - a1
+        t[4 + i] = a3 + a2
+        t[12 + i] = a3 - a2
+    for i in 0..4
+        d0 := t[4 * i] + 3
+        a0 := d0 + t[4 * i + 3]
+        a1 := t[4 * i + 1] + t[4 * i + 2]
+        a2 := t[4 * i + 1] - t[4 * i + 2]
+        a3 := d0 - t[4 * i + 3]
+        co[16 * (4 * i)] = (a0 + a1).shr(3)
+        co[16 * (4 * i + 1)] = (a3 + a2).shr(3)
+        co[16 * (4 * i + 2)] = (a0 - a1).shr(3)
+        co[16 * (4 * i + 3)] = (a3 - a2).shr(3)
+
+## Predicts an `n` by `n` block (16 luma, 8 chroma) at `(x0, y0)`: the
+## whole-macroblock modes DC 0, TM 1, V 2, H 3. Samples above the picture are
+## 127, left of it 129 (section 12.2).
+fn vp8_pred_block(pl List[int], stride int, x0 int, y0 int, n int, mode int) List[int]
+    mut out := [0 for _ in 0..n * n]
+    mut top := [127 for _ in 0..n]
+    mut left := [129 for _ in 0..n]
+    if y0 > 0
+        for i in 0..n
+            top[i] = pl[(y0 - 1) * stride + x0 + i]
+    if x0 > 0
+        for j in 0..n
+            left[j] = pl[(y0 + j) * stride + x0 - 1]
+    if mode == 0
+        mut sum := 0
+        mut cnt := 0
+        if y0 > 0
+            for i in 0..n
+                sum += top[i]
+            cnt += n
+        if x0 > 0
+            for j in 0..n
+                sum += left[j]
+            cnt += n
+        mut v := 128
+        if cnt > 0
+            v = (sum + cnt / 2) / cnt
+        for k in 0..n * n
+            out[k] = v
+    elif mode == 1
+        tl := if y0 == 0 then 127 else if x0 == 0 then 129 else pl[(y0 - 1) * stride + x0 - 1]
+        for j in 0..n
+            for i in 0..n
+                out[j * n + i] = vp8_clip(left[j] + top[i] - tl)
+    elif mode == 2
+        for j in 0..n
+            for i in 0..n
+                out[j * n + i] = top[i]
+    else
+        for j in 0..n
+            for i in 0..n
+                out[j * n + i] = left[j]
+    out
+
+## Predicts the 4x4 sub-block with top samples `t` (4 above, 4 above-right),
+## left samples `l` and corner `x` (section 12.3). Modes: DC 0, TM 1, VE 2,
+## HE 3, RD 4, VR 5, LD 6, VL 7, HD 8, HU 9.
+fn vp8_pred4(mode int, t List[int], l List[int], x int) List[int]
+    mut o := [0 for _ in 0..16]
+    if mode == 0
+        mut dc := 4
+        for i in 0..4
+            dc += t[i] + l[i]
+        for k in 0..16
+            o[k] = dc.shr(3)
+    elif mode == 1
+        for j in 0..4
+            for i in 0..4
+                o[j * 4 + i] = vp8_clip(l[j] + t[i] - x)
+    elif mode == 2
+        v0 := vp8_avg3(x, t[0], t[1])
+        v1 := vp8_avg3(t[0], t[1], t[2])
+        v2 := vp8_avg3(t[1], t[2], t[3])
+        v3 := vp8_avg3(t[2], t[3], t[4])
+        for j in 0..4
+            o[j * 4] = v0
+            o[j * 4 + 1] = v1
+            o[j * 4 + 2] = v2
+            o[j * 4 + 3] = v3
+    elif mode == 3
+        r0 := vp8_avg3(x, l[0], l[1])
+        r1 := vp8_avg3(l[0], l[1], l[2])
+        r2 := vp8_avg3(l[1], l[2], l[3])
+        r3 := vp8_avg3(l[2], l[3], l[3])
+        for i in 0..4
+            o[i] = r0
+            o[4 + i] = r1
+            o[8 + i] = r2
+            o[12 + i] = r3
+    elif mode == 4
+        e := [l[3], l[2], l[1], l[0], x, t[0], t[1], t[2], t[3]]
+        for j in 0..4
+            for i in 0..4
+                d := i - j
+                o[j * 4 + i] = vp8_avg3(e[3 + d], e[4 + d], e[5 + d])
+    elif mode == 5
+        i0 := l[0]
+        j0 := l[1]
+        k0 := l[2]
+        a2 := vp8_avg2(x, t[0])
+        b2 := vp8_avg2(t[0], t[1])
+        c2 := vp8_avg2(t[1], t[2])
+        o[0] = a2
+        o[9] = a2
+        o[1] = b2
+        o[10] = b2
+        o[2] = c2
+        o[11] = c2
+        o[3] = vp8_avg2(t[2], t[3])
+        o[12] = vp8_avg3(k0, j0, i0)
+        o[8] = vp8_avg3(j0, i0, x)
+        v1 := vp8_avg3(i0, x, t[0])
+        o[4] = v1
+        o[13] = v1
+        v2 := vp8_avg3(x, t[0], t[1])
+        o[5] = v2
+        o[14] = v2
+        v3 := vp8_avg3(t[0], t[1], t[2])
+        o[6] = v3
+        o[15] = v3
+        o[7] = vp8_avg3(t[1], t[2], t[3])
+    elif mode == 6
+        for j in 0..4
+            for i in 0..4
+                k := i + j
+                if k == 6
+                    o[j * 4 + i] = vp8_avg3(t[6], t[7], t[7])
+                else
+                    o[j * 4 + i] = vp8_avg3(t[k], t[k + 1], t[k + 2])
+    elif mode == 7
+        o[0] = vp8_avg2(t[0], t[1])
+        v = vp8_avg2(t[1], t[2])
+        o[1] = v
+        o[8] = v
+        v = vp8_avg2(t[2], t[3])
+        o[2] = v
+        o[9] = v
+        v = vp8_avg2(t[3], t[4])
+        o[3] = v
+        o[10] = v
+        o[4] = vp8_avg3(t[0], t[1], t[2])
+        v = vp8_avg3(t[1], t[2], t[3])
+        o[5] = v
+        o[12] = v
+        v = vp8_avg3(t[2], t[3], t[4])
+        o[6] = v
+        o[13] = v
+        v = vp8_avg3(t[3], t[4], t[5])
+        o[7] = v
+        o[14] = v
+        o[11] = vp8_avg3(t[4], t[5], t[6])
+        o[15] = vp8_avg3(t[5], t[6], t[7])
+    elif mode == 8
+        v := vp8_avg2(l[0], x)
+        o[0] = v
+        o[6] = v
+        v = vp8_avg2(l[1], l[0])
+        o[4] = v
+        o[10] = v
+        v = vp8_avg2(l[2], l[1])
+        o[8] = v
+        o[14] = v
+        o[12] = vp8_avg2(l[3], l[2])
+        o[3] = vp8_avg3(t[0], t[1], t[2])
+        o[2] = vp8_avg3(x, t[0], t[1])
+        v = vp8_avg3(l[0], x, t[0])
+        o[1] = v
+        o[7] = v
+        v = vp8_avg3(l[1], l[0], x)
+        o[5] = v
+        o[11] = v
+        v = vp8_avg3(l[2], l[1], l[0])
+        o[9] = v
+        o[15] = v
+        o[13] = vp8_avg3(l[3], l[2], l[1])
+    else
+        o[0] = vp8_avg2(l[0], l[1])
+        v := vp8_avg2(l[1], l[2])
+        o[2] = v
+        o[4] = v
+        v = vp8_avg2(l[2], l[3])
+        o[6] = v
+        o[8] = v
+        o[1] = vp8_avg3(l[0], l[1], l[2])
+        v = vp8_avg3(l[1], l[2], l[3])
+        o[3] = v
+        o[5] = v
+        v = vp8_avg3(l[2], l[3], l[3])
+        o[7] = v
+        o[9] = v
+        for k in [11, 10, 12, 13, 14, 15]
+            o[k] = l[3]
+    o
+
+fn vp8_filter2(mut pl List[int], p int, s int)
+    p1 := pl[p - 2 * s]
+    p0 := pl[p - s]
+    q0 := pl[p]
+    q1 := pl[p + s]
+    a := 3 * (q0 - p0) + vp8_sclip1(p1 - q1)
+    a1 := vp8_sclip2((a + 4).shr(3))
+    a2 := vp8_sclip2((a + 3).shr(3))
+    pl[p - s] = vp8_clip(p0 + a2)
+    pl[p] = vp8_clip(q0 - a1)
+
+fn vp8_filter4(mut pl List[int], p int, s int)
+    p1 := pl[p - 2 * s]
+    p0 := pl[p - s]
+    q0 := pl[p]
+    q1 := pl[p + s]
+    a := 3 * (q0 - p0)
+    a1 := vp8_sclip2((a + 4).shr(3))
+    a2 := vp8_sclip2((a + 3).shr(3))
+    a3 := (a1 + 1).shr(1)
+    pl[p - 2 * s] = vp8_clip(p1 + a3)
+    pl[p - s] = vp8_clip(p0 + a2)
+    pl[p] = vp8_clip(q0 - a1)
+    pl[p + s] = vp8_clip(q1 - a3)
+
+fn vp8_filter6(mut pl List[int], p int, s int)
+    p2 := pl[p - 3 * s]
+    p1 := pl[p - 2 * s]
+    p0 := pl[p - s]
+    q0 := pl[p]
+    q1 := pl[p + s]
+    q2 := pl[p + 2 * s]
+    a := vp8_sclip1(3 * (q0 - p0) + vp8_sclip1(p1 - q1))
+    a1 := (27 * a + 63).shr(7)
+    a2 := (18 * a + 63).shr(7)
+    a3 := (9 * a + 63).shr(7)
+    pl[p - 3 * s] = vp8_clip(p2 + a3)
+    pl[p - 2 * s] = vp8_clip(p1 + a2)
+    pl[p - s] = vp8_clip(p0 + a1)
+    pl[p] = vp8_clip(q0 - a1)
+    pl[p + s] = vp8_clip(q1 - a2)
+    pl[p + 2 * s] = vp8_clip(q2 - a3)
+
+fn vp8_needs(pl List[int], p int, s int, t2 int) bool
+    4 * (pl[p - s] - pl[p]).abs() + (pl[p - 2 * s] - pl[p + s]).abs() <= t2
+
+fn vp8_needs2(pl List[int], p int, s int, t2 int, it int) bool
+    if not vp8_needs(pl, p, s, t2)
+        return false
+    (pl[p - 4 * s] - pl[p - 3 * s]).abs() <= it
+        and (pl[p - 3 * s] - pl[p - 2 * s]).abs() <= it
+        and (pl[p - 2 * s] - pl[p - s]).abs() <= it
+        and (pl[p + 3 * s] - pl[p + 2 * s]).abs() <= it
+        and (pl[p + 2 * s] - pl[p + s]).abs() <= it
+        and (pl[p + s] - pl[p]).abs() <= it
+
+fn vp8_hev(pl List[int], p int, s int, thr int) bool
+    (pl[p - 2 * s] - pl[p - s]).abs() > thr or (pl[p + s] - pl[p]).abs() > thr
+
+## Simple filter along one 16-sample edge: `hs` steps across the edge, `vs`
+## along it.
+fn vp8_simple_edge(mut pl List[int], p0 int, hs int, vs int, thresh int)
+    t2 := 2 * thresh + 1
+    for i in 0..16
+        p := p0 + i * vs
+        if vp8_needs(pl, p, hs, t2)
+            vp8_filter2(mut pl, p, hs)
+
+## Normal filter along an edge of `size` samples; `inner` picks the 4-tap
+## variant used on sub-block edges, the 6-tap one is for macroblock edges.
+fn vp8_edge(
+    mut pl List[int],
+    p0 int,
+    hs int,
+    vs int,
+    size int,
+    thresh int,
+    ithresh int,
+    hev int,
+    inner bool,
+)
+    t2 := 2 * thresh + 1
+    for i in 0..size
+        p := p0 + i * vs
+        if vp8_needs2(pl, p, hs, t2, ithresh)
+            if vp8_hev(pl, p, hs, hev)
+                vp8_filter2(mut pl, p, hs)
+            elif inner
+                vp8_filter4(mut pl, p, hs)
+            else
+                vp8_filter6(mut pl, p, hs)
+
+## One macroblock's loop filter (section 15), in the decoder's order: left
+## edge, inner vertical edges, top edge, inner horizontal edges.
+fn vp8_filter_mb(
+    mut yp List[int],
+    mut up List[int],
+    mut vp List[int],
+    ys int,
+    cs int,
+    mx int,
+    my int,
+    limit int,
+    ilevel int,
+    hev int,
+    inner bool,
+    simple bool,
+)
+    yo := my * 16 * ys + mx * 16
+    co := my * 8 * cs + mx * 8
+    if simple
+        if mx > 0
+            vp8_simple_edge(mut yp, yo, 1, ys, limit + 4)
+        if inner
+            for k in 1..4
+                vp8_simple_edge(mut yp, yo + 4 * k, 1, ys, limit)
+        if my > 0
+            vp8_simple_edge(mut yp, yo, ys, 1, limit + 4)
+        if inner
+            for k in 1..4
+                vp8_simple_edge(mut yp, yo + 4 * k * ys, ys, 1, limit)
+        return
+    if mx > 0
+        vp8_edge(mut yp, yo, 1, ys, 16, limit + 4, ilevel, hev, false)
+        vp8_edge(mut up, co, 1, cs, 8, limit + 4, ilevel, hev, false)
+        vp8_edge(mut vp, co, 1, cs, 8, limit + 4, ilevel, hev, false)
+    if inner
+        for k in 1..4
+            vp8_edge(mut yp, yo + 4 * k, 1, ys, 16, limit, ilevel, hev, true)
+        vp8_edge(mut up, co + 4, 1, cs, 8, limit, ilevel, hev, true)
+        vp8_edge(mut vp, co + 4, 1, cs, 8, limit, ilevel, hev, true)
+    if my > 0
+        vp8_edge(mut yp, yo, ys, 1, 16, limit + 4, ilevel, hev, false)
+        vp8_edge(mut up, co, cs, 1, 8, limit + 4, ilevel, hev, false)
+        vp8_edge(mut vp, co, cs, 1, 8, limit + 4, ilevel, hev, false)
+    if inner
+        for k in 1..4
+            vp8_edge(mut yp, yo + 4 * k * ys, ys, 1, 16, limit, ilevel, hev, true)
+        vp8_edge(mut up, co + 4 * cs, cs, 1, 8, limit, ilevel, hev, true)
+        vp8_edge(mut vp, co + 4 * cs, cs, 1, 8, limit, ilevel, hev, true)
+
+fn vp8_clip8(v int) int
+    if v < 0
+        return 0
+    if v > 16383
+        return 255
+    v.shr(6)
+
+## `0xFF000000 | r << 16 | g << 8 | b` for one pixel (the libwebp constants).
+fn vp8_rgb(y int, u int, v int) int
+    yy := (y * 19077).shr(8)
+    r := vp8_clip8(yy + (v * 26149).shr(8) - 14234)
+    g := vp8_clip8(yy - (u * 6419).shr(8) - (v * 13320).shr(8) + 8708)
+    b := vp8_clip8(yy + (u * 33050).shr(8) - 17685)
+    0xff000000.bit_or(r.shl(16)).bit_or(g.shl(8)).bit_or(b)
+
+## The picture of a key frame at `at` (`len` bytes of VP8 data in `d`).
+pub fn vp8(d List[int], at int, len int) Rgba ! ImageError
+    if len < 10
+        return Bad(why: "VP8 frame is cut off")
+    tag := d[at] + d[at + 1] * 256 + d[at + 2] * 65536
+    if tag.bit_and(1) != 0
+        return Unsupported(what: "VP8 inter frame")
+    if tag.shr(1).bit_and(7) > 3
+        return Bad(why: "VP8 profile")
+    if d[at + 3] != 0x9d or d[at + 4] != 0x01 or d[at + 5] != 0x2a
+        return Bad(why: "VP8 start code")
+    w := (d[at + 6] + d[at + 7] * 256).bit_and(0x3fff)
+    h := (d[at + 8] + d[at + 9] * 256).bit_and(0x3fff)
+    if w == 0 or h == 0
+        return Bad(why: "VP8 picture of {w}x{h}")
+    part_len := tag.shr(5)
+    first := at + 10
+    stop := at + len
+    if first + part_len > stop
+        return Bad(why: "VP8 first partition is cut off")
+    mbw := (w + 15) / 16
+    mbh := (h + 15) / 16
+    mut br := vp8_bits(d, first, first + part_len)
+    br.skip_bits(2)
+    # Segments (9.3).
+    use_seg := br.bit(128)
+    mut update_map := 0
+    mut abs_delta := 1
+    mut seg_q := [0, 0, 0, 0]
+    mut seg_f := [0, 0, 0, 0]
+    mut seg_p := [255, 255, 255]
+    if use_seg == 1
+        update_map = br.bit(128)
+        if br.bit(128) == 1
+            abs_delta = br.bit(128)
+            for s in 0..4
+                seg_q[s] = br.opt_signed(7)
+            for s in 0..4
+                seg_f[s] = br.opt_signed(6)
+        if update_map == 1
+            for s in 0..3
+                seg_p[s] = if br.bit(128) == 1 then br.lit(8) else 255
+    # Loop filter (9.6).
+    simple := br.bit(128) == 1
+    level := br.lit(6)
+    sharp := br.lit(3)
+    use_delta := br.bit(128)
+    mut ref_delta := 0
+    mut mode_delta := 0
+    if use_delta == 1
+        if br.bit(128) == 1
+            for i in 0..4
+                if br.bit(128) == 1
+                    v := br.signed(6)
+                    if i == 0
+                        ref_delta = v
+            for i in 0..4
+                if br.bit(128) == 1
+                    v := br.signed(6)
+                    if i == 0
+                        mode_delta = v
+    # Token partitions (9.5).
+    nparts := 1.shl(br.lit(2))
+    mut pstart := first + part_len + 3 * (nparts - 1)
+    if pstart > stop
+        return Bad(why: "VP8 partition sizes are cut off")
+    mut starts := List[int]()
+    mut stops := List[int]()
+    for p in 0..nparts
+        mut sz := stop - pstart
+        if p < nparts - 1
+            q := first + part_len + 3 * p
+            sz = (d[q] + d[q + 1] * 256 + d[q + 2] * 65536).min(stop - pstart)
+        starts.push(pstart)
+        stops.push(pstart + sz)
+        pstart += sz
+    # Quantizers (9.6).
+    base_q := br.lit(7)
+    dqy1_dc := br.opt_signed(4)
+    dqy2_dc := br.opt_signed(4)
+    dqy2_ac := br.opt_signed(4)
+    dquv_dc := br.opt_signed(4)
+    dquv_ac := br.opt_signed(4)
+    mut dqm := List[List[int]]()
+    for s in 0..4
+        mut q := base_q
+        if use_seg == 1
+            q = seg_q[s]
+            if abs_delta == 0
+                q += base_q
+        y1dc := VP8_DC_Q[(q + dqy1_dc).max(0).min(127)]
+        y1ac := VP8_AC_Q[q.max(0).min(127)]
+        y2dc := VP8_DC_Q[(q + dqy2_dc).max(0).min(127)] * 2
+        y2ac := ((VP8_AC_Q[(q + dqy2_ac).max(0).min(127)] * 101581).shr(16)).max(8)
+        uvdc := VP8_DC_Q[(q + dquv_dc).max(0).min(117)]
+        uvac := VP8_AC_Q[(q + dquv_ac).max(0).min(127)]
+        dqm.push([y1dc, y1ac, y2dc, y2ac, uvdc, uvac])
+    br.skip_bits(1)
+    # Coefficient probabilities (13.4).
+    mut probas := VP8_COEF_PROBA
+    for i in 0..1056
+        if br.bit(VP8_COEF_UPDATE[i]) == 1
+            probas[i] = br.lit(8)
+    use_skip := br.bit(128)
+    skip_p := if use_skip == 1 then br.lit(8) else 0
+    # Per-segment loop-filter strengths (15.2 / libwebp's precomputation).
+    mut f_limit := List[int]()
+    mut f_ilevel := List[int]()
+    mut f_hev := List[int]()
+    for s in 0..4
+        for i4 in 0..2
+            mut lv := level
+            if use_seg == 1
+                lv = seg_f[s]
+                if abs_delta == 0
+                    lv += level
+            if use_delta == 1
+                lv += ref_delta
+                if i4 == 1
+                    lv += mode_delta
+            lv = lv.max(0).min(63)
+            mut il := lv
+            if lv > 0 and sharp > 0
+                il = if sharp > 4 then lv.shr(2) else lv.shr(1)
+                il = il.min(9 - sharp)
+            il = il.max(1)
+            f_limit.push(if lv > 0 then 2 * lv + il else 0)
+            f_ilevel.push(il)
+            f_hev.push(if lv >= 40 then 2 else if lv >= 15 then 1 else 0)
+    # The picture, one macroblock at a time.
+    ys := mbw * 16
+    cs := mbw * 8
+    mut yp := [0 for _ in 0..ys * mbh * 16]
+    mut up := [0 for _ in 0..cs * mbh * 8]
+    mut vp := [0 for _ in 0..cs * mbh * 8]
+    mut tok := vp8_bits(d, starts[0], stops[0])
+    mut pstate := [tok.save() for _ in 0..nparts]
+    for p in 0..nparts
+        tok = vp8_bits(d, starts[p], stops[p])
+        pstate[p] = tok.save()
+    mut intra_t := [0 for _ in 0..mbw * 4]
+    mut top_nz := [0 for _ in 0..mbw * 9]
+    mut inner_flag := [false for _ in 0..mbw * mbh]
+    mut seg_of := [0 for _ in 0..mbw * mbh]
+    mut is4_of := [0 for _ in 0..mbw * mbh]
+    for my in 0..mbh
+        pi := my.bit_and(nparts - 1)
+        tok.restore(pstate[pi])
+        mut intra_l := [0, 0, 0, 0]
+        mut left_nz := [0 for _ in 0..9]
+        for mx in 0..mbw
+            # Modes (section 11).
+            mut seg := 0
+            if update_map == 1
+                if br.bit(seg_p[0]) == 0
+                    seg = br.bit(seg_p[1])
+                else
+                    seg = 2 + br.bit(seg_p[2])
+            skip := if use_skip == 1 then br.bit(skip_p) else 0
+            is4 := br.bit(145) == 0
+            mut ymode := 0
+            mut bmodes := [0 for _ in 0..16]
+            if not is4
+                if br.bit(156) == 1
+                    ymode = if br.bit(128) == 1 then 1 else 3
+                else
+                    ymode = if br.bit(163) == 1 then 2 else 0
+                for i in 0..4
+                    intra_t[mx * 4 + i] = ymode
+                    intra_l[i] = ymode
+            else
+                for by in 0..4
+                    mut lm := intra_l[by]
+                    for bx in 0..4
+                        pb := (intra_t[mx * 4 + bx] * 10 + lm) * 9
+                        pr := VP8_BMODE_PROBA
+                        mut m := 0
+                        if br.bit(pr[pb]) == 0
+                            m = 0
+                        elif br.bit(pr[pb + 1]) == 0
+                            m = 1
+                        elif br.bit(pr[pb + 2]) == 0
+                            m = 2
+                        elif br.bit(pr[pb + 3]) == 0
+                            if br.bit(pr[pb + 4]) == 0
+                                m = 3
+                            elif br.bit(pr[pb + 5]) == 0
+                                m = 4
+                            else
+                                m = 5
+                        elif br.bit(pr[pb + 6]) == 0
+                            m = 6
+                        elif br.bit(pr[pb + 7]) == 0
+                            m = 7
+                        elif br.bit(pr[pb + 8]) == 0
+                            m = 8
+                        else
+                            m = 9
+                        intra_t[mx * 4 + bx] = m
+                        bmodes[by * 4 + bx] = m
+                        lm = m
+                    intra_l[by] = lm
+            mut uvmode := 0
+            if br.bit(142) == 0
+                uvmode = 0
+            elif br.bit(114) == 0
+                uvmode = 2
+            elif br.bit(183) == 1
+                uvmode = 1
+            else
+                uvmode = 3
+            seg_of[my * mbw + mx] = seg
+            is4_of[my * mbw + mx] = if is4 then 1 else 0
+            # Residuals (section 13).
+            mut co := [0 for _ in 0..400]
+            q := dqm[seg]
+            mut all_zero := true
+            tb := mx * 9
+            if skip == 1
+                for k in 0..8
+                    top_nz[tb + k] = 0
+                    left_nz[k] = 0
+                if not is4
+                    top_nz[tb + 8] = 0
+                    left_nz[8] = 0
+            else
+                mut first_c := 0
+                mut ac_type := 3
+                if not is4
+                    mut dcv := [0 for _ in 0..16]
+                    ctx := top_nz[tb + 8] + left_nz[8]
+                    nz := tok.coeffs(probas, 1, ctx, q[2], q[3], 0, mut dcv, 0)
+                    top_nz[tb + 8] = if nz > 0 then 1 else 0
+                    left_nz[8] = top_nz[tb + 8]
+                    if nz > 1
+                        vp8_wht(dcv, mut co)
+                    else
+                        dc0 := (dcv[0] + 3).shr(3)
+                        for k in 0..16
+                            co[16 * k] = dc0
+                    first_c = 1
+                    ac_type = 0
+                for by in 0..4
+                    for bx in 0..4
+                        ctx := top_nz[tb + bx] + left_nz[by]
+                        nz := tok.coeffs(probas, ac_type, ctx, q[0], q[1], first_c, mut co, 16 * (by * 4 + bx))
+                        l := if nz > first_c then 1 else 0
+                        top_nz[tb + bx] = l
+                        left_nz[by] = l
+                        if nz > first_c or co[16 * (by * 4 + bx)] != 0
+                            all_zero = false
+                for ch in 0..2
+                    for by in 0..2
+                        for bx in 0..2
+                            ti := tb + 4 + ch * 2 + bx
+                            li := 4 + ch * 2 + by
+                            ctx := top_nz[ti] + left_nz[li]
+                            nz := tok.coeffs(probas, 2, ctx, q[4], q[5], 0, mut co, 256 + ch * 64 + (by * 2 + bx) * 16)
+                            l := if nz > 0 then 1 else 0
+                            top_nz[ti] = l
+                            left_nz[li] = l
+                            if nz > 0
+                                all_zero = false
+            has_res := skip == 0 and not all_zero
+            inner_flag[my * mbw + mx] = is4 or has_res
+            # Reconstruction (section 12).
+            x0 := mx * 16
+            y0 := my * 16
+            if not is4
+                pr := vp8_pred_block(yp, ys, x0, y0, 16, ymode)
+                for j in 0..16
+                    for i in 0..16
+                        yp[(y0 + j) * ys + x0 + i] = pr[j * 16 + i]
+                if skip == 0
+                    for n in 0..16
+                        vp8_idct_add(co, 16 * n, mut yp, ys, x0 + (n.bit_and(3)) * 4, y0 + (n / 4) * 4)
+            else
+                for n in 0..16
+                    bx := n.bit_and(3)
+                    by := n / 4
+                    px := x0 + bx * 4
+                    py := y0 + by * 4
+                    mut t := [127 for _ in 0..8]
+                    mut l := [129 for _ in 0..4]
+                    mut tl := 127
+                    if py > 0
+                        for i in 0..4
+                            t[i] = yp[(py - 1) * ys + px + i]
+                        tl = if px > 0 then yp[(py - 1) * ys + px - 1] else 129
+                        # Above-right: inside the macroblock, or the row above.
+                        if bx < 3
+                            for i in 4..8
+                                t[i] = yp[(py - 1) * ys + px + i]
+                        else
+                            if my > 0
+                                if mx < mbw - 1
+                                    for i in 4..8
+                                        t[i] = yp[(y0 - 1) * ys + px + i]
+                                else
+                                    for i in 4..8
+                                        t[i] = yp[(y0 - 1) * ys + x0 + 15]
+                    if px > 0
+                        for j in 0..4
+                            l[j] = yp[(py + j) * ys + px - 1]
+                    pr := vp8_pred4(bmodes[n], t, l, tl)
+                    for j in 0..4
+                        for i in 0..4
+                            yp[(py + j) * ys + px + i] = pr[j * 4 + i]
+                    if skip == 0
+                        vp8_idct_add(co, 16 * n, mut yp, ys, px, py)
+            cx := mx * 8
+            cy := my * 8
+            for ch in 0..2
+                if ch == 0
+                    pr := vp8_pred_block(up, cs, cx, cy, 8, uvmode)
+                    for j in 0..8
+                        for i in 0..8
+                            up[(cy + j) * cs + cx + i] = pr[j * 8 + i]
+                    if skip == 0
+                        for n in 0..4
+                            vp8_idct_add(co, 256 + n * 16, mut up, cs, cx + (n.bit_and(1)) * 4, cy + (n / 2) * 4)
+                else
+                    pr := vp8_pred_block(vp, cs, cx, cy, 8, uvmode)
+                    for j in 0..8
+                        for i in 0..8
+                            vp[(cy + j) * cs + cx + i] = pr[j * 8 + i]
+                    if skip == 0
+                        for n in 0..4
+                            vp8_idct_add(co, 320 + n * 16, mut vp, cs, cx + (n.bit_and(1)) * 4, cy + (n / 2) * 4)
+        pstate[pi] = tok.save()
+    # Loop filter over the whole picture, macroblock by macroblock.
+    if level > 0
+        for my in 0..mbh
+            for mx in 0..mbw
+                s := seg_of[my * mbw + mx]
+                k := s * 2 + is4_of[my * mbw + mx]
+                lim := f_limit[k]
+                if lim > 0
+                    vp8_filter_mb(
+                        mut yp,
+                        mut up,
+                        mut vp,
+                        ys,
+                        cs,
+                        mx,
+                        my,
+                        lim,
+                        f_ilevel[k],
+                        f_hev[k],
+                        inner_flag[my * mbw + mx],
+                        simple,
+                    )
+    vp8_to_rgba(yp, up, vp, ys, cs, w, h)
+
+## The cropped `w` by `h` picture from the planes: chroma is upsampled with
+## the 9-3-3-1 bilinear filter and the nearer chroma sample counts most.
+fn vp8_to_rgba(yp List[int], up List[int], vp List[int], ys int, cs int, w int, h int) Rgba
+    mut out := Rgba.new(w, h, 0)
+    chw := (w + 1) / 2
+    chh := (h + 1) / 2
+    for y in 0..h
+        n := y / 2
+        o := (if y.bit_and(1) == 0 then n - 1 else n + 1).max(0).min(chh - 1)
+        for x in 0..w
+            nx := x / 2
+            ox := (if x.bit_and(1) == 0 then nx - 1 else nx + 1).max(0).min(chw - 1)
+            a := n * cs + nx
+            b := n * cs + ox
+            c := o * cs + nx
+            e := o * cs + ox
+            u := (9 * up[a] + 3 * up[b] + 3 * up[c] + up[e] + 8).shr(4)
+            v := (9 * vp[a] + 3 * vp[b] + 3 * vp[c] + vp[e] + 8).shr(4)
+            out.px[y * w + x] = vp8_rgb(yp[y * ys + x], u, v)
+    out
