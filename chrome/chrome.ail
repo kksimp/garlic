@@ -17,6 +17,8 @@ pub struct Item
     pub icon_w int
     pub icon_h int
     pub icon_data str
+    ## Whether the page is loading: a spinner takes the favicon's place.
+    pub loading bool
 
 ## The colours of the chrome; `dark()` and `light()` are Chromium's.
 pub struct Theme
@@ -367,6 +369,10 @@ fn arc(mut ops List[app.Op], cx float, cy float, r float, a0 float, a1 float, c 
 
 # ---- Icons -------------------------------------------------------------------
 
+## Chromium's loading spinner: three quarters of a ring, centred on (cx, cy).
+fn spinner(mut ops List[app.Op], cx float, cy float, c int)
+    arc(mut ops, cx, cy, 6.0, 0.0 - 1.2, 3.5, c, 2.0)
+
 ## A left or right arrow in a 28 point box at (x, y).
 fn arrow(mut ops List[app.Op], x float, y float, c int, back bool)
     cx := x + BTN / 2.0
@@ -505,6 +511,8 @@ pub fn draw(th Theme, items List[Item], cur int, st State, tw fn(str, float) flo
                 ph: items[k].icon_h,
                 data: items[k].icon_data,
             ))
+        elif items[k].loading
+            spinner(mut ops, x0 + 18.0, TAB_TOP + 17.0, th.accent)
         else
             globe(mut ops, x0 + 10.0, TAB_TOP + 9.0, th.dim, bg)
         title := if items[k].title == "" then "New tab" else items[k].title
@@ -861,6 +869,7 @@ pub fn find_hit(x float, y float, width float) str
             icon_w: 0,
             icon_h: 0,
             icon_data: "",
+            loading: false,
         )],
         0,
         st,

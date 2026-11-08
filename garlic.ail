@@ -2373,6 +2373,12 @@ struct Garlic
     seconds int
     next_watch int
     jobs List[attach.Job]
+    ## A load the window shows a spinner for before doing it on the next
+    ## event (`open:URL`, `back`, `forward`, `reload`; "" for none), and the
+    ## inbox that brings that event (`has_inbox` says `run` gave one).
+    load_next str
+    has_inbox bool
+    inbox app.Inbox
     ## Favicons by address (zero size for a site without one), and which
     ## ones the host already holds (`icon_fresh` goes with this view).
     icons Map[str, images.Bitmap]
@@ -2395,6 +2401,9 @@ fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
         omni: chrome.omni(b.url),
         finding: false,
         find: chrome.omni(""),
+        load_next: "",
+        has_inbox: false,
+        inbox: app.new_inbox(),
         hover_x: -1.0,
         hover_y: -1.0,
         hover_href: "",
@@ -2599,6 +2608,7 @@ fn Garlic.item(self, k int) chrome.Item
         icon_w: 0,
         icon_h: 0,
         icon_data: "",
+        loading: k == cur and load_next != "",
     )
     if bm := icons.get(t.icon)
         if bm.w > 0
@@ -2708,9 +2718,9 @@ fn Garlic.menu_pick(mut self, r int)
         "Open link in new tab" => open_in_new_tab(menu_href)
         "Copy link address" => queue.push(app.clipboard(menu_href))
         "Copy text" => queue.push(app.clipboard(menu_text))
-        "Back" => g.b.go_back()
-        "Forward" => g.b.go_forward()
-        "Reload" => g.b.reload()
+        "Back" => start_load("back")
+        "Forward" => start_load("forward")
+        "Reload" => start_load("reload")
         "Show node ids" | "Hide node ids" => g.ids = not g.ids
         "Light theme" | "Dark theme" => light = not light
         _ => menu_tab = -1
@@ -2736,9 +2746,9 @@ fn Garlic.chrome_click(mut self, ev app.Event)
             else
                 switch(h.k)
         "close" => close_at(h.k)
-        "back" => g.b.go_back()
-        "forward" => g.b.go_forward()
-        "reload" => g.b.reload()
+        "back" => start_load("back")
+        "forward" => start_load("forward")
+        "reload" => start_load("reload")
         "omni" =>
             if not omni.editing
                 omni.start()
@@ -2777,6 +2787,39 @@ fn Garlic.agent_line(self) str
     if not attached
         return ""
     "Agent attached at {where}: {calls} calls so far; {watches.len()} watches, {events.len()} unread changes"
+
+## A click on the page: a link shows the spinner first (`start_load`);
+## anything else is `Gui.click`.
+fn Garlic.page_click(mut self, x float, y float)
+    if g.pixel
+        if h := g.scene.hit_at(x, y + g.top)
+            if h.node < 0 and h.href != ""
+                start_load("open:{h.href}")
+                return
+    g.click(x, y)
+
+## Starts a load: with an inbox the tab shows its spinner and the load runs
+## on the `load` event this posts, so the host draws the spinner first;
+## headless, the load runs now.
+fn Garlic.start_load(mut self, what str)
+    load_next = what
+    if has_inbox
+        inbox.post(app.external("load", what))
+    else
+        do_load()
+
+## Does the load `start_load` queued.
+fn Garlic.do_load(mut self)
+    what := load_next
+    load_next = ""
+    if what.starts_with("open:")
+        g.open(what.slice(5, what.chars().len()))
+    elif what == "back"
+        g.b.go_back()
+    elif what == "forward"
+        g.b.go_forward()
+    elif what == "reload"
+        g.b.reload()
 
 ## Copies what Cmd-C means here: the omnibox's text while it is edited, the
 ## find bar's while it has the keys, else the link under the pointer.
@@ -2874,6 +2917,10 @@ fn Garlic.chrome_node(self) app.Node
     )
 
 impl app.App for Garlic
+    fn attach(mut self, inbox app.Inbox)
+        has_inbox = true
+        self.inbox = inbox
+
     fn update(mut self, ev app.Event)
         want = ""
         g.b.pump()
@@ -2910,7 +2957,7 @@ impl app.App for Garlic
                     else
                         menu_tab = -1
                         find.editing = false
-                        g.click(ev.x, ev.y)
+                        page_click(ev.x, ev.y)
             "scroll" =>
                 if ev.id != "chrome"
                     g.scroll(ev.dy)
@@ -2937,7 +2984,7 @@ impl app.App for Garlic
                 if omni.editing
                     and (not ev.meta or ev.text == "a" or ev.text == "left" or ev.text == "right")
                     match omni.key(ev.text, ev.meta, ev.shift)
-                        "open" => g.open(omni.text)
+                        "open" => start_load("open:{omni.text}")
                         "cancel" => omni = chrome.omni(g.b.url)
                         _ => menu_tab = menu_tab
                 elif finding and ev.meta and (ev.text == "g" or ev.text == "G")
@@ -2955,11 +3002,11 @@ impl app.App for Garlic
                     omni.start()
                     want = "chrome"
                 elif ev.meta and ev.text == "r"
-                    g.b.reload()
+                    start_load("reload")
                 elif ev.meta and ev.text == "["
-                    g.b.go_back()
+                    start_load("back")
                 elif ev.meta and ev.text == "]"
-                    g.b.go_forward()
+                    start_load("forward")
                 elif ev.meta and ev.text == "i"
                     g.ids = not g.ids
                 elif ev.meta and ev.text == "f"
@@ -2975,7 +3022,9 @@ impl app.App for Garlic
                 else
                     g.key(ev.text, ev.alt, ev.shift)
             "external" =>
-                if ev.id == "mcp"
+                if ev.id == "load"
+                    do_load()
+                elif ev.id == "mcp"
                     agent_call(ev.text)
                 elif ev.id == "tick"
                     tick()
@@ -4809,6 +4858,19 @@ fn flat(s gfx.Scene) List[str]
     if rows.contains("Copy text")
         a.menu_pick(rows.index_of("Copy text") else 0)
         assert_eq(a.lines().len(), 1)
+
+@test fn a_load_shows_the_spinner_until_the_load_event_arrives()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut a := Garlic.new(b, 400.0, 300.0, 7.5, 15.0)
+    a.g.pixel = true
+    a.update(resized(400.0, 300.0))
+    a.attach(app.new_inbox())
+    mut r := app.key("r")
+    r.meta = true
+    a.update(r)
+    assert(a.item(0).loading)
+    a.update(app.external("load", "reload"))
+    assert(not a.item(0).loading)
 
 @test fn max_age_is_read_from_cache_control()
     assert_eq(max_age("public, max-age=60"), 60)
