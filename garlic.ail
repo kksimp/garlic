@@ -2326,7 +2326,7 @@ fn Gui.selected(self) Map[int, (int, int)]
 
 ## The top and bottom of the text line at height `py` of the page: the
 ## tallest run whose box holds `py`, else the run nearest to it.
-fn Gui.line_at(self, py float) (float, float)
+fn Gui.line_at(self, py float)(float, float)
     mut best := (py, py)
     mut best_d := 1.0e9
     for op in scene.ops
