@@ -23,6 +23,7 @@ use gfx
 use jsdom
 use images
 use favicon
+use history
 use attach
 use ws
 use look
@@ -2332,11 +2333,14 @@ struct Garlic
     menu_text str
     ## The omnibox: the address shown, or the text being typed.
     omni chrome.Omni
-    ## The pages shown so far in any tab, oldest first, for the omnibox's
+    ## The pages shown so far in any tab (this run and earlier ones), oldest
+    ## first, for the omnibox's
     ## dropdown; `pick_row` is the dropdown row the arrow keys chose, -1 for the
     ## typed text.
-    history List[chrome.Suggestion]
+    visits List[chrome.Suggestion]
     pick_row int
+    ## The file the history is kept in across runs, "" to keep none (tests).
+    history_file str
     ## The find bar (Cmd-F): whether it shows, and its text; `find.editing`
     ## says the keys go to it rather than the page.
     finding bool
@@ -2404,8 +2408,9 @@ fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
         menu_text: "",
         strip_w: w,
         omni: chrome.omni(b.url),
-        history: [],
+        visits: [],
         pick_row: -1,
+        history_file: "",
         finding: false,
         find: chrome.omni(""),
         load_next: "",
@@ -2833,7 +2838,7 @@ fn Garlic.do_load(mut self)
 fn Garlic.suggestions(self) List[chrome.Suggestion]
     if not omni.editing or omni.all
         return []
-    chrome.suggestions(omni.text, history)
+    chrome.suggestions(omni.text, visits)
 
 ## Adds the shown page to the history when it is new there (an `http(s)`
 ## page with a title), keeping the last 500.
@@ -2841,12 +2846,14 @@ fn Garlic.remember(mut self)
     u := g.b.url
     if not u.starts_with("http") or g.b.pg.title == ""
         return
-    if last := history.last()
+    if last := visits.last()
         if last.url == u
             return
-    history.push(chrome.Suggestion(title: g.b.pg.title, url: u))
-    if history.len() > 500
-        history = [history[i] for i in 1..history.len()]
+    visits.push(chrome.Suggestion(title: g.b.pg.title, url: u))
+    if history_file != ""
+        history.add(history_file, visits)
+    if visits.len() > 5000
+        visits = [visits[i] for i in 1..visits.len()]
 
 ## Copies what Cmd-C means here: the omnibox's text while it is edited, the
 ## find bar's while it has the keys, else the link under the pointer.
@@ -3193,6 +3200,8 @@ fn app_main(b Browser, pixel bool, attached bool, sites str, light bool) !
     mut a := Garlic.new(b, GUI_W, GUI_H, GUI_CELL_W, GUI_CELL_H)
     a.g.pixel = pixel
     a.light = light
+    a.history_file = history.default_path()
+    a.visits = history.load(a.history_file)
     a.g.refresh()
     if attached
         attached_main(mut a, sites)?
@@ -4942,7 +4951,7 @@ fn flat(s gfx.Scene) List[str]
     mut a := Garlic.new(b, 600.0, 300.0, 7.5, 15.0)
     a.g.pixel = true
     a.update(resized(600.0, 300.0))
-    a.history.push(chrome.Suggestion(title: "AIL", url: "https://ail.dev/"))
+    a.visits.push(chrome.Suggestion(title: "AIL", url: "https://ail.dev/"))
     mut l := app.key("l")
     l.meta = true
     a.update(l)

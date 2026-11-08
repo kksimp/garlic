@@ -34,7 +34,7 @@ Native macOS window (needs the SwiftUI host, ADR 0838): `../ail/tools/app-host/m
 | `css/` | CSS parser, selector matching and cascade (the properties text cells use) |
 | `page/` | text-cell layout, link numbering, boxes with roles, names and positions, the page model JSON, URL resolution (RFC 3986) |
 | `draw/` | the display list and colors both windows share |
-| `chrome/`, `favicon/` | the Chromium-style chrome (tab strip, toolbar, omnibox, menus) and the tabs' favicons (ICO decoder included) |
+| `chrome/`, `favicon/`, `history/` | the Chromium-style chrome (tab strip, toolbar, omnibox, menus), the tabs' favicons (ICO decoder included) and the history file behind the omnibox dropdown |
 | `gfx/` | pixel layout: box model, proportional text, flex, grid, tables, images; `--app --pixels` |
 | `--bench FILE [ROUNDS]` | page-load phases in milliseconds on a saved page: `ail build garlic.ail -o garlic && ./garlic --bench FILE [ROUNDS]` |
 | `garlic.ail` | fetching, history, find, the `std.app` window and the command line |
@@ -46,7 +46,7 @@ Native macOS window (needs the SwiftUI host, ADR 0838): `../ail/tools/app-host/m
 - Omnibox: click or Cmd-L to edit, Enter opens a URL or a DuckDuckGo search (`b`, `y`, `g` prefixes pick Bing, Yahoo, Google), Escape restores the address.
 - Look: Chromium-style, dark by default; `--light` for the light look (also in the toolbar menu). On macOS the tabs sit in the title bar beside the traffic lights (std.app.25); drag the empty strip to move the window, double-click it to zoom. Tabs show the site's favicon (`<link rel="icon">` or `/favicon.ico`; ICO, PNG, GIF, JPEG), fetched once per icon address.
 - Find: Cmd-F (or the menu) opens Chromium's find bar at the top right; it searches as you type, shows `k/n`, Enter or Cmd-G steps to the next match (Shift for the previous), Escape closes. The match shown is orange, the others yellow. In the text layout `/` prompts instead and `n` finds the next.
-- Omnibox dropdown: typing lists the text as a search or URL, then the pages from this session's history that match; Down and Up pick one, Enter opens it.
+- Omnibox dropdown: typing lists the text as a search or URL, then the pages from the history that match (kept across runs in `~/.garlic-history.txt`, or `$GARLIC_HISTORY`); Down and Up pick one, Enter opens it.
 - Loading: the tab shows Chromium's spinner in place of the favicon while a page loads.
 - Copy: Cmd-C copies the omnibox's text while you edit it, the find bar's text, or the link under the pointer (std.app.26). A right-click on the page opens Chromium's page menu: Open link in new tab, Copy link address, Copy text, Back, Forward, Reload.
 - `garlic --pixels-dump URL` prints the canvas, ops and image decode status.
