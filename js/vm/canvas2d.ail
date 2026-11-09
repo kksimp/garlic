@@ -104,15 +104,7 @@ fn erase(dst int, sa float) int
     clamp255(da).shl(24) + dst.bit_and(0xffffff)
 
 fn Surface.new_blank(w int, h int) Surface
-    Surface(
-        w: w,
-        h: h,
-        px: [0 for _ in 0..w * h],
-        mask: [],
-        saved: [],
-        node: -1,
-        dirty: true,
-    )
+    Surface(w: w, h: h, px: [0 for _ in 0..w * h], mask: [], saved: [], node: -1, dirty: true)
 
 # ------------------------------------------------------------------ paints
 
@@ -259,7 +251,13 @@ fn Surface.cover(
             elif sa >= 0.999
                 px[at] = 0xff000000 + c.bit_and(0xffffff)
             else
-                px[at] = over(px[at], px_r(c).to_float(), px_g(c).to_float(), px_b(c).to_float(), sa)
+                px[at] = over(
+                    px[at],
+                    px_r(c).to_float(),
+                    px_g(c).to_float(),
+                    px_b(c).to_float(),
+                    sa,
+                )
     dirty = true
 
 ## Rasterizes the polygons `pts` (flat x, y; `counts` points each).
@@ -367,7 +365,8 @@ fn Surface.blit(
         return
     scale_x := sw / dw
     scale_y := sh / dh
-    bilinear := smooth and (scale_x != 1.0 or scale_y != 1.0 or m[0] != 1.0 or m[3] != 1.0 or m[1] != 0.0 or m[2] != 0.0)
+    bilinear := smooth
+        and (scale_x != 1.0 or scale_y != 1.0 or m[0] != 1.0 or m[3] != 1.0 or m[1] != 0.0 or m[2] != 0.0)
     for py in by0..by1
         for pxx in bx0..bx1
             fx := pxx.to_float() + 0.5 - m[4]
@@ -434,15 +433,15 @@ fn crc_table() List[int]
 fn be32(v int) List[int]
     [v.shr(24).bit_and(255), v.shr(16).bit_and(255), v.shr(8).bit_and(255), v.bit_and(255)]
 
-fn png_chunk(table List[int], kind str, data List[int]) List[int]
+fn png_chunk(table List[int], kind str, chunk List[int]) List[int]
     mut body := List[int]()
     for ch in kind.chars()
         body.push(ch.code())
-    body.extend(data)
+    body.extend(chunk)
     mut c := 0xffffffff
     for b in body
         c = table[c.bit_xor(b).bit_and(255)].bit_xor(c.shr(8))
-    mut out := be32(data.len())
+    mut out := be32(chunk.len())
     out.extend(body)
     out.extend(be32(c.bit_xor(0xffffffff)))
     out
@@ -671,7 +670,10 @@ pub fn Vm.canvas_native(mut self, m str, args List[Value]) Value ! Thrown
                 k := (j * ww + i) * 4
                 if k + 3 >= bytes_in.len()
                     continue
-                s.px[ty * s.w + tx] = bytes_in[k + 3].shl(24) + bytes_in[k].shl(16) + bytes_in[k + 1].shl(8) + bytes_in[k + 2]
+                s.px[ty * s.w + tx] = bytes_in[k + 3].shl(24)
+                    + bytes_in[k].shl(16)
+                    + bytes_in[k + 1].shl(8)
+                    + bytes_in[k + 2]
         s.dirty = true
         return Undef
     if m == "canvas.blit"
@@ -679,7 +681,15 @@ pub fn Vm.canvas_native(mut self, m str, args List[Value]) Value ! Thrown
         src := cvs.surfaces.get(sid) else return Undef
         if sid == id
             # Drawing a canvas onto itself reads a copy of it.
-            snap := ref Surface(w: s.w, h: s.h, px: s.px, mask: [], saved: [], node: -1, dirty: false)
+            snap := ref Surface(
+                w: s.w,
+                h: s.h,
+                px: s.px,
+                mask: [],
+                saved: [],
+                node: -1,
+                dirty: false,
+            )
             do_blit(s, snap, args)?
         else
             do_blit(s, src, args)?
