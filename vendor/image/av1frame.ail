@@ -1,0 +1,53 @@
+## Shared shapes of the AV1 still-picture decoder: the decoded frame and the
+## per-block facts the tile decoder hands to the post filters (`av1post.ail`).
+## Block sizes, transform sizes and modes use dav1d's numbering (`av1tab.ail`).
+
+## `Av1Plane` (visible `w`, `h`; `pix[y * stride + x]`) is defined in `av1plane.ail`,
+## which lane (b) owns. Its buffer must cover the whole 4x4 grid of the frame
+## (`mi_cols * 4 >> sub_x` wide) because the post filters read to the grid edge.
+
+## A decoded frame: 1 plane (`mono`) or 3 (Y, U, V). `sub_x`/`sub_y` are the
+## chroma subsampling shifts (1 for 4:2:0), `bd` the bit depth (8, 10 or 12).
+pub struct Av1Frame
+    pub planes List[Av1Plane]
+    pub bd int
+    pub sub_x int
+    pub sub_y int
+    pub mono bool
+
+## The loop-restoration choices of one plane, one entry per restoration unit in
+## row-major order (`units_x` per row). `kind` is 0 none, 1 Wiener, 2 self-guided.
+## `coef` has 6 integers per unit. Wiener: the 3 vertical-filter coefficients
+## (spec pass 0), then the 3 horizontal ones (pass 1), as coded (chroma has a
+## zero first tap). Self-guided: set (0..15), xqd0, xqd1, then 3 unused.
+pub struct Av1Lr
+    pub units_x int
+    pub units_y int
+    pub kind List[int]
+    pub coef List[int]
+
+## What the post filters need from the tile decode, on the frame's 4x4 luma
+## grid (`mi_cols = 2 * ((width + 7) / 8)`, likewise `mi_rows`; index
+## `r * mi_cols + c`). Only intra frames exist, so reference frames and
+## inter-only rules are not recorded.
+## - `tx_y`: the TxfmSize of the luma transform block covering each 4x4.
+## - `tx_c`: the TxfmSize of the chroma transform block covering each chroma
+##   4x4, on the grid `(mi_cols >> sub_x) x (mi_rows >> sub_y)`; empty if mono.
+## - `skip`: 1 where the block had no coefficients (the `skip` syntax element).
+## - `seg`: segment id per 4x4 (all 0 without segmentation).
+## - `dlf`: 4 delta-LF values per 4x4 (`dlf[i * 4 + k]`); empty unless the frame
+##   has `delta_lf_present`. Left at the value coded for the superblock.
+## - `cdef_idx`: per 64x64 block, row-major, `(mi_cols + 15) / 16` per row;
+##   -1 where no index was coded (every block in it was skipped).
+## - `lr`: one `Av1Lr` per plane (entries for planes without restoration may be
+##   empty).
+pub struct BlockInfo
+    pub mi_cols int
+    pub mi_rows int
+    pub tx_y List[int]
+    pub tx_c List[int]
+    pub skip List[int]
+    pub seg List[int]
+    pub dlf List[int]
+    pub cdef_idx List[int]
+    pub lr List[Av1Lr]
