@@ -699,7 +699,7 @@ pub fn Vm.dom_setup(mut self)
     methods(
         global_obj,
         "dom.window",
-        "setTimeout:1 setInterval:1 clearTimeout:1 clearInterval:1 requestAnimationFrame:1 cancelAnimationFrame:1 queueMicrotask:1 requestIdleCallback:1 structuredClone:1 addEventListener:2 removeEventListener:2 dispatchEvent:1 getComputedStyle:1 matchMedia:1 alert:1 confirm:1 prompt:1 scrollTo:2 scrollBy:2 scroll:2 open:1 close:0 focus:0 blur:0 postMessage:1 atob:1 btoa:1 __hostFetch:3 __hostWs:3 __hostClipboard:1",
+        "setTimeout:1 setInterval:1 clearTimeout:1 clearInterval:1 requestAnimationFrame:1 cancelAnimationFrame:1 queueMicrotask:1 requestIdleCallback:1 structuredClone:1 addEventListener:2 removeEventListener:2 dispatchEvent:1 getComputedStyle:1 matchMedia:1 alert:1 confirm:1 prompt:1 scrollTo:2 scrollBy:2 scroll:2 open:1 close:0 focus:0 blur:0 postMessage:1 atob:1 btoa:1 __hostFetch:3 __hostWs:3 __hostClipboard:1 __imageDims:1",
     )
     global_obj.props["location"] = Prop(
         value: Undef,
@@ -2591,6 +2591,11 @@ fn Vm.window_method(mut self, m str, args List[Value]) Value ! Thrown
                 text: to_string(arg_at(args, 2))?,
             ))
             Num(id.to_float())
+        "__imageDims" =>
+            # `createImageBitmap(blob)` (webapi.ail): the picture's size from
+            # its header, "0,0" for bytes no decoder knows.
+            size := image.dims(bytes_of(a0)?)
+            return Str("{size[0]},{size[1]}")
         "__hostClipboard" =>
             # `navigator.clipboard.writeText` (platform.ail): the browser puts
             # the text on the system clipboard.

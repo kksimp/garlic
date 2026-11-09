@@ -10,30 +10,35 @@
 
 WEB_PRELUDE := r"""
 (function (g) {
-  function partText(p) {
-    if (p instanceof Blob) return p._text;
-    if (p instanceof ArrayBuffer) return new TextDecoder().decode(new Uint8Array(p));
-    if (ArrayBuffer.isView(p)) return new TextDecoder().decode(new Uint8Array(p.buffer, p.byteOffset, p.byteLength));
-    return String(p);
+  // A Blob keeps its bytes, so pictures fetched from data: URLs survive it.
+  function partBytes(p) {
+    if (p instanceof Blob) return p._bytes;
+    if (p instanceof ArrayBuffer) return new Uint8Array(p);
+    if (ArrayBuffer.isView(p)) return new Uint8Array(p.buffer, p.byteOffset, p.byteLength);
+    return new TextEncoder().encode(String(p));
   }
   function Blob(parts, options) {
-    var text = "";
+    var chunks = [], total = 0;
     if (parts !== undefined) {
       if (parts === null || typeof parts[Symbol.iterator] !== "function") throw new TypeError("Failed to construct 'Blob': The provided value cannot be converted to a sequence.");
-      for (var p of parts) text += partText(p);
+      for (var p of parts) { var b = partBytes(p); chunks.push(b); total += b.length; }
     }
-    Object.defineProperty(this, "_text", { value: text, enumerable: false });
-    this.size = new TextEncoder().encode(text).length;
+    var bytes = new Uint8Array(total), at = 0;
+    for (var i = 0; i < chunks.length; i++) { bytes.set(chunks[i], at); at += chunks[i].length; }
+    Object.defineProperty(this, "_bytes", { value: bytes, enumerable: false });
+    this.size = total;
     this.type = options && options.type !== undefined ? String(options.type).toLowerCase() : "";
   }
+  Object.defineProperty(Blob.prototype, "_text", { get: function () { return new TextDecoder().decode(this._bytes); }, configurable: true });
+  function latin1(bytes) { var s = ""; for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]); return s; }
   Blob.prototype.text = function () { return Promise.resolve(this._text); };
-  Blob.prototype.arrayBuffer = function () { return Promise.resolve(new TextEncoder().encode(this._text).buffer); };
-  Blob.prototype.bytes = function () { return Promise.resolve(new TextEncoder().encode(this._text)); };
+  Blob.prototype.arrayBuffer = function () { return Promise.resolve(new Uint8Array(this._bytes).buffer); };
+  Blob.prototype.bytes = function () { return Promise.resolve(new Uint8Array(this._bytes)); };
   Blob.prototype.slice = function (start, end, type) {
-    var n = this._text.length;
+    var n = this._bytes.length;
     start = start === undefined ? 0 : (start < 0 ? Math.max(n + start, 0) : Math.min(start, n));
     end = end === undefined ? n : (end < 0 ? Math.max(n + end, 0) : Math.min(end, n));
-    return new Blob([this._text.slice(start, end)], { type: type === undefined ? "" : type });
+    return new Blob([this._bytes.slice(start, Math.max(start, end))], { type: type === undefined ? "" : type });
   };
   Blob.prototype.stream = function () { throw new TypeError("Blob.prototype.stream is not supported yet"); };
   Object.defineProperty(Blob.prototype, Symbol.toStringTag, { value: "Blob", configurable: true });
@@ -74,10 +79,9 @@ WEB_PRELUDE := r"""
     }, 0);
   };
   FileReader.prototype.readAsText = function (b) { this._read(b, function (b) { return b._text; }); };
-  function base64Of(text) { var bytes = new TextEncoder().encode(text), s = ""; for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]); return btoa(s); }
-  FileReader.prototype.readAsDataURL = function (b) { this._read(b, function (b) { return "data:" + (b.type || "application/octet-stream") + ";base64," + base64Of(b._text); }); };
-  FileReader.prototype.readAsArrayBuffer = function (b) { this._read(b, function (b) { return new TextEncoder().encode(b._text).buffer; }); };
-  FileReader.prototype.readAsBinaryString = function (b) { this._read(b, function (b) { return b._text; }); };
+  FileReader.prototype.readAsDataURL = function (b) { this._read(b, function (b) { return "data:" + (b.type || "application/octet-stream") + ";base64," + btoa(latin1(b._bytes)); }); };
+  FileReader.prototype.readAsArrayBuffer = function (b) { this._read(b, function (b) { return new Uint8Array(b._bytes).buffer; }); };
+  FileReader.prototype.readAsBinaryString = function (b) { this._read(b, function (b) { return latin1(b._bytes); }); };
   FileReader.prototype.abort = function () { if (this.readyState === 1) { this.readyState = 2; this.result = null; this._fire("abort"); this._fire("loadend"); } };
   g.FileReader = FileReader;
 
@@ -208,12 +212,23 @@ WEB_PRELUDE := r"""
     Object.defineProperty(Object.getPrototypeOf(nav), "mediaCapabilities", { get: function () { return caps; }, configurable: true, enumerable: true });
   }
   if (!g.createImageBitmap) {
+    function ImageBitmap(w, h) { this.width = w; this.height = h; }
+    ImageBitmap.prototype.close = function () { this.width = 0; this.height = 0; };
+    Object.defineProperty(ImageBitmap.prototype, Symbol.toStringTag, { value: "ImageBitmap", configurable: true });
+    g.ImageBitmap = ImageBitmap;
     g.createImageBitmap = function (source) {
-      if (source instanceof Blob) return Promise.reject(new DOMException("The source image could not be decoded.", "InvalidStateError"));
-      var w = source && source.naturalWidth ? source.naturalWidth : (source && source.width) || 0;
-      var h = source && source.naturalHeight ? source.naturalHeight : (source && source.height) || 0;
+      var w = 0, h = 0;
+      if (source instanceof Blob) {
+        // The size comes from the picture's header through the image library (webp, avif and the
+        // rest decode when vendor/image knows them).
+        var dims = String(g.__imageDims(source._bytes)).split(",");
+        w = Number(dims[0]) || 0; h = Number(dims[1]) || 0;
+      } else {
+        w = source && source.naturalWidth ? source.naturalWidth : (source && source.width) || 0;
+        h = source && source.naturalHeight ? source.naturalHeight : (source && source.height) || 0;
+      }
       if (!w || !h) return Promise.reject(new DOMException("The source image could not be decoded.", "InvalidStateError"));
-      return Promise.resolve({ width: w, height: h, close: function () {} });
+      return Promise.resolve(new ImageBitmap(w, h));
     };
   }
 
