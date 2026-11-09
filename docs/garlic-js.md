@@ -52,12 +52,6 @@ did.
    the browser's structs; a page that wants a ninth worker gets an `error`
    event. Check by hand: `ail run garlic.ail testdata/worker.html` shows
    "worker said ..." after a moment.
-   **Viewport**: in the window, `Gui.refresh` hands the page area (CSS px)
-   and the laid-out page height to `Vm.viewport`; `innerWidth/Height`,
-   `outerWidth/Height`, `screen.width/height` and `documentElement.clientWidth/Height`
-   follow it, `body` gets the page height, and `resize` fires when the area
-   changes. A headless run keeps 1280x800. `devicePixelRatio` stays 1 until
-   std.app reports the display's scale.
 7. **Later**: BigInt, import maps.
 
 ## Layout
@@ -420,6 +414,13 @@ it comes later for speed, and these frames will move onto it).
   one from before it). An inline element without a box, such as a span
   used to measure a font, gets 8px per character by 18px; headless runs
   and `jsdom.run` have no layout and see only that estimate.
+  Viewport: in the window, `Gui.refresh` hands the page area (CSS px) and
+  the laid-out page height to `Vm.viewport`; `innerWidth/Height`,
+  `outerWidth/Height` and `documentElement.clientWidth/Height` follow it,
+  `body` gets the page height, and `resize` fires when the area changes.
+  A headless run keeps 1280x800. `screen.width/height` equal the window
+  area for now and will change once std.app reports the display size;
+  `devicePixelRatio` stays 1 until std.app reports the display's scale.
 - Platform APIs (platform.ail): `navigator.clipboard.writeText` and
   `write` go to the system clipboard; `readText` and `read` are refused
   (NotAllowedError), as Chrome does without the permission.
