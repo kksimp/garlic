@@ -29,9 +29,21 @@ NET_PRELUDE := r"""
   Headers.prototype.entries = function () { var h = this._h; return Object.keys(h).sort().map(function (k) { return [k, h[k]]; })[Symbol.iterator](); };
   Headers.prototype[Symbol.iterator] = Headers.prototype.entries;
 
+  // Bytes of a body given as a BufferSource or Blob, else null (text bodies stay strings).
+  function bodyBytes(b) {
+    if (b instanceof ArrayBuffer) return new Uint8Array(b.slice(0));
+    if (ArrayBuffer.isView(b)) return new Uint8Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength));
+    if (g.Blob && b instanceof g.Blob) return b._bytes;
+    return null;
+  }
   function Response(body, init) {
     init = init || {};
-    this._body = body == null ? "" : String(body);
+    var bytes = bodyBytes(body);
+    Object.defineProperty(this, "_bytes", { value: bytes, enumerable: false, writable: true });
+    this._body = bytes ? new TextDecoder().decode(bytes) : (body == null ? "" : String(body));
+    if (bytes && g.Blob && body instanceof g.Blob && body.type && !(init.headers && new Headers(init.headers).has("content-type"))) {
+      init = Object.assign({}, init, { headers: Object.assign({ "content-type": body.type }, init.headers || {}) });
+    }
     this.status = init.status === undefined ? 200 : init.status;
     this.statusText = init.statusText || "";
     this.ok = this.status >= 200 && this.status < 300;
@@ -43,7 +55,27 @@ NET_PRELUDE := r"""
   }
   Response.prototype.text = function () { var s = this._body; this.bodyUsed = true; return Promise.resolve(s); };
   Response.prototype.json = function () { var s = this._body; this.bodyUsed = true; try { return Promise.resolve(JSON.parse(s)); } catch (e) { return Promise.reject(e); } };
-  Response.prototype.clone = function () { return new Response(this._body, { status: this.status, statusText: this.statusText, headers: this.headers, url: this.url }); };
+  Response.prototype.clone = function () { return new Response(this._bytes || this._body, { status: this.status, statusText: this.statusText, headers: this.headers, url: this.url }); };
+  Response.prototype._raw = function () { this.bodyUsed = true; return this._bytes ? new Uint8Array(this._bytes) : new TextEncoder().encode(this._body); };
+  Response.prototype.arrayBuffer = function () { return Promise.resolve(this._raw().buffer); };
+  Response.prototype.bytes = function () { return Promise.resolve(this._raw()); };
+  Response.prototype.blob = function () { return Promise.resolve(new g.Blob([this._raw()], { type: (this.headers.get("content-type") || "").split(";")[0].trim().toLowerCase() })); };
+  Response.prototype.formData = function () { return Promise.reject(new TypeError("Failed to execute 'formData' on 'Response': body is not form data")); };
+  // A `data:` URL (RFC 2397) answered without the host: base64 or percent-encoded bytes.
+  function dataResponse(url) {
+    var comma = url.indexOf(",");
+    if (comma < 0) return null;
+    var meta = url.slice(5, comma), payload = url.slice(comma + 1);
+    var parts = meta.split(";"), b64 = false, type = parts[0] || "text/plain";
+    for (var i = 1; i < parts.length; i++) { if (parts[i] === "base64") b64 = true; else type += ";" + parts[i]; }
+    if (parts[0] === "" && parts.length === 1) type = "text/plain;charset=US-ASCII";
+    var bin;
+    try { bin = b64 ? atob(payload.replace(/\s+/g, "")) : decodeURIComponent(payload); } catch (e) { return null; }
+    var bytes = new Uint8Array(bin.length);
+    if (b64) { for (var k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k); }
+    else bytes = new TextEncoder().encode(bin);
+    return new Response(bytes, { status: 200, statusText: "OK", headers: { "content-type": type }, url: url });
+  }
 
   var pending = {};
   function ask(method, url, type, body, done) {
@@ -62,6 +94,10 @@ NET_PRELUDE := r"""
     var headers = new Headers(init.headers);
     var body = method === "GET" || method === "HEAD" ? "" : bodyText(init.body);
     var type = headers.get("content-type") || (init.body && typeof init.body === "object" && "append" in init.body && "toString" in init.body ? "application/x-www-form-urlencoded;charset=UTF-8" : (body ? "text/plain;charset=UTF-8" : ""));
+    if (/^data:/i.test(url)) {
+      var dr = dataResponse(url);
+      return dr ? Promise.resolve(dr) : Promise.reject(new TypeError("Failed to fetch"));
+    }
     return new Promise(function (resolve, reject) {
       ask(method, url, type, body, function (r) {
         if (r.error) { reject(new TypeError("Failed to fetch")); return; }
