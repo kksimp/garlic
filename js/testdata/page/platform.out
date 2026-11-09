@@ -1,0 +1,93 @@
+true function true true true
+true false
+-1 1 -1 -1
+wrote
+read NotAllowedError
+share AbortError
+lock screen false [object WakeLockSentinel]
+upgrade 0 2 versionchange
+items,kv true
+released true
+release done
+open shop 2 [object IDBDatabase]
+added 2
+dup ConstraintError
+complete readwrite
+count 3
+get {"name":"apple","price":1,"id":2}
+all apple,fig
+index 7
+keys 2,7,1
+cursor 7:fig,2:apple
+missing NotFoundError
+readonly ReadOnlyError
+dbs [{"name":"shop","version":2}]
+left 2,7
+kv 1+2
+== body
+<script>
+const log = (...a) => console.log(a.join(" "));
+log("clipboard" in navigator, typeof navigator.clipboard.writeText, "share" in navigator, "wakeLock" in navigator, !!window.indexedDB);
+navigator.clipboard.writeText("hi").then(() => log("wrote"));
+navigator.clipboard.readText().catch(e => log("read", e.name));
+log(navigator.canShare({ url: "https://a.test/" }), navigator.canShare({}));
+navigator.share({ url: "https://a.test/" }).catch(e => log("share", e.name));
+navigator.wakeLock.request("screen").then(s => {
+  log("lock", s.type, s.released, Object.prototype.toString.call(s));
+  s.onrelease = () => log("released", s.released);
+  return s.release();
+}).then(() => log("release done"));
+log(indexedDB.cmp(1, 2), indexedDB.cmp("b", "a"), indexedDB.cmp(1, "a"), indexedDB.cmp([1, 2], [1, 3]));
+const open = indexedDB.open("shop", 2);
+open.onupgradeneeded = e => {
+  log("upgrade", e.oldVersion, e.newVersion, open.transaction.mode);
+  const db = open.result;
+  const items = db.createObjectStore("items", { keyPath: "id", autoIncrement: true });
+  items.createIndex("by_name", "name", { unique: true });
+  db.createObjectStore("kv");
+  log(Array.from(db.objectStoreNames).join(","), db.objectStoreNames.contains("kv"));
+};
+open.onsuccess = () => {
+  const db = open.result;
+  log("open", db.name, db.version, Object.prototype.toString.call(db));
+  const tx = db.transaction(["items", "kv"], "readwrite");
+  const items = tx.objectStore("items");
+  items.add({ name: "pear", price: 2 });
+  items.add({ name: "apple", price: 1 }).onsuccess = e => log("added", e.target.result);
+  items.put({ id: 7, name: "fig", price: 3 });
+  items.add({ name: "pear" }).onerror = e => { log("dup", e.target.error.name); e.preventDefault(); };
+  tx.objectStore("kv").put("v1", "k1");
+  tx.objectStore("kv").put([1, 2], ["a", 1]);
+  tx.oncomplete = () => {
+    log("complete", tx.mode);
+    const r = db.transaction("items").objectStore("items");
+    r.count().onsuccess = e => log("count", e.target.result);
+    r.get(2).onsuccess = e => log("get", JSON.stringify(e.target.result));
+    r.getAll(IDBKeyRange.lowerBound(2)).onsuccess = e => log("all", e.target.result.map(x => x.name).join(","));
+    r.index("by_name").get("fig").onsuccess = e => log("index", e.target.result.id);
+    r.index("by_name").getAllKeys().onsuccess = e => log("keys", e.target.result.join(","));
+    const seen = [];
+    r.openCursor(null, "prev").onsuccess = e => {
+      const c = e.target.result;
+      if (!c) { log("cursor", seen.join(",")); return; }
+      seen.push(c.key + ":" + c.value.name);
+      c.continue();
+    };
+    const w = db.transaction("items", "readwrite").objectStore("items");
+    w.openCursor(IDBKeyRange.only(1)).onsuccess = e => {
+      const c = e.target.result;
+      if (!c) return;
+      c.update({ id: 1, name: "pear", price: 5 });
+      c.delete();
+      c.continue();
+    };
+    w.transaction.oncomplete = () => {
+      db.transaction("items").objectStore("items").getAllKeys().onsuccess = e => log("left", e.target.result.join(","));
+      db.transaction("kv").objectStore("kv").get(["a", 1]).onsuccess = e => log("kv", e.target.result.join("+"));
+      indexedDB.databases().then(d => log("dbs", JSON.stringify(d)));
+      try { db.transaction("nope"); } catch (err) { log("missing", err.name); }
+      try { db.transaction("items").objectStore("items").put({ name: "x" }); } catch (err) { log("readonly", err.name); }
+    };
+  };
+};
+</script>

@@ -19,6 +19,8 @@ pub struct Outcome
     pub changes int
     ## What scripts assigned to `document.cookie`, in order.
     pub cookies List[str]
+    ## What scripts wrote with `navigator.clipboard.writeText`, in order.
+    pub clips List[str]
     ## Module sources the page wants (static imports it could not find, and
     ## `import()` targets), by the address the engine uses; answer each with
     ## `Session.module`.
@@ -66,7 +68,8 @@ pub struct Session
 
 ## Run the scripts of `d` (the page at `url`): inline ones, and external ones
 ## whose source is in `scripts` by resolved URL. `cookies` are the page's
-## cookies by name and `now_ms` the time (ms since 1970). Timers run for
+## cookies by name, `now_ms` the time (ms since 1970) and `zone` the local
+## time zone of `Date` ("UTC" or an IANA name). Timers run for
 ## `budget_ms` of virtual time; `max_steps` caps the work (0 for no cap).
 pub fn run(
     mut d html.Doc,
@@ -77,7 +80,7 @@ pub fn run(
     budget_ms float,
     max_steps int,
 ) Outcome
-    s := start(mut d, url, scripts, cookies, now_ms, budget_ms, max_steps, no_pool())
+    s := start(mut d, url, scripts, cookies, now_ms, "UTC", budget_ms, max_steps, no_pool())
     s.1
 
 ## Like `run`, and keeps the engine for `Session.click`, `Session.input`
@@ -88,6 +91,7 @@ pub fn start(
     scripts Map[str, str],
     cookies Map[str, str],
     now_ms float,
+    zone str,
     budget_ms float,
     max_steps int,
     pool Pool,
@@ -96,6 +100,7 @@ pub fn start(
     machine.trace = true
     machine.step_limit = max_steps
     machine.clock_ms = now_ms
+    machine.zone = zone
     machine.cookies = cookies
     machine.dom_setup()
     machine.net_setup()
@@ -131,6 +136,7 @@ fn Session.collect(mut self, mut d html.Doc) Outcome
         mods: [],
         changes: 0,
         cookies: [],
+        clips: [],
         asks: [],
         sockets: [],
         net: [],
@@ -153,6 +159,8 @@ fn Session.collect(mut self, mut d html.Doc) Outcome
             out.sockets.push(SockOp(op: r.method, id: r.node, url: r.url, text: r.text))
         if r.kind == "cookie"
             out.cookies.push(r.text)
+        if r.kind == "clipboard"
+            out.clips.push(r.text)
     mut ops := List[vm.HostRequest]()
     for r in machine.host_requests[requests..]
         if r.kind == "worker"
@@ -255,6 +263,13 @@ pub fn Session.idle(mut self, mut d html.Doc, budget_ms float) Outcome
     if machine.clock_ms < until
         machine.clock_ms = until
     collect(mut d)
+
+## Hands the page's scripts the browser's layout: each box is a node id
+## and its x, y, width and height in page pixels; `scroll` is how far the
+## page is scrolled. `getBoundingClientRect` and `offsetWidth` answer from
+## them.
+pub fn Session.measure(mut self, boxes List[List[float]], scroll float)
+    machine.measure(boxes, scroll)
 
 ## How many timers the page still has waiting.
 pub fn Session.pending(self) int

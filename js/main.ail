@@ -304,6 +304,7 @@ fn run_page_with(html str, max_steps int, url str, files Map[str, str], trace bo
     machine.step_limit = max_steps
     machine.external_scripts = files
     machine.dom_setup()
+    machine.net_setup()
     machine.parse_into(0, html)
     machine.load_page(if url == "" then PAGE_URL else url, 1000.0)
     serve_page_modules(mut machine, files)
