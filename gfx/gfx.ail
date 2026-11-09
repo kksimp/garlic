@@ -1643,9 +1643,12 @@ fn Ctx.place_float(mut self, id int, st St, x float, w float, right bool)
     fst := text_style(d.nodes[id].tag, self.with_attrs(id, d.nodes[id].tag, cs), st)
     bx := box_of(d.nodes[id].tag, cs, fst, w)
     settle()
-    ## The measured extent already includes the left margin (the box is laid out from x = 0).
+    ## The measured extent already includes the left margin (the box is laid
+    ## out from x = 0). A set `width` is the content box unless
+    ## `box-sizing: border-box`, so padding and borders are added to it.
+    edges := if (cs.get("box-sizing") else "").trim() == "border-box" then 0.0 else bx.pl + bx.pr + bx.bl + bx.br
     wide := fmin(
-        (if bw := bx.width then bw + bx.ml else self.max_content(id, st) + bx.pr + bx.br) + bx.mr,
+        (if bw := bx.width then bw + edges + bx.ml else self.max_content(id, st) + bx.pr + bx.br) + bx.mr,
         w,
     )
     fx := if right then x + w - wide else x
