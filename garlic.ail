@@ -4804,6 +4804,22 @@ fn pixels(src str, width float) gfx.Scene
     assert(t[0].starts_with("Document Referrer@"))
     assert(value_x - label_x >= gfx.text_width("Referrer", 16.0, false, false))
 
+@test fn a_table_cell_min_width_and_nowrap_set_its_column()
+    ## browserleaks: `td:first-child { white-space: nowrap; min-width: 135px }`
+    ## with the value cells empty until a script fills them.
+    rules := css.parse("td:first-child \{ white-space: nowrap; min-width: 135px } table \{ width: 100% }", 0)
+    s := gfx.layout(
+        html.parse("<table><tr><td>Fingerprint</td><td></td></tr><tr><td>Fullscreen Leak Test</td><td>v</td></tr></table>"),
+        "https://x.test/",
+        400.0,
+        rules,
+    )
+    t := pixel_text(s.ops)
+    assert_eq(t.len(), 3)
+    assert(t[1].starts_with("Fullscreen Leak Test@"))
+    value_x := t[2].split("@")[1].split(",")[0].to_float() else 0.0
+    assert(value_x >= 135.0)
+
 @test fn the_pixel_layout_records_a_box_for_every_inline_element()
     ## Font-fingerprinting scripts measure spans, so inline elements need
     ## boxes too: the span starts after "a " and is narrower than its line.

@@ -2520,12 +2520,26 @@ fn Ctx.table(mut self, id int, st St, x float, w float)
         least.push(20.0)
         most.push(20.0)
     for r in rows
+        if (element_style(r).get("display") else "") == "none"
+            continue
         cells := self.items(r)
         for k in 0..cells.len()
             cs := element_style(cells[k])
             cst := text_style(d.nodes[cells[k]].tag, cs, st)
-            least[k] = fmax(least[k], self.min_intrinsic(cells[k], cst) + 12.0)
-            most[k] = fmax(most[k], fmax(self.intrinsic(cells[k], cst), self.max_content(cells[k], cst)) + 12.0)
+            line := self.intrinsic(cells[k], cst)
+            ## `white-space: nowrap` keeps the cell's text on one line.
+            word := if cst.nowrap then line else self.min_intrinsic(cells[k], cst)
+            least[k] = fmax(least[k], word + 12.0)
+            most[k] = fmax(most[k], fmax(line, self.max_content(cells[k], cst)) + 12.0)
+            ## A cell's `width` sets its column (not below its words);
+            ## `min-width` only raises the floor.
+            if v := cs.get("min-width")
+                if p := length(v, cst.size, w)
+                    least[k] = fmax(least[k], p)
+            if v := cs.get("width")
+                if p := length(v, cst.size, w)
+                    least[k] = fmax(least[k], p)
+                    most[k] = fmax(most[k], p)
     mut sum_least := 0.0
     mut sum_most := 0.0
     for k in 0..ncols
