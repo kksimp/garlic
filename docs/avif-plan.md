@@ -24,8 +24,8 @@ Planes are `List[int]` per plane (`Av1Plane` = `w`, `h`, `stride`, `pix List[int
 - `av1post.ail`: `pub fn av1_post(mut f Av1Frame, hdr Av1Hdr, info BlockInfo)`; `BlockInfo` is the per-4x4 grid the tile decoder fills: `bsize`, `tx` (luma and chroma), `skip`, `mode`, `qidx`, `lf_level` per 4x4, plus CDEF idx and restoration units from the tile data.
 - `avif.ail`: `pub fn avif(d) Rgba ! ImageError` calls `av1_decode(obus List[int]) Av1Frame ! ImageError` (mine, `av1tile.ail`) per item.
 
-## Lane (b) notes: transforms and intra prediction (`av1itx.ail`, `av1pred.ail`)
-- `Av1Plane` (with `Av1Frame`) lives in `av1frame.ail`, owned by lane (c). Buffers must be padded past the visible size; writes outside the buffer are dropped, reads of neighbours use the 4-aligned visible size like dav1d.
+## Lane (b) notes: transforms and intra prediction (`av1itx.ail`, `av1pred.ail`, `av1plane.ail`)
+- `Av1Plane` and `av1_plane(w, h, pad)` live in `av1plane.ail`. Buffers must be padded past the visible size; writes outside the buffer are dropped, reads of neighbours use the 4-aligned visible size like dav1d.
 - `av1_itx_add`: `cf` is column-major with column height `min(h, 32)` (`cf[xx * sh + yy]`), so 64-point sides carry only 32 coefficients. `eob` is the last scan position (0 = DC only; any other value is exact, only slower). `ttype` 16 = lossless WHT (4x4 only). `cf` is not cleared.
 - `av1_pred`: `PredCtx` (build with `av1_predctx(bd)`) has `angle` (delta -3..3), `have_left/top/topright/bottomleft`, `filt` (-1 or 0..4), `smooth_nb`, `edge_filter` (sequence header flag), `alpha` + `ac` for CFL, `bd`. For CFL call `av1_cfl_ac(luma, lx, ly, cw, ch, ssx, ssy, wpad, hpad)` first and pass its result as `ac`; `mode` 13 then predicts with the DC of the available edges.
 - Both are translations of dav1d (BSD-2-Clause); the 1-D transform kernels were checked against float DCT/ADST in a Python model. Nothing has been compiled or run yet: first step is `ail fmt` and `ail check` on a Kaleb machine.
