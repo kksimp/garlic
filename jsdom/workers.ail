@@ -1,0 +1,209 @@
+## Web Workers on real threads (js/vm/workers.ail has the JavaScript side).
+## The browser starts a fixed pool of threads, each of which runs one
+## worker at a time in an engine of its own: a worker's script, timers and
+## messages never touch the page's engine, and a slow worker never stops
+## the window. A thread and the page swap strings through a `Slot`:
+##
+## - `jobs` takes a worker to start ("ID\nNAME\nURL\nBASE\nSOURCE");
+## - `inbox` holds what the page sent it ("ID\tKIND\tPAYLOAD"), and `wake`
+##   with `sleeping` lets an idle thread block until something arrives
+##   (the writer sets `sleeping` false and sends the token, so at most
+##   one token is ever waiting);
+## - `outbox` holds what the worker sent the page, in the same shape,
+##   and each batch posts an external "worker" event to the window.
+##
+## A thread is free again when its worker ends (`close()`, `terminate()` or
+## the page going away); its number returns to the pool's `free` list.
+## Each thread's engine has a 2,000,000,000 step cap, so a loop that never
+## ends still stops, in hours, not at once: `terminate()` only reaches a
+## worker between its tasks.
+use std.app
+use std.time
+use garlicjs.vm
+
+## How many workers can run at once, all tabs together.
+pub POOL_SIZE := 8
+
+## The step cap of a worker's engine.
+WORKER_STEPS := 2000000000
+
+## What the page and one pool thread share.
+pub struct Slot
+    pub idx int
+    pub jobs Channel[str]
+    pub inbox Mutex[List[str]]
+    pub outbox Mutex[List[str]]
+    pub wake Channel[int]
+    pub sleeping Atomic[bool]
+
+pub struct Pool
+    pub slots List[Slot]
+    ## The numbers of the threads with no worker.
+    pub free Mutex[List[int]]
+    ## Where the window hears of new output.
+    pub gui app.Inbox
+    pub use_gui bool
+
+## A pool of `n` slots; `use_gui` says whether to wake the window through
+## `gui` (a program with no window polls instead).
+pub fn new_pool(gui app.Inbox, use_gui bool, n int) Pool
+    mut slots := List[Slot]()
+    mut ids := List[int]()
+    for i in 0..n
+        slots.push(Slot(
+            idx: i,
+            jobs: Channel[str](4),
+            inbox: Mutex(List[str]()),
+            outbox: Mutex(List[str]()),
+            wake: Channel[int](1),
+            sleeping: Atomic(false),
+        ))
+        ids.push(i)
+    Pool(slots: slots, free: Mutex(ids), gui: gui, use_gui: use_gui)
+
+## A pool with no threads: `new Worker` then fails with an error event.
+pub fn no_pool() Pool
+    new_pool(app.new_inbox(), false, 0)
+
+## Takes a free thread for worker `id` and hands it the job: the thread
+## number, or -1 when all are busy.
+pub fn Pool.start(self, id int, name str, url str, base str, source str) int
+    f := free
+    mut at := -1
+    with f as mut avail
+        if avail.len() > 0
+            at = avail.remove_at(0)
+    if at < 0
+        return -1
+    slots[at].jobs.send("{id}\n{name}\n{url}\n{base}\n{source}")
+    at
+
+## Writes a message into a thread's inbox and wakes the thread if it sleeps.
+pub fn Slot.post(self, id int, kind str, payload str)
+    q := inbox
+    with q as mut items
+        items.push("{id}\t{kind}\t{payload}")
+    if sleeping.cas(true, false)
+        wake.send(1)
+
+## What the worker on this thread sent since the last call.
+pub fn Slot.take(self) List[str]
+    outbox.swap(List[str]())
+
+## Stops every worker and ends the threads, at the end of the program.
+pub fn Pool.shutdown(self)
+    for s in slots
+        s.post(-1, "stop", "")
+        s.jobs.close()
+
+## The part of `s` before the first `sep` and the part after it.
+pub fn cut(s str, sep str)(str, str)
+    at := s.find(sep) else return (s, "")
+    (s.slice(0, at), s.slice(at + 1, s.chars().len()))
+
+## The thread's loop: runs the workers it is given, one after another.
+pub fn worker_slot(s Slot, free Mutex[List[int]], gui app.Inbox, use_gui bool)
+    jobs := s.jobs
+    for job in jobs
+        run_worker(s, job, gui, use_gui)
+        s.sleeping.store(false)
+        s.inbox.set(List[str]())
+        f := free
+        with f as mut avail
+            avail.push(s.idx)
+
+## Sends `lines` to the page in one batch.
+fn emit(s Slot, lines List[str], gui app.Inbox, use_gui bool)
+    if lines.len() == 0
+        return
+    q := s.outbox
+    mut was_empty := true
+    with q as mut items
+        was_empty = items.len() == 0
+        items.extend(lines)
+    ## One wake per drain, so a window that is slow never fills its inbox.
+    if use_gui and was_empty
+        gui.post(app.external("worker", ""))
+
+## Blocks until the page has written to the inbox.
+fn park(s Slot)
+    s.sleeping.store(true)
+    if s.inbox.get().len() > 0
+        if not s.sleeping.cas(true, false)
+            # The page took the flag first and is sending the token.
+            s.wake.recv()
+        return
+    s.wake.recv()
+
+## One worker, from its script to its end.
+fn run_worker(s Slot, job str, gui app.Inbox, use_gui bool)
+    parts := job.split("\n")
+    if parts.len() < 5
+        return
+    id := parts[0].to_int() else return
+    ## Whatever an earlier worker left unread is not for this one.
+    s.outbox.set(List[str]())
+    script := parts[2]
+    base := parts[3]
+    mut m := vm.new_vm()
+    m.step_limit = WORKER_STEPS
+    m.location_href = if script.starts_with("blob:")
+        or script.starts_with("data:") then base else script
+    m.clock_ms = time.now_ms().to_float()
+    m.page_start_ms = m.clock_ms
+    m.dom_setup()
+    m.net_setup()
+    m.worker_scope_setup(parts[1])
+    m.run_script_text(parts[4..].join("\n"))
+    mut reqs := 0
+    mut logs := 0
+    mut ending := false
+    while true
+        mut stop := false
+        m.clock_ms = time.now_ms().to_float()
+        for msg in s.inbox.swap(List[str]())
+            head := cut(msg, "\t")
+            rest := cut(head.1, "\t")
+            who := head.0.to_int() else continue
+            if rest.0 == "stop" and (who == id or who < 0)
+                stop = true
+            elif who != id or ending
+                continue
+            elif rest.0 == "post"
+                m.worker_deliver(rest.1)
+            elif rest.0 == "net"
+                reply := cut(rest.1, "\u{1}")
+                m.net_deliver(reply.0.to_int() else 0, reply.1)
+        if stop
+            break
+        m.clock_ms = time.now_ms().to_float()
+        m.run_event_loop(m.clock_ms, 10000)
+        mut out := List[str]()
+        for line in m.console_out[logs..]
+            out.push("{id}\tlog\t{line}")
+            if line.starts_with("Uncaught ")
+                out.push("{id}\terror\t{line}")
+        logs = m.console_out.len()
+        for r in m.host_requests[reqs..]
+            if r.kind == "worker" and r.method == "out"
+                out.push("{id}\tmsg\t{r.text}")
+            elif r.kind == "worker" and r.method == "close"
+                ending = true
+            elif r.kind == "fetch"
+                sep := "\u{1}"
+                out.push("{id}\tfetch\t{r.node}{sep}{r.method}{sep}{r.url}{sep}{r.text}")
+        reqs = m.host_requests.len()
+        if ending
+            out.push("{id}\tclosed\t")
+        emit(s, out, gui, use_gui)
+        if ending
+            break
+        if m.timers.len() > 0
+            mut next := m.timers[0].due
+            for t in m.timers
+                if t.due < next
+                    next = t.due
+            wait := (next - m.clock_ms).to_int()
+            time.sleep_ms(wait.max(1).min(20))
+        else
+            park(s)

@@ -59,6 +59,10 @@ pub struct Session
     requests int
     console int
     cookies int
+    ## The pool the page's workers run in, and the thread of each live one
+    ## by the number the page's `Worker` knows it by.
+    pool Pool
+    live Map[int, int]
     ## Whether the last `click` or `key` was cancelled by a listener.
     pub prevented bool
 
@@ -76,7 +80,7 @@ pub fn run(
     budget_ms float,
     max_steps int,
 ) Outcome
-    s := start(mut d, url, scripts, cookies, now_ms, "UTC", budget_ms, max_steps)
+    s := start(mut d, url, scripts, cookies, now_ms, "UTC", budget_ms, max_steps, no_pool())
     s.1
 
 ## Like `run`, and keeps the engine for `Session.click`, `Session.input`
@@ -90,6 +94,7 @@ pub fn start(
     zone str,
     budget_ms float,
     max_steps int,
+    pool Pool,
 )(Session, Outcome)
     mut machine := vm.new_vm()
     machine.trace = true
@@ -99,6 +104,7 @@ pub fn start(
     machine.cookies = cookies
     machine.dom_setup()
     machine.net_setup()
+    machine.worker_setup()
     machine.dom = mirror(d)
     for id in 0..machine.dom.len()
         for a in machine.dom[id].attrs
@@ -112,6 +118,8 @@ pub fn start(
         requests: 0,
         console: 0,
         cookies: 0,
+        pool: pool,
+        live: {},
         prevented: false,
     )
     out := s.collect(mut d)
@@ -153,8 +161,78 @@ fn Session.collect(mut self, mut d html.Doc) Outcome
             out.cookies.push(r.text)
         if r.kind == "clipboard"
             out.clips.push(r.text)
+    mut ops := List[vm.HostRequest]()
+    for r in machine.host_requests[requests..]
+        if r.kind == "worker"
+            ops.push(r)
     requests = machine.host_requests.len()
+    for r in ops
+        worker_op(r)
     out
+
+## One worker request of the page: start worker `r.node` (`r.text` is
+## "NAME\nURL\nBASE\nSOURCE"), pass it a message, or stop it. The page hears
+## of a start that found no free thread as an error event.
+fn Session.worker_op(mut self, r vm.HostRequest)
+    if r.method == "start"
+        parts := r.text.split("\n")
+        if parts.len() < 4
+            return
+        at := pool.start(r.node, parts[0], parts[1], parts[2], parts[3..].join("\n"))
+        if at < 0
+            machine.worker_event(r.node, "error", "Too many workers are running.")
+        else
+            live[r.node] = at
+        return
+    at := live.get(r.node) else return
+    if r.method == "post"
+        pool.slots[at].post(r.node, "post", r.text)
+    elif r.method == "net"
+        pool.slots[at].post(r.node, "net", r.text)
+    elif r.method == "stop"
+        pool.slots[at].post(r.node, "stop", "")
+        live.remove(r.node)
+
+## Whether any of the page's workers is running.
+pub fn Session.workers_live(self) bool
+    live.len() > 0
+
+## Stops the page's workers, as leaving the page does.
+pub fn Session.stop_workers(mut self)
+    for id in live.keys()
+        at := live.get(id) else continue
+        pool.slots[at].post(id, "stop", "")
+    live = {}
+
+## Hands the page what its workers sent since the last call (messages,
+## errors, console lines, closes) and makes the `fetch` requests they asked
+## for, then runs the timers and microtasks that became due.
+pub fn Session.workers_poll(mut self, mut d html.Doc, budget_ms float) Outcome
+    mut got := 0
+    for id in live.keys()
+        at := live.get(id) else continue
+        for line in pool.slots[at].take()
+            head := cut(line, "\t")
+            who := head.0.to_int() else continue
+            rest := cut(head.1, "\t")
+            got += 1
+            if rest.0 == "msg"
+                machine.worker_event(who, "message", rest.1)
+            elif rest.0 == "error"
+                machine.worker_event(who, "error", rest.1)
+            elif rest.0 == "log"
+                machine.report(rest.1)
+            elif rest.0 == "closed"
+                machine.worker_event(who, "closed", "")
+                live.remove(who)
+            elif rest.0 == "fetch"
+                f := rest.1.split("\u{1}")
+                if f.len() >= 4
+                    packed := f[3..].join("\u{1}")
+                    machine.worker_fetch(who, f[0].to_int() else 0, f[1], f[2], packed)
+    if got > 0
+        machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
+    collect(mut d)
 
 ## The browser's JSON answer to request `id` (see `Ask`): the page's
 ## callbacks run, then timers and microtasks that became due.
