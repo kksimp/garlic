@@ -8,11 +8,15 @@
 ## drawing buffer (`readPixels` sees it): draw calls validate, then do
 ## nothing, and the window never shows a WebGL canvas. Parameters and the
 ## extension list follow Chromium's (the same names in the same order);
-## the unmasked vendor and renderer say what this is: "Garlic". WebGL 2
-## (`webgl2`) is still null.
+## the unmasked vendor and renderer say what this is: "Garlic". `webgl2`
+## adds the 3.00 API on the same state: GLSL ES 3.00 shader parsing (layout
+## locations, uniform blocks, integer and unsigned types), vertex array
+## objects, samplers, queries, sync objects, transform feedback objects,
+## 3D and array textures, immutable storage, indexed buffer bindings,
+## separate read and draw framebuffers, `drawBuffers` and `clearBuffer*`.
 ##
 ## The behaviour was checked against Chromium by running one script in both
-## (js/testdata/page/webgl.html).
+## (js/testdata/page/webgl.html and webgl2.html).
 
 WEBGL_PRELUDE := r"""
 (function (g) {
@@ -20,9 +24,10 @@ WEBGL_PRELUDE := r"""
   if (!canvasProto || !canvasProto.getContext) return;
   // WebGL 1: a context that keeps all of its state and validates like the
   // real thing, and rasterizes nothing but `clear`.
-  var GL = __CONSTS__;
-  var DEF_TYPES = { float: 5126, vec2: 35664, vec3: 35665, vec4: 35666, int: 5124, ivec2: 35667, ivec3: 35668, ivec4: 35669, bool: 35670, bvec2: 35671, bvec3: 35672, bvec4: 35673, mat2: 35674, mat3: 35675, mat4: 35676, sampler2D: 35678, samplerCube: 35680 };
-  var TYPE_SIZE = { 5126: 1, 35664: 2, 35665: 3, 35666: 4, 5124: 1, 35667: 2, 35668: 3, 35669: 4, 35670: 1, 35671: 2, 35672: 3, 35673: 4, 35674: 4, 35675: 9, 35676: 16, 35678: 1, 35680: 1 };
+  var GL = {"DEPTH_BUFFER_BIT":256,"STENCIL_BUFFER_BIT":1024,"COLOR_BUFFER_BIT":16384,"POINTS":0,"LINES":1,"LINE_LOOP":2,"LINE_STRIP":3,"TRIANGLES":4,"TRIANGLE_STRIP":5,"TRIANGLE_FAN":6,"ZERO":0,"ONE":1,"SRC_COLOR":768,"ONE_MINUS_SRC_COLOR":769,"SRC_ALPHA":770,"ONE_MINUS_SRC_ALPHA":771,"DST_ALPHA":772,"ONE_MINUS_DST_ALPHA":773,"DST_COLOR":774,"ONE_MINUS_DST_COLOR":775,"SRC_ALPHA_SATURATE":776,"FUNC_ADD":32774,"BLEND_EQUATION":32777,"BLEND_EQUATION_RGB":32777,"BLEND_EQUATION_ALPHA":34877,"FUNC_SUBTRACT":32778,"FUNC_REVERSE_SUBTRACT":32779,"BLEND_DST_RGB":32968,"BLEND_SRC_RGB":32969,"BLEND_DST_ALPHA":32970,"BLEND_SRC_ALPHA":32971,"CONSTANT_COLOR":32769,"ONE_MINUS_CONSTANT_COLOR":32770,"CONSTANT_ALPHA":32771,"ONE_MINUS_CONSTANT_ALPHA":32772,"BLEND_COLOR":32773,"ARRAY_BUFFER":34962,"ELEMENT_ARRAY_BUFFER":34963,"ARRAY_BUFFER_BINDING":34964,"ELEMENT_ARRAY_BUFFER_BINDING":34965,"STREAM_DRAW":35040,"STATIC_DRAW":35044,"DYNAMIC_DRAW":35048,"BUFFER_SIZE":34660,"BUFFER_USAGE":34661,"CURRENT_VERTEX_ATTRIB":34342,"FRONT":1028,"BACK":1029,"FRONT_AND_BACK":1032,"TEXTURE_2D":3553,"CULL_FACE":2884,"BLEND":3042,"DITHER":3024,"STENCIL_TEST":2960,"DEPTH_TEST":2929,"SCISSOR_TEST":3089,"POLYGON_OFFSET_FILL":32823,"SAMPLE_ALPHA_TO_COVERAGE":32926,"SAMPLE_COVERAGE":32928,"NO_ERROR":0,"INVALID_ENUM":1280,"INVALID_VALUE":1281,"INVALID_OPERATION":1282,"OUT_OF_MEMORY":1285,"CW":2304,"CCW":2305,"LINE_WIDTH":2849,"ALIASED_POINT_SIZE_RANGE":33901,"ALIASED_LINE_WIDTH_RANGE":33902,"CULL_FACE_MODE":2885,"FRONT_FACE":2886,"DEPTH_RANGE":2928,"DEPTH_WRITEMASK":2930,"DEPTH_CLEAR_VALUE":2931,"DEPTH_FUNC":2932,"STENCIL_CLEAR_VALUE":2961,"STENCIL_FUNC":2962,"STENCIL_FAIL":2964,"STENCIL_PASS_DEPTH_FAIL":2965,"STENCIL_PASS_DEPTH_PASS":2966,"STENCIL_REF":2967,"STENCIL_VALUE_MASK":2963,"STENCIL_WRITEMASK":2968,"STENCIL_BACK_FUNC":34816,"STENCIL_BACK_FAIL":34817,"STENCIL_BACK_PASS_DEPTH_FAIL":34818,"STENCIL_BACK_PASS_DEPTH_PASS":34819,"STENCIL_BACK_REF":36003,"STENCIL_BACK_VALUE_MASK":36004,"STENCIL_BACK_WRITEMASK":36005,"VIEWPORT":2978,"SCISSOR_BOX":3088,"COLOR_CLEAR_VALUE":3106,"COLOR_WRITEMASK":3107,"UNPACK_ALIGNMENT":3317,"PACK_ALIGNMENT":3333,"MAX_TEXTURE_SIZE":3379,"MAX_VIEWPORT_DIMS":3386,"SUBPIXEL_BITS":3408,"RED_BITS":3410,"GREEN_BITS":3411,"BLUE_BITS":3412,"ALPHA_BITS":3413,"DEPTH_BITS":3414,"STENCIL_BITS":3415,"POLYGON_OFFSET_UNITS":10752,"POLYGON_OFFSET_FACTOR":32824,"TEXTURE_BINDING_2D":32873,"SAMPLE_BUFFERS":32936,"SAMPLES":32937,"SAMPLE_COVERAGE_VALUE":32938,"SAMPLE_COVERAGE_INVERT":32939,"COMPRESSED_TEXTURE_FORMATS":34467,"DONT_CARE":4352,"FASTEST":4353,"NICEST":4354,"GENERATE_MIPMAP_HINT":33170,"BYTE":5120,"UNSIGNED_BYTE":5121,"SHORT":5122,"UNSIGNED_SHORT":5123,"INT":5124,"UNSIGNED_INT":5125,"FLOAT":5126,"DEPTH_COMPONENT":6402,"ALPHA":6406,"RGB":6407,"RGBA":6408,"LUMINANCE":6409,"LUMINANCE_ALPHA":6410,"UNSIGNED_SHORT_4_4_4_4":32819,"UNSIGNED_SHORT_5_5_5_1":32820,"UNSIGNED_SHORT_5_6_5":33635,"FRAGMENT_SHADER":35632,"VERTEX_SHADER":35633,"MAX_VERTEX_ATTRIBS":34921,"MAX_VERTEX_UNIFORM_VECTORS":36347,"MAX_VARYING_VECTORS":36348,"MAX_COMBINED_TEXTURE_IMAGE_UNITS":35661,"MAX_VERTEX_TEXTURE_IMAGE_UNITS":35660,"MAX_TEXTURE_IMAGE_UNITS":34930,"MAX_FRAGMENT_UNIFORM_VECTORS":36349,"SHADER_TYPE":35663,"DELETE_STATUS":35712,"LINK_STATUS":35714,"VALIDATE_STATUS":35715,"ATTACHED_SHADERS":35717,"ACTIVE_UNIFORMS":35718,"ACTIVE_ATTRIBUTES":35721,"SHADING_LANGUAGE_VERSION":35724,"CURRENT_PROGRAM":35725,"NEVER":512,"LESS":513,"EQUAL":514,"LEQUAL":515,"GREATER":516,"NOTEQUAL":517,"GEQUAL":518,"ALWAYS":519,"KEEP":7680,"REPLACE":7681,"INCR":7682,"DECR":7683,"INVERT":5386,"INCR_WRAP":34055,"DECR_WRAP":34056,"VENDOR":7936,"RENDERER":7937,"VERSION":7938,"NEAREST":9728,"LINEAR":9729,"NEAREST_MIPMAP_NEAREST":9984,"LINEAR_MIPMAP_NEAREST":9985,"NEAREST_MIPMAP_LINEAR":9986,"LINEAR_MIPMAP_LINEAR":9987,"TEXTURE_MAG_FILTER":10240,"TEXTURE_MIN_FILTER":10241,"TEXTURE_WRAP_S":10242,"TEXTURE_WRAP_T":10243,"TEXTURE":5890,"TEXTURE_CUBE_MAP":34067,"TEXTURE_BINDING_CUBE_MAP":34068,"TEXTURE_CUBE_MAP_POSITIVE_X":34069,"TEXTURE_CUBE_MAP_NEGATIVE_X":34070,"TEXTURE_CUBE_MAP_POSITIVE_Y":34071,"TEXTURE_CUBE_MAP_NEGATIVE_Y":34072,"TEXTURE_CUBE_MAP_POSITIVE_Z":34073,"TEXTURE_CUBE_MAP_NEGATIVE_Z":34074,"MAX_CUBE_MAP_TEXTURE_SIZE":34076,"TEXTURE0":33984,"TEXTURE1":33985,"TEXTURE2":33986,"TEXTURE3":33987,"TEXTURE4":33988,"TEXTURE5":33989,"TEXTURE6":33990,"TEXTURE7":33991,"TEXTURE8":33992,"TEXTURE9":33993,"TEXTURE10":33994,"TEXTURE11":33995,"TEXTURE12":33996,"TEXTURE13":33997,"TEXTURE14":33998,"TEXTURE15":33999,"TEXTURE16":34000,"TEXTURE17":34001,"TEXTURE18":34002,"TEXTURE19":34003,"TEXTURE20":34004,"TEXTURE21":34005,"TEXTURE22":34006,"TEXTURE23":34007,"TEXTURE24":34008,"TEXTURE25":34009,"TEXTURE26":34010,"TEXTURE27":34011,"TEXTURE28":34012,"TEXTURE29":34013,"TEXTURE30":34014,"TEXTURE31":34015,"ACTIVE_TEXTURE":34016,"REPEAT":10497,"CLAMP_TO_EDGE":33071,"MIRRORED_REPEAT":33648,"FLOAT_VEC2":35664,"FLOAT_VEC3":35665,"FLOAT_VEC4":35666,"INT_VEC2":35667,"INT_VEC3":35668,"INT_VEC4":35669,"BOOL":35670,"BOOL_VEC2":35671,"BOOL_VEC3":35672,"BOOL_VEC4":35673,"FLOAT_MAT2":35674,"FLOAT_MAT3":35675,"FLOAT_MAT4":35676,"SAMPLER_2D":35678,"SAMPLER_CUBE":35680,"VERTEX_ATTRIB_ARRAY_ENABLED":34338,"VERTEX_ATTRIB_ARRAY_SIZE":34339,"VERTEX_ATTRIB_ARRAY_STRIDE":34340,"VERTEX_ATTRIB_ARRAY_TYPE":34341,"VERTEX_ATTRIB_ARRAY_NORMALIZED":34922,"VERTEX_ATTRIB_ARRAY_POINTER":34373,"VERTEX_ATTRIB_ARRAY_BUFFER_BINDING":34975,"IMPLEMENTATION_COLOR_READ_TYPE":35738,"IMPLEMENTATION_COLOR_READ_FORMAT":35739,"COMPILE_STATUS":35713,"LOW_FLOAT":36336,"MEDIUM_FLOAT":36337,"HIGH_FLOAT":36338,"LOW_INT":36339,"MEDIUM_INT":36340,"HIGH_INT":36341,"FRAMEBUFFER":36160,"RENDERBUFFER":36161,"RGBA4":32854,"RGB5_A1":32855,"RGB565":36194,"DEPTH_COMPONENT16":33189,"STENCIL_INDEX8":36168,"DEPTH_STENCIL":34041,"RENDERBUFFER_WIDTH":36162,"RENDERBUFFER_HEIGHT":36163,"RENDERBUFFER_INTERNAL_FORMAT":36164,"RENDERBUFFER_RED_SIZE":36176,"RENDERBUFFER_GREEN_SIZE":36177,"RENDERBUFFER_BLUE_SIZE":36178,"RENDERBUFFER_ALPHA_SIZE":36179,"RENDERBUFFER_DEPTH_SIZE":36180,"RENDERBUFFER_STENCIL_SIZE":36181,"FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE":36048,"FRAMEBUFFER_ATTACHMENT_OBJECT_NAME":36049,"FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL":36050,"FRAMEBUFFER_ATTACHMENT_TEXTURE_CUBE_MAP_FACE":36051,"COLOR_ATTACHMENT0":36064,"DEPTH_ATTACHMENT":36096,"STENCIL_ATTACHMENT":36128,"DEPTH_STENCIL_ATTACHMENT":33306,"NONE":0,"FRAMEBUFFER_COMPLETE":36053,"FRAMEBUFFER_INCOMPLETE_ATTACHMENT":36054,"FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT":36055,"FRAMEBUFFER_INCOMPLETE_DIMENSIONS":36057,"FRAMEBUFFER_UNSUPPORTED":36061,"FRAMEBUFFER_BINDING":36006,"RENDERBUFFER_BINDING":36007,"MAX_RENDERBUFFER_SIZE":34024,"INVALID_FRAMEBUFFER_OPERATION":1286,"UNPACK_FLIP_Y_WEBGL":37440,"UNPACK_PREMULTIPLY_ALPHA_WEBGL":37441,"CONTEXT_LOST_WEBGL":37442,"UNPACK_COLORSPACE_CONVERSION_WEBGL":37443,"BROWSER_DEFAULT_WEBGL":37444,"RGB8":32849,"RGBA8":32856};
+  var DEF_TYPES = { float: 5126, vec2: 35664, vec3: 35665, vec4: 35666, int: 5124, ivec2: 35667, ivec3: 35668, ivec4: 35669, bool: 35670, bvec2: 35671, bvec3: 35672, bvec4: 35673, mat2: 35674, mat3: 35675, mat4: 35676, sampler2D: 35678, samplerCube: 35680, uint: 5125, uvec2: 36294, uvec3: 36295, uvec4: 36296, mat2x3: 35685, mat2x4: 35686, mat3x2: 35687, mat3x4: 35688, mat4x2: 35689, mat4x3: 35690, sampler3D: 35679, sampler2DShadow: 35682, samplerCubeShadow: 36293, sampler2DArray: 36289, sampler2DArrayShadow: 36292, isampler2D: 36298, isampler3D: 36299, isamplerCube: 36300, isampler2DArray: 36303, usampler2D: 36306, usampler3D: 36307, usamplerCube: 36308, usampler2DArray: 36311 };
+  var TYPE_SIZE = { 5126: 1, 35664: 2, 35665: 3, 35666: 4, 5124: 1, 35667: 2, 35668: 3, 35669: 4, 35670: 1, 35671: 2, 35672: 3, 35673: 4, 35674: 4, 35675: 9, 35676: 16, 35678: 1, 35680: 1, 5125: 1, 36294: 2, 36295: 3, 36296: 4, 35685: 6, 35686: 8, 35687: 6, 35688: 12, 35689: 8, 35690: 12, 35679: 1, 35682: 1, 36293: 1, 36289: 1, 36292: 1, 36298: 1, 36299: 1, 36300: 1, 36303: 1, 36306: 1, 36307: 1, 36308: 1, 36311: 1 };
+  var SAMPLERS = { 35678: 1, 35680: 1, 35679: 1, 35682: 1, 36293: 1, 36289: 1, 36292: 1, 36298: 1, 36299: 1, 36300: 1, 36303: 1, 36306: 1, 36307: 1, 36308: 1, 36311: 1 };
   var EXT_NAMES = ["ANGLE_instanced_arrays", "EXT_blend_minmax", "EXT_clip_control", "EXT_color_buffer_half_float", "EXT_depth_clamp", "EXT_disjoint_timer_query", "EXT_float_blend", "EXT_frag_depth", "EXT_polygon_offset_clamp", "EXT_shader_texture_lod", "EXT_texture_compression_bptc", "EXT_texture_compression_rgtc", "EXT_texture_filter_anisotropic", "EXT_texture_mirror_clamp_to_edge", "EXT_sRGB", "OES_element_index_uint", "OES_fbo_render_mipmap", "OES_standard_derivatives", "OES_texture_float", "OES_texture_float_linear", "OES_texture_half_float", "OES_texture_half_float_linear", "OES_vertex_array_object", "WEBGL_color_buffer_float", "WEBGL_compressed_texture_astc", "WEBGL_compressed_texture_etc", "WEBGL_compressed_texture_etc1", "WEBGL_compressed_texture_s3tc", "WEBGL_compressed_texture_s3tc_srgb", "WEBGL_debug_renderer_info", "WEBGL_debug_shaders", "WEBGL_depth_texture", "WEBGL_draw_buffers", "WEBGL_lose_context", "WEBGL_multi_draw", "WEBGL_polygon_mode"];
   var EXT_CONSTS = {
     ANGLE_instanced_arrays: { VERTEX_ATTRIB_ARRAY_DIVISOR_ANGLE: 35070 },
@@ -38,7 +43,7 @@ WEBGL_PRELUDE := r"""
     WEBGL_compressed_texture_s3tc: { COMPRESSED_RGB_S3TC_DXT1_EXT: 33776, COMPRESSED_RGBA_S3TC_DXT1_EXT: 33777, COMPRESSED_RGBA_S3TC_DXT3_EXT: 33778, COMPRESSED_RGBA_S3TC_DXT5_EXT: 33779 }
   };
   var CAPS = [3042, 2884, 2929, 3024, 32823, 32926, 32928, 3089, 2960];
-  var NAMES = ["Buffer", "Texture", "Program", "Shader", "Framebuffer", "Renderbuffer"];
+  var NAMES = ["Buffer", "Texture", "Program", "Shader", "Framebuffer", "Renderbuffer", "VertexArrayObject", "Sampler", "Query", "Sync", "TransformFeedback"];
   var illegal = function (n) { return function () { throw new TypeError("Failed to construct '" + n + "': Illegal constructor"); }; };
   var CLS = {};
   NAMES.concat(["UniformLocation", "ActiveInfo", "ShaderPrecisionFormat"]).forEach(function (n) {
@@ -102,11 +107,11 @@ WEBGL_PRELUDE := r"""
   Object.defineProperty(P, "getContextAttributes", { value: function () { var s = S(this); if (s.lost) return null; var o = {}; for (var k in s.attrs) o[k] = s.attrs[k]; return o; }, writable: true, configurable: true, enumerable: true });
   Object.defineProperty(P, "isContextLost", { value: function () { return S(this).lost; }, writable: true, configurable: true, enumerable: true });
   Object.defineProperty(P, "getError", { value: function () { var s = S(this); if (s.lost) { if (s.lostErr) { s.lostErr = false; return 37442; } return 0; } var e = s.err; s.err = 0; return e; }, writable: true, configurable: true, enumerable: true });
-  def("getSupportedExtensions", function () { return EXT_NAMES.slice(); });
+  def("getSupportedExtensions", function (s) { return (s.extList || EXT_NAMES).slice(); });
   def("getExtension", function (s, name) {
     name = String(name);
-    var real = null;
-    for (var i = 0; i < EXT_NAMES.length; i++) if (EXT_NAMES[i].toLowerCase() === name.toLowerCase()) real = EXT_NAMES[i];
+    var real = null, names = s.extList || EXT_NAMES;
+    for (var i = 0; i < names.length; i++) if (names[i].toLowerCase() === name.toLowerCase()) real = names[i];
     if (!real) return null;
     if (!s.exts[real]) s.exts[real] = makeExt(this, s, real);
     return s.exts[real];
@@ -233,16 +238,16 @@ WEBGL_PRELUDE := r"""
   });
 
   // ---- buffers ----
-  function bufTarget(s, t) { if (t !== 34962 && t !== 34963) { err(s, 1280); return false; } return true; }
+  function bufTarget(s, t) { if (t !== 34962 && t !== 34963 && !(s.v2 && (t === 36662 || t === 36663 || t === 35051 || t === 35052 || t === 35982 || t === 35345))) { err(s, 1280); return false; } return true; }
   def("createBuffer", function (s) { return mk("Buffer", { _s: s, _del: false, _ever: false, _size: 0, _usage: 35044, _data: new Uint8Array(0) }); });
   def("deleteBuffer", function (s, b) { if (!chk(s, b, "Buffer") || !b) return; b._del = true; if (s.buf[34962] === b) s.buf[34962] = null; if (s.vao.element === b) s.vao.element = null; s.vao.attribs.forEach(function (a) { if (a.buffer === b) a.buffer = null; }); });
   def("isBuffer", function (s, b) { return own(s, b, "Buffer") && !b._del && b._ever; });
-  def("bindBuffer", function (s, t, b) { if (!bufTarget(s, t) || !chk(s, b, "Buffer")) return; if (b && b._del) return err(s, 1282); if (b) b._ever = true; if (t === 34962) s.buf[34962] = b || null; else s.vao.element = b || null; });
-  function bound(s, t) { return t === 34962 ? s.buf[34962] : s.vao.element; }
+  def("bindBuffer", function (s, t, b) { if (!bufTarget(s, t) || !chk(s, b, "Buffer")) return; if (b && b._del) return err(s, 1282); if (b) b._ever = true; if (t === 34963) s.vao.element = b || null; else s.buf[t] = b || null; });
+  function bound(s, t) { return t === 34963 ? s.vao.element : s.buf[t] || null; }
   function bytes(d) { if (d instanceof ArrayBuffer) return new Uint8Array(d.slice(0)); if (ArrayBuffer.isView(d)) return new Uint8Array(d.buffer.slice(d.byteOffset, d.byteOffset + d.byteLength)); return null; }
   def("bufferData", function (s, t, d, u) {
     if (!bufTarget(s, t)) return;
-    if ([35040, 35044, 35048].indexOf(u) < 0) return err(s, 1280);
+    if (!(u >= 35040 && u <= 35050 && u !== 35043 && u !== 35047 && (s.v2 || [35040, 35044, 35048].indexOf(u) >= 0))) return err(s, 1280);
     var b = bound(s, t); if (!b) return err(s, 1282);
     if (typeof d === "number") { if (d < 0) return err(s, 1281); b._data = new Uint8Array(d); }
     else if (d === null || d === undefined) return err(s, 1282);
@@ -286,22 +291,24 @@ WEBGL_PRELUDE := r"""
 
   // ---- shaders and programs ----
   function strip(src) { return src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " "); }
-  function compile(sh) {
+  function compile(sh, s) {
     var src = strip(sh._src), log = "", n = (sh._src.split("\n").length);
-    if (/^\s*#\s*version\s+300/m.test(src)) log = "ERROR: 0:1: '#version' : version number not supported in WebGL 1.0\n";
+    sh._v3 = /^\s*#\s*version\s+300\s+es\b/.test(src);
+    if (/^\s*#\s*version\s+300/m.test(src) && !(s && s.v2 && sh._v3)) log = "ERROR: 0:1: '#version' : version number not supported in WebGL 1.0\n";
     else if (!/\bvoid\s+main\s*\(\s*(void)?\s*\)/.test(src)) log = "ERROR: 0:1: 'main' : function is not defined\n";
     else {
       var depth = 0, par = 0, ok = true;
       for (var i = 0; i < src.length; i++) { var c = src[i]; if (c === "{") depth++; else if (c === "}") { depth--; if (depth < 0) ok = false; } else if (c === "(") par++; else if (c === ")") { par--; if (par < 0) ok = false; } }
       if (!ok || depth !== 0 || par !== 0) log = "ERROR: 0:" + n + ": '' : syntax error\n";
       else if (sh._type === 35632 && /\bfloat\b|\bvec[234]\b|\bmat[234]\b/.test(src) && !/\bprecision\s+(lowp|mediump|highp)\s+float\s*;/.test(src)) log = "ERROR: 0:1: 'float' : No precision specified for (float)\n";
-      else if (sh._type === 35633 && /\bgl_FragColor\b|\bgl_FragData\b/.test(src)) log = "ERROR: 0:1: 'gl_FragColor' : undeclared identifier\n";
+      else if (sh._type === 35633 && !sh._v3 && /\bgl_FragColor\b|\bgl_FragData\b/.test(src)) log = "ERROR: 0:1: 'gl_FragColor' : undeclared identifier\n";
       else if (sh._type === 35632 && /\bgl_Position\b/.test(src)) log = "ERROR: 0:1: 'gl_Position' : undeclared identifier\n";
     }
     sh._log = log; sh._ok = !log;
-    sh._decls = log ? [] : decls(src);
+    sh._decls = log ? [] : decls(src, sh);
   }
-  function decls(src) {
+  function decls(src, sh) {
+    if (sh && sh._v3) return decls3(src, sh);
     var out = [], re = /\b(attribute|uniform|varying)\s+(?:(?:lowp|mediump|highp)\s+)?(\w+)\s+([^;{}]+);/g, m;
     while ((m = re.exec(src))) {
       m[3].split(",").forEach(function (nm) {
@@ -315,7 +322,7 @@ WEBGL_PRELUDE := r"""
   def("createShader", function (s, t) { if (t !== 35633 && t !== 35632) { err(s, 1280); return null; } return mk("Shader", { _s: s, _type: t, _src: "", _ok: false, _log: "", _del: false, _decls: [], _progs: 0 }); });
   def("shaderSource", function (s, sh, src) { if (!chk(s, sh, "Shader") || !sh) return err(s, 1282); sh._src = String(src); });
   def("getShaderSource", function (s, sh) { if (!chk(s, sh, "Shader") || !sh) { err(s, 1282); return null; } return sh._src; });
-  def("compileShader", function (s, sh) { if (!chk(s, sh, "Shader") || !sh) return err(s, 1282); compile(sh); });
+  def("compileShader", function (s, sh) { if (!chk(s, sh, "Shader") || !sh) return err(s, 1282); compile(sh, s); });
   def("getShaderParameter", function (s, sh, p) { if (!chk(s, sh, "Shader") || !sh) { err(s, 1282); return null; } if (p === 35663) return sh._type; if (p === 35712) return sh._del; if (p === 35713) return sh._ok; err(s, 1280); return null; });
   def("getShaderInfoLog", function (s, sh) { if (!chk(s, sh, "Shader") || !sh) { err(s, 1282); return null; } return sh._log; });
   def("deleteShader", function (s, sh) { if (!chk(s, sh, "Shader") || !sh) return; sh._del = true; });
@@ -333,9 +340,12 @@ WEBGL_PRELUDE := r"""
     if (!v._ok || !f._ok) { p._log = "ERROR: Must have a compiled vertex shader and fragment shader attached.\n"; return; }
     var vv = {}; v._decls.forEach(function (d) { if (d.kind === "varying") vv[d.name] = d; });
     for (var i = 0; i < f._decls.length; i++) { var d = f._decls[i]; if (d.kind === "varying" && d.used && !vv[d.name]) { p._log = "ERROR: Varyings with the same name but different type, or statically used varyings in fragment shader are not declared in vertex shader: " + d.name + "\n"; return; } }
+    if (!!v._v3 !== !!f._v3) { p._log = "ERROR: Versions of linked shaders have to match\n"; return; }
     var taken = {}; for (var k in p._bind) taken[p._bind[k]] = true;
+    v._decls.forEach(function (d) { if (d.kind === "attribute" && d.loc !== undefined) taken[d.loc] = true; });
     var next = 0;
-    v._decls.forEach(function (d) { if (d.kind === "attribute" && d.used) { var loc = p._bind[d.name]; if (loc === undefined) { while (taken[next]) next++; loc = next; taken[next] = true; } p._attrs.push({ name: d.name, type: d.type, size: d.size, loc: loc }); } });
+    v._decls.forEach(function (d) { if (d.kind === "attribute" && d.used) { var loc = p._bind[d.name]; if (loc === undefined) loc = d.loc; if (loc === undefined) { while (taken[next]) next++; loc = next; taken[next] = true; } p._attrs.push({ name: d.name, type: d.type, size: d.size, loc: loc }); } });
+    if (v._v3) ["gl_VertexID", "gl_InstanceID"].forEach(function (n) { if (new RegExp("\\b" + n + "\\b").test(strip(v._src))) p._attrs.push({ name: n, type: 5124, size: 1, loc: -1 }); });
     var seen = {};
     v._decls.concat(f._decls).forEach(function (d) { if (d.kind === "uniform" && d.used && !seen[d.name]) { seen[d.name] = 1; p._unis.push({ name: d.name + (d.arr ? "[0]" : ""), base: d.name, type: d.type, size: d.size, arr: d.arr }); } });
     p._unis.forEach(function (u) { p._vals[u.base] = u.type === 35670 ? false : (TYPE_SIZE[u.type] > 1 && u.type !== 5124 ? new Float32Array(TYPE_SIZE[u.type] * u.size) : 0); });
@@ -456,8 +466,9 @@ WEBGL_PRELUDE := r"""
   def("isFramebuffer", function (s, f) { return own(s, f, "Framebuffer") && !f._del && f._ever; });
   def("bindFramebuffer", function (s, t, f) { if (t !== 36160) return err(s, 1280); if (!chk(s, f, "Framebuffer")) return; if (f) { if (f._del) return err(s, 1282); f._ever = true; } s.fb = f || null; });
   var ATT = [36064, 36096, 36128, 33306];
-  def("framebufferTexture2D", function (s, t, a, tt, tex, lvl) { if (t !== 36160) return err(s, 1280); if (ATT.indexOf(a) < 0) return err(s, 1280); if (!s.fb) return err(s, 1282); if (!chk(s, tex, "Texture")) return; if (lvl !== 0) return err(s, 1281); s.fb._att[a] = tex ? { kind: "tex", obj: tex, target: tt } : null; });
-  def("framebufferRenderbuffer", function (s, t, a, rt, rb) { if (t !== 36160 || rt !== 36161) return err(s, 1280); if (ATT.indexOf(a) < 0) return err(s, 1280); if (!s.fb) return err(s, 1282); if (!chk(s, rb, "Renderbuffer")) return; s.fb._att[a] = rb ? { kind: "rb", obj: rb } : null; });
+  function attOk(s, a) { return ATT.indexOf(a) >= 0 || (s.v2 && a > 36064 && a <= 36071); }
+  def("framebufferTexture2D", function (s, t, a, tt, tex, lvl) { if (t !== 36160) return err(s, 1280); if (!attOk(s, a)) return err(s, 1280); if (!s.fb) return err(s, 1282); if (!chk(s, tex, "Texture")) return; if (lvl !== 0) return err(s, 1281); s.fb._att[a] = tex ? { kind: "tex", obj: tex, target: tt } : null; });
+  def("framebufferRenderbuffer", function (s, t, a, rt, rb) { if (t !== 36160 || rt !== 36161) return err(s, 1280); if (!attOk(s, a)) return err(s, 1280); if (!s.fb) return err(s, 1282); if (!chk(s, rb, "Renderbuffer")) return; s.fb._att[a] = rb ? { kind: "rb", obj: rb } : null; });
   function fbStatus(s) {
     var f = s.fb; if (!f) return 36053;
     var any = false;
@@ -466,7 +477,7 @@ WEBGL_PRELUDE := r"""
   }
   def("checkFramebufferStatus", function (s, t) { if (t !== 36160) { err(s, 1280); return 0; } return fbStatus(s); });
   def("getFramebufferAttachmentParameter", function (s, t, a, p) {
-    if (t !== 36160) { err(s, 1280); return null; } if (!s.fb) { err(s, 1282); return null; } if (ATT.indexOf(a) < 0) { err(s, 1280); return null; }
+    if (t !== 36160) { err(s, 1280); return null; } if (!s.fb) { err(s, 1282); return null; } if (!attOk(s, a)) { err(s, 1280); return null; }
     var at = s.fb._att[a];
     if (p === 36048) return at ? (at.kind === "tex" ? 5890 : 36161) : 0;
     if (!at) { if (p === 36049) { err(s, 1280); return null; } err(s, 1280); return null; }
@@ -506,6 +517,10 @@ WEBGL_PRELUDE := r"""
   function drawChecks(s) {
     if (!s.prog) { err(s, 1282); return false; }
     if (fbStatus(s) !== 36053) { err(s, 1286); return false; }
+    if (s.v2) {
+      var bl = s.prog._sh.reduce(function (a, sh) { return a.concat(sh._blocks || []); }, []);
+      for (var i = 0; i < bl.length; i++) { var bi = (s.prog._blk || {})[bl[i].name] || 0, e = (s.ibuf[35345] || [])[bi]; if (!e || !e.buffer || e.buffer._size === 0) { err(s, 1282); return false; } }
+    }
     return true;
   }
   def("drawArrays", function (s, mode, first, count) {
@@ -522,16 +537,354 @@ WEBGL_PRELUDE := r"""
     if (!drawChecks(s)) return;
   });
 
+  // ---- WebGL 2 ----
+  var GL2 = {"DEPTH_BUFFER_BIT":256,"STENCIL_BUFFER_BIT":1024,"COLOR_BUFFER_BIT":16384,"POINTS":0,"LINES":1,"LINE_LOOP":2,"LINE_STRIP":3,"TRIANGLES":4,"TRIANGLE_STRIP":5,"TRIANGLE_FAN":6,"ZERO":0,"ONE":1,"SRC_COLOR":768,"ONE_MINUS_SRC_COLOR":769,"SRC_ALPHA":770,"ONE_MINUS_SRC_ALPHA":771,"DST_ALPHA":772,"ONE_MINUS_DST_ALPHA":773,"DST_COLOR":774,"ONE_MINUS_DST_COLOR":775,"SRC_ALPHA_SATURATE":776,"FUNC_ADD":32774,"BLEND_EQUATION":32777,"BLEND_EQUATION_RGB":32777,"BLEND_EQUATION_ALPHA":34877,"FUNC_SUBTRACT":32778,"FUNC_REVERSE_SUBTRACT":32779,"BLEND_DST_RGB":32968,"BLEND_SRC_RGB":32969,"BLEND_DST_ALPHA":32970,"BLEND_SRC_ALPHA":32971,"CONSTANT_COLOR":32769,"ONE_MINUS_CONSTANT_COLOR":32770,"CONSTANT_ALPHA":32771,"ONE_MINUS_CONSTANT_ALPHA":32772,"BLEND_COLOR":32773,"ARRAY_BUFFER":34962,"ELEMENT_ARRAY_BUFFER":34963,"ARRAY_BUFFER_BINDING":34964,"ELEMENT_ARRAY_BUFFER_BINDING":34965,"STREAM_DRAW":35040,"STATIC_DRAW":35044,"DYNAMIC_DRAW":35048,"BUFFER_SIZE":34660,"BUFFER_USAGE":34661,"CURRENT_VERTEX_ATTRIB":34342,"FRONT":1028,"BACK":1029,"FRONT_AND_BACK":1032,"TEXTURE_2D":3553,"CULL_FACE":2884,"BLEND":3042,"DITHER":3024,"STENCIL_TEST":2960,"DEPTH_TEST":2929,"SCISSOR_TEST":3089,"POLYGON_OFFSET_FILL":32823,"SAMPLE_ALPHA_TO_COVERAGE":32926,"SAMPLE_COVERAGE":32928,"NO_ERROR":0,"INVALID_ENUM":1280,"INVALID_VALUE":1281,"INVALID_OPERATION":1282,"OUT_OF_MEMORY":1285,"CW":2304,"CCW":2305,"LINE_WIDTH":2849,"ALIASED_POINT_SIZE_RANGE":33901,"ALIASED_LINE_WIDTH_RANGE":33902,"CULL_FACE_MODE":2885,"FRONT_FACE":2886,"DEPTH_RANGE":2928,"DEPTH_WRITEMASK":2930,"DEPTH_CLEAR_VALUE":2931,"DEPTH_FUNC":2932,"STENCIL_CLEAR_VALUE":2961,"STENCIL_FUNC":2962,"STENCIL_FAIL":2964,"STENCIL_PASS_DEPTH_FAIL":2965,"STENCIL_PASS_DEPTH_PASS":2966,"STENCIL_REF":2967,"STENCIL_VALUE_MASK":2963,"STENCIL_WRITEMASK":2968,"STENCIL_BACK_FUNC":34816,"STENCIL_BACK_FAIL":34817,"STENCIL_BACK_PASS_DEPTH_FAIL":34818,"STENCIL_BACK_PASS_DEPTH_PASS":34819,"STENCIL_BACK_REF":36003,"STENCIL_BACK_VALUE_MASK":36004,"STENCIL_BACK_WRITEMASK":36005,"VIEWPORT":2978,"SCISSOR_BOX":3088,"COLOR_CLEAR_VALUE":3106,"COLOR_WRITEMASK":3107,"UNPACK_ALIGNMENT":3317,"PACK_ALIGNMENT":3333,"MAX_TEXTURE_SIZE":3379,"MAX_VIEWPORT_DIMS":3386,"SUBPIXEL_BITS":3408,"RED_BITS":3410,"GREEN_BITS":3411,"BLUE_BITS":3412,"ALPHA_BITS":3413,"DEPTH_BITS":3414,"STENCIL_BITS":3415,"POLYGON_OFFSET_UNITS":10752,"POLYGON_OFFSET_FACTOR":32824,"TEXTURE_BINDING_2D":32873,"SAMPLE_BUFFERS":32936,"SAMPLES":32937,"SAMPLE_COVERAGE_VALUE":32938,"SAMPLE_COVERAGE_INVERT":32939,"COMPRESSED_TEXTURE_FORMATS":34467,"DONT_CARE":4352,"FASTEST":4353,"NICEST":4354,"GENERATE_MIPMAP_HINT":33170,"BYTE":5120,"UNSIGNED_BYTE":5121,"SHORT":5122,"UNSIGNED_SHORT":5123,"INT":5124,"UNSIGNED_INT":5125,"FLOAT":5126,"DEPTH_COMPONENT":6402,"ALPHA":6406,"RGB":6407,"RGBA":6408,"LUMINANCE":6409,"LUMINANCE_ALPHA":6410,"UNSIGNED_SHORT_4_4_4_4":32819,"UNSIGNED_SHORT_5_5_5_1":32820,"UNSIGNED_SHORT_5_6_5":33635,"FRAGMENT_SHADER":35632,"VERTEX_SHADER":35633,"MAX_VERTEX_ATTRIBS":34921,"MAX_VERTEX_UNIFORM_VECTORS":36347,"MAX_VARYING_VECTORS":36348,"MAX_COMBINED_TEXTURE_IMAGE_UNITS":35661,"MAX_VERTEX_TEXTURE_IMAGE_UNITS":35660,"MAX_TEXTURE_IMAGE_UNITS":34930,"MAX_FRAGMENT_UNIFORM_VECTORS":36349,"SHADER_TYPE":35663,"DELETE_STATUS":35712,"LINK_STATUS":35714,"VALIDATE_STATUS":35715,"ATTACHED_SHADERS":35717,"ACTIVE_UNIFORMS":35718,"ACTIVE_ATTRIBUTES":35721,"SHADING_LANGUAGE_VERSION":35724,"CURRENT_PROGRAM":35725,"NEVER":512,"LESS":513,"EQUAL":514,"LEQUAL":515,"GREATER":516,"NOTEQUAL":517,"GEQUAL":518,"ALWAYS":519,"KEEP":7680,"REPLACE":7681,"INCR":7682,"DECR":7683,"INVERT":5386,"INCR_WRAP":34055,"DECR_WRAP":34056,"VENDOR":7936,"RENDERER":7937,"VERSION":7938,"NEAREST":9728,"LINEAR":9729,"NEAREST_MIPMAP_NEAREST":9984,"LINEAR_MIPMAP_NEAREST":9985,"NEAREST_MIPMAP_LINEAR":9986,"LINEAR_MIPMAP_LINEAR":9987,"TEXTURE_MAG_FILTER":10240,"TEXTURE_MIN_FILTER":10241,"TEXTURE_WRAP_S":10242,"TEXTURE_WRAP_T":10243,"TEXTURE":5890,"TEXTURE_CUBE_MAP":34067,"TEXTURE_BINDING_CUBE_MAP":34068,"TEXTURE_CUBE_MAP_POSITIVE_X":34069,"TEXTURE_CUBE_MAP_NEGATIVE_X":34070,"TEXTURE_CUBE_MAP_POSITIVE_Y":34071,"TEXTURE_CUBE_MAP_NEGATIVE_Y":34072,"TEXTURE_CUBE_MAP_POSITIVE_Z":34073,"TEXTURE_CUBE_MAP_NEGATIVE_Z":34074,"MAX_CUBE_MAP_TEXTURE_SIZE":34076,"TEXTURE0":33984,"TEXTURE1":33985,"TEXTURE2":33986,"TEXTURE3":33987,"TEXTURE4":33988,"TEXTURE5":33989,"TEXTURE6":33990,"TEXTURE7":33991,"TEXTURE8":33992,"TEXTURE9":33993,"TEXTURE10":33994,"TEXTURE11":33995,"TEXTURE12":33996,"TEXTURE13":33997,"TEXTURE14":33998,"TEXTURE15":33999,"TEXTURE16":34000,"TEXTURE17":34001,"TEXTURE18":34002,"TEXTURE19":34003,"TEXTURE20":34004,"TEXTURE21":34005,"TEXTURE22":34006,"TEXTURE23":34007,"TEXTURE24":34008,"TEXTURE25":34009,"TEXTURE26":34010,"TEXTURE27":34011,"TEXTURE28":34012,"TEXTURE29":34013,"TEXTURE30":34014,"TEXTURE31":34015,"ACTIVE_TEXTURE":34016,"REPEAT":10497,"CLAMP_TO_EDGE":33071,"MIRRORED_REPEAT":33648,"FLOAT_VEC2":35664,"FLOAT_VEC3":35665,"FLOAT_VEC4":35666,"INT_VEC2":35667,"INT_VEC3":35668,"INT_VEC4":35669,"BOOL":35670,"BOOL_VEC2":35671,"BOOL_VEC3":35672,"BOOL_VEC4":35673,"FLOAT_MAT2":35674,"FLOAT_MAT3":35675,"FLOAT_MAT4":35676,"SAMPLER_2D":35678,"SAMPLER_CUBE":35680,"VERTEX_ATTRIB_ARRAY_ENABLED":34338,"VERTEX_ATTRIB_ARRAY_SIZE":34339,"VERTEX_ATTRIB_ARRAY_STRIDE":34340,"VERTEX_ATTRIB_ARRAY_TYPE":34341,"VERTEX_ATTRIB_ARRAY_NORMALIZED":34922,"VERTEX_ATTRIB_ARRAY_POINTER":34373,"VERTEX_ATTRIB_ARRAY_BUFFER_BINDING":34975,"IMPLEMENTATION_COLOR_READ_TYPE":35738,"IMPLEMENTATION_COLOR_READ_FORMAT":35739,"COMPILE_STATUS":35713,"LOW_FLOAT":36336,"MEDIUM_FLOAT":36337,"HIGH_FLOAT":36338,"LOW_INT":36339,"MEDIUM_INT":36340,"HIGH_INT":36341,"FRAMEBUFFER":36160,"RENDERBUFFER":36161,"RGBA4":32854,"RGB5_A1":32855,"RGB565":36194,"DEPTH_COMPONENT16":33189,"STENCIL_INDEX8":36168,"DEPTH_STENCIL":34041,"RENDERBUFFER_WIDTH":36162,"RENDERBUFFER_HEIGHT":36163,"RENDERBUFFER_INTERNAL_FORMAT":36164,"RENDERBUFFER_RED_SIZE":36176,"RENDERBUFFER_GREEN_SIZE":36177,"RENDERBUFFER_BLUE_SIZE":36178,"RENDERBUFFER_ALPHA_SIZE":36179,"RENDERBUFFER_DEPTH_SIZE":36180,"RENDERBUFFER_STENCIL_SIZE":36181,"FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE":36048,"FRAMEBUFFER_ATTACHMENT_OBJECT_NAME":36049,"FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL":36050,"FRAMEBUFFER_ATTACHMENT_TEXTURE_CUBE_MAP_FACE":36051,"COLOR_ATTACHMENT0":36064,"DEPTH_ATTACHMENT":36096,"STENCIL_ATTACHMENT":36128,"DEPTH_STENCIL_ATTACHMENT":33306,"NONE":0,"FRAMEBUFFER_COMPLETE":36053,"FRAMEBUFFER_INCOMPLETE_ATTACHMENT":36054,"FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT":36055,"FRAMEBUFFER_INCOMPLETE_DIMENSIONS":36057,"FRAMEBUFFER_UNSUPPORTED":36061,"FRAMEBUFFER_BINDING":36006,"RENDERBUFFER_BINDING":36007,"MAX_RENDERBUFFER_SIZE":34024,"INVALID_FRAMEBUFFER_OPERATION":1286,"UNPACK_FLIP_Y_WEBGL":37440,"UNPACK_PREMULTIPLY_ALPHA_WEBGL":37441,"CONTEXT_LOST_WEBGL":37442,"UNPACK_COLORSPACE_CONVERSION_WEBGL":37443,"BROWSER_DEFAULT_WEBGL":37444,"READ_BUFFER":3074,"UNPACK_ROW_LENGTH":3314,"UNPACK_SKIP_ROWS":3315,"UNPACK_SKIP_PIXELS":3316,"PACK_ROW_LENGTH":3330,"PACK_SKIP_ROWS":3331,"PACK_SKIP_PIXELS":3332,"COLOR":6144,"DEPTH":6145,"STENCIL":6146,"RED":6403,"RGB8":32849,"RGBA8":32856,"RGB10_A2":32857,"TEXTURE_BINDING_3D":32874,"UNPACK_SKIP_IMAGES":32877,"UNPACK_IMAGE_HEIGHT":32878,"TEXTURE_3D":32879,"TEXTURE_WRAP_R":32882,"MAX_3D_TEXTURE_SIZE":32883,"UNSIGNED_INT_2_10_10_10_REV":33640,"MAX_ELEMENTS_VERTICES":33000,"MAX_ELEMENTS_INDICES":33001,"TEXTURE_MIN_LOD":33082,"TEXTURE_MAX_LOD":33083,"TEXTURE_BASE_LEVEL":33084,"TEXTURE_MAX_LEVEL":33085,"MIN":32775,"MAX":32776,"DEPTH_COMPONENT24":33190,"MAX_TEXTURE_LOD_BIAS":34045,"TEXTURE_COMPARE_MODE":34892,"TEXTURE_COMPARE_FUNC":34893,"CURRENT_QUERY":34917,"QUERY_RESULT":34918,"QUERY_RESULT_AVAILABLE":34919,"STREAM_READ":35041,"STREAM_COPY":35042,"STATIC_READ":35045,"STATIC_COPY":35046,"DYNAMIC_READ":35049,"DYNAMIC_COPY":35050,"MAX_DRAW_BUFFERS":34852,"DRAW_BUFFER0":34853,"DRAW_BUFFER1":34854,"DRAW_BUFFER2":34855,"DRAW_BUFFER3":34856,"DRAW_BUFFER4":34857,"DRAW_BUFFER5":34858,"DRAW_BUFFER6":34859,"DRAW_BUFFER7":34860,"DRAW_BUFFER8":34861,"DRAW_BUFFER9":34862,"DRAW_BUFFER10":34863,"DRAW_BUFFER11":34864,"DRAW_BUFFER12":34865,"DRAW_BUFFER13":34866,"DRAW_BUFFER14":34867,"DRAW_BUFFER15":34868,"MAX_FRAGMENT_UNIFORM_COMPONENTS":35657,"MAX_VERTEX_UNIFORM_COMPONENTS":35658,"SAMPLER_3D":35679,"SAMPLER_2D_SHADOW":35682,"FRAGMENT_SHADER_DERIVATIVE_HINT":35723,"PIXEL_PACK_BUFFER":35051,"PIXEL_UNPACK_BUFFER":35052,"PIXEL_PACK_BUFFER_BINDING":35053,"PIXEL_UNPACK_BUFFER_BINDING":35055,"FLOAT_MAT2x3":35685,"FLOAT_MAT2x4":35686,"FLOAT_MAT3x2":35687,"FLOAT_MAT3x4":35688,"FLOAT_MAT4x2":35689,"FLOAT_MAT4x3":35690,"SRGB":35904,"SRGB8":35905,"SRGB8_ALPHA8":35907,"COMPARE_REF_TO_TEXTURE":34894,"RGBA32F":34836,"RGB32F":34837,"RGBA16F":34842,"RGB16F":34843,"VERTEX_ATTRIB_ARRAY_INTEGER":35069,"MAX_ARRAY_TEXTURE_LAYERS":35071,"MIN_PROGRAM_TEXEL_OFFSET":35076,"MAX_PROGRAM_TEXEL_OFFSET":35077,"MAX_VARYING_COMPONENTS":35659,"TEXTURE_2D_ARRAY":35866,"TEXTURE_BINDING_2D_ARRAY":35869,"R11F_G11F_B10F":35898,"UNSIGNED_INT_10F_11F_11F_REV":35899,"RGB9_E5":35901,"UNSIGNED_INT_5_9_9_9_REV":35902,"TRANSFORM_FEEDBACK_BUFFER_MODE":35967,"MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS":35968,"TRANSFORM_FEEDBACK_VARYINGS":35971,"TRANSFORM_FEEDBACK_BUFFER_START":35972,"TRANSFORM_FEEDBACK_BUFFER_SIZE":35973,"TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN":35976,"RASTERIZER_DISCARD":35977,"MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS":35978,"MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS":35979,"INTERLEAVED_ATTRIBS":35980,"SEPARATE_ATTRIBS":35981,"TRANSFORM_FEEDBACK_BUFFER":35982,"TRANSFORM_FEEDBACK_BUFFER_BINDING":35983,"RGBA32UI":36208,"RGB32UI":36209,"RGBA16UI":36214,"RGB16UI":36215,"RGBA8UI":36220,"RGB8UI":36221,"RGBA32I":36226,"RGB32I":36227,"RGBA16I":36232,"RGB16I":36233,"RGBA8I":36238,"RGB8I":36239,"RED_INTEGER":36244,"RGB_INTEGER":36248,"RGBA_INTEGER":36249,"SAMPLER_2D_ARRAY":36289,"SAMPLER_2D_ARRAY_SHADOW":36292,"SAMPLER_CUBE_SHADOW":36293,"UNSIGNED_INT_VEC2":36294,"UNSIGNED_INT_VEC3":36295,"UNSIGNED_INT_VEC4":36296,"INT_SAMPLER_2D":36298,"INT_SAMPLER_3D":36299,"INT_SAMPLER_CUBE":36300,"INT_SAMPLER_2D_ARRAY":36303,"UNSIGNED_INT_SAMPLER_2D":36306,"UNSIGNED_INT_SAMPLER_3D":36307,"UNSIGNED_INT_SAMPLER_CUBE":36308,"UNSIGNED_INT_SAMPLER_2D_ARRAY":36311,"DEPTH_COMPONENT32F":36012,"DEPTH32F_STENCIL8":36013,"FLOAT_32_UNSIGNED_INT_24_8_REV":36269,"FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING":33296,"FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE":33297,"FRAMEBUFFER_ATTACHMENT_RED_SIZE":33298,"FRAMEBUFFER_ATTACHMENT_GREEN_SIZE":33299,"FRAMEBUFFER_ATTACHMENT_BLUE_SIZE":33300,"FRAMEBUFFER_ATTACHMENT_ALPHA_SIZE":33301,"FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE":33302,"FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE":33303,"FRAMEBUFFER_DEFAULT":33304,"UNSIGNED_INT_24_8":34042,"DEPTH24_STENCIL8":35056,"UNSIGNED_NORMALIZED":35863,"DRAW_FRAMEBUFFER_BINDING":36006,"READ_FRAMEBUFFER":36008,"DRAW_FRAMEBUFFER":36009,"READ_FRAMEBUFFER_BINDING":36010,"RENDERBUFFER_SAMPLES":36011,"FRAMEBUFFER_ATTACHMENT_TEXTURE_LAYER":36052,"MAX_COLOR_ATTACHMENTS":36063,"COLOR_ATTACHMENT1":36065,"COLOR_ATTACHMENT2":36066,"COLOR_ATTACHMENT3":36067,"COLOR_ATTACHMENT4":36068,"COLOR_ATTACHMENT5":36069,"COLOR_ATTACHMENT6":36070,"COLOR_ATTACHMENT7":36071,"COLOR_ATTACHMENT8":36072,"COLOR_ATTACHMENT9":36073,"COLOR_ATTACHMENT10":36074,"COLOR_ATTACHMENT11":36075,"COLOR_ATTACHMENT12":36076,"COLOR_ATTACHMENT13":36077,"COLOR_ATTACHMENT14":36078,"COLOR_ATTACHMENT15":36079,"FRAMEBUFFER_INCOMPLETE_MULTISAMPLE":36182,"MAX_SAMPLES":36183,"HALF_FLOAT":5131,"RG":33319,"RG_INTEGER":33320,"R8":33321,"RG8":33323,"R16F":33325,"R32F":33326,"RG16F":33327,"RG32F":33328,"R8I":33329,"R8UI":33330,"R16I":33331,"R16UI":33332,"R32I":33333,"R32UI":33334,"RG8I":33335,"RG8UI":33336,"RG16I":33337,"RG16UI":33338,"RG32I":33339,"RG32UI":33340,"VERTEX_ARRAY_BINDING":34229,"R8_SNORM":36756,"RG8_SNORM":36757,"RGB8_SNORM":36758,"RGBA8_SNORM":36759,"SIGNED_NORMALIZED":36764,"COPY_READ_BUFFER":36662,"COPY_WRITE_BUFFER":36663,"COPY_READ_BUFFER_BINDING":36662,"COPY_WRITE_BUFFER_BINDING":36663,"UNIFORM_BUFFER":35345,"UNIFORM_BUFFER_BINDING":35368,"UNIFORM_BUFFER_START":35369,"UNIFORM_BUFFER_SIZE":35370,"MAX_VERTEX_UNIFORM_BLOCKS":35371,"MAX_FRAGMENT_UNIFORM_BLOCKS":35373,"MAX_COMBINED_UNIFORM_BLOCKS":35374,"MAX_UNIFORM_BUFFER_BINDINGS":35375,"MAX_UNIFORM_BLOCK_SIZE":35376,"MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS":35377,"MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS":35379,"UNIFORM_BUFFER_OFFSET_ALIGNMENT":35380,"ACTIVE_UNIFORM_BLOCKS":35382,"UNIFORM_TYPE":35383,"UNIFORM_SIZE":35384,"UNIFORM_BLOCK_INDEX":35386,"UNIFORM_OFFSET":35387,"UNIFORM_ARRAY_STRIDE":35388,"UNIFORM_MATRIX_STRIDE":35389,"UNIFORM_IS_ROW_MAJOR":35390,"UNIFORM_BLOCK_BINDING":35391,"UNIFORM_BLOCK_DATA_SIZE":35392,"UNIFORM_BLOCK_ACTIVE_UNIFORMS":35394,"UNIFORM_BLOCK_ACTIVE_UNIFORM_INDICES":35395,"UNIFORM_BLOCK_REFERENCED_BY_VERTEX_SHADER":35396,"UNIFORM_BLOCK_REFERENCED_BY_FRAGMENT_SHADER":35398,"INVALID_INDEX":4294967295,"MAX_VERTEX_OUTPUT_COMPONENTS":37154,"MAX_FRAGMENT_INPUT_COMPONENTS":37157,"MAX_SERVER_WAIT_TIMEOUT":37137,"OBJECT_TYPE":37138,"SYNC_CONDITION":37139,"SYNC_STATUS":37140,"SYNC_FLAGS":37141,"SYNC_FENCE":37142,"SYNC_GPU_COMMANDS_COMPLETE":37143,"UNSIGNALED":37144,"SIGNALED":37145,"ALREADY_SIGNALED":37146,"TIMEOUT_EXPIRED":37147,"CONDITION_SATISFIED":37148,"WAIT_FAILED":37149,"SYNC_FLUSH_COMMANDS_BIT":1,"VERTEX_ATTRIB_ARRAY_DIVISOR":35070,"ANY_SAMPLES_PASSED":35887,"ANY_SAMPLES_PASSED_CONSERVATIVE":36202,"SAMPLER_BINDING":35097,"RGB10_A2UI":36975,"INT_2_10_10_10_REV":36255,"TRANSFORM_FEEDBACK":36386,"TRANSFORM_FEEDBACK_PAUSED":36387,"TRANSFORM_FEEDBACK_ACTIVE":36388,"TRANSFORM_FEEDBACK_BINDING":36389,"TEXTURE_IMMUTABLE_FORMAT":37167,"MAX_ELEMENT_INDEX":36203,"TEXTURE_IMMUTABLE_LEVELS":33503,"TIMEOUT_IGNORED":-1,"MAX_CLIENT_WAIT_TIMEOUT_WEBGL":37447};
+  var EXT2_NAMES = ["EXT_clip_control", "EXT_color_buffer_float", "EXT_color_buffer_half_float", "EXT_conservative_depth", "EXT_depth_clamp", "EXT_disjoint_timer_query_webgl2", "EXT_float_blend", "EXT_polygon_offset_clamp", "EXT_texture_compression_bptc", "EXT_texture_compression_rgtc", "EXT_texture_filter_anisotropic", "EXT_texture_mirror_clamp_to_edge", "NV_shader_noperspective_interpolation", "OES_draw_buffers_indexed", "OES_sample_variables", "OES_shader_multisample_interpolation", "OES_texture_float_linear", "OVR_multiview2", "WEBGL_clip_cull_distance", "WEBGL_compressed_texture_astc", "WEBGL_compressed_texture_etc", "WEBGL_compressed_texture_etc1", "WEBGL_compressed_texture_s3tc", "WEBGL_compressed_texture_s3tc_srgb", "WEBGL_debug_renderer_info", "WEBGL_debug_shaders", "WEBGL_lose_context", "WEBGL_multi_draw", "WEBGL_polygon_mode", "WEBGL_stencil_texturing"];
+  var GL3_PARAMS = {"3074":1029,"3314":0,"3315":0,"3316":0,"3330":0,"3331":0,"3332":0,"32877":0,"32878":0,"32883":2048,"33000":2147483647,"33001":2147483647,"34045":15,"34852":8,"34853":1029,"34854":1029,"34855":1029,"34856":1029,"34857":1029,"34858":1029,"34859":1029,"34860":1029,"35657":16384,"35658":16384,"35723":4352,"35071":2048,"35076":-8,"35077":7,"35659":124,"35968":4,"35977":false,"35978":128,"35979":4,"36063":8,"36183":4,"35371":14,"35373":14,"35374":60,"35375":72,"35376":65536,"35377":245760,"35379":245760,"35380":256,"37154":128,"37157":128,"37137":0,"36387":false,"36388":false,"36203":1073741823,"37447":0};
+  function WebGL2RenderingContext() { throw new TypeError("Illegal constructor"); }
+  var P2 = WebGL2RenderingContext.prototype;
+  Object.keys(GL2).forEach(function (k) { Object.defineProperty(WebGL2RenderingContext, k, { value: GL2[k], enumerable: true }); Object.defineProperty(P2, k, { value: GL2[k], enumerable: true }); });
+  Object.defineProperty(P2, Symbol.toStringTag, { value: "WebGL2RenderingContext", configurable: true });
+  g.WebGL2RenderingContext = WebGL2RenderingContext;
+  // Methods that behave the same in both versions are shared by copying.
+  Object.getOwnPropertyNames(P).forEach(function (k) {
+    if (k === "constructor" || k in GL) return;
+    Object.defineProperty(P2, k, Object.getOwnPropertyDescriptor(P, k));
+  });
+  var base = {};
+  Object.getOwnPropertyNames(P).forEach(function (k) { var d = Object.getOwnPropertyDescriptor(P, k); if (typeof d.value === "function") base[k] = d.value; });
+  function def2(name, fn) { Object.defineProperty(P2, name, { value: function () { var s = S(this); if (s.lost) return undefined; return fn.apply(this, [s].concat(Array.prototype.slice.call(arguments))); }, writable: true, configurable: true, enumerable: true }); }
+  function create2(canvas, attrs) {
+    var gl = create(canvas, attrs); Object.setPrototypeOf(gl, P2);
+    var s = gl._s; s.v2 = true; s.extList = EXT2_NAMES; s.rfb = null;
+    s.ibuf = {}; s.samp = []; s.drawBufs = [1029]; s.readBuf = 1029; s.query = {}; s.tf = null; s.tfObj = null; s.vaoObj = null;
+    for (var i = 0; i < 32; i++) { s.tex[i][32879] = null; s.tex[i][35866] = null; s.samp.push(null); }
+    return gl;
+  }
+  var P2 = WebGL2RenderingContext.prototype;
+  // ---- declarations of GLSL ES 3.00 ----
+  function decls3(src, sh) {
+    var out = [], isV = sh._type === 35633, m, re;
+    re = /(?:layout\s*\(\s*location\s*=\s*(\d+)\s*\)\s*)?(?:(?:flat|smooth|centroid|noperspective)\s+)*\b(in|out|uniform)\s+(?:(?:lowp|mediump|highp)\s+)?(\w+)\s+([^;{}()]+);/g;
+    while ((m = re.exec(src))) {
+      var kind = m[2] === "uniform" ? "uniform" : (m[2] === "in" ? (isV ? "attribute" : "varying") : (isV ? "varying" : "output"));
+      if (kind === "uniform" && !DEF_TYPES[m[3]]) continue;
+      m[4].split(",").forEach(function (nm) {
+        var q = /^\s*(\w+)\s*(?:\[\s*(\d+)\s*\])?\s*$/.exec(nm); if (!q) return;
+        var count = (src.match(new RegExp("\\b" + q[1] + "\\b", "g")) || []).length;
+        out.push({ kind: kind, type: DEF_TYPES[m[3]] || 0, tname: m[3], name: q[1], size: q[2] ? +q[2] : 1, arr: !!q[2], used: count > 1, loc: m[1] === undefined ? undefined : +m[1] });
+      });
+    }
+    var blocks = [], br = /\buniform\s+(\w+)\s*\{([^}]*)\}\s*(\w+)?\s*(?:\[\s*\d+\s*\])?\s*;/g;
+    while ((m = br.exec(src))) blocks.push({ name: m[1], members: (m[2].match(/;/g) || []).length, decl: m[2] });
+    sh._blocks = blocks;
+    blocks.forEach(function (bk) { bk.decl.split(";").forEach(function (mm) { var q = /^\s*(?:(?:lowp|mediump|highp)\s+)?(\w+)\s+(\w+)\s*(?:\[\s*(\d+)\s*\])?\s*$/.exec(mm); if (q && DEF_TYPES[q[1]]) out.push({ kind: "uniform", type: DEF_TYPES[q[1]], tname: q[1], name: bk.name + "." + q[2], size: q[3] ? +q[3] : 1, arr: !!q[3], used: true }); }); });
+    return out;
+  }
+  // ---- parameters ----
+  def2("getParameter", function (s, p) {
+    switch (p) {
+      case 7938: return "WebGL 2.0 (OpenGL ES 3.0 Chromium)";
+      case 35724: return "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)";
+      case 3074: return s.readBuf;
+      case 32874: return s.tex[s.unit][32879]; case 35869: return s.tex[s.unit][35866];
+      case 35053: return s.buf[35051] || null; case 35055: return s.buf[35052] || null;
+      case 36662: return s.buf[36662] || null; case 36663: return s.buf[36663] || null;
+      case 36010: return s.rfb;
+      case 34229: return s.vao === s.defVao ? null : s.vaoObj;
+      case 35983: return s.buf[35982] || null; case 35368: return s.buf[35345] || null;
+      case 36389: return s.tfObj;
+      case 36387: return s.tf ? s.tf.paused : false; case 36388: return s.tf ? s.tf.active : false;
+      case 35977: return !!s.caps[35977];
+      case 35097: return s.samp[s.unit];
+    }
+    if (p >= 34853 && p <= 34860) return (p - 34853) < s.drawBufs.length ? s.drawBufs[p - 34853] : 1029;
+    if (GL3_PARAMS[p] !== undefined) { var v = GL3_PARAMS[p]; return v === "null" ? null : v; }
+    return base.getParameter.call(this, p);
+  });
+  def2("getIndexedParameter", function (s, t, i) {
+    var tfb = t === 35983 || t === 35972 || t === 35973, ub = t === 35368 || t === 35369 || t === 35370;
+    if (!tfb && !ub) { err(s, 1280); return null; }
+    if (i >>> 0 !== i || i >= (tfb ? 4 : 72)) { err(s, 1281); return null; }
+    var e = (s.ibuf[tfb ? 35982 : 35345] || [])[i];
+    if (t === 35983 || t === 35368) return e ? e.buffer : null;
+    return e ? (t === 35972 || t === 35369 ? e.start : e.size) : 0;
+  });
+  // ---- buffers ----
+  var ITARGET = { 35982: 4, 35345: 72 };
+  def2("bindBufferBase", function (s, t, i, b) { if (!ITARGET[t]) return err(s, 1280); if (i >>> 0 !== i || i >= ITARGET[t]) return err(s, 1281); if (!chk(s, b, "Buffer")) return; (s.ibuf[t] = s.ibuf[t] || [])[i] = b ? { buffer: b, start: 0, size: 0 } : null; s.buf[t] = b || null; if (b) b._ever = true; });
+  def2("bindBufferRange", function (s, t, i, b, off, size) { if (!ITARGET[t]) return err(s, 1280); if (i >>> 0 !== i || i >= ITARGET[t]) return err(s, 1281); if (!chk(s, b, "Buffer")) return; if (b && (size <= 0 || off < 0 || off % (t === 35345 ? 256 : 4))) return err(s, 1281); (s.ibuf[t] = s.ibuf[t] || [])[i] = b ? { buffer: b, start: off, size: size } : null; s.buf[t] = b || null; if (b) b._ever = true; });
+  var bd = base.bufferData;
+  def2("bufferData", function (s, t, d, u, so, len) {
+    if (d && ArrayBuffer.isView(d) && so !== undefined) { var e = d.BYTES_PER_ELEMENT || 1; var from = so * e, to = len ? from + len * e : d.byteLength; if (from > d.byteLength || to > d.byteLength) return err(s, 1281); d = new Uint8Array(d.buffer, d.byteOffset + from, to - from); }
+    bd.call(this, t, d, u);
+  });
+  def2("copyBufferSubData", function (s, rt, wt, ro, wo, size) {
+    if (!bufTarget(s, rt) || !bufTarget(s, wt)) return; var r = bound(s, rt), w = bound(s, wt); if (!r || !w) return err(s, 1282);
+    if (ro < 0 || wo < 0 || size < 0 || ro + size > r._size || wo + size > w._size) return err(s, 1281);
+    if (r === w && ro < wo + size && wo < ro + size) return err(s, 1282);
+    w._data.set(r._data.subarray(ro, ro + size), wo);
+  });
+  def2("getBufferSubData", function (s, t, off, dst, doff, len) {
+    if (!bufTarget(s, t)) return; var b = bound(s, t); if (!b) return err(s, 1282); if (!dst || !ArrayBuffer.isView(dst)) return err(s, 1282);
+    var e = dst.BYTES_PER_ELEMENT || 1; doff = (doff || 0) * e; var n = len ? len * e : dst.byteLength - doff;
+    if (off < 0 || doff + n > dst.byteLength) return err(s, 1281); if (off + n > b._size) return err(s, 1281);
+    new Uint8Array(dst.buffer, dst.byteOffset + doff, n).set(b._data.subarray(off, off + n));
+  });
+  // ---- vertex arrays and attributes ----
+  def2("createVertexArray", function (s) { return mk("VertexArrayObject", { _s: s, _vao: newVao(), _del: false, _bound: false }); });
+  def2("deleteVertexArray", function (s, v) { if (!chk(s, v, "VertexArrayObject") || !v) return; v._del = true; if (s.vao === v._vao) s.vao = s.defVao; });
+  def2("isVertexArray", function (s, v) { return own(s, v, "VertexArrayObject") && !v._del && v._bound; });
+  def2("bindVertexArray", function (s, v) { if (!chk(s, v, "VertexArrayObject")) return; if (!v) { s.vao = s.defVao; return; } if (v._del) return err(s, 1282); v._bound = true; s.vao = v._vao; s.vaoObj = v; });
+  def2("vertexAttribDivisor", function (s, i, d) { var a = attribIdx(s, i); if (a) a.divisor = d >>> 0; });
+  def2("vertexAttribIPointer", function (s, i, size, type, stride, off) {
+    var a = attribIdx(s, i); if (!a) return; if ([5120, 5121, 5122, 5123, 5124, 5125].indexOf(type) < 0) return err(s, 1280);
+    if (size < 1 || size > 4 || stride < 0 || off < 0) return err(s, 1281);
+    var z = type === 5124 || type === 5125 ? 4 : (type === 5122 || type === 5123 ? 2 : 1); if (stride % z || off % z) return err(s, 1282);
+    a.size = size; a.type = type; a.integer = true; a.normalized = false; a.stride = stride; a.offset = off; a.buffer = s.buf[34962];
+  });
+  def2("vertexAttribI4i", function (s, i, x, y, z, w) { var a = attribIdx(s, i); if (a) a.cur = new Int32Array([x, y, z, w]); });
+  def2("vertexAttribI4ui", function (s, i, x, y, z, w) { var a = attribIdx(s, i); if (a) a.cur = new Uint32Array([x, y, z, w]); });
+  def2("vertexAttribI4iv", function (s, i, v) { var a = attribIdx(s, i); if (!a) return; if (!v || v.length < 4) return err(s, 1281); a.cur = new Int32Array(Array.prototype.slice.call(v, 0, 4)); });
+  def2("vertexAttribI4uiv", function (s, i, v) { var a = attribIdx(s, i); if (!a) return; if (!v || v.length < 4) return err(s, 1281); a.cur = new Uint32Array(Array.prototype.slice.call(v, 0, 4)); });
+  var gva = base.getVertexAttrib;
+  def2("getVertexAttrib", function (s, i, p) { var a = attribIdx(s, i); if (!a) return null; if (p === 35069) return !!a.integer; if (p === 35070) return a.divisor; return gva.call(this, i, p); });
+  def2("vertexAttribPointer", function (s, i, size, type, norm, stride, off) { base.vertexAttribPointer.call(this, i, size, type, norm, stride, off); var a = s.vao.attribs[i]; if (a) a.integer = false; });
+  // ---- drawing ----
+  def2("drawArraysInstanced", function (s, m, f, c, n) { if (n < 0) return err(s, 1281); this.drawArrays(m, f, c); });
+  def2("drawElementsInstanced", function (s, m, c, t, o, n) { if (n < 0) return err(s, 1281); this.drawElements(m, c, t, o); });
+  def2("drawRangeElements", function (s, m, st, en, c, t, o) { if (en < st) return err(s, 1281); this.drawElements(m, c, t, o); });
+  def2("drawElements", function (s, mode, count, type, off) {
+    if (mode < 0 || mode > 6) return err(s, 1280);
+    if (type !== 5121 && type !== 5123 && type !== 5125) return err(s, 1280);
+    if (count < 0 || off < 0) return err(s, 1281);
+    if (off % (type === 5121 ? 1 : type === 5123 ? 2 : 4)) return err(s, 1282);
+    if (!s.vao.element) return err(s, 1282);
+    if (!s.prog) return err(s, 1282);
+    if (fbStatus(s) !== 36053) return err(s, 1286);
+  });
+  def2("drawBuffers", function (s, list) {
+    if (!list || list.length === undefined || list.length > 8) return err(s, 1281);
+    for (var i = 0; i < list.length; i++) { var v = list[i]; if (s.fb ? !(v === 36064 + i || v === 1) : !(v === 1029 || v === 1 || v === 1028)) return err(s, s.fb || v !== 36064 ? 1280 : 1282); }
+    s.drawBufs = Array.prototype.slice.call(list);
+  });
+  def2("readBuffer", function (s, v) { if (s.rfb ? !(v === 1 || (v >= 36064 && v < 36072)) : !(v === 1 || v === 1029)) return err(s, 1280); s.readBuf = v; });
+  // ---- framebuffers ----
+  function withFb(s, t, fn) {
+    if (t !== 36160 && t !== 36008 && t !== 36009) return err(s, 1280);
+    var keep = s.fb; if (t === 36008) s.fb = s.rfb;
+    try { return fn(); } finally { if (t === 36008) { s.rfb = s.fb; } s.fb = keep; }
+  }
+  def2("bindFramebuffer", function (s, t, f) {
+    if (t !== 36160 && t !== 36008 && t !== 36009) return err(s, 1280); if (!chk(s, f, "Framebuffer")) return;
+    if (f) { if (f._del) return err(s, 1282); f._ever = true; }
+    if (t !== 36008) s.fb = f || null; if (t !== 36009) s.rfb = f || null;
+  });
+  def2("framebufferTexture2D", function (s, t, a, tt, tex, lvl) { var self = this; withFb(s, t, function () { base.framebufferTexture2D.call(self, 36160, a, tt, tex, lvl); }); });
+  def2("framebufferRenderbuffer", function (s, t, a, rt, rb) { var self = this; withFb(s, t, function () { base.framebufferRenderbuffer.call(self, 36160, a, rt, rb); }); });
+  def2("framebufferTextureLayer", function (s, t, a, tex, lvl, layer) {
+    if (!attOk(s, a)) return err(s, 1280); var f = t === 36008 ? s.rfb : s.fb; if (t !== 36160 && t !== 36008 && t !== 36009) return err(s, 1280);
+    if (!f) return err(s, 1282); if (!chk(s, tex, "Texture")) return; if (layer < 0 || lvl < 0) return err(s, 1281);
+    f._att[a] = tex ? { kind: "tex", obj: tex, layer: layer } : null;
+  });
+  def2("checkFramebufferStatus", function (s, t) { var self = this; return withFb(s, t, function () { return base.checkFramebufferStatus.call(self, 36160); }) || 0; });
+  def2("getFramebufferAttachmentParameter", function (s, t, a, p) { var self = this; return withFb(s, t, function () { return base.getFramebufferAttachmentParameter.call(self, 36160, a, p); }); });
+  def2("invalidateFramebuffer", function (s, t, list) { if (t !== 36160 && t !== 36008 && t !== 36009) return err(s, 1280); });
+  def2("invalidateSubFramebuffer", function (s, t, list, x, y, w, h) { if (t !== 36160 && t !== 36008 && t !== 36009) return err(s, 1280); if (w < 0 || h < 0) return err(s, 1281); });
+  def2("blitFramebuffer", function (s, sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, mask, filter) {
+    if (mask & ~(16384 | 256 | 1024)) return err(s, 1281); if (filter !== 9728 && filter !== 9729) return err(s, 1280);
+    if (s.fb === s.rfb) return err(s, 1282);
+    if (fbStatus(s) !== 36053) return err(s, 1286);
+  });
+  def2("renderbufferStorageMultisample", function (s, t, samples, f, w, h) { if (samples < 0 || samples > 4) return err(s, 1281); if (t !== 36161) return err(s, 1280); base.renderbufferStorage.call(this, t, f, w, h); });
+  def2("renderbufferStorage", function (s, t, f, w, h) {
+    if (t !== 36161) return err(s, 1280); if (!s.rb) return err(s, 1282); if (w < 0 || h < 0 || w > 8192 || h > 8192) return err(s, 1281);
+    if (!SIZED[f] && [32854, 32856, 36194, 33189, 36168, 34041].indexOf(f) < 0) return err(s, 1280);
+    s.rb._w = w; s.rb._h = h; s.rb._fmt = f;
+  });
+  def2("getInternalformatParameter", function (s, t, f, p) { if (t !== 36161) { err(s, 1280); return null; } if (p !== 32937) { err(s, 1280); return null; } if (!SIZED[f] && [32854, 32856, 36194, 33189, 36168, 34041].indexOf(f) < 0) { err(s, 1280); return null; } return SIZED[f] && SIZED[f].nomsaa ? new Int32Array(0) : new Int32Array([4]); });
+  function clearBuf(s, buf, idx, vals, n) {
+    if (buf !== 6144 && buf !== 6145 && buf !== 6146 && buf !== 6930) return err(s, 1280);
+    if (fbStatus(s) !== 36053) return err(s, 1286);
+    if (buf === 6144 && (idx < 0 || idx >= 8)) return err(s, 1281); if ((buf === 6145 || buf === 6146) && idx !== 0) return err(s, 1281);
+    if (n && (!vals || vals.length === undefined || vals.length < n)) return err(s, 1281);
+    if (buf === 6144 && idx === 0 && !s.fb) { var k = s.clearColor; s.clearColor = new Float32Array([vals[0], vals[1], vals[2], vals[3]]); base.clear.call(this, 16384); s.clearColor = k; }
+  }
+  def2("clearBufferfv", function (s, b, i, v, o) { clearBuf.call(this, s, b, i, o ? Array.prototype.slice.call(v, o) : v, b === 6144 ? 4 : 1); });
+  def2("clearBufferiv", function (s, b, i, v, o) { if (b === 6144) { clearBuf.call(this, s, b, i, null, 0); return; } clearBuf.call(this, s, b, i, v, 1); });
+  def2("clearBufferuiv", function (s, b, i, v, o) { if (b !== 6144) return err(s, 1280); clearBuf.call(this, s, b, i, null, 0); });
+  def2("clearBufferfi", function (s, b, i, d, st) { if (b !== 34041) return err(s, 1280); if (i !== 0) return err(s, 1281); });
+  var rp = base.readPixels;
+  def2("readPixels", function (s, x, y, w, h, fmt, type, dst, doff) {
+    if (typeof dst === "number") { if (!s.buf[35051]) return err(s, 1282); return; }
+    if (dst && doff && ArrayBuffer.isView(dst)) dst = new dst.constructor(dst.buffer, dst.byteOffset + doff * dst.BYTES_PER_ELEMENT, dst.length - doff);
+    var keep = s.fb; s.fb = s.rfb; try { rp.call(this, x, y, w, h, fmt, type, dst); } finally { s.fb = keep; }
+  });
+  // ---- textures ----
+  var SIZED = {};
+  [[33321, "R8"], [33323, "RG8"], [32849, "RGB8"], [32856, "RGBA8"], [33325, "R16F"], [33327, "RG16F"], [34843, "RGB16F"], [34842, "RGBA16F"], [33326, "R32F"], [33328, "RG32F"], [34837, "RGB32F"], [34836, "RGBA32F"], [35898, "R11F_G11F_B10F"], [35901, "RGB9_E5"], [35905, "SRGB8"], [35907, "SRGB8_ALPHA8"], [36194, "RGB565"], [32854, "RGBA4"], [32855, "RGB5_A1"], [32857, "RGB10_A2"], [36975, "RGB10_A2UI"], [33189, "DEPTH16"], [33190, "DEPTH24"], [36012, "DEPTH32F"], [35056, "DEPTH24_STENCIL8"], [36013, "DEPTH32F_STENCIL8"], [36168, "STENCIL8"], [36756, "R8_SNORM"], [36757, "RG8_SNORM"], [36758, "RGB8_SNORM"], [36759, "RGBA8_SNORM"], [33329, "R8I"], [33330, "R8UI"], [33331, "R16I"], [33332, "R16UI"], [33333, "R32I"], [33334, "R32UI"], [33335, "RG8I"], [33336, "RG8UI"], [33337, "RG16I"], [33338, "RG16UI"], [33339, "RG32I"], [33340, "RG32UI"], [36239, "RGB8UI"], [36234, "RGB8I"], [36221, "RGB16UI"], [36233, "RGB16I"], [36209, "RGB32UI"], [36227, "RGB32I"], [36220, "RGBA8UI"], [36238, "RGBA8I"], [36214, "RGBA16UI"], [36232, "RGBA16I"], [36208, "RGBA32UI"], [36226, "RGBA32I"]].forEach(function (e) { SIZED[e[0]] = { name: e[1], nomsaa: /I$|UI$|32F|16F/.test(e[1]) }; });
+  var FMT2 = [6402, 6403, 33319, 36244, 33320, 36248, 36249, 34041];
+  var TYP2 = [5120, 5122, 5124, 5131, 35902, 35899, 33640, 34042, 36269];
+  function t3(t) { return t === 32879 || t === 35866; }
+  function texT(s, t) { if (t === 3553 || t === 34067 || t3(t)) return s.tex[s.unit][t]; err(s, 1280); return null; }
+  function faceT(target) { return target === 3553 ? 3553 : (target >= 34069 && target <= 34074 ? 34067 : 0); }
+  var ti = base.texImage2D, tsub = base.texSubImage2D;
+  def2("createTexture", function (s) { return mk("Texture", { _s: s, _del: false, _ever: false, _levels: {}, _p: { 10241: 9986, 10240: 9729, 10242: 10497, 10243: 10497, 32882: 10497, 34046: 1, 33082: -1000, 33083: 1000, 33084: 0, 33085: 1000, 34892: 0, 34893: 515, 37167: false, 33503: 0 } }); });
+  def2("bindTexture", function (s, t, tex) { if (t !== 3553 && t !== 34067 && !t3(t)) return err(s, 1280); if (!chk(s, tex, "Texture")) return; if (tex && tex._del) return err(s, 1282); if (tex) { if (tex._target && tex._target !== t) return err(s, 1282); tex._target = t; tex._ever = true; if (t === 34067) tex._p[10241] = 9986; } s.tex[s.unit][t] = tex || null; });
+  def2("texImage2D", function (s, target) {
+    var a = arguments, ifmt = a[3], t = faceT(target), w, h, fmt, type;
+    if (a.length >= 10) { w = a[4]; h = a[5]; fmt = a[7]; type = a[8]; if (a[6] !== 0) return err(s, 1281); }
+    else if (a.length === 7) { var d = srcDims(a[6]); fmt = a[4]; type = a[5]; if (!d || a[6] === null) return err(s, 1282); w = d[0]; h = d[1]; }
+    else return err(s, 1282);
+    if (!t) return err(s, 1280); var tex = s.tex[s.unit][t]; if (!tex) return err(s, 1282);
+    var lvl = a[2]; if (lvl < 0 || lvl > 13) return err(s, 1281);
+    if ((!SIZED[ifmt] && FMT.indexOf(ifmt) < 0) || (FMT.indexOf(fmt) < 0 && FMT2.indexOf(fmt) < 0) || (TYP.indexOf(type) < 0 && TYP2.indexOf(type) < 0)) return err(s, 1280);
+    if (w < 0 || h < 0 || w > 8192 || h > 8192) return err(s, 1281); if (t === 34067 && w !== h) return err(s, 1281);
+    if (tex._p[37167]) return err(s, 1282);
+    tex._levels[target + ":" + lvl] = { w: w, h: h, d: 1, fmt: ifmt, type: type };
+  });
+  def2("texImage3D", function (s, target, level, ifmt, w, h, depth, border, fmt, type) {
+    if (!t3(target)) return err(s, 1280); var tex = s.tex[s.unit][target]; if (!tex) return err(s, 1282);
+    if (level < 0 || level > 13 || w < 0 || h < 0 || depth < 0 || border !== 0) return err(s, 1281);
+    if (w > 2048 || h > 2048 || depth > 2048) return err(s, 1281);
+    if ((!SIZED[ifmt] && FMT.indexOf(ifmt) < 0) || (FMT.indexOf(fmt) < 0 && FMT2.indexOf(fmt) < 0) || (TYP.indexOf(type) < 0 && TYP2.indexOf(type) < 0)) return err(s, 1280);
+    if (tex._p[37167]) return err(s, 1282);
+    tex._levels[target + ":" + level] = { w: w, h: h, d: depth, fmt: ifmt, type: type };
+  });
+  def2("texSubImage2D", function (s, target, level) {
+    var t = faceT(target); if (!t) return err(s, 1280); var tex = s.tex[s.unit][t]; if (!tex) return err(s, 1282);
+    var l = tex._levels[target + ":" + level]; if (!l) return err(s, 1282);
+    var a = arguments, x = a[3], y = a[4], w, h;
+    if (a.length >= 10) { w = a[5]; h = a[6]; } else { var d = srcDims(a[7]); if (!d) return err(s, 1282); w = d[0]; h = d[1]; }
+    if (x < 0 || y < 0 || x + w > l.w || y + h > l.h) return err(s, 1281);
+  });
+  def2("texSubImage3D", function (s, target, level, x, y, z, w, h, d) {
+    if (!t3(target)) return err(s, 1280); var tex = s.tex[s.unit][target]; if (!tex) return err(s, 1282);
+    var l = tex._levels[target + ":" + level]; if (!l) return err(s, 1282);
+    if (x < 0 || y < 0 || z < 0 || x + w > l.w || y + h > l.h || z + d > l.d) return err(s, 1281);
+  });
+  def2("copyTexSubImage3D", function (s, target) { if (!t3(target)) return err(s, 1280); if (!s.tex[s.unit][target]) return err(s, 1282); });
+  def2("compressedTexImage3D", function (s) { err(s, 1280); });
+  def2("compressedTexSubImage3D", function (s) { err(s, 1280); });
+  def2("texStorage2D", function (s, target, levels, ifmt, w, h) {
+    var t = faceT(target); if (!t) return err(s, 1280); var tex = s.tex[s.unit][t]; if (!tex) return err(s, 1282);
+    if (levels < 1 || w < 1 || h < 1 || levels > Math.floor(Math.log2(Math.max(w, h))) + 1) return err(s, 1281);
+    if (!SIZED[ifmt]) return err(s, 1280); if (tex._p[37167]) return err(s, 1282);
+    for (var l = 0; l < levels; l++) tex._levels[target + ":" + l] = { w: Math.max(1, w >> l), h: Math.max(1, h >> l), d: 1, fmt: ifmt, type: 5121 };
+    tex._p[37167] = true; tex._p[33503] = levels;
+  });
+  def2("texStorage3D", function (s, target, levels, ifmt, w, h, d) {
+    if (!t3(target)) return err(s, 1280); var tex = s.tex[s.unit][target]; if (!tex) return err(s, 1282);
+    if (levels < 1 || w < 1 || h < 1 || d < 1) return err(s, 1281); if (!SIZED[ifmt]) return err(s, 1280); if (tex._p[37167]) return err(s, 1282);
+    for (var l = 0; l < levels; l++) tex._levels[target + ":" + l] = { w: Math.max(1, w >> l), h: Math.max(1, h >> l), d: target === 32879 ? Math.max(1, d >> l) : d, fmt: ifmt, type: 5121 };
+    tex._p[37167] = true; tex._p[33503] = levels;
+  });
+  def2("generateMipmap", function (s, t) { if (t !== 3553 && t !== 34067 && !t3(t)) return err(s, 1280); if (!s.tex[s.unit][t]) return err(s, 1282); });
+  def2("texParameteri", function (s, t, p, v) {
+    var tex = texT(s, t); if (tex === null) { if (t === 3553 || t === 34067 || t3(t)) err(s, 1282); return; }
+    var ok = { 10240: [9728, 9729], 10241: [9728, 9729, 9984, 9985, 9986, 9987], 10242: [33071, 33648, 10497], 10243: [33071, 33648, 10497], 32882: [33071, 33648, 10497], 34892: [0, 34894], 34893: [512, 513, 514, 515, 516, 517, 518, 519] }[p];
+    if (p === 34046) { if (!s.exts.EXT_texture_filter_anisotropic) return err(s, 1280); tex._p[p] = v; return; }
+    if (p === 33082 || p === 33083 || p === 33084 || p === 33085) { if (p >= 33084 && v < 0) return err(s, 1281); tex._p[p] = v; return; }
+    if (!ok || ok.indexOf(v) < 0) return err(s, 1280); tex._p[p] = v;
+  });
+  def2("texParameterf", function (s, t, p, v) { this.texParameteri(t, p, v); });
+  def2("getTexParameter", function (s, t, p) { var tex = texT(s, t); if (tex === null) { if (t === 3553 || t === 34067 || t3(t)) err(s, 1282); return null; } if (!(p in tex._p)) { err(s, 1280); return null; } return tex._p[p]; });
+  // ---- samplers ----
+  def2("createSampler", function (s) { return mk("Sampler", { _s: s, _del: false, _ever: true, _p: { 10241: 9986, 10240: 9729, 10242: 10497, 10243: 10497, 32882: 10497, 33082: -1000, 33083: 1000, 34892: 0, 34893: 515 } }); });
+  def2("deleteSampler", function (s, m) { if (!chk(s, m, "Sampler") || !m) return; m._del = true; s.samp = s.samp.map(function (x) { return x === m ? null : x; }); });
+  def2("isSampler", function (s, m) { return own(s, m, "Sampler") && !m._del && m._ever; });
+  def2("bindSampler", function (s, u, m) { if (u >>> 0 !== u || u >= 32) return err(s, 1281); if (!chk(s, m, "Sampler")) return; if (m && m._del) return err(s, 1282); if (m) m._ever = true; s.samp[u] = m || null; });
+  def2("samplerParameteri", function (s, m, p, v) {
+    if (!chk(s, m, "Sampler") || !m) return err(s, 1282);
+    var ok = { 10240: [9728, 9729], 10241: [9728, 9729, 9984, 9985, 9986, 9987], 10242: [33071, 33648, 10497], 10243: [33071, 33648, 10497], 32882: [33071, 33648, 10497], 34892: [0, 34894], 34893: [512, 513, 514, 515, 516, 517, 518, 519] }[p];
+    if (p === 33082 || p === 33083) { m._p[p] = v; return; } if (!ok || ok.indexOf(v) < 0) return err(s, 1280); m._p[p] = v;
+  });
+  def2("samplerParameterf", function (s, m, p, v) { this.samplerParameteri(m, p, v); });
+  def2("getSamplerParameter", function (s, m, p) { if (!chk(s, m, "Sampler") || !m) { err(s, 1282); return null; } if (!(p in m._p)) { err(s, 1280); return null; } return m._p[p]; });
+  // ---- queries, sync, transform feedback ----
+  var QT = { 35887: 1, 36202: 1, 35976: 1 };
+  def2("createQuery", function (s) { return mk("Query", { _s: s, _del: false, _ever: false, _target: 0, _done: false }); });
+  def2("deleteQuery", function (s, q) { if (!chk(s, q, "Query") || !q) return; q._del = true; });
+  def2("isQuery", function (s, q) { return own(s, q, "Query") && !q._del && q._ever; });
+  def2("beginQuery", function (s, t, q) { if (!QT[t]) return err(s, 1280); if (!q || !own(s, q, "Query") || q._del) return err(s, 1282); if (s.query[t]) return err(s, 1282); if (q._target && q._target !== t) return err(s, 1282); q._target = t; q._ever = true; q._done = false; s.query[t] = q; });
+  def2("endQuery", function (s, t) { if (!QT[t]) return err(s, 1280); var q = s.query[t]; if (!q) return err(s, 1282); q._done = true; s.query[t] = null; });
+  def2("getQuery", function (s, t, p) { if (!QT[t]) { err(s, 1280); return null; } if (p !== 34917) { err(s, 1280); return null; } return s.query[t] || null; });
+  def2("getQueryParameter", function (s, q, p) { if (!chk(s, q, "Query") || !q || !q._target) { err(s, 1282); return null; } if (p === 34919) { var r = q._done && q._polled; if (q._done) q._polled = true; return !!r; } if (p === 34918) return q._done ? (q._target === 35976 ? 0 : false) : 0; err(s, 1280); return null; });
+  def2("fenceSync", function (s, c, f) { if (c !== 37143) { err(s, 1280); return null; } if (f !== 0) { err(s, 1281); return null; } return mk("Sync", { _s: s, _del: false }); });
+  def2("isSync", function (s, y) { return own(s, y, "Sync") && !y._del; });
+  def2("deleteSync", function (s, y) { if (!chk(s, y, "Sync") || !y) return; y._del = true; });
+  def2("clientWaitSync", function (s, y, f, t) { if (!chk(s, y, "Sync") || !y || y._del) { err(s, 1282); return 37149; } if (f & ~1) { err(s, 1281); return 37149; } return 37146; });
+  def2("waitSync", function (s, y, f, t) { if (!chk(s, y, "Sync") || !y || y._del) return err(s, 1282); if (f !== 0) return err(s, 1281); if (t !== -1) return err(s, 1281); });
+  def2("getSyncParameter", function (s, y, p) { if (!chk(s, y, "Sync") || !y || y._del) { err(s, 1282); return null; } switch (p) { case 37138: return 37142; case 37139: return 37145; case 37140: return 37143; case 37141: return 0; } err(s, 1280); return null; });
+  def2("createTransformFeedback", function (s) { return mk("TransformFeedback", { _s: s, _del: false, _ever: false, active: false, paused: false }); });
+  def2("deleteTransformFeedback", function (s, t) { if (!chk(s, t, "TransformFeedback") || !t) return; t._del = true; if (s.tfObj === t) { s.tf = null; s.tfObj = null; } });
+  def2("isTransformFeedback", function (s, t) { return own(s, t, "TransformFeedback") && !t._del && t._ever; });
+  def2("bindTransformFeedback", function (s, t, o) { if (t !== 36386) return err(s, 1280); if (!chk(s, o, "TransformFeedback")) return; if (o && o._del) return err(s, 1282); if (s.tf && s.tf.active && !s.tf.paused) return err(s, 1282); if (o) { o._ever = true; s.tf = o; s.tfObj = o; } else { s.tf = null; s.tfObj = null; } });
+  def2("beginTransformFeedback", function (s, m) { if ([0, 1, 4].indexOf(m) < 0) return err(s, 1280); if (!s.prog) return err(s, 1282); if (!s.tf) { s.tf = { active: false, paused: false }; s.tfObj = null; } if (s.tf.active) return err(s, 1282); s.tf.active = true; });
+  def2("endTransformFeedback", function (s) { if (!s.tf || !s.tf.active) return err(s, 1282); s.tf.active = false; s.tf.paused = false; });
+  def2("pauseTransformFeedback", function (s) { if (!s.tf || !s.tf.active || s.tf.paused) return err(s, 1282); s.tf.paused = true; });
+  def2("resumeTransformFeedback", function (s) { if (!s.tf || !s.tf.active || !s.tf.paused) return err(s, 1282); s.tf.paused = false; });
+  def2("transformFeedbackVaryings", function (s, p, names, mode) { if (!chk(s, p, "Program") || !p) return err(s, 1282); if (mode !== 35980 && mode !== 35981) return err(s, 1280); if (mode === 35981 && names.length > 4) return err(s, 1281); p._tfv = Array.prototype.slice.call(names).map(String); });
+  def2("getTransformFeedbackVarying", function (s, p, i) { if (!chk(s, p, "Program") || !p) { err(s, 1282); return null; } var n = (p._tfv || [])[i]; if (n === undefined) { err(s, 1281); return null; } var u = null; var vs = p._sh.filter(function (x) { return x._type === 35633; })[0]; if (vs) vs._decls.forEach(function (d) { if (d.name === n) u = d; }); return info(n, u ? u.type : 5126, u ? u.size : 1); });
+  // ---- programs: uniforms, blocks, outputs ----
+  def2("getProgramParameter", function (s, p, n) {
+    if (!chk(s, p, "Program") || !p) { err(s, 1282); return null; }
+    if (n === 35382) return p._ok ? blocks(p).length : 0; if (n === 35967) return (p._tfv || []).length; if (n === 35967 + 1) return 35980;
+    if (n === 35971) return 35980; if (n === 35958) return (p._tfv || []).length;
+    return base.getProgramParameter.call(this, p, n);
+  });
+  function blocks(p) { var out = []; p._sh.forEach(function (sh) { (sh._blocks || []).forEach(function (b) { if (!out.some(function (o) { return o.name === b.name; })) out.push({ name: b.name, members: b.members, binding: 0 }); }); }); if (!p._blk) p._blk = {}; out.forEach(function (b) { if (p._blk[b.name] !== undefined) b.binding = p._blk[b.name]; }); return out; }
+  def2("getUniformBlockIndex", function (s, p, n) { if (!chk(s, p, "Program") || !p || !p._ok) { err(s, 1282); return 4294967295; } var b = blocks(p); for (var i = 0; i < b.length; i++) if (b[i].name === n) return i; return 4294967295; });
+  def2("getActiveUniformBlockName", function (s, p, i) { if (!chk(s, p, "Program") || !p || !p._ok) { err(s, 1282); return null; } var b = blocks(p)[i]; if (!b) { err(s, 1281); return null; } return b.name; });
+  def2("getActiveUniformBlockParameter", function (s, p, i, pn) {
+    if (!chk(s, p, "Program") || !p || !p._ok) { err(s, 1282); return null; } var b = blocks(p)[i]; if (!b) { err(s, 1281); return null; }
+    switch (pn) { case 35391: return b.binding; case 35392: return b.members * 16; case 35393: return b.name.length + 1 - 1 + 0 * 1 + 1; case 35394: return b.members; case 35395: return new Uint32Array(0); case 35396: return true; case 35397: return true; }
+    err(s, 1280); return null;
+  });
+  def2("uniformBlockBinding", function (s, p, i, b) { if (!chk(s, p, "Program") || !p) return err(s, 1282); var bl = blocks(p)[i]; if (!bl) return err(s, 1281); if (b >>> 0 !== b || b >= 72) return err(s, 1281); p._blk[bl.name] = b; });
+  def2("getUniformIndices", function (s, p, names) { if (!chk(s, p, "Program") || !p) { err(s, 1282); return null; } return Array.prototype.map.call(names, function (n) { n = String(n); for (var i = 0; i < p._unis.length; i++) if (p._unis[i].name === n || p._unis[i].base === n) return i; return 4294967295; }); });
+  def2("getActiveUniforms", function (s, p, idx, pn) {
+    if (!chk(s, p, "Program") || !p) { err(s, 1282); return null; }
+    return Array.prototype.map.call(idx, function (i) { var u = p._unis[i]; if (!u) return null; switch (pn) { case 35383: return u.type; case 35384: return u.size; case 35385: return u.name.length; case 35386: return -1; case 35387: case 35388: case 35389: return 0; case 35390: return false; } return 0; });
+  });
+  def2("getFragDataLocation", function (s, p, n) { if (!chk(s, p, "Program") || !p || !p._ok) { err(s, 1282); return -1; } var f = p._sh.filter(function (x) { return x._type === 35632; })[0], k = 0, r = -1; if (f) f._decls.forEach(function (d) { if (d.kind === "output") { var l = d.loc !== undefined ? d.loc : k; if (d.name === n) r = l; k = l + 1; } }); return r; });
+  // typed uniform setters
+  function setUv(s, loc, vals, per, isInt) {
+    if (loc === null) return; if (!own(s, loc, "UniformLocation") || !s.prog || loc._p !== s.prog) return err(s, 1282);
+    var u = loc._u, comps = TYPE_SIZE[u.type];
+    if (comps !== per) return err(s, 1282);
+    var cur = s.prog._vals[u.base];
+    if (comps === 1) { if (u.type === 35670) cur = !!vals[0]; else cur = vals[0]; s.prog._vals[u.base] = cur; return; }
+    for (var i = 0; i < per; i++) { if (!(cur instanceof Float32Array) && !(cur instanceof Int32Array) && !(cur instanceof Uint32Array)) { cur = new Float32Array(per * u.size); s.prog._vals[u.base] = cur; } cur[loc._i * per + i] = vals[i]; }
+  }
+  [1, 2, 3, 4].forEach(function (n) {
+    def2("uniform" + n + "ui", function (s, loc) { var v = []; for (var k = 0; k < n; k++) v.push(arguments[2 + k] >>> 0); setUv(s, loc, v, n, true); });
+    def2("uniform" + n + "uiv", function (s, loc, arr, so, len) { if (!arr || arr.length === undefined) return err(s, 1282); if (arr.length < n || arr.length % n) return err(s, 1281); setUv(s, loc, Array.prototype.slice.call(arr, so || 0, (so || 0) + n), n, true); });
+  });
+  [[2, 3], [2, 4], [3, 2], [3, 4], [4, 2], [4, 3]].forEach(function (rc) {
+    def2("uniformMatrix" + rc[0] + "x" + rc[1] + "fv", function (s, loc, tr, arr) { var n = rc[0] * rc[1]; if (tr) return err(s, 1281); if (!arr || arr.length === undefined) return err(s, 1282); if (arr.length < n || arr.length % n) return err(s, 1281); setUv(s, loc, Array.prototype.slice.call(arr, 0, n), n, false); });
+  });
+  def2("getUniform", function (s, p, loc) {
+    if (!chk(s, p, "Program") || !p || !own(s, loc, "UniformLocation") || loc._p !== p) { err(s, 1282); return null; }
+    var v = p._vals[loc._u.base], per = TYPE_SIZE[loc._u.type];
+    if (v && v.slice && typeof v !== "string") { var r = v.slice(loc._i * per, loc._i * per + per); if (loc._u.type >= 36294 && loc._u.type <= 36296) return new Uint32Array(r); if (loc._u.type >= 35667 && loc._u.type <= 35669) return new Int32Array(r); return r; }
+    return v;
+  });
+  // ---- the canvas asks for it ----
+  def2("enable", function (s, c) { if (CAPS.indexOf(c) < 0 && c !== 35977) return err(s, 1280); s.caps[c] = true; });
+  def2("disable", function (s, c) { if (CAPS.indexOf(c) < 0 && c !== 35977) return err(s, 1280); s.caps[c] = false; });
+  def2("isEnabled", function (s, c) { if (CAPS.indexOf(c) < 0 && c !== 35977) { err(s, 1280); return false; } return !!s.caps[c]; });
   // ---- canvas hook ----
   var prevGet = canvasProto.getContext;
   canvasProto.getContext = function (kind, attrs) {
     var k = String(kind);
-    if (k === "webgl" || k === "experimental-webgl") {
-      if (this._ctxKind && this._ctxKind !== "webgl") return null;
-      if (!this._gl) { Object.defineProperty(this, "_gl", { value: create(this, attrs), enumerable: false }); Object.defineProperty(this, "_ctxKind", { value: "webgl", enumerable: false }); }
+    var v = k === "webgl" || k === "experimental-webgl" ? "webgl" : (k === "webgl2" ? "webgl2" : "");
+    if (v) {
+      if (this._ctxKind && this._ctxKind !== v) return null;
+      if (!this._gl) { Object.defineProperty(this, "_gl", { value: v === "webgl2" ? create2(this, attrs) : create(this, attrs), enumerable: false }); Object.defineProperty(this, "_ctxKind", { value: v, enumerable: false }); }
       return this._gl;
     }
-    if (this._ctxKind && (k === "2d" || k === "webgl2" || k === "bitmaprenderer")) return null;
+    if (this._ctxKind && (k === "2d" || k === "bitmaprenderer")) return null;
     var r = prevGet.apply(this, arguments);
     if (r && k === "2d") Object.defineProperty(this, "_ctxKind", { value: "2d", enumerable: false });
     return r;

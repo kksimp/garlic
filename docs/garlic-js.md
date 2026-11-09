@@ -380,7 +380,7 @@ it comes later for speed, and these frames will move onto it).
   `getImageData` is transparent black and `toDataURL` a blank PNG. A
   `webgl` context (webgl.ail, WebGL 1) keeps its state and validates like
   Chromium's but rasterizes nothing except `clear`: draw calls do nothing
-  and the window never shows it. `webgl2` and WebGPU contexts are null.
+  and the window never shows it. `webgl2` is the same with the WebGL 2 API; WebGPU is null.
   Streams, `Worker`, `WebAssembly`, media
   devices, geolocation and service workers are missing: pages that
   feature-test them report them unsupported.
