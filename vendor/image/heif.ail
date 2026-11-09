@@ -1,0 +1,297 @@
+## The HEIF / ISO base media container of an AVIF file (ISO 14496-12, 23008-12
+## and the AVIF specification): finds the primary image item, its AV1 data,
+## its alpha plane, its size, colour description and orientation. A grid item
+## lists the tiles that make up the picture.
+
+fn hf_be(d List[int], at int, n int) int
+    mut v := 0
+    for i in 0..n
+        v = v * 256 + d[at + i]
+    v
+
+fn hf_tag(d List[int], at int) str
+    mut s := ""
+    for i in 0..4
+        s = "{s}{char.from_code(d[at + i])}"
+    s
+
+## A box: its type, the offset of its payload and the offset after it.
+struct HfBox
+    kind str
+    at int
+    stop int
+
+## The boxes in `d[from..stop]`.
+fn hf_boxes(d List[int], from int, stop int) List[HfBox]
+    mut out := List[HfBox]()
+    mut p := from
+    while p + 8 <= stop
+        mut sz := hf_be(d, p, 4)
+        kind := hf_tag(d, p + 4)
+        mut hdr := 8
+        if sz == 1
+            if p + 16 > stop
+                break
+            sz = hf_be(d, p + 8, 8)
+            hdr = 16
+        elif sz == 0
+            sz = stop - p
+        if sz < hdr or p + sz > stop
+            break
+        out.push(HfBox(kind: kind, at: p + hdr, stop: p + sz))
+        p += sz
+    out
+
+fn hf_find(bs List[HfBox], kind str) HfBox?
+    for b in bs
+        if b.kind == kind
+            return b
+    none
+
+## A byte range of the file that holds part of an item.
+struct HfExtent
+    at int
+    len int
+
+## What the file says about one item.
+pub struct HfItem
+    pub id int
+    pub kind str
+    pub w int
+    pub h int
+    pub extents List[HfExtent]
+    pub av1c List[int]
+    pub props List[int]
+
+## The facts the decoder needs about the primary picture.
+pub struct Heif
+    pub data List[int]
+    pub primary int
+    pub items List[HfItem]
+    pub alpha int
+    pub tiles List[int]
+    pub rows int
+    pub cols int
+    pub out_w int
+    pub out_h int
+    pub matrix int
+    pub full_range bool
+    pub rotation int
+    pub mirror int
+    pub premult bool
+
+fn hf_item_index(items List[HfItem], id int) int
+    for i in 0..items.len()
+        if items[i].id == id
+            return i
+    -1
+
+## The bytes of item `idx`, joined from its extents (construction method 0).
+pub fn Heif.item_bytes(self, idx int) List[int]
+    mut out := List[int]()
+    for e in items[idx].extents
+        out.extend(data[e.at..e.at + e.len])
+    out
+
+## Parses the container; `Bad` when it is not an AVIF picture.
+pub fn heif(d List[int]) Heif ! ImageError
+    if d.len() < 16 or hf_tag(d, 4) != "ftyp"
+        return Bad(why: "no ftyp box")
+    top := hf_boxes(d, 0, d.len())
+    meta := hf_find(top, "meta") else return Bad(why: "AVIF without a meta box")
+    mb := hf_boxes(d, meta.at + 4, meta.stop)
+    pit := hf_find(mb, "pitm") else return Bad(why: "AVIF without a primary item")
+    primary := if d[pit.at] == 0 then hf_be(d, pit.at + 4, 2) else hf_be(d, pit.at + 4, 4)
+    mut items := List[HfItem]()
+    if inf := hf_find(mb, "iinf")
+        mut p := inf.at + (if d[inf.at] == 0 then 6 else 8)
+        for b in hf_boxes(d, p, inf.stop)
+            if b.kind != "infe"
+                continue
+            ver := d[b.at]
+            mut q := b.at + 4
+            mut id := 0
+            if ver >= 3
+                id = hf_be(d, q, 4)
+                q += 4
+            else
+                id = hf_be(d, q, 2)
+                q += 2
+            q += 2
+            kind := if ver >= 2 then hf_tag(d, q) else "none"
+            items.push(
+                HfItem(
+                    id: id,
+                    kind: kind,
+                    w: 0,
+                    h: 0,
+                    extents: List[HfExtent](),
+                    av1c: List[int](),
+                    props: List[int](),
+                )
+            )
+    if loc := hf_find(mb, "iloc")
+        ver := d[loc.at]
+        sizes := hf_be(d, loc.at + 4, 2)
+        off_size := sizes.shr(12)
+        len_size := sizes.shr(8).bit_and(15)
+        base_size := sizes.shr(4).bit_and(15)
+        idx_size := if ver >= 1 then sizes.bit_and(15) else 0
+        mut p := loc.at + 6
+        mut n := 0
+        if ver < 2
+            n = hf_be(d, p, 2)
+            p += 2
+        else
+            n = hf_be(d, p, 4)
+            p += 4
+        for _ in 0..n
+            mut id := 0
+            if ver < 2
+                id = hf_be(d, p, 2)
+                p += 2
+            else
+                id = hf_be(d, p, 4)
+                p += 4
+            mut method := 0
+            if ver >= 1
+                method = d[p + 1].bit_and(15)
+                p += 2
+            p += 2
+            base := hf_be(d, p, base_size)
+            p += base_size
+            ne := hf_be(d, p, 2)
+            p += 2
+            mut ex := List[HfExtent]()
+            for _ in 0..ne
+                p += idx_size
+                off := hf_be(d, p, off_size)
+                p += off_size
+                ln := hf_be(d, p, len_size)
+                p += len_size
+                if method == 0
+                    ex.push(HfExtent(at: base + off, len: ln))
+            i := hf_item_index(items, id)
+            if i >= 0
+                items[i].extents = ex
+    mut matrix := 1
+    mut full := true
+    mut rotation := 0
+    mut mirror := -1
+    mut alpha := -1
+    if prp := hf_find(mb, "iprp")
+        pb := hf_boxes(d, prp.at, prp.stop)
+        cont := hf_find(pb, "ipco") else return Bad(why: "AVIF without ipco")
+        props := hf_boxes(d, cont.at, cont.stop)
+        assoc := hf_find(pb, "ipma") else return Bad(why: "AVIF without ipma")
+        ver := d[assoc.at]
+        fl := hf_be(d, assoc.at + 1, 3)
+        n := hf_be(d, assoc.at + 4, 4)
+        mut p := assoc.at + 8
+        for _ in 0..n
+            mut id := 0
+            if ver < 1
+                id = hf_be(d, p, 2)
+                p += 2
+            else
+                id = hf_be(d, p, 4)
+                p += 4
+            cnt := d[p]
+            p += 1
+            i := hf_item_index(items, id)
+            for _ in 0..cnt
+                mut pi := d[p]
+                p += 1
+                if fl.bit_and(1) == 1
+                    pi = pi.bit_and(127) * 256 + d[p]
+                    p += 1
+                else
+                    pi = pi.bit_and(127)
+                if i < 0 or pi == 0 or pi > props.len()
+                    continue
+                pr := props[pi - 1]
+                if pr.kind == "ispe"
+                    items[i].w = hf_be(d, pr.at + 4, 4)
+                    items[i].h = hf_be(d, pr.at + 8, 4)
+                elif pr.kind == "av1C"
+                    items[i].av1c = d[pr.at..pr.stop]
+                elif pr.kind == "colr" and id == primary
+                    if hf_tag(d, pr.at) == "nclx"
+                        matrix = hf_be(d, pr.at + 8, 2)
+                        full = d[pr.at + 10].shr(7) == 1
+                elif pr.kind == "irot" and id == primary
+                    rotation = d[pr.at].bit_and(3)
+                elif pr.kind == "imir" and id == primary
+                    mirror = d[pr.at].bit_and(1)
+                elif pr.kind == "auxC"
+                    # Marks an auxiliary image; the alpha plane is found below.
+                    items[i].props.push(1)
+    mut tiles := List[int]()
+    mut premult := false
+    if rf := hf_find(mb, "iref")
+        for b in hf_boxes(d, rf.at + 4, rf.stop)
+            from_id := hf_be(d, b.at, 2)
+            cnt := hf_be(d, b.at + 2, 2)
+            if b.kind == "auxl"
+                for k in 0..cnt
+                    target := hf_be(d, b.at + 4 + 2 * k, 2)
+                    i := hf_item_index(items, from_id)
+                    if target == primary and i >= 0 and items[i].props.len() > 0
+                        alpha = from_id
+            elif b.kind == "dimg" and from_id == primary
+                for k in 0..cnt
+                    tiles.push(hf_be(d, b.at + 4 + 2 * k, 2))
+            elif b.kind == "prem" and from_id == alpha
+                premult = true
+    pi := hf_item_index(items, primary)
+    if pi < 0
+        return Bad(why: "AVIF primary item is missing")
+    mut rows := 1
+    mut cols := 1
+    mut ow := items[pi].w
+    mut oh := items[pi].h
+    if items[pi].kind == "grid"
+        g := Heif(
+            data: d,
+            primary: primary,
+            items: items,
+            alpha: alpha,
+            tiles: tiles,
+            rows: 1,
+            cols: 1,
+            out_w: 0,
+            out_h: 0,
+            matrix: matrix,
+            full_range: full,
+            rotation: rotation,
+            mirror: mirror,
+            premult: premult,
+        )
+        gb := g.item_bytes(pi)
+        if gb.len() < 8
+            return Bad(why: "AVIF grid descriptor")
+        wide := gb[1].bit_and(1) == 1
+        rows = gb[2] + 1
+        cols = gb[3] + 1
+        if wide
+            ow = hf_be(gb, 4, 4)
+            oh = hf_be(gb, 8, 4)
+        else
+            ow = hf_be(gb, 4, 2)
+            oh = hf_be(gb, 6, 2)
+    Heif(
+        data: d,
+        primary: primary,
+        items: items,
+        alpha: alpha,
+        tiles: tiles,
+        rows: rows,
+        cols: cols,
+        out_w: ow,
+        out_h: oh,
+        matrix: matrix,
+        full_range: full,
+        rotation: rotation,
+        mirror: mirror,
+        premult: premult,
+    )
