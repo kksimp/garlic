@@ -1818,12 +1818,7 @@ fn Ctx.max_content(mut self, id int, st St) float
     for k in o0..ops.len()
         match ops[k]
             Rect(x, _, w, _, _) => extent = if x + w < SHRINK_W then fmax(extent, x + w) else extent
-            Str(x, _, t, _, size, _, bold, _, _) => extent = fmax(extent, x + text_width(
-                t,
-                size,
-                bold,
-                st.mono,
-            ))
+            Str(x, _, t, font, size, _, bold, italic, _) => extent = fmax(extent, x + tw(t, size, bold, italic, font))
             Pic(x, _, w, _, _) => extent = fmax(extent, x + w)
             Text(_, _, _, _, _, _, _) => extent = extent
     drop_boxes(o0)
@@ -1844,6 +1839,14 @@ fn Ctx.max_content(mut self, id int, st St) float
 fn Ctx.intrinsic(mut self, id int, st St) float
     text := d.visible_text(id).trim()
     tw(html.collapse(text), st.size, st.bold, st.italic, font_of(st))
+
+## The narrowest width `id`'s text fits without breaking a word: its
+## longest word (the min-content width, CSS Sizing 3).
+fn Ctx.min_intrinsic(mut self, id int, st St) float
+    mut best := 0.0
+    for word in html.collapse(d.visible_text(id)).split(" ")
+        best = fmax(best, tw(word, st.size, st.bold, st.italic, font_of(st)))
+    best
 
 ## Lays out block `id` inside a column from `x`, `w` wide, with the
 ## parent's text style `parent`.
@@ -2506,25 +2509,40 @@ fn Ctx.table(mut self, id int, st St, x float, w float)
         ncols = ncols.max(self.items(r).len())
     if ncols == 0
         return
-    mut natural := List[float]()
+    ## Automatic table layout (CSS 2.1 §17.5.2.2): each column is at least
+    ## its widest word and at most its widest line (12px for cell padding);
+    ## a table narrower than its lines shrinks the columns between those
+    ## two in proportion, so a long value never squeezes a label column;
+    ## one that cannot fit its words overflows, as in Chrome.
+    mut least := List[float]()
+    mut most := List[float]()
     for k in 0..ncols
-        natural.push(20.0)
+        least.push(20.0)
+        most.push(20.0)
     for r in rows
         cells := self.items(r)
         for k in 0..cells.len()
             cs := element_style(cells[k])
             cst := text_style(d.nodes[cells[k]].tag, cs, st)
-            natural[k] = fmax(natural[k], self.intrinsic(cells[k], cst) + 12.0)
-    mut sum := 0.0
-    for v in natural
-        sum += v
-    scale := if sum > w then w / sum else 1.0
-    mut extra := if sum < w then (w - sum) / ncols.to_float() else 0.0
+            least[k] = fmax(least[k], self.min_intrinsic(cells[k], cst) + 12.0)
+            most[k] = fmax(most[k], fmax(self.intrinsic(cells[k], cst), self.max_content(cells[k], cst)) + 12.0)
+    mut sum_least := 0.0
+    mut sum_most := 0.0
+    for k in 0..ncols
+        most[k] = fmax(most[k], least[k])
+        sum_least += least[k]
+        sum_most += most[k]
     mut widths := List[float]()
     mut offsets := List[float]()
     mut at := 0.0
-    for v in natural
-        cw := v * scale + extra
+    for k in 0..ncols
+        mut cw := most[k]
+        if sum_most <= w
+            cw = most[k] + (w - sum_most) / ncols.to_float()
+        elif sum_least >= w
+            cw = least[k]
+        else
+            cw = least[k] + (most[k] - least[k]) * (w - sum_least) / (sum_most - sum_least)
         widths.push(cw)
         offsets.push(at)
         at += cw

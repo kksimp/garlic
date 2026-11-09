@@ -4792,6 +4792,18 @@ fn pixels(src str, width float) gfx.Scene
     assert(tall[0].y > 20.0)
     assert(s.boxes.len() >= 3)
 
+@test fn a_table_column_keeps_its_longest_word_beside_a_long_value()
+    ## browserleaks' two-column tables: the label column must not be
+    ## squeezed by a value wider than the table.
+    long := "x".repeat(90)
+    s := pixels("<table style=\"width:100%\"><tr><td>Document Referrer</td><td>{long}</td></tr></table>", 400.0)
+    t := pixel_text(s.ops)
+    assert_eq(t.len(), 2)
+    label_x := t[0].split("@")[1].split(",")[0].to_float() else 0.0
+    value_x := t[1].split("@")[1].split(",")[0].to_float() else 0.0
+    assert(t[0].starts_with("Document Referrer@"))
+    assert(value_x - label_x >= gfx.text_width("Referrer", 16.0, false, false))
+
 @test fn the_pixel_layout_records_a_box_for_every_inline_element()
     ## Font-fingerprinting scripts measure spans, so inline elements need
     ## boxes too: the span starts after "a " and is narrower than its line.
