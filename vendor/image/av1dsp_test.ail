@@ -1,0 +1,61 @@
+## Self-consistency tests for the AV1 inverse transforms and intra predictors.
+
+fn dsp_plane(w int, h int, v int) Av1Plane
+    Av1Plane(w: w, h: h, stride: w + 64, pix: [v for _ in 0..(w + 64) * (h + 64)])
+
+@test fn itx_dc_shortcut_matches_the_full_transform()
+    for tx in [0, 1, 2, 3, 4, 5, 7, 11, 15, 18]
+        w := 4 * AV1_TXFM_DIM[8 * tx]
+        h := 4 * AV1_TXFM_DIM[8 * tx + 1]
+        sh := if h < 32 then h else 32
+        sw := if w < 32 then w else 32
+        mut cf := [0 for _ in 0..sw * sh]
+        cf[0] = 300
+        mut a := dsp_plane(w, h, 100)
+        mut b := dsp_plane(w, h, 100)
+        av1_itx_add(mut a, 0, 0, cf, tx, 0, 0, 8)
+        av1_itx_add(mut b, 0, 0, cf, tx, 0, 5, 8)
+        assert_eq(a.pix, b.pix)
+
+@test fn itx_flat_dc_gives_a_flat_residual()
+    mut cf := [0 for _ in 0..64]
+    cf[0] = 512
+    mut p := dsp_plane(8, 8, 128)
+    av1_itx_add(mut p, 0, 0, cf, 1, 0, 3, 8)
+    first := p.pix[0]
+    assert_eq(first > 128, true)
+    for yy in 0..8
+        for xx in 0..8
+            assert_eq(p.pix[yy * p.stride + xx], first)
+
+@test fn itx_identity_and_flip_are_symmetric()
+    mut cf := [0 for _ in 0..16]
+    cf[0] = 64
+    mut a := dsp_plane(4, 4, 128)
+    av1_itx_add(mut a, 0, 0, cf, 0, 9, 1, 8)
+    assert_eq(a.pix[0] > 128, true)
+    assert_eq(a.pix[1], 128)
+
+@test fn pred_edges_without_neighbours_use_the_mid_grey_rules()
+    mut p := dsp_plane(8, 8, 0)
+    ctx := av1_predctx(8)
+    av1_pred(mut p, 0, 0, 8, 8, 0, ctx)
+    assert_eq(p.pix[0], 128)
+    av1_pred(mut p, 0, 0, 8, 8, 1, ctx)
+    assert_eq(p.pix[0], 127)
+    av1_pred(mut p, 0, 0, 8, 8, 2, ctx)
+    assert_eq(p.pix[0], 129)
+
+@test fn pred_dc_v_h_copy_the_edges()
+    mut p := dsp_plane(16, 16, 0)
+    for i in 0..16
+        p.pix[i] = 10 + i
+        p.pix[i * p.stride] = 50 + i
+    mut ctx := av1_predctx(8)
+    ctx.have_left = true
+    ctx.have_top = true
+    av1_pred(mut p, 4, 4, 4, 4, 1, ctx)
+    assert_eq(p.pix[4 * p.stride + 4 + 2], 10 + 6)
+    assert_eq(p.pix[7 * p.stride + 7], 10 + 7)
+    av1_pred(mut p, 4, 4, 4, 4, 2, ctx)
+    assert_eq(p.pix[5 * p.stride + 6], 50 + 5)
