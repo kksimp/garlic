@@ -36,7 +36,9 @@ pub fn decode(data List[int]) Rgba ! ImageError
         return gif(data)
     if data.len() >= 12 and data[0] == 0x52 and data[1] == 0x49 and data[8] == 0x57 and data[9] == 0x45
         return webp(data)
-    Unsupported(what: "image data that is not PNG, JPEG, GIF or WebP")
+    if data.len() >= 16 and data[4] == 0x66 and data[5] == 0x74 and data[6] == 0x79 and data[7] == 0x70
+        return avif(data)
+    Unsupported(what: "image data that is not PNG, JPEG, GIF, WebP or AVIF")
 
 ## The `[width, height]` of a PNG, JPEG, GIF or WebP read from its header alone,
 ## or `[0, 0]` when `data` is none of them. The browser sizes `<img>` with it
@@ -49,6 +51,8 @@ pub fn dims(data List[int]) List[int]
         return [data[6] + data[7] * 256, data[8] + data[9] * 256]
     if n >= 30 and data[0] == 0x52 and data[1] == 0x49 and data[8] == 0x57
         return webp_dims(data)
+    if n >= 16 and data[4] == 0x66 and data[5] == 0x74 and data[6] == 0x79 and data[7] == 0x70
+        return avif_dims(data)
     if n >= 4 and data[0] == 0xff and data[1] == 0xd8
         mut i := 2
         while i + 9 < n
