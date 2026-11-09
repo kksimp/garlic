@@ -101,7 +101,10 @@ fn over(dst int, r float, g float, b float, sa float) int
 ## `dst` with `sa` of its alpha erased (destination-out).
 fn erase(dst int, sa float) int
     da := px_a(dst).to_float() * (1.0 - sa)
-    clamp255(da).shl(24) + dst.bit_and(0xffffff)
+    na := clamp255(da)
+    if na == 0
+        return 0
+    na.shl(24) + dst.bit_and(0xffffff)
 
 fn Surface.new_blank(w int, h int) Surface
     Surface(w: w, h: h, px: [0 for _ in 0..w * h], mask: [], saved: [], node: -1, dirty: true)
