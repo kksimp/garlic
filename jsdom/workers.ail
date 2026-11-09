@@ -97,7 +97,7 @@ pub fn Pool.shutdown(self)
         s.jobs.close()
 
 ## The part of `s` before the first `sep` and the part after it.
-pub fn cut(s str, sep str) (str, str)
+pub fn cut(s str, sep str)(str, str)
     at := s.find(sep) else return (s, "")
     (s.slice(0, at), s.slice(at + 1, s.chars().len()))
 
@@ -147,7 +147,8 @@ fn run_worker(s Slot, job str, gui app.Inbox, use_gui bool)
     base := parts[3]
     mut m := vm.new_vm()
     m.step_limit = WORKER_STEPS
-    m.location_href = if script.starts_with("blob:") or script.starts_with("data:") then base else script
+    m.location_href = if script.starts_with("blob:")
+        or script.starts_with("data:") then base else script
     m.clock_ms = time.now_ms().to_float()
     m.page_start_ms = m.clock_ms
     m.dom_setup()

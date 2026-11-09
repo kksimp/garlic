@@ -1031,6 +1031,11 @@ fn Browser.close_sockets(mut self)
         s.close(1001)
         socks.remove(id)
 
+## Whether a page's engine is kept.
+fn Browser.has_js(self) bool
+    s := js else return false
+    s.pending() >= 0
+
 ## Stops the page's Web Workers (leaving the page does).
 fn Browser.stop_workers(mut self)
     mut s := js else return
@@ -1203,7 +1208,7 @@ fn Browser.step_focus(mut self, forward bool)
 
 ## Tells the page's scripts focus moved to node `id` (`blur`, `focus`).
 fn Browser.js_focus(mut self, id int)
-    if js == none
+    if not has_js()
         return
     mut s := js else return
     out := s.focus(mut doc, id, 1000.0)
@@ -1214,7 +1219,7 @@ fn Browser.js_focus(mut self, id int)
 ## Tells the page's scripts the user pressed `key` in node `id`. True when
 ## a listener cancelled it, so the browser's own action should not follow.
 fn Browser.js_key(mut self, id int, key str) bool
-    if js == none
+    if not has_js()
         return false
     mut s := js else return false
     out := s.key(mut doc, id, key, 1000.0)
@@ -1380,7 +1385,7 @@ fn Browser.type_into(mut self, id int, text str)
     if b.role != "textbox"
         message = "node {id} is a {b.role}, not a textbox"
         return
-    if js != none
+    if has_js()
         mut s := js else return
         out := serve_page(
             mut s,
@@ -1472,7 +1477,7 @@ fn Browser.submit(mut self, id int)
     form := doc.enclosing(id, "form") else
         message = "node {id} is not in a form"
         return
-    if js != none
+    if has_js()
         mut s := js else return
         out := serve_page(mut s, mut doc, s.submit(mut doc, id, 1000.0), url, mut cj, mut socks)
         js = s
@@ -3528,7 +3533,7 @@ GUI_H := 600.0
 GUI_CELL_W := 7.8
 GUI_CELL_H := 16.0
 
-fn app_main(b Browser, pixel bool, attached bool, sites str, light bool) !
+fn app_main(b Browser, pixel bool, attached bool, sites str, light bool, inbox app.Inbox) !
     mut a := Garlic.new(b, GUI_W, GUI_H, GUI_CELL_W, GUI_CELL_H)
     a.g.pixel = pixel
     a.light = light
@@ -3537,9 +3542,13 @@ fn app_main(b Browser, pixel bool, attached bool, sites str, light bool) !
     a.visits = history.load(a.history_file)
     a.g.refresh()
     if attached
-        attached_main(mut a, sites)?
+        attached_main(mut a, sites, inbox)?
         return
-    app.run(mut a) else err
+    host := app.host_path() else err
+        print("garlic: no native window ({err.message}); the page as text:")
+        print(a.g.b.pg.text())
+        return
+    app.run_with(mut a, host, [], inbox) else err
         print("garlic: no native window ({err.message}); the page as text:")
         print(a.g.b.pg.text())
 
@@ -3555,6 +3564,11 @@ fn build_id() str
     pin_short := if pin.chars().len() > 8 then pin.slice(0, 8) else pin
     if pin_short == "" then "Garlic {short}" else "Garlic {short} · ail {pin_short}"
 
+## A pool thread's task (a local function, which `spawn` needs natively):
+## runs Web Workers one after another until the pool shuts down.
+fn worker_task(s jsdom.Slot, free Mutex[List[int]], gui app.Inbox, use_gui bool)
+    jsdom.worker_slot(s, free, gui, use_gui)
+
 ## Posts a `tick` event every second until `stop` is set.
 fn ticker(inbox app.Inbox, stop Atomic[int])
     while stop.load() == 0
@@ -3568,7 +3582,7 @@ fn serve(srv net.Server, inbox app.Inbox, bridge attach.Bridge, token str)
 ## `--attach`: the window as `app_main` runs it, with the attach server on
 ## 127.0.0.1 (a free port), its address and token in `~/.garlic-attach.json`
 ## for the agents on this machine.
-fn attached_main(mut a Garlic, sites str) !
+fn attached_main(mut a Garlic, sites str, inbox app.Inbox) !
     srv := net.serve("127.0.0.1:0")?
     token := attach.make_token()
     path := "{env.get("HOME") else "."}/.garlic-attach.json"
@@ -3580,7 +3594,6 @@ fn attached_main(mut a Garlic, sites str) !
     a.attached = true
     a.where = where
     a.guard.fixed = [h for h in sites.split(",") if h != ""]
-    inbox := app.new_inbox()
     g := TaskGroup()
     g.add(spawn serve(srv, inbox, a.bridge, token))
     stop := Atomic(0)
