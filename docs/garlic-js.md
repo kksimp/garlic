@@ -409,6 +409,18 @@ it comes later for speed, and these frames will move onto it).
   release, but Garlic does not keep the screen awake. IndexedDB is
   complete enough for stores, indexes, key ranges and cursors, but lives
   in memory for the life of the page: nothing is written to disk yet.
+- Device and codec APIs (deviceapi.ail): `navigator.hid`, `usb`,
+  `bluetooth`, `xr` and `gpu` exist as on a Chrome with nothing plugged
+  in: `getDevices` lists nothing, `requestDevice` needs a user gesture and
+  then finds no device, `bluetooth.getAvailability` is false, only
+  `inline` XR sessions are supported, and `gpu.requestAdapter` resolves
+  null until Garlic has a GPU backend. WebCodecs (`VideoDecoder`,
+  `AudioDecoder`, their encoders, chunks, `VideoFrame`, `AudioData`,
+  `ImageDecoder`) and `mediaCapabilities.decodingInfo` say a codec is
+  supported only when Garlic has a decoder for it (VP8, VP9, Opus,
+  Vorbis, FLAC, MP3, PCM in WebM, Ogg, WAV, FLAC and MP3 containers);
+  `decode` and `encode` report NotSupportedError through the error
+  callback, since nothing feeds frames yet.
 - BigInt literals (`10n`).
 - Regular expression pattern syntax (§22.2.1): the literal's body and flags
   are checked, and the pattern is checked when the regex engine compiles it.

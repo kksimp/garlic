@@ -1,0 +1,292 @@
+## Device, graphics-adapter and codec surfaces written in JavaScript over
+## the engine's built-ins, run once per page after mediaapi.ail: WebHID,
+## WebUSB, Web Bluetooth, WebXR, WebGPU and WebCodecs, plus
+## `mediaCapabilities.decodingInfo` answering from one codec table.
+##
+## There is no device host behind them: a page sees what Chrome shows on a
+## machine with nothing plugged in. `getDevices` lists nothing,
+## `requestDevice` needs a user gesture and then finds no device,
+## `bluetooth.getAvailability` is false, `xr.isSessionSupported` is true
+## only for `inline`, and `gpu.requestAdapter` resolves null until the GPU
+## lane gives Garlic an adapter. WebCodecs and `decodingInfo` say a codec is
+## supported only when Garlic has a decoder for it (CODECS below, kept in
+## step with canPlayType in browser.ail).
+
+DEVICE_PRELUDE := r"""
+(function (g) {
+  var nav = g.navigator;
+  var NavProto = nav && Object.getPrototypeOf(nav);
+  if (!NavProto) return;
+  function tag(C, name) { Object.defineProperty(C.prototype, Symbol.toStringTag, { value: name, configurable: true }); }
+  function expose(name, value) {
+    if (name in nav) return;
+    Object.defineProperty(NavProto, name, { get: function () { return value; }, configurable: true, enumerable: true });
+  }
+  function illegal(name) { var C = function () { throw new TypeError("Illegal constructor"); }; Object.defineProperty(C, "name", { value: name }); return C; }
+  function gesture() { var ua = nav.userActivation; return !ua || ua.isActive === true; }
+  function needGesture(what) { return new DOMException("Must be handling a user gesture to show a permission request.", "SecurityError"); }
+  function ET() { Object.defineProperty(this, "_ls", { value: {}, enumerable: false }); }
+  ET.prototype.addEventListener = function (t, f) { (this._ls[t] || (this._ls[t] = [])).push(f); };
+  ET.prototype.removeEventListener = function (t, f) { var l = this._ls[t]; if (l) { var i = l.indexOf(f); if (i >= 0) l.splice(i, 1); } };
+  ET.prototype.dispatchEvent = function (e) {
+    var l = (this._ls[e.type] || []).slice(); var self = this;
+    l.forEach(function (f) { f.call(self, e); });
+    var h = this["on" + e.type]; if (typeof h === "function") h.call(this, e);
+    return !e.defaultPrevented;
+  };
+
+  // ---- WebHID ----
+  function HID() { ET.call(this); this.onconnect = null; this.ondisconnect = null; }
+  HID.prototype = Object.create(ET.prototype, { constructor: { value: HID, writable: true, configurable: true } });
+  HID.prototype.getDevices = function () { return Promise.resolve([]); };
+  HID.prototype.requestDevice = function (o) {
+    if (!o || !Array.isArray(o.filters)) return Promise.reject(new TypeError("Failed to execute 'requestDevice' on 'HID': required member filters is undefined."));
+    if (!gesture()) return Promise.reject(needGesture());
+    return Promise.resolve([]);
+  };
+  tag(HID, "HID");
+  g.HID = illegal("HID"); g.HID.prototype = HID.prototype;
+  g.HIDDevice = illegal("HIDDevice");
+  g.HIDConnectionEvent = illegal("HIDConnectionEvent");
+  g.HIDInputReportEvent = illegal("HIDInputReportEvent");
+  expose("hid", new HID());
+
+  // ---- WebUSB ----
+  function USB() { ET.call(this); this.onconnect = null; this.ondisconnect = null; }
+  USB.prototype = Object.create(ET.prototype, { constructor: { value: USB, writable: true, configurable: true } });
+  USB.prototype.getDevices = function () { return Promise.resolve([]); };
+  USB.prototype.requestDevice = function (o) {
+    if (!o || !Array.isArray(o.filters)) return Promise.reject(new TypeError("Failed to execute 'requestDevice' on 'USB': required member filters is undefined."));
+    if (!gesture()) return Promise.reject(needGesture());
+    return Promise.reject(new DOMException("No device selected.", "NotFoundError"));
+  };
+  tag(USB, "USB");
+  g.USB = illegal("USB"); g.USB.prototype = USB.prototype;
+  g.USBDevice = illegal("USBDevice");
+  g.USBConnectionEvent = illegal("USBConnectionEvent");
+  expose("usb", new USB());
+
+  // ---- Web Bluetooth ----
+  function Bluetooth() { ET.call(this); this.onavailabilitychanged = null; this.referringDevice = null; }
+  Bluetooth.prototype = Object.create(ET.prototype, { constructor: { value: Bluetooth, writable: true, configurable: true } });
+  Bluetooth.prototype.getAvailability = function () { return Promise.resolve(false); };
+  Bluetooth.prototype.getDevices = function () { return Promise.resolve([]); };
+  Bluetooth.prototype.requestDevice = function (o) {
+    if (!o || (!o.acceptAllDevices && !Array.isArray(o.filters))) return Promise.reject(new TypeError("Failed to execute 'requestDevice' on 'Bluetooth': Either 'filters' should be present or 'acceptAllDevices' should be true, but not both."));
+    if (!gesture()) return Promise.reject(needGesture());
+    return Promise.reject(new DOMException("Bluetooth adapter not available.", "NotFoundError"));
+  };
+  Bluetooth.prototype.requestLEScan = function () { return Promise.reject(new DOMException("Bluetooth adapter not available.", "NotFoundError")); };
+  tag(Bluetooth, "Bluetooth");
+  g.Bluetooth = illegal("Bluetooth"); g.Bluetooth.prototype = Bluetooth.prototype;
+  g.BluetoothDevice = illegal("BluetoothDevice");
+  g.BluetoothRemoteGATTServer = illegal("BluetoothRemoteGATTServer");
+  g.BluetoothUUID = {
+    canonicalUUID: function (a) { var n = Number(a) >>> 0; return ("00000000" + n.toString(16)).slice(-8) + "-0000-1000-8000-00805f9b34fb"; },
+    getService: function (n) { return typeof n === "number" ? g.BluetoothUUID.canonicalUUID(n) : String(n); },
+    getCharacteristic: function (n) { return typeof n === "number" ? g.BluetoothUUID.canonicalUUID(n) : String(n); },
+    getDescriptor: function (n) { return typeof n === "number" ? g.BluetoothUUID.canonicalUUID(n) : String(n); }
+  };
+  expose("bluetooth", new Bluetooth());
+
+  // ---- WebXR ----
+  function XRSession(mode) { ET.call(this); this.mode = mode; this.ended = false; this.visibilityState = "visible"; this.inputSources = []; this.onend = null; }
+  XRSession.prototype = Object.create(ET.prototype, { constructor: { value: XRSession, writable: true, configurable: true } });
+  XRSession.prototype.requestReferenceSpace = function (t) {
+    if (t === "viewer") return Promise.resolve({ getOffsetReferenceSpace: function () { return this; } });
+    return Promise.reject(new DOMException("The requested reference space type is not supported.", "NotSupportedError"));
+  };
+  XRSession.prototype.requestAnimationFrame = function (cb) { return g.requestAnimationFrame(function (t) { cb(t, { session: null, getViewerPose: function () { return null; }, getPose: function () { return null; } }); }); };
+  XRSession.prototype.cancelAnimationFrame = function (h) { g.cancelAnimationFrame(h); };
+  XRSession.prototype.updateRenderState = function () {};
+  XRSession.prototype.end = function () {
+    if (this.ended) return Promise.reject(new DOMException("The session has already ended.", "InvalidStateError"));
+    this.ended = true; var e = new Event("end"); this.dispatchEvent(e); return Promise.resolve();
+  };
+  tag(XRSession, "XRSession");
+  g.XRSession = illegal("XRSession"); g.XRSession.prototype = XRSession.prototype;
+  function XRSystem() { ET.call(this); this.ondevicechange = null; }
+  XRSystem.prototype = Object.create(ET.prototype, { constructor: { value: XRSystem, writable: true, configurable: true } });
+  XRSystem.prototype.isSessionSupported = function (mode) {
+    if (mode !== "inline" && mode !== "immersive-vr" && mode !== "immersive-ar") return Promise.reject(new TypeError("Failed to execute 'isSessionSupported' on 'XRSystem': The provided value '" + mode + "' is not a valid enum value of type XRSessionMode."));
+    return Promise.resolve(mode === "inline");
+  };
+  XRSystem.prototype.requestSession = function (mode) {
+    if (mode === "inline") return Promise.resolve(new XRSession(mode));
+    return Promise.reject(new DOMException("The specified session configuration is not supported.", "NotSupportedError"));
+  };
+  tag(XRSystem, "XRSystem");
+  g.XRSystem = illegal("XRSystem"); g.XRSystem.prototype = XRSystem.prototype;
+  g.XRReferenceSpace = illegal("XRReferenceSpace");
+  g.XRFrame = illegal("XRFrame");
+  g.XRWebGLLayer = function XRWebGLLayer() { throw new DOMException("WebGL layers are not supported.", "NotSupportedError"); };
+  expose("xr", new XRSystem());
+
+  // ---- WebGPU: the surface, with no adapter yet ----
+  var gpu = {
+    requestAdapter: function () { return Promise.resolve(null); },
+    getPreferredCanvasFormat: function () { return "bgra8unorm"; },
+    wgslLanguageFeatures: new Set()
+  };
+  Object.defineProperty(gpu, Symbol.toStringTag, { value: "GPU", configurable: true });
+  g.GPU = illegal("GPU");
+  g.GPUAdapter = illegal("GPUAdapter");
+  g.GPUDevice = illegal("GPUDevice");
+  g.GPUBufferUsage = { MAP_READ: 1, MAP_WRITE: 2, COPY_SRC: 4, COPY_DST: 8, INDEX: 16, VERTEX: 32, UNIFORM: 64, STORAGE: 128, INDIRECT: 256, QUERY_RESOLVE: 512 };
+  g.GPUTextureUsage = { COPY_SRC: 1, COPY_DST: 2, TEXTURE_BINDING: 4, STORAGE_BINDING: 8, RENDER_ATTACHMENT: 16 };
+  g.GPUShaderStage = { VERTEX: 1, FRAGMENT: 2, COMPUTE: 4 };
+  g.GPUMapMode = { READ: 1, WRITE: 2 };
+  g.GPUColorWrite = { RED: 1, GREEN: 2, BLUE: 4, ALPHA: 8, ALL: 15 };
+  expose("gpu", gpu);
+
+  // ---- Codecs Garlic decodes (kept in step with canPlayType) ----
+  var CODECS = {
+    video: ["vp8", "vp9", "vp09"],
+    audio: ["opus", "vorbis", "flac", "mp3", "mp4a.40", "pcm", "ulaw", "alaw"]
+  };
+  var CONTAINERS = ["video/webm", "audio/webm", "video/ogg", "audio/ogg", "audio/wav", "audio/x-wav", "audio/flac", "audio/mpeg", "audio/mp3"];
+  function codecOk(kind, codec) {
+    var c = String(codec || "").toLowerCase();
+    return CODECS[kind].some(function (p) { return c === p || c.indexOf(p + ".") === 0; });
+  }
+  function mimeOk(kind, contentType) {
+    var parts = String(contentType || "").split(";");
+    var base = parts[0].trim().toLowerCase();
+    if (CONTAINERS.indexOf(base) < 0) return false;
+    var m = /codecs\s*=\s*"?([^";]*)"?/i.exec(contentType);
+    if (!m) return true;
+    return m[1].split(",").every(function (c) { return codecOk(kind, c.trim()) || (kind === "video" && codecOk("audio", c.trim())); });
+  }
+  var caps = nav.mediaCapabilities;
+  if (caps) {
+    caps.decodingInfo = function (c) {
+      if (!c || !c.type) return Promise.reject(new TypeError("Failed to execute 'decodingInfo' on 'MediaCapabilities': required member type is undefined."));
+      if (!c.video && !c.audio) return Promise.reject(new TypeError("Failed to execute 'decodingInfo' on 'MediaCapabilities': The configuration dictionary has neither |video| nor |audio| specified and needs at least one of them."));
+      var ok = (!c.video || mimeOk("video", c.video.contentType)) && (!c.audio || mimeOk("audio", c.audio.contentType));
+      if (c.keySystemConfiguration) ok = false;
+      return Promise.resolve({ supported: ok, smooth: ok, powerEfficient: ok, configuration: c, keySystemAccess: null });
+    };
+  }
+
+  // ---- WebCodecs ----
+  function CodecState(name) { this.state = "unconfigured"; this.decodeQueueSize = 0; this.encodeQueueSize = 0; this.ondequeue = null; this._name = name; }
+  function codecClass(name, kind, isDecoder) {
+    var C = function (init) {
+      if (!(this instanceof C)) throw new TypeError("Failed to construct '" + name + "': Please use the 'new' operator, this DOM object constructor cannot be called as a function.");
+      if (!init || typeof init.output !== "function" || typeof init.error !== "function") throw new TypeError("Failed to construct '" + name + "': required member output is undefined.");
+      ET.call(this); CodecState.call(this, name);
+      Object.defineProperty(this, "_init", { value: init, enumerable: false });
+    };
+    C.prototype = Object.create(ET.prototype, { constructor: { value: C, writable: true, configurable: true } });
+    function valid(cfg) {
+      if (!cfg || typeof cfg.codec !== "string" || cfg.codec.trim() === "") return "Invalid codec";
+      if (kind === "video" && !isDecoder && !(cfg.width > 0 && cfg.height > 0)) return "Invalid size";
+      if (kind === "audio" && !(cfg.sampleRate > 0 && cfg.numberOfChannels > 0)) return "Invalid sampleRate or numberOfChannels";
+      return "";
+    }
+    C.isConfigSupported = function (cfg) {
+      var why = valid(cfg);
+      if (why) return Promise.reject(new TypeError("Failed to execute 'isConfigSupported' on '" + name + "': " + why + "."));
+      var out = {}; Object.keys(cfg).forEach(function (k) { if (cfg[k] !== undefined) out[k] = cfg[k]; });
+      return Promise.resolve({ supported: codecOk(kind, cfg.codec), config: out });
+    };
+    C.prototype.configure = function (cfg) {
+      var why = valid(cfg);
+      if (why) throw new TypeError("Failed to execute 'configure' on '" + name + "': " + why + ".");
+      if (this.state === "closed") throw new DOMException("Cannot call 'configure' on a closed codec.", "InvalidStateError");
+      if (!codecOk(kind, cfg.codec)) {
+        var self = this; this.state = "closed";
+        setTimeout(function () { self._init.error(new DOMException("Unsupported codec: " + cfg.codec, "NotSupportedError")); }, 0);
+        return;
+      }
+      this.state = "configured";
+    };
+    C.prototype[isDecoder ? "decode" : "encode"] = function () {
+      if (this.state !== "configured") throw new DOMException("Cannot call '" + (isDecoder ? "decode" : "encode") + "' on an unconfigured codec.", "InvalidStateError");
+      var self = this; this.state = "closed";
+      setTimeout(function () { self._init.error(new DOMException("Decoding in WebCodecs is not supported yet.", "NotSupportedError")); }, 0);
+    };
+    C.prototype.flush = function () {
+      if (this.state !== "configured") return Promise.reject(new DOMException("Cannot call 'flush' on an unconfigured codec.", "InvalidStateError"));
+      return Promise.resolve();
+    };
+    C.prototype.reset = function () { if (this.state === "closed") throw new DOMException("Cannot call 'reset' on a closed codec.", "InvalidStateError"); this.state = "unconfigured"; };
+    C.prototype.close = function () { this.state = "closed"; };
+    tag(C, name);
+    Object.defineProperty(C, "name", { value: name });
+    g[name] = C;
+  }
+  codecClass("VideoDecoder", "video", true);
+  codecClass("VideoEncoder", "video", false);
+  codecClass("AudioDecoder", "audio", true);
+  codecClass("AudioEncoder", "audio", false);
+  function chunkClass(name) {
+    var C = function (init) {
+      if (!init || typeof init.type !== "string" || init.timestamp === undefined || !init.data) throw new TypeError("Failed to construct '" + name + "': required member data is undefined.");
+      if (init.type !== "key" && init.type !== "delta") throw new TypeError("Failed to construct '" + name + "': The provided value '" + init.type + "' is not a valid enum value of type EncodedChunkType.");
+      var bytes = init.data instanceof ArrayBuffer ? new Uint8Array(init.data) : new Uint8Array(init.data.buffer, init.data.byteOffset, init.data.byteLength);
+      Object.defineProperty(this, "_bytes", { value: new Uint8Array(bytes), enumerable: false });
+      this.type = init.type; this.timestamp = init.timestamp; this.duration = init.duration === undefined ? null : init.duration; this.byteLength = bytes.byteLength;
+    };
+    C.prototype.copyTo = function (dst) {
+      var out = dst instanceof ArrayBuffer ? new Uint8Array(dst) : new Uint8Array(dst.buffer, dst.byteOffset, dst.byteLength);
+      if (out.byteLength < this.byteLength) throw new TypeError("Failed to execute 'copyTo' on '" + name + "': destination is not large enough.");
+      out.set(this._bytes);
+    };
+    tag(C, name); Object.defineProperty(C, "name", { value: name }); g[name] = C;
+  }
+  chunkClass("EncodedVideoChunk");
+  chunkClass("EncodedAudioChunk");
+  function VideoFrame(src, init) {
+    var w = 0, h = 0;
+    if (src && typeof src === "object" && !(src instanceof ArrayBuffer) && !ArrayBuffer.isView(src)) {
+      w = src.naturalWidth || src.videoWidth || src.width || 0; h = src.naturalHeight || src.videoHeight || src.height || 0;
+      if (!w || !h) throw new DOMException("Invalid source state", "InvalidStateError");
+      if (!init || init.timestamp === undefined) { if (!(src instanceof VideoFrame)) throw new TypeError("Failed to construct 'VideoFrame': required member timestamp is undefined."); }
+    } else {
+      if (!init || !init.format || !(init.codedWidth > 0) || !(init.codedHeight > 0) || init.timestamp === undefined) throw new TypeError("Failed to construct 'VideoFrame': required member codedWidth is undefined.");
+      w = init.codedWidth; h = init.codedHeight;
+    }
+    this.format = init && init.format ? init.format : "RGBA";
+    this.codedWidth = w; this.codedHeight = h; this.displayWidth = (init && init.displayWidth) || w; this.displayHeight = (init && init.displayHeight) || h;
+    this.codedRect = { x: 0, y: 0, width: w, height: h }; this.visibleRect = this.codedRect;
+    this.timestamp = init && init.timestamp !== undefined ? init.timestamp : (src && src.timestamp) || 0;
+    this.duration = init && init.duration !== undefined ? init.duration : null;
+    this.colorSpace = { primaries: null, transfer: null, matrix: null, fullRange: null };
+  }
+  VideoFrame.prototype.allocationSize = function () { return this.codedWidth * this.codedHeight * 4; };
+  VideoFrame.prototype.copyTo = function () { return Promise.resolve([{ offset: 0, stride: this.codedWidth * 4 }]); };
+  VideoFrame.prototype.clone = function () { if (this.codedWidth === 0) throw new DOMException("Cannot clone a closed VideoFrame.", "InvalidStateError"); var f = Object.create(VideoFrame.prototype); Object.assign(f, this); return f; };
+  VideoFrame.prototype.close = function () { this.codedWidth = 0; this.codedHeight = 0; this.displayWidth = 0; this.displayHeight = 0; this.format = null; };
+  tag(VideoFrame, "VideoFrame"); g.VideoFrame = VideoFrame;
+  function AudioData(init) {
+    if (!init || !init.format || !(init.sampleRate > 0) || !(init.numberOfFrames > 0) || !(init.numberOfChannels > 0) || init.timestamp === undefined || !init.data) throw new TypeError("Failed to construct 'AudioData': required member data is undefined.");
+    this.format = init.format; this.sampleRate = init.sampleRate; this.numberOfFrames = init.numberOfFrames; this.numberOfChannels = init.numberOfChannels;
+    this.timestamp = init.timestamp; this.duration = Math.round(init.numberOfFrames / init.sampleRate * 1e6);
+    Object.defineProperty(this, "_data", { value: init.data, enumerable: false });
+  }
+  AudioData.prototype.allocationSize = function () { return this.numberOfFrames * 4; };
+  AudioData.prototype.copyTo = function () {};
+  AudioData.prototype.clone = function () { var a = Object.create(AudioData.prototype); Object.assign(a, this); return a; };
+  AudioData.prototype.close = function () { this.format = null; this.numberOfFrames = 0; };
+  tag(AudioData, "AudioData"); g.AudioData = AudioData;
+  var IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif"];
+  function ImageDecoder(init) {
+    if (!init || !init.type || !init.data) throw new TypeError("Failed to construct 'ImageDecoder': required member type is undefined.");
+    this.type = String(init.type).toLowerCase(); this.complete = false; this.tracks = { length: 0, ready: Promise.resolve(), selectedIndex: -1, selectedTrack: null };
+    var self = this;
+    this.completed = new Promise(function (res, rej) { self._done = res; self._fail = rej; });
+    if (IMAGE_TYPES.indexOf(this.type) < 0) { this._fail(new DOMException("Unsupported image type: " + this.type, "NotSupportedError")); this.completed.catch(function () {}); }
+    else { this.complete = true; this._done(); }
+  }
+  ImageDecoder.isTypeSupported = function (t) { return Promise.resolve(IMAGE_TYPES.indexOf(String(t).toLowerCase()) >= 0); };
+  ImageDecoder.prototype.decode = function () { return Promise.reject(new DOMException("Image decoding through WebCodecs is not supported yet.", "NotSupportedError")); };
+  ImageDecoder.prototype.reset = function () {}; ImageDecoder.prototype.close = function () {};
+  tag(ImageDecoder, "ImageDecoder"); g.ImageDecoder = ImageDecoder;
+})(this);
+"""
+
+## Defines the device, graphics-adapter and codec APIs of DEVICE_PRELUDE on
+## the window.
+pub fn Vm.device_setup(mut self)
+    run_script_text(DEVICE_PRELUDE)

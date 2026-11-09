@@ -1,0 +1,25 @@
+<!DOCTYPE html><html><body><script>
+const log = (...a) => console.log(a.join(" "));
+log("hid" in navigator, "usb" in navigator, "bluetooth" in navigator, "xr" in navigator, "gpu" in navigator);
+log(Object.prototype.toString.call(navigator.hid), typeof HIDDevice, typeof GPUBufferUsage, GPUBufferUsage.STORAGE, navigator.gpu.getPreferredCanvasFormat());
+navigator.hid.getDevices().then(d => log("hid", d.length));
+navigator.usb.getDevices().then(d => log("usb", d.length));
+navigator.bluetooth.getAvailability().then(a => log("bt", a));
+navigator.xr.isSessionSupported("inline").then(a => log("xr inline", a));
+navigator.xr.isSessionSupported("immersive-vr").then(a => log("xr vr", a));
+navigator.gpu.requestAdapter().then(a => log("gpu", a));
+navigator.mediaCapabilities.decodingInfo({ type: "file", video: { contentType: 'video/webm; codecs="vp09.00.10.08"', width: 1920, height: 1080, bitrate: 2000000, framerate: 30 } }).then(r => log("vp9", r.supported, r.smooth));
+navigator.mediaCapabilities.decodingInfo({ type: "file", video: { contentType: 'video/mp4; codecs="avc1.42E01E"', width: 1920, height: 1080, bitrate: 2000000, framerate: 30 } }).then(r => log("h264", r.supported));
+navigator.mediaCapabilities.decodingInfo({ type: "file", audio: { contentType: 'audio/webm; codecs="opus"' } }).then(r => log("opus", r.supported));
+VideoDecoder.isConfigSupported({ codec: "vp09.00.10.08" }).then(r => log("vd vp9", r.supported, r.config.codec));
+VideoDecoder.isConfigSupported({ codec: "av01.0.04M.08" }).then(r => log("vd av1", r.supported));
+AudioDecoder.isConfigSupported({ codec: "opus", sampleRate: 48000, numberOfChannels: 2 }).then(r => log("ad opus", r.supported));
+const d = new VideoDecoder({ output: () => {}, error: e => log("err", e.name) });
+log(d.state);
+d.configure({ codec: "hvc1.1.6.L93.B0" });
+log(d.state);
+const c = new EncodedVideoChunk({ type: "key", timestamp: 0, data: new Uint8Array([1, 2, 3]) });
+log(c.type, c.byteLength, Object.prototype.toString.call(c));
+ImageDecoder.isTypeSupported("image/png").then(a => log("png", a));
+ImageDecoder.isTypeSupported("image/webp").then(a => log("webp", a));
+</script></body></html>
