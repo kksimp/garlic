@@ -1042,10 +1042,13 @@ fn Ctx.scope(mut self, id int) Map[str, str]
     scopes[id] = m
     m
 
-## Whether `opacity: 0` makes the element draw nothing.
+## Whether `opacity: 0` on a positioned box makes it draw nothing. In the
+## flow it is usually the first frame of an animation Garlic doesn't run, so
+## the content stays.
 fn is_clear(cs Map[str, str]) bool
     v := cs.get("opacity") else return false
-    (number(v.trim()) else 1.0) <= 0.0
+    pos := (cs.get("position") else "").trim()
+    (pos == "absolute" or pos == "fixed") and (number(v.trim()) else 1.0) <= 0.0
 
 fn Ctx.is_block(mut self, id int, cs Map[str, str]) bool
     tag := d.nodes[id].tag
@@ -1815,15 +1818,15 @@ fn Ctx.intrinsic(mut self, id int, st St) float
 
 ## Lays out block `id` inside a column from `x`, `w` wide, with the
 ## parent's text style `parent`.
-## The top of drawing operation `op`.
+## The middle of a line or picture, the top of anything else.
 fn op_top(op draw.Op) float
     match op
         Rect(_, y, _, _, _) => y
-        Text(_, y, _, _, _, _, _) => y
-        Str(_, y, _, _, _, _, _, _, _) => y
-        Pic(_, y, _, _, _) => y
+        Text(_, y, _, _, _, _, _) => y + 6.0
+        Str(_, y, _, _, size, _, _, _, _) => y + size * 0.5
+        Pic(_, y, _, h, _) => y + h / 2.0
 
-## Drops what starts at or below `limit` from operation `o0` and hit `h0` on:
+## Drops what is mostly at or below `limit` from operation `o0` and hit `h0` on:
 ## `overflow` clips a box of a set height.
 fn Ctx.clip_ops(mut self, o0 int, h0 int, limit float)
     mut kept := List[draw.Op]()
