@@ -1,0 +1,88 @@
+same true
+size 40x20
+blank 0,0,0,0
+in 255,0,0,255
+out 0,0,0,0
+edge 0,0,0,0,255,0,0,255
+cleared 0,0,0,0
+path 0,255,0,255
+arc 0,0,255,255 0,0,0,0
+stroke 0,0,0,255 0,0,0,255 0,0,0,0
+xform 128,128,128,255 0,0,0,0 0,0,0,0
+clip 18,52,86,255 0,0,0,0
+restored 1,2,3,255
+put 1,2,3,255,4,5,6,255
+style #ff0000
+rgba(1, 2, 3, 0.5)
+rgba(1, 2, 3, 0.5)
+#aabbcc
+gradient true
+measure true
+pip true false
+url data:image/png;base64,
+reset 0,0,0,0
+img 40x20
+copy 255,0,0,255 0,255,0,255
+== body
+<script>
+const log = [];
+const later = [];
+const px = (ctx, x, y) => Array.from(ctx.getImageData(x, y, 1, 1).data).join(",");
+const c = document.createElement("canvas");
+c.width = 40; c.height = 20;
+const x = c.getContext("2d");
+log.push("same " + (c.getContext("2d") === x));
+log.push("size " + x.canvas.width + "x" + x.canvas.height);
+log.push("blank " + px(x, 0, 0));
+x.fillStyle = "#ff0000";
+x.fillRect(2, 2, 4, 4);
+log.push("in " + px(x, 3, 3));
+log.push("out " + px(x, 6, 6));
+log.push("edge " + Array.from(x.getImageData(1, 2, 2, 1).data).join(","));
+x.clearRect(3, 3, 1, 1);
+log.push("cleared " + px(x, 3, 3));
+x.beginPath(); x.rect(10, 0, 4, 2); x.fillStyle = "#00ff00"; x.fill();
+log.push("path " + px(x, 11, 1));
+x.beginPath(); x.arc(20, 6, 3, 0, Math.PI * 2); x.fillStyle = "blue"; x.fill();
+log.push("arc " + px(x, 20, 6) + " " + px(x, 20, 1));
+x.strokeStyle = "#000"; x.lineWidth = 2; x.beginPath(); x.moveTo(0, 9); x.lineTo(8, 9); x.stroke();
+log.push("stroke " + px(x, 4, 8) + " " + px(x, 4, 9) + " " + px(x, 4, 10));
+x.save(); x.translate(30, 10); x.scale(2, 2); x.fillStyle = "#808080"; x.fillRect(0, 0, 2, 2); x.restore();
+log.push("xform " + px(x, 31, 11) + " " + px(x, 35, 11) + " " + px(x, 29, 9));
+x.save(); x.beginPath(); x.rect(30, 0, 2, 2); x.clip(); x.fillStyle = "#123456"; x.fillRect(28, 0, 10, 8); x.restore();
+log.push("clip " + px(x, 30, 0) + " " + px(x, 35, 5));
+x.fillStyle = "#010203"; x.fillRect(38, 18, 1, 1);
+log.push("restored " + px(x, 38, 18));
+const id = x.createImageData(2, 1);
+const vals = [1, 2, 3, 255, 4, 5, 6, 255];
+for (let i = 0; i < 8; i++) id.data[i] = vals[i];
+x.putImageData(id, 10, 15);
+log.push("put " + Array.from(x.getImageData(10, 15, 2, 1).data).join(","));
+x.fillStyle = "RED"; log.push("style " + x.fillStyle);
+x.fillStyle = "rgba(1,2,3,0.5)"; log.push(x.fillStyle);
+x.fillStyle = "nonsense"; log.push(x.fillStyle);
+x.fillStyle = "#abc"; log.push(x.fillStyle);
+const gr = x.createLinearGradient(0, 0, 40, 0);
+gr.addColorStop(0, "#000"); gr.addColorStop(1, "#fff");
+x.fillStyle = gr; x.fillRect(0, 16, 40, 2);
+log.push("gradient " + (x.getImageData(2, 16, 1, 1).data[0] < x.getImageData(37, 16, 1, 1).data[0]));
+x.font = "20px sans-serif";
+log.push("measure " + (x.measureText("Hello").width > 0));
+x.beginPath(); x.rect(0, 0, 4, 4);
+log.push("pip " + x.isPointInPath(2, 2) + " " + x.isPointInPath(6, 6));
+const url = c.toDataURL();
+log.push("url " + url.slice(0, 22));
+const c2 = document.createElement("canvas");
+c2.width = 40; c2.height = 20;
+const img = new Image();
+img.onload = () => {
+  const y = c2.getContext("2d");
+  y.drawImage(img, 0, 0);
+  later.push("img " + img.naturalWidth + "x" + img.naturalHeight);
+  later.push("copy " + px(y, 4, 4) + " " + px(y, 11, 1));
+};
+setTimeout(() => console.log(log.concat(later).join("\n")), 200);
+img.src = url;
+c.width = 40;
+log.push("reset " + px(x, 4, 4));
+</script>
