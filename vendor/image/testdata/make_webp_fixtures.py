@@ -76,3 +76,12 @@ for n in ("webp_anim_lossless", "webp_anim_lossy"):
         open(os.path.join(HERE, "%s_f%d.rgba" % (n, i)), "wb").write(out.convert("RGBA").tobytes())
     out.seek(0)
     open(os.path.join(HERE, n + ".rgba"), "wb").write(out.convert("RGBA").tobytes())
+
+# AVIF: container fixtures (the expected .rgba is libavif's decode through Pillow).
+for name, im, kw in [
+    ("avif_rgb", rgb, dict(quality=60)),
+    ("avif_rgba", rgba, dict(quality=60)),
+]:
+    p = os.path.join(HERE, name + ".avif")
+    im.save(p, "AVIF", **kw)
+    open(os.path.join(HERE, name + ".rgba"), "wb").write(Image.open(p).convert("RGBA").tobytes())

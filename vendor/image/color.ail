@@ -199,3 +199,7 @@ fn load(name str, ext str) List[int] ! fs.IoError
     for name in ["webp_ll_rgb", "webp_lossy_q75", "webp_lossy_alpha", "webp_anim_lossy"]
         got := dims(load(name, "webp")?)
         assert(got[0] >= 37 and got[1] >= 29)
+
+@test fn avif_dims_comes_from_the_container() !
+    for name in ["avif_rgb", "avif_rgba"]
+        assert_eq(dims(load(name, "avif")?), [37, 29])
