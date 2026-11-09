@@ -72,7 +72,7 @@ fn LBits.skip(mut self, n int)
 
 ## A canonical prefix code of up to 15 bits: a table for the first 8 bits and
 ## the count and symbol lists for longer codes.
-struct Huff
+struct WpHuff
     single int
     fast List[int]
     count List[int]
@@ -80,7 +80,7 @@ struct Huff
 
 ## The code for symbol lengths `lens` (0 means unused), or none if it has no
 ## symbols.
-fn wp_huff(lens List[int]) Huff?
+fn wp_huff(lens List[int]) WpHuff?
     mut count := [0 for _ in 0..16]
     mut used := 0
     mut last := 0
@@ -92,7 +92,7 @@ fn wp_huff(lens List[int]) Huff?
     if used == 0
         return none
     if used == 1
-        return Huff(single: last, fast: List[int](), count: count, syms: List[int]())
+        return WpHuff(single: last, fast: List[int](), count: count, syms: List[int]())
     mut offs := [0 for _ in 0..17]
     for l in 1..16
         offs[l + 1] = offs[l] + count[l]
@@ -117,10 +117,10 @@ fn wp_huff(lens List[int]) Huff?
                 r = r.bit_or(c.shr(k).bit_and(1).shl(l - 1 - k))
             for k in 0..1.shl(8 - l)
                 fast[r + k.shl(l)] = l.shl(16).bit_or(s)
-    Huff(single: -1, fast: fast, count: count, syms: syms)
+    WpHuff(single: -1, fast: fast, count: count, syms: syms)
 
 ## The next symbol, or -1 when the bits are not a code.
-fn Huff.read(self, mut br LBits) int
+fn WpHuff.read(self, mut br LBits) int
     if single >= 0
         return single
     bits := br.peek(15)
@@ -160,7 +160,7 @@ WP_PLANE := [
 ]
 
 ## Reads one prefix code over `size` symbols.
-fn wp_read_huff(mut br LBits, size int) Huff ! ImageError
+fn wp_read_huff(mut br LBits, size int) WpHuff ! ImageError
     mut lens := [0 for _ in 0..size]
     if br.read(1) == 1
         n := br.read(1) + 1
@@ -241,7 +241,7 @@ fn wp_read_image(mut br LBits, w int, h int, main bool) List[int] ! ImageError
         meta = [p.shr(8).bit_and(0xffff) for p in mimg]
         ngroups = (meta.max() else 0) + 1
     green := 256 + 24 + (if cache_bits > 0 then 1.shl(cache_bits) else 0)
-    mut groups := List[Huff]()
+    mut groups := List[WpHuff]()
     for _ in 0..ngroups
         groups.push(wp_read_huff(mut br, green)?)
         groups.push(wp_read_huff(mut br, 256)?)

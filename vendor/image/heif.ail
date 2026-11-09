@@ -163,7 +163,7 @@ pub fn heif(d List[int]) Heif ! ImageError
             ne := hf_be(d, p, 2)
             p += 2
             mut ex := List[HfExtent]()
-            for _ in 0..ne
+            for _e in 0..ne
                 p += idx_size
                 off := hf_be(d, p, off_size)
                 p += off_size
@@ -199,7 +199,7 @@ pub fn heif(d List[int]) Heif ! ImageError
             cnt := d[p]
             p += 1
             i := hf_item_index(items, id)
-            for _ in 0..cnt
+            for _c in 0..cnt
                 mut pi := d[p]
                 p += 1
                 if fl.bit_and(1) == 1

@@ -274,6 +274,7 @@ fn vp8_pred_block(pl List[int], stride int, x0 int, y0 int, n int, mode int) Lis
 ## HE 3, RD 4, VR 5, LD 6, VL 7, HD 8, HU 9.
 fn vp8_pred4(mode int, t List[int], l List[int], x int) List[int]
     mut o := [0 for _ in 0..16]
+    mut v := 0
     if mode == 0
         mut dc := 4
         for i in 0..4
@@ -368,7 +369,7 @@ fn vp8_pred4(mode int, t List[int], l List[int], x int) List[int]
         o[11] = vp8_avg3(t[4], t[5], t[6])
         o[15] = vp8_avg3(t[5], t[6], t[7])
     elif mode == 8
-        v := vp8_avg2(l[0], x)
+        v = vp8_avg2(l[0], x)
         o[0] = v
         o[6] = v
         v = vp8_avg2(l[1], l[0])
@@ -392,7 +393,7 @@ fn vp8_pred4(mode int, t List[int], l List[int], x int) List[int]
         o[13] = vp8_avg3(l[3], l[2], l[1])
     else
         o[0] = vp8_avg2(l[0], l[1])
-        v := vp8_avg2(l[1], l[2])
+        v = vp8_avg2(l[1], l[2])
         o[2] = v
         o[4] = v
         v = vp8_avg2(l[2], l[3])
