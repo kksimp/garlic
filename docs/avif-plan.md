@@ -16,3 +16,10 @@ Goal: `<img>`, CSS backgrounds and `new Image()` probes show AVIF like Chrome.
 Tests: `vendor/image/testdata/avif_*.avif` with expected `.rgba` from libavif through Pillow (`make_webp_fixtures.py`); add `@test`s in `color.ail`.
 
 Licence: dav1d is BSD-2-Clause; keep its copyright in the table files' headers and NOTICE.
+
+## Pinned interfaces (shared by the three lanes; change only by agreement)
+Planes are `List[int]` per plane (`Av1Plane` = `w`, `h`, `stride`, `pix List[int]`), values at the sequence bit depth. A frame is `Av1Frame`: `planes List[Av1Plane]` (1 or 3), `bd int`, `sub_x`, `sub_y`, `mono bool`.
+- `av1itx.ail`: `pub fn av1_itx_add(mut p Av1Plane, x int, y int, cf List[int], tx int, ttype int, eob int, bd int)`. `tx` is TxfmSize 0..18, `ttype` is the AV1 tx type 0..15 (DCT_DCT=0, ADST_DCT=1, DCT_ADST=2, ADST_ADST=3, ... IDTX=9, V_DCT=10 ... as in dav1d), `cf` is dequantised column-major `cf[x*h+y]`; the residual is added into `p` at (x, y) and clamped to the bit depth.
+- `av1pred.ail`: `pub fn av1_pred(mut p Av1Plane, x int, y int, w int, h int, mode int, ctx PredCtx)`; `PredCtx` holds angle delta, availability flags (have_left/top/topright/bottomleft), filter-intra mode, CFL alphas and the luma source, smooth-edge filter flag, `bd`. Modes: dav1d IntraPredMode 0..13.
+- `av1post.ail`: `pub fn av1_post(mut f Av1Frame, hdr Av1Hdr, info BlockInfo)`; `BlockInfo` is the per-4x4 grid the tile decoder fills: `bsize`, `tx` (luma and chroma), `skip`, `mode`, `qidx`, `lf_level` per 4x4, plus CDEF idx and restoration units from the tile data.
+- `avif.ail`: `pub fn avif(d) Rgba ! ImageError` calls `av1_decode(obus List[int]) Av1Frame ! ImageError` (mine, `av1tile.ail`) per item.
