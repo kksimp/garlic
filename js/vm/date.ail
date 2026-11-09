@@ -1,6 +1,40 @@
-## Date (ECMA-262 §21.4). The local time zone is UTC, and `Date.now()`
-## reads the interpreter's clock (`Vm.clock_ms`), so a run repeats exactly.
+## Date (ECMA-262 §21.4). The local time zone is `Vm.zone`: "UTC" unless
+## the browser sets the system zone, whose offsets come from the tz
+## database (std.tz). `Date.now()` reads the interpreter's clock
+## (`Vm.clock_ms`), so a run repeats exactly.
 use syntax
+use std.tz
+
+## Milliseconds east of UTC in `zone` at the instant `t` (LocalTZA, §21.4.1.25).
+pub fn zone_offset_ms(zone str, t float) float
+    if zone == "UTC" or zone == "" or not is_finite(t)
+        return 0.0
+    secs := (t / 1000.0).floor().to_int()
+    off := tz.offset(zone, secs) else return 0.0
+    off.to_float() * 1000.0
+
+## The local offset at the UTC instant `t`.
+fn Vm.offset_ms(self, t float) float
+    zone_offset_ms(zone, t)
+
+## The parts of `t` in the local zone.
+pub fn Vm.local_parts(self, t float) DateParts
+    parts_of(t + offset_ms(t))
+
+## UTC(t) (§21.4.1.27): the instant whose local clock reads `local`.
+fn Vm.from_local(self, local float) float
+    if not is_finite(local)
+        return local
+    guess := local - offset_ms(local)
+    local - offset_ms(guess)
+
+## "GMT-0500 (America/New_York)": the offset and zone of Date's toString.
+fn Vm.zone_text(self, t float) str
+    off := (offset_ms(t) / 60000.0).to_int()
+    a := off.abs()
+    sign := if off < 0 then "-" else "+"
+    name := if zone == "UTC" or zone == "" then "Coordinated Universal Time" else zone
+    "GMT{sign}{pad2(a / 60)}{pad2(a % 60)} ({name})"
 
 MS_PER_DAY := 86400000.0
 
@@ -99,11 +133,11 @@ pub fn iso_date(t float) str
 DAYS := ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 MONTHS := ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
-fn date_text(t float) str
+fn Vm.date_text(self, t float) str
     if not is_finite(t)
         return "Invalid Date"
-    p := parts_of(t)
-    "{DAYS[p.weekday]} {MONTHS[p.month]} {pad2(p.date)} {"{p.year}".pad_left(4, '0')} {pad2(p.hours)}:{pad2(p.minutes)}:{pad2(p.seconds)} GMT+0000 (Coordinated Universal Time)"
+    p := local_parts(t)
+    "{DAYS[p.weekday]} {MONTHS[p.month]} {pad2(p.date)} {"{p.year}".pad_left(4, '0')} {pad2(p.hours)}:{pad2(p.minutes)}:{pad2(p.seconds)} {zone_text(t)}"
 
 fn utc_text(t float) str
     if not is_finite(t)
@@ -112,8 +146,14 @@ fn utc_text(t float) str
     "{DAYS[p.weekday]}, {pad2(p.date)} {MONTHS[p.month]} {"{p.year}".pad_left(4, '0')} {pad2(p.hours)}:{pad2(p.minutes)}:{pad2(p.seconds)} GMT"
 
 ## Date.parse: the ISO format of §21.4.1.32 and the toString and
-## toUTCString forms; NaN otherwise.
-pub fn parse_date(text str) float
+## toUTCString forms; NaN otherwise. A date-time with no offset is local.
+pub fn Vm.parse_date(self, text str) float
+    r := parse_date_raw(text)
+    if r.1 then from_local(r.0) else r.0
+
+## The time value as if its zone were UTC, and whether the text named no
+## zone (so the value is local wall time).
+fn parse_date_raw(text str)(float, bool)
     s := text.trim()
     cs := s.chars()
     mut i := 0
@@ -124,22 +164,23 @@ pub fn parse_date(text str) float
     year_len := if i > 0 then 6 else 4
     if not digits_at(cs, i, year_len)
         return parse_text_date(s)
+    mut local := false
     year := sign * (cs[i..i + year_len].join("").to_int() else 0)
     i += year_len
     mut month := 1
     mut day := 1
     if i < cs.len() and cs[i] == '-'
         if not digits_at(cs, i + 1, 2)
-            return nan()
+            return (nan(), false)
         month = cs[i + 1..i + 3].join("").to_int() else 1
         i += 3
         if i < cs.len() and cs[i] == '-'
             if not digits_at(cs, i + 1, 2)
-                return nan()
+                return (nan(), false)
             day = cs[i + 1..i + 3].join("").to_int() else 1
             i += 3
     if month < 1 or month > 12 or day < 1 or day > 31
-        return nan()
+        return (nan(), false)
     mut h := 0
     mut mi := 0
     mut sec := 0
@@ -151,13 +192,14 @@ pub fn parse_date(text str) float
             i + 1,
             2,
         ) or i + 3 >= cs.len() or cs[i + 3] != ':' or not digits_at(cs, i + 4, 2)
-            return nan()
+            return (nan(), false)
         h = cs[i + 1..i + 3].join("").to_int() else 0
         mi = cs[i + 4..i + 6].join("").to_int() else 0
         i += 6
+        local = true
         if i < cs.len() and cs[i] == ':'
             if not digits_at(cs, i + 1, 2)
-                return nan()
+                return (nan(), false)
             sec = cs[i + 1..i + 3].join("").to_int() else 0
             i += 3
             if i < cs.len() and cs[i] == '.'
@@ -169,10 +211,12 @@ pub fn parse_date(text str) float
                 i = j
         if i < cs.len() and (cs[i] == 'Z' or cs[i] == 'z')
             i += 1
+            local = false
         elif i < cs.len() and (cs[i] == '+' or cs[i] == '-')
+            local = false
             osign := if cs[i] == '-' then -1 else 1
             if not digits_at(cs, i + 1, 2)
-                return nan()
+                return (nan(), false)
             oh := cs[i + 1..i + 3].join("").to_int() else 0
             mut om := 0
             if i + 3 < cs.len() and cs[i + 3] == ':' and digits_at(cs, i + 4, 2)
@@ -185,7 +229,7 @@ pub fn parse_date(text str) float
                 i += 3
             offset = osign * (oh * 60 + om)
     if i != cs.len() or h > 24 or mi > 59 or sec > 59
-        return nan()
+        return (nan(), false)
     t := make_time(
         year.to_float(),
         (month - 1).to_float(),
@@ -195,32 +239,49 @@ pub fn parse_date(text str) float
         sec.to_float(),
         ms.to_float(),
     )
-    t - offset.to_float() * 60000.0
+    (t - offset.to_float() * 60000.0, local)
 
-## "Thu Jan 01 2026 00:00:00 GMT+0000" and "Thu, 01 Jan 2026 00:00:00 GMT".
-fn parse_text_date(s str) float
+## "Thu Jan 01 2026 00:00:00 GMT+0000" and "Thu, 01 Jan 2026 00:00:00 GMT";
+## without a GMT, UTC or Z word the time is local.
+fn parse_text_date(s str)(float, bool)
     words := [w for w in s.replace(",", " ").split(" ") if w != ""]
     mut month := -1
     mut day := -1
     mut year := -1
     mut clock := "00:00:00"
+    mut local := true
+    mut offset := 0
     for w in words
-        if MONTHS.contains(w.slice(0, 3)) and w.chars().len() >= 3
+        if w.chars().len() >= 3 and MONTHS.contains(w.slice(0, 3))
             month = MONTHS.index_of(w.slice(0, 3)) else -1
         elif w.contains(":")
             clock = w
+        elif w == "Z" or w == "UTC" or w.starts_with("GMT") or w.starts_with("UTC")
+            local = false
+            rest := if w.starts_with("GMT") then w.slice(
+                3,
+                w.chars().len(),
+            ) else w.slice(3, w.chars().len())
+            if rest != ""
+                osign := if rest.starts_with("-") then -1 else 1
+                digits := rest.slice(1, rest.chars().len()).replace(":", "")
+                if n := digits.to_int()
+                    offset = osign
+                        * (if digits.chars().len() > 2 then n / 100 * 60 + n % 100 else n * 60)
+        elif w.starts_with("(")
+            break
         elif n := w.to_int()
             if day < 0 and n <= 31 and w.chars().len() <= 2
                 day = n
             else
                 year = n
     if month < 0 or day < 0 or year < 0
-        return nan()
+        return (nan(), false)
     hm := clock.split(":")
     h := hm[0].to_int() else 0
     mi := if hm.len() > 1 then (hm[1].to_int() else 0) else 0
     sec := if hm.len() > 2 then (hm[2].to_int() else 0) else 0
-    make_time(
+    t := make_time(
         year.to_float(),
         month.to_float(),
         day.to_float(),
@@ -229,6 +290,7 @@ fn parse_text_date(s str) float
         sec.to_float(),
         0.0,
     )
+    (t - offset.to_float() * 60000.0, local)
 
 fn Vm.date_components(mut self, args List[Value]) float ! Thrown
     mut nums := List[float]()
@@ -263,7 +325,7 @@ fn Vm.date_constructor(mut self, args List[Value], new_target Value) Value ! Thr
         else
             t = time_clip(to_number(a)?)
     elif args.len() > 1
-        t = date_components(args)?
+        t = time_clip(from_local(date_components(args)?))
     proto := get(new_target, "prototype")?
     o := object("Date", if is_obj(proto) then proto else proto_of("Date"))
     o.prim = Num(t)
@@ -301,12 +363,12 @@ fn Vm.date_method(mut self, m str, this_val Value, args List[Value]) Value ! Thr
     if m == "getTime" or m == "valueOf"
         return Value.Num(t)
     if m == "getTimezoneOffset"
-        return Value.Num(if is_finite(t) then 0.0 else nan())
+        return Value.Num(if is_finite(t) then 0.0 - offset_ms(t) / 60000.0 else nan())
     if m.starts_with("set")
-        return date_set(o, m.replace("UTC", ""), t, args)
+        return date_set(o, m.replace("UTC", ""), m.contains("UTC"), t, args)
     if not is_finite(t)
         return Value.Num(nan())
-    p := parts_of(t)
+    p := if m.contains("UTC") then parts_of(t) else local_parts(t)
     n := match m.replace("UTC", "")
         "getFullYear" => p.year
         "getMonth" => p.month
@@ -319,9 +381,9 @@ fn Vm.date_method(mut self, m str, this_val Value, args List[Value]) Value ! Thr
         _ => return type_error("Date.prototype.{m} is not supported yet")
     Value.Num(n.to_float())
 
-## setFullYear, setMonth, ... setMilliseconds (§21.4.4.20-28); local time is
-## UTC here.
-fn Vm.date_set(mut self, o ref JsObject, m str, t float, args List[Value]) Value ! Thrown
+## setFullYear, setMonth, ... setMilliseconds (§21.4.4.20-28), in local
+## time, or UTC for the `setUTC*` forms.
+fn Vm.date_set(mut self, o ref JsObject, m str, utc bool, t float, args List[Value]) Value ! Thrown
     names := [
         "setFullYear",
         "setMonth",
@@ -335,14 +397,15 @@ fn Vm.date_set(mut self, o ref JsObject, m str, t float, args List[Value]) Value
     first := names.index_of(m) else return type_error("Date.prototype.{m} is not a function")
     mut f := [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
     if is_finite(t)
-        p := parts_of(t)
+        p := if utc then parts_of(t) else local_parts(t)
         f = [x.to_float() for x in [p.year, p.month, p.date, p.hours, p.minutes, p.seconds, p.ms]]
     elif first != 0
         return Value.Num(nan())
     n := args.len().max(1).min(counts[first])
     for i in 0..n
         f[first + i] = to_number(arg_at(args, i))?
-    nt := time_clip(make_time(f[0], f[1], f[2], f[3], f[4], f[5], f[6]))
+    made := make_time(f[0], f[1], f[2], f[3], f[4], f[5], f[6])
+    nt := time_clip(if utc then made else from_local(made))
     o.prim = Num(nt)
     Value.Num(nt)
 

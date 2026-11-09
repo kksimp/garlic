@@ -2,9 +2,11 @@
 ## browser reports: DateTimeFormat, NumberFormat, Collator, PluralRules,
 ## RelativeTimeFormat, ListFormat and DisplayNames, each with
 ## `resolvedOptions` and `supportedLocalesOf`, plus `getCanonicalLocales`
-## and `supportedValuesOf`. Local time is UTC (date.ail), so the resolved
-## time zone is "UTC". Date.prototype.toLocale*String format through the
-## same code (§21.4.4.38-41).
+## and `supportedValuesOf`. Times format in the browser's zone (`Vm.zone`,
+## date.ail) or the `timeZone` option, an IANA name whose offsets come from
+## std.tz. Date.prototype.toLocale*String format through the same code
+## (§21.4.4.38-41).
+use std.tz
 
 LOCALE := "en-US"
 
@@ -38,6 +40,8 @@ MONTH_NAMES := [
 ## What a date format shows. Each field is "" for absent, else the option's
 ## value ("numeric", "2-digit", "long", "short", "narrow").
 pub struct DateFmt
+    ## The `timeZone` option: "" for the browser's zone (`Vm.zone`).
+    pub zone str
     pub weekday str
     pub year str
     pub month str
@@ -52,6 +56,7 @@ pub struct DateFmt
 
 fn empty_fmt() DateFmt
     DateFmt(
+        zone: "",
         weekday: "",
         year: "",
         month: "",
@@ -94,6 +99,14 @@ pub fn Vm.date_format_options(mut self, m str, options Value) DateFmt ! Thrown
     f.minute = str_option(options, "minute")?
     f.second = str_option(options, "second")?
     f.time_zone_name = str_option(options, "timeZoneName")?
+    f.zone = str_option(options, "timeZone")?
+    if f.zone != ""
+        if f.zone.to_upper() == "UTC"
+            or f.zone.to_upper() == "GMT"
+            or f.zone.to_upper() == "ETC/UTC"
+            f.zone = "UTC"
+        elif tz.offset(f.zone, 0) == none
+            return range_error("Invalid time zone specified: {f.zone}")
     f.date_style = str_option(options, "dateStyle")?
     f.time_style = str_option(options, "timeStyle")?
     if is_obj(options)
@@ -166,7 +179,8 @@ fn date_part(p DateParts, f DateFmt) str
     out
 
 ## The time part, "" when the format shows none.
-fn time_part(p DateParts, f DateFmt) str
+## `name` is the zone the parts are in and `off` its offset in ms.
+fn time_part(p DateParts, f DateFmt, name str, off float) str
     mut hour := f.hour
     mut minute := f.minute
     mut second := f.second
@@ -197,16 +211,26 @@ fn time_part(p DateParts, f DateFmt) str
         out = if out == "" then two_digits(p.seconds) else "{out}:{two_digits(p.seconds)}"
     out = "{out}{suffix}"
     if zone == "long"
-        out = "{out} Coordinated Universal Time"
+        out = "{out} {if name == "UTC" then "Coordinated Universal Time" else name}"
     elif zone != ""
-        out = "{out} UTC"
+        out = "{out} {if name == "UTC" then "UTC" else short_zone(off)}"
     out
 
-## A time value as en-US writes it with format `f`.
-pub fn format_date(t float, f DateFmt) str
-    p := parts_of(t)
+## "GMT-5" or "GMT+5:30": the short zone name of a zone without one.
+fn short_zone(off_ms float) str
+    off := (off_ms / 60000.0).to_int()
+    a := off.abs()
+    sign := if off < 0 then "-" else "+"
+    if a % 60 == 0 then "GMT{sign}{a / 60}" else "GMT{sign}{a / 60}:{two_digits(a % 60)}"
+
+## A time value as en-US writes it with format `f`, in the format's zone or
+## the browser's.
+pub fn Vm.format_date(self, t float, f DateFmt) str
+    name := if f.zone != "" then f.zone else (if zone == "" then "UTC" else zone)
+    off := zone_offset_ms(name, t)
+    p := parts_of(t + off)
     d := date_part(p, f)
-    tm := time_part(p, f)
+    tm := time_part(p, f, name, off)
     if d == ""
         return tm
     if tm == ""
@@ -379,7 +403,7 @@ fn Vm.intl_new(mut self, kind str, args List[Value]) Value ! Thrown
             f := date_format_options("format", options)?
             resolved.props["calendar"] = data(Value.Str("gregory"))
             resolved.props["numberingSystem"] = data(Value.Str("latn"))
-            resolved.props["timeZone"] = data(Value.Str("UTC"))
+            resolved.props["timeZone"] = data(Value.Str(if f.zone != "" then f.zone else (if zone == "" then "UTC" else zone)))
             for pair in [
                 ("weekday", f.weekday),
                 ("year", f.year),
@@ -489,6 +513,7 @@ fn date_fmt_of(r ref JsObject) DateFmt
     f.minute = resolved_str(r, "minute")
     f.second = resolved_str(r, "second")
     f.time_zone_name = resolved_str(r, "timeZoneName")
+    f.zone = resolved_str(r, "timeZone")
     f.date_style = resolved_str(r, "dateStyle")
     f.time_style = resolved_str(r, "timeStyle")
     f.hour12 = resolved_str(r, "hourCycle") != "h23"
@@ -648,7 +673,12 @@ pub fn Vm.intl_native(
         return match key
             "calendar" => array([Value.Str("gregory")])
             "numberingSystem" => array([Value.Str("latn")])
-            "timeZone" => array([Value.Str("UTC")])
+            "timeZone" => array(
+                if zone == "UTC" or zone == "" then [Value.Str("UTC")] else [
+                    Value.Str("UTC"),
+                    Value.Str(zone),
+                ],
+            )
             "currency" => array([
                 Value.Str("EUR"),
                 Value.Str("GBP"),

@@ -37,7 +37,8 @@ pub struct Mutation
 ## "navigate" (to `url` with `method`, and `text` as a POST body), "open",
 ## "fetch-script" (`url` for script node `node`), "ws" (`method` open, send or close for socket `node`, with `url` and `text`), "fetch" (request number `node`, `method`, `url`
 ## and `text`, the content type, a newline and the body), "cookie" (`text` is the
-## Set-Cookie line), "alert", "confirm", "prompt".
+## Set-Cookie line), "alert", "confirm", "prompt", "clipboard" (`text` is what
+## `navigator.clipboard.writeText` wrote).
 pub struct HostRequest
     pub kind str
     pub url str
@@ -63,6 +64,46 @@ pub struct Timer
     pub every float
     ## How deeply timers started by timers nest (HTML §8.6 step 12).
     pub level int
+
+## The browser's layout boxes (node, x, y, w, h) and scroll position, for
+## `getBoundingClientRect` and friends.
+pub fn Vm.measure(mut self, boxes List[List[float]], scroll float)
+    rects = {}
+    for b in boxes
+        rects[b[0].to_int()] = [b[1], b[2], b[3], b[4]]
+    scroll_y = scroll
+
+## A DOMRect of `id`'s border box, relative to the viewport.
+fn Vm.rect_value(mut self, id int) Value
+    b := rect_of(id)
+    r := plain()
+    left := b[0]
+    top := b[1] - scroll_y
+    for pair in [
+        ("x", left),
+        ("y", top),
+        ("top", top),
+        ("left", left),
+        ("right", left + b[2]),
+        ("bottom", top + b[3]),
+        ("width", b[2]),
+        ("height", b[3]),
+    ]
+        r.props[pair.0] = data(Num(pair.1))
+    Value.Obj(r)
+
+## The border box of `id`: the layout's, or, for an element the layout
+## gave no box (inline ones), an estimate from its text at 16px so that
+## measuring scripts see a size that grows with the text.
+fn Vm.rect_of(self, id int) List[float]
+    if r := rects.get(id)
+        return r
+    if id < 0 or id >= dom.len() or dom[id].kind != 1
+        return [0.0, 0.0, 0.0, 0.0]
+    text := text_content(id)
+    if text.trim() == ""
+        return [0.0, 0.0, 0.0, 0.0]
+    [0.0, 0.0, (text.chars().len().to_float() * 8.0).round(), 18.0]
 
 ## A new empty document: node 0.
 pub fn Vm.dom_reset(mut self)
@@ -637,7 +678,7 @@ pub fn Vm.dom_setup(mut self)
     methods(
         global_obj,
         "dom.window",
-        "setTimeout:1 setInterval:1 clearTimeout:1 clearInterval:1 requestAnimationFrame:1 cancelAnimationFrame:1 queueMicrotask:1 requestIdleCallback:1 structuredClone:1 addEventListener:2 removeEventListener:2 dispatchEvent:1 getComputedStyle:1 matchMedia:1 alert:1 confirm:1 prompt:1 scrollTo:2 scrollBy:2 scroll:2 open:1 close:0 focus:0 blur:0 postMessage:1 atob:1 btoa:1 __hostFetch:3 __hostWs:3",
+        "setTimeout:1 setInterval:1 clearTimeout:1 clearInterval:1 requestAnimationFrame:1 cancelAnimationFrame:1 queueMicrotask:1 requestIdleCallback:1 structuredClone:1 addEventListener:2 removeEventListener:2 dispatchEvent:1 getComputedStyle:1 matchMedia:1 alert:1 confirm:1 prompt:1 scrollTo:2 scrollBy:2 scroll:2 open:1 close:0 focus:0 blur:0 postMessage:1 atob:1 btoa:1 __hostFetch:3 __hostWs:3 __hostClipboard:1",
     )
     global_obj.props["location"] = Prop(
         value: Undef,
@@ -1052,6 +1093,11 @@ pub fn Vm.dom_native(
         return make_event_as(iface, to_string(arg_at(args, 0))?, arg_at(args, 1))
     if m == "illegal"
         name := to_string(get(new_target, "name") else Value.Str("")) else ""
+        if name == "DOMException"
+            # `new DOMException(message, name)` (WebIDL §2.8.1).
+            msg := if arg_at(args, 0) != Undef then to_string(arg_at(args, 0))? else ""
+            kind := if arg_at(args, 1) != Undef then to_string(arg_at(args, 1))? else "Error"
+            return dom_exception(kind, msg).value
         return type_error(if name == "" then "Illegal constructor" else "Failed to construct '{name}': Illegal constructor")
     if m == "Image"
         # `new Image(width, height)` (HTML §4.8.4.1).
@@ -1286,7 +1332,8 @@ fn Vm.dom_get(mut self, p str, this_val Value) Value ! Thrown
                 if attr_of(opts[i], "selected") != none
                     return Value.Num(i.to_float())
             Value.Num(if opts.len() > 0 then 0.0 else -1.0)
-        "offsetWidth" | "offsetHeight" | "clientWidth" | "clientHeight" => Value.Num(0.0)
+        "offsetWidth" | "clientWidth" => Value.Num(rect_of(id)[2].round())
+        "offsetHeight" | "clientHeight" => Value.Num(rect_of(id)[3].round())
         "documentElement" => node_value(first_element(n.children, false))
         "head" | "body" =>
             for e in elements_under(0)
@@ -1612,12 +1659,8 @@ fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
             Undef
         "select" | "scrollIntoView" | "reset" | "animate" | "attachShadow" => Undef
         "checkValidity" => Value.Bool(true)
-        "getBoundingClientRect" =>
-            r := plain()
-            for k in ["x", "y", "top", "left", "right", "bottom", "width", "height"]
-                r.props[k] = data(Num(0.0))
-            Value.Obj(r)
-        "getClientRects" => array([])
+        "getBoundingClientRect" => rect_value(id)
+        "getClientRects" => if rect_of(id)[2] == 0.0 then array([]) else array([rect_value(id)])
         "insertAdjacentHTML" | "insertAdjacentText" | "insertAdjacentElement" =>
             pos := to_string(a0)?.to_lower()
             holder := dom_create("#fragment", 1, "")
@@ -2527,6 +2570,17 @@ fn Vm.window_method(mut self, m str, args List[Value]) Value ! Thrown
                 text: to_string(arg_at(args, 2))?,
             ))
             Num(id.to_float())
+        "__hostClipboard" =>
+            # `navigator.clipboard.writeText` (platform.ail): the browser puts
+            # the text on the system clipboard.
+            host_requests.push(HostRequest(
+                kind: "clipboard",
+                url: "",
+                method: "",
+                node: -1,
+                text: to_string(a0)?,
+            ))
+            Undef
         "__hostWs" =>
             # A WebSocket operation for the browser: "open" (`url`, `text`
             # the protocols; the result numbers the socket), "send" and

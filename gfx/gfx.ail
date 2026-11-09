@@ -32,10 +32,23 @@ pub struct Hit
     ## The link's node (the `a` element) for a link's rectangle, else -1.
     pub anchor int
 
+## The border box of a block-level element, for scripts that measure
+## (`getBoundingClientRect`, `offsetWidth`): page coordinates.
+pub struct Box
+    pub node int
+    pub x float
+    pub y float
+    pub w float
+    pub h float
+    ## How many drawing operations came before it: the shifts that move
+    ## operations from an index on move the boxes recorded after it too.
+    at int
+
 ## A laid-out page: its drawing operations, links and size.
 pub struct Scene
     pub ops List[draw.Op]
     pub hits List[Hit]
+    pub boxes List[Box]
     pub height float
     ## The canvas color (the `body` or `html` background, else white).
     pub bg int
@@ -205,6 +218,20 @@ pub fn length(v str, size float, rel float) float?
         return none
     x := num.trim().to_float()?
     x * scale
+
+## A unitless number, plain or as a `calc()` of numbers only (CSS Values 4
+## §10.9): `calc(1.5 / 1)`, a Tailwind line height, is the number 1.5 and not
+## a length. `none` once a unit or `%` appears.
+pub fn number(v str) float?
+    t := v.trim()
+    if x := t.to_float()
+        return x
+    inner := t.strip_prefix("calc(")?
+    body := inner.slice(0, inner.chars().len() - 1)
+    for ch in body.chars()
+        if not (ch.is_digit() or " .()+-*/".chars().contains(ch))
+            return none
+    calc_sum(body, 0.0, 0.0)
 
 ## `a + b - c` of products, as in `calc()` (CSS Values 4): `+` and `-`
 ## need spaces around them.
@@ -596,7 +623,7 @@ fn text_style(tag str, cs Map[str, str], parent St) St
         st.align = a.trim()
     if l := cs.get("line-height")
         t := l.trim()
-        if x := t.to_float()
+        if x := number(t)
             st.lh = x
         elif p := length(t, st.size, st.size)
             st.lh = p / st.size
@@ -691,10 +718,12 @@ fn box_of(tag str, cs Map[str, str], st St, avail float) Bx
         b.ml = m.3
         b.ml_auto = m.4
         b.mr_auto = m.5
-    if v := cs.get("margin-top")
-        b.mt = length(v, size, avail) else b.mt
-    if v := cs.get("margin-bottom")
-        b.mb = length(v, size, avail) else b.mb
+    for name in ["margin-top", "margin-block-start", "margin-block"]
+        if v := cs.get(name)
+            b.mt = length(v, size, avail) else b.mt
+    for name in ["margin-bottom", "margin-block-end", "margin-block"]
+        if v := cs.get(name)
+            b.mb = length(v, size, avail) else b.mb
     for name in ["margin-left", "margin-inline-start", "margin-inline"]
         if v := cs.get(name)
             if v.trim() == "auto"
@@ -890,6 +919,7 @@ struct Ctx
     url str
     ops List[draw.Op]
     hits List[Hit]
+    boxes List[Box]
     atoms List[Atom]
     ## The next line starts here, and the margin still owed above it.
     y float
@@ -1601,8 +1631,21 @@ fn lowered(op draw.Op, dy float) draw.Op
         )
         Pic(x, y, w, h, src) => draw.Op.Pic(x, y: y + dy, w, h, src)
 
+## Moves the element boxes recorded from operation `o0` on down by `dy`.
+fn Ctx.shift_boxes(mut self, o0 int, dy float)
+    for k in 0..boxes.len()
+        b := boxes[k]
+        if b.at >= o0
+            boxes[k] = Box(node: b.node, x: b.x, y: b.y + dy, w: b.w, h: b.h, at: b.at)
+
+## Drops the element boxes recorded from operation `o0` on.
+fn Ctx.drop_boxes(mut self, o0 int)
+    kept := [b for b in boxes if b.at < o0]
+    boxes = kept
+
 ## Moves the operations and hit boxes from `o0` and `h0` on down by `dy`.
 fn Ctx.lower(mut self, o0 int, h0 int, dy float)
+    shift_boxes(o0, dy)
     for k in o0..ops.len()
         ops[k] = lowered(ops[k], dy)
     for k in h0..hits.len()
@@ -1696,6 +1739,7 @@ fn Ctx.max_content(mut self, id int, st St) float
             ))
             Pic(x, _, w, _, _) => extent = fmax(extent, x + w)
             Text(_, _, _, _, _, _, _) => extent = extent
+    drop_boxes(o0)
     while ops.len() > o0
         ops.pop()
     while hits.len() > h0
@@ -1770,7 +1814,7 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
     content_w := fmax(border_w - bx.bl - bx.br - bx.pl - bx.pr, 1.0)
     pend = fmax(pend, bx.mt)
     mut slot := -1
-    mut top := 0.0
+    mut top := y + pend
     positioned := bx.pos == "relative" or bx.pos == "absolute" or bx.pos == "fixed"
     boxed := bx.boxed() or bx.padded() or bx.height != none or positioned
     if boxed
@@ -1886,6 +1930,7 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
         pend = bx.mb
     else
         pend = fmax(pend, bx.mb)
+    boxes.push(Box(node: id, x: left, y: top, w: border_w, h: fmax(y - top, 0.0), at: ops.len()))
     if tag == "body" or tag == "html"
         if bg := bx.bg
             canvas = bg
@@ -1978,6 +2023,7 @@ fn Ctx.row(
         for k in 0..items.len()
             dy := (tall - heights[k]) / 2.0
             if dy > 0.5
+                shift_boxes(spans[k].0, dy)
                 for o in spans[k].0..spans[k].1
                     ops[o] = shifted(ops[o], dy)
                 for h in spans[k].2..spans[k].3
@@ -2024,6 +2070,7 @@ fn Ctx.columns(mut self, id int, st St, cs Map[str, str], x float, w float, n in
         self.lay_item(it, st, x, colw)
         heights.push(y + pend - y0)
         total += y + pend - y0
+        drop_boxes(o0)
         while ops.len() > o0
             ops.pop()
         while hits.len() > h0
@@ -2299,19 +2346,19 @@ fn Ctx.grid_areas(
         cols.push(1.0)
         autos.push(false)
     ## Each item's box: [row0, row1, col0, col1]; unplaced ones get new rows.
-    mut boxes := List[List[int]]()
+    mut cells := List[List[int]]()
     mut extra := areas.len()
     for it in items
         name := (self.element_style(it).get("grid-area") else "").trim()
         b := if d.nodes[it].kind == Element and name != "" then area_box(areas, name) else []
         if b.len() == 0
-            boxes.push([extra, extra, 0, ncols - 1])
+            cells.push([extra, extra, 0, ncols - 1])
             extra += 1
         else
-            boxes.push(b)
+            cells.push(b)
     ## Content-sized tracks take the widest item that sits in them alone.
     for k in 0..items.len()
-        b := boxes[k]
+        b := cells[k]
         if b[2] == b[3] and autos[b[2]] and d.nodes[items[k]].kind == Element
             cs2 := self.element_style(items[k])
             cst := text_style(d.nodes[items[k]].tag, cs2, st)
@@ -2344,9 +2391,9 @@ fn Ctx.grid_areas(
     for r in 0..extra
         mut order := List[int]()
         for k in 0..items.len()
-            if boxes[k][0] == r
+            if cells[k][0] == r
                 mut pos := 0
-                while pos < order.len() and boxes[order[pos]][2] <= boxes[k][2]
+                while pos < order.len() and cells[order[pos]][2] <= cells[k][2]
                     pos += 1
                 order.insert(pos, k)
         if order.len() > 0
@@ -2354,7 +2401,7 @@ fn Ctx.grid_areas(
             mut ws := List[float]()
             mut os := List[float]()
             for k in order
-                b := boxes[k]
+                b := cells[k]
                 mut span := gap * (b[3] - b[2]).to_float()
                 for c in b[2]..b[3] + 1
                     span += widths[c]
@@ -2466,6 +2513,7 @@ pub fn layout_measured(
         url: page.base_of(d, url),
         ops: [],
         hits: [],
+        boxes: [],
         atoms: [],
         y: 0.0,
         pend: 0.0,
@@ -2492,7 +2540,15 @@ pub fn layout_measured(
     )
     c.block(0, base, 0.0, width)
     c.settle()
-    Scene(ops: c.ops, hits: c.hits, height: c.y, bg: c.canvas, probes: c.probes, bits: c.svgs)
+    Scene(
+        ops: c.ops,
+        hits: c.hits,
+        boxes: c.boxes,
+        height: c.y,
+        bg: c.canvas,
+        probes: c.probes,
+        bits: c.svgs,
+    )
 
 ## The link or control under point (`x`, `y`) of the page, if any.
 pub fn Scene.hit_at(self, x float, y float) Hit?
