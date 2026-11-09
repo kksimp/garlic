@@ -777,10 +777,19 @@ fn av1_adst4(mut c List[int], ib int, ist int, ob int, ost int, lo int, hi int)
     in1 := c[ib + 1 * ist]
     in2 := c[ib + 2 * ist]
     in3 := c[ib + 3 * ist]
-    c[ob] = (1321 * in0 + (3803 - 4096) * in2 + (2482 - 4096) * in3 + (3344 - 4096) * in1 + 2048).shr(12) + in2 + in3 + in1
-    c[ob + 1 * ost] = ((2482 - 4096) * in0 - 1321 * in2 - (3803 - 4096) * in3 + (3344 - 4096) * in1 + 2048).shr(12) + in0 - in3 + in1
+    c[ob] = (1321 * in0 + (3803 - 4096) * in2 + (2482 - 4096) * in3 + (3344 - 4096) * in1 + 2048).shr(12)
+        + in2
+        + in3
+        + in1
+    c[ob + 1 * ost] = ((2482 - 4096) * in0 - 1321 * in2 - (3803 - 4096) * in3 + (3344 - 4096) * in1 + 2048).shr(12)
+        + in0 -
+        in3
+        + in1
     c[ob + 2 * ost] = (209 * (in0 - in2 + in3) + 128).shr(8)
-    c[ob + 3 * ost] = ((3803 - 4096) * in0 + (2482 - 4096) * in2 - 1321 * in3 - (3344 - 4096) * in1 + 2048).shr(12) + in0 + in2 - in1
+    c[ob + 3 * ost] = ((3803 - 4096) * in0 + (2482 - 4096) * in2 - 1321 * in3 - (3344 - 4096) * in1 + 2048).shr(12)
+        + in0
+        + in2 -
+        in1
 
 fn av1_adst8(mut c List[int], ib int, ist int, ob int, ost int, lo int, hi int)
     mut t2 := 0
