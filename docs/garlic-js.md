@@ -231,6 +231,15 @@ regex engine is written.
   the JSON reply to the live engine (`Session.reply`), which runs the
   page's callback. No script runs twice. Pages restored by Back have no
   engine, so they make no requests.
+- **Blob and Response are binary-safe** (webapi.ail, netapi.ail). A `Blob`
+  keeps its bytes (`_bytes`, a Uint8Array; `_text` decodes them as UTF-8), so
+  `arrayBuffer`, `slice`, `FileReader` and `Response.blob/arrayBuffer/bytes`
+  round-trip any byte. `fetch("data:...")` is answered in the engine
+  (base64 or percent-encoded, RFC 2397) with no host request.
+  `createImageBitmap(blob)` asks `__imageDims` (`image.dims`, the header's
+  size) and resolves an `ImageBitmap`; unknown bytes reject
+  `InvalidStateError`. It reads sizes only, not pixels, and WebP and AVIF
+  succeed once `vendor/image` `dims` knows them.
 - **WebSocket** is a JavaScript class over `__hostWs` (open, send, close).
   The browser (`ws/ws.ail`, RFC 6455 over `net.connect`/`net.connect_tls`)
   makes the connection with the page's origin and cookies, and delivers
