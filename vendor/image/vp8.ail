@@ -811,7 +811,16 @@ pub fn vp8(d List[int], at int, len int) Rgba ! ImageError
                 for by in 0..4
                     for bx in 0..4
                         ctx := top_nz[tb + bx] + left_nz[by]
-                        nz := tok.coeffs(probas, ac_type, ctx, q[0], q[1], first_c, mut co, 16 * (by * 4 + bx))
+                        nz := tok.coeffs(
+                            probas,
+                            ac_type,
+                            ctx,
+                            q[0],
+                            q[1],
+                            first_c,
+                            mut co,
+                            16 * (by * 4 + bx),
+                        )
                         l := if nz > first_c then 1 else 0
                         top_nz[tb + bx] = l
                         left_nz[by] = l
@@ -823,7 +832,16 @@ pub fn vp8(d List[int], at int, len int) Rgba ! ImageError
                             ti := tb + 4 + ch * 2 + bx
                             li := 4 + ch * 2 + by
                             ctx := top_nz[ti] + left_nz[li]
-                            nz := tok.coeffs(probas, 2, ctx, q[4], q[5], 0, mut co, 256 + ch * 64 + (by * 2 + bx) * 16)
+                            nz := tok.coeffs(
+                                probas,
+                                2,
+                                ctx,
+                                q[4],
+                                q[5],
+                                0,
+                                mut co,
+                                256 + ch * 64 + (by * 2 + bx) * 16,
+                            )
                             l := if nz > 0 then 1 else 0
                             top_nz[ti] = l
                             left_nz[li] = l
@@ -841,7 +859,14 @@ pub fn vp8(d List[int], at int, len int) Rgba ! ImageError
                         yp[(y0 + j) * ys + x0 + i] = pr[j * 16 + i]
                 if skip == 0
                     for n in 0..16
-                        vp8_idct_add(co, 16 * n, mut yp, ys, x0 + (n.bit_and(3)) * 4, y0 + (n / 4) * 4)
+                        vp8_idct_add(
+                            co,
+                            16 * n,
+                            mut yp,
+                            ys,
+                            x0 + (n.bit_and(3)) * 4,
+                            y0 + (n / 4) * 4,
+                        )
             else
                 for n in 0..16
                     bx := n.bit_and(3)
@@ -886,7 +911,14 @@ pub fn vp8(d List[int], at int, len int) Rgba ! ImageError
                             up[(cy + j) * cs + cx + i] = pr[j * 8 + i]
                     if skip == 0
                         for n in 0..4
-                            vp8_idct_add(co, 256 + n * 16, mut up, cs, cx + (n.bit_and(1)) * 4, cy + (n / 2) * 4)
+                            vp8_idct_add(
+                                co,
+                                256 + n * 16,
+                                mut up,
+                                cs,
+                                cx + (n.bit_and(1)) * 4,
+                                cy + (n / 2) * 4,
+                            )
                 else
                     pr := vp8_pred_block(vp, cs, cx, cy, 8, uvmode)
                     for j in 0..8
@@ -894,7 +926,14 @@ pub fn vp8(d List[int], at int, len int) Rgba ! ImageError
                             vp[(cy + j) * cs + cx + i] = pr[j * 8 + i]
                     if skip == 0
                         for n in 0..4
-                            vp8_idct_add(co, 320 + n * 16, mut vp, cs, cx + (n.bit_and(1)) * 4, cy + (n / 2) * 4)
+                            vp8_idct_add(
+                                co,
+                                320 + n * 16,
+                                mut vp,
+                                cs,
+                                cx + (n.bit_and(1)) * 4,
+                                cy + (n / 2) * 4,
+                            )
         pstate[pi] = tok.save()
     # Loop filter over the whole picture, macroblock by macroblock.
     if level > 0

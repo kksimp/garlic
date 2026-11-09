@@ -34,9 +34,17 @@ pub fn decode(data List[int]) Rgba ! ImageError
         return jpeg_rgb(data)
     if data.len() >= 6 and data[0] == 0x47 and data[1] == 0x49 and data[2] == 0x46
         return gif(data)
-    if data.len() >= 12 and data[0] == 0x52 and data[1] == 0x49 and data[8] == 0x57 and data[9] == 0x45
+    if data.len() >= 12
+        and data[0] == 0x52
+        and data[1] == 0x49
+        and data[8] == 0x57
+        and data[9] == 0x45
         return webp(data)
-    if data.len() >= 16 and data[4] == 0x66 and data[5] == 0x74 and data[6] == 0x79 and data[7] == 0x70
+    if data.len() >= 16
+        and data[4] == 0x66
+        and data[5] == 0x74
+        and data[6] == 0x79
+        and data[7] == 0x70
         return avif(data)
     Unsupported(what: "image data that is not PNG, JPEG, GIF, WebP or AVIF")
 

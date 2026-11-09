@@ -119,17 +119,15 @@ pub fn heif(d List[int]) Heif ! ImageError
                 q += 2
             q += 2
             kind := if ver >= 2 then hf_tag(d, q) else "none"
-            items.push(
-                HfItem(
-                    id: id,
-                    kind: kind,
-                    w: 0,
-                    h: 0,
-                    extents: List[HfExtent](),
-                    av1c: List[int](),
-                    props: List[int](),
-                )
-            )
+            items.push(HfItem(
+                id: id,
+                kind: kind,
+                w: 0,
+                h: 0,
+                extents: List[HfExtent](),
+                av1c: List[int](),
+                props: List[int](),
+            ))
     if loc := hf_find(mb, "iloc")
         ver := d[loc.at]
         sizes := hf_be(d, loc.at + 4, 2)
