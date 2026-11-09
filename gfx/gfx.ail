@@ -1361,7 +1361,10 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
     pend = 0.0
 
 fn Ctx.image_atom(mut self, id int, cs Map[str, str], st St, avail float) Atom?
-    src := d.attr(id, "src")?
+    # A `<canvas>` is a picture too: scripts publish its bitmap as a `data:`
+    # address in `data-garlic-pixels` (js/vm/canvas2d.ail).
+    pic_attr := if d.nodes[id].tag == "canvas" then "data-garlic-pixels" else "src"
+    src := d.attr(id, pic_attr)?
     mut w := (d.attr(id, "width") else "0").to_float() else 0.0
     mut h := (d.attr(id, "height") else "0").to_float() else 0.0
     if v := cs.get("width")
@@ -1504,7 +1507,7 @@ fn Ctx.inline(mut self, id int, parent St, avail float)
     if tag == "br"
         atoms.push(self.break_atom(st))
         return
-    if tag == "img"
+    if tag == "img" or tag == "canvas"
         side := (cs.get("float") else (d.attr(id, "align") else "")).trim()
         if a := self.image_atom(id, cs, st, avail)
             if side == "left" or side == "right"

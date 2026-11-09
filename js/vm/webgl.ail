@@ -884,7 +884,7 @@ WEBGL_PRELUDE := r"""
       if (!this._gl) { Object.defineProperty(this, "_gl", { value: v === "webgl2" ? create2(this, attrs) : create(this, attrs), enumerable: false }); Object.defineProperty(this, "_ctxKind", { value: v, enumerable: false }); }
       return this._gl;
     }
-    if (this._ctxKind && (k === "2d" || k === "bitmaprenderer")) return null;
+    if (this._ctxKind && this._ctxKind !== "2d" && (k === "2d" || k === "bitmaprenderer")) return null;
     var r = prevGet.apply(this, arguments);
     if (r && k === "2d") Object.defineProperty(this, "_ctxKind", { value: "2d", enumerable: false });
     return r;

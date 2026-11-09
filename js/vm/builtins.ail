@@ -77,6 +77,7 @@ pub fn new_vm() Vm
         mo_held: [],
         template_frags: {},
         modules: new_mod_state(),
+        cvs: new_canvas_state(),
     )
     vm.setup()
     vm

@@ -68,6 +68,33 @@ pub fn prefetch(
         if sizes[at][0] * sizes[at][1] <= MAX_PIXELS
             px := image.decode(raw) else continue
             bits[at] = Bitmap(w: px.width, h: px.height, data: app.bitmap_data(px.bytes()))
+    # A `<canvas>` a script drew on: the engine publishes its bitmap as a
+    # `data:` picture in `data-garlic-pixels` (js/vm/canvas2d.ail).
+    mut live := Set[str]()
+    for id in d.all("canvas")
+        src := d.attr(id, "data-garlic-pixels") else continue
+        live.add(src)
+        add_data_picture(src, mut sizes, mut bits)
+    # Each redraw makes a new address; forget the pictures of earlier ones.
+    if bits.len() > 48
+        for k in bits.keys()
+            if k.starts_with(PNG_PREFIX) and not live.contains(k)
+                bits.remove(k)
+                sizes.remove(k)
+
+PNG_PREFIX := "data:image/png;base64,"
+
+## Decodes the `data:` picture `src` for the host, once.
+fn add_data_picture(src str, mut sizes Map[str, List[int]], mut bits Map[str, Bitmap])
+    if sizes.contains(src)
+        return
+    raw := data_image(src) else
+        sizes[src] = [0, 0]
+        return
+    sizes[src] = image.dims(raw)
+    if sizes[src][0] * sizes[src][1] <= MAX_PIXELS
+        px := image.decode(raw) else return
+        bits[src] = Bitmap(w: px.width, h: px.height, data: app.bitmap_data(px.bytes()))
 
 ## The bytes of a base64 `data:` image URL (RFC 2397), or none.
 pub fn data_image(src str) List[int]?

@@ -142,6 +142,7 @@ fn Session.collect(mut self, mut d html.Doc) Outcome
         net: [],
     )
     console = machine.console_out.len()
+    machine.canvas_flush()
     out.changes = replay(mut d, machine.mutations[changes..])
     changes = machine.mutations.len()
     for r in machine.host_requests[requests..]

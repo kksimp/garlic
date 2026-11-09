@@ -298,6 +298,8 @@ pub fn Vm.bin_native(
         return encoding_native(m, this_val, args)
     if m.starts_with("customElements.")
         return custom_native(m, this_val, args)
+    if m.starts_with("canvas.")
+        return canvas_native(m, args)
     if m.starts_with("crypto.") or m.starts_with("SubtleCrypto.")
         return crypto_native(m, this_val, args)
     if m == "TypedArray.from" or m == "TypedArray.of"
