@@ -396,8 +396,11 @@ it comes later for speed, and these frames will move onto it).
   "(America/New_York)" and `timeZoneName: "short"` gives "GMT-5", where
   Chrome writes "Eastern Standard Time" and "EST".
 - A canvas 2D context keeps its state and draws nothing (webapi.ail):
-  `getImageData` is transparent black and `toDataURL` a blank PNG. WebGL
-  and WebGPU contexts are null. Streams, `Worker`, `WebAssembly`,
+  `getImageData` is transparent black and `toDataURL` a blank PNG. A
+  `webgl` context (webgl.ail, WebGL 1) keeps its state and validates like
+  Chromium's but rasterizes nothing except `clear`: draw calls do nothing
+  and the window never shows it. `webgl2` is the same with the WebGL 2
+  API; WebGPU is null. Streams, `Worker`, `WebAssembly`,
   geolocation and service workers are missing: pages that feature-test
   them report them unsupported.
 - Media (mediaapi.ail): `navigator.mediaDevices`, `MediaStream`,
