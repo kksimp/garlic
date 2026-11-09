@@ -8,7 +8,7 @@ usb 0
 bt false
 xr inline true
 xr vr false
-gpu null
+gpu 
 vp9 true true
 h264 false
 opus true
