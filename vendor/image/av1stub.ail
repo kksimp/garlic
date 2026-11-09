@@ -1,0 +1,5 @@
+## TEMPORARY: stands in for `av1tile.ail` (lane a) so the post filters and the
+## AVIF assembly compile on their own. Delete this file when `av1_decode` lands.
+
+pub fn av1_decode(obus List[int]) Av1Frame ! ImageError
+    Unsupported(what: "AV1 tile decoding")
