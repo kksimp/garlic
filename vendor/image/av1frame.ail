@@ -2,15 +2,9 @@
 ## per-block facts the tile decoder hands to the post filters (`av1post.ail`).
 ## Block sizes, transform sizes and modes use dav1d's numbering (`av1tab.ail`).
 
-## One plane of samples at the sequence bit depth. `w` and `h` are the visible
-## size (`Round2(frame size, subsampling)`). The buffer must cover at least the
-## whole 4x4 grid of the frame (`mi_cols * 4 >> sub_x` by `mi_rows * 4 >> sub_y`)
-## because filters read and write up to the grid edge. `pix[y * stride + x]`.
-pub struct Av1Plane
-    pub w int
-    pub h int
-    pub stride int
-    pub pix List[int]
+## `Av1Plane` (visible `w`, `h`; `pix[y * stride + x]`) is defined in `av1plane.ail`,
+## which lane (b) owns. Its buffer must cover the whole 4x4 grid of the frame
+## (`mi_cols * 4 >> sub_x` wide) because the post filters read to the grid edge.
 
 ## A decoded frame: 1 plane (`mono`) or 3 (Y, U, V). `sub_x`/`sub_y` are the
 ## chroma subsampling shifts (1 for 4:2:0), `bd` the bit depth (8, 10 or 12).
