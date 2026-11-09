@@ -1073,6 +1073,13 @@ fn Browser.measure(mut self, boxes List[gfx.Box], top float)
     s.measure([[b.node.to_float(), b.x, b.y, b.w, b.h] for b in boxes], top)
     js = s
 
+## Hands the page's scripts the window's page area (`window.innerWidth` and
+## the root element's `clientWidth`) and the laid-out page's height.
+fn Browser.viewport(mut self, w float, h float, page_height float)
+    mut s := js else return
+    s.viewport(w, h, 1.0, page_height)
+    js = s
+
 ## Remembers what the page logged and requested, for the page model.
 fn Browser.record(mut self, out jsdom.Outcome)
     console_log.extend(out.console)
@@ -2131,6 +2138,7 @@ fn Gui.refresh(mut self)
             scene_url = b.url
     top = top.max(0.0).min((scene.height - area_h).max(0.0))
     b.measure(scene.boxes, top)
+    b.viewport(area_w, area_h, scene.height)
     mark_fresh()
 
 ## Marks as fresh the decoded pictures the view will draw that the host
@@ -5505,6 +5513,22 @@ fn flat(s gfx.Scene) List[str]
     mut a := Garlic.new(b, 800.0, 600.0, 8.0, 16.0)
     assert_eq(a.lines(), [app.clipboard("from the page")])
     assert_eq(a.lines(), [])
+
+@test fn a_script_reads_the_window_area_the_browser_reported()
+    mut b := Browser.new("{testdata()}/viewport.html", 80, 30)
+    go := node_with(b, "button", "id", "go")
+    b.act("click", "{go}")
+    # Before the window reports its area, a script sees the headless 1280x800.
+    assert(b.pg.text().contains("1280 800 1280 1280 800 1 1280"))
+    b.viewport(900.0, 600.0, 2400.0)
+    b.act("click", "{go}")
+    assert(b.pg.text().contains("900 600 900 900 600 1 900"))
+    # A new area fires `resize` once; the same area again does not.
+    b.viewport(900.0, 600.0, 2400.0)
+    b.viewport(700.0, 500.0, 2400.0)
+    b.act("click", "{go}")
+    assert(b.pg.text().contains("700 500 700 700 500 1 700"))
+    assert(b.pg.text().contains("resized1"))
 
 @test fn typing_fires_focus_key_input_and_change_events_and_enter_can_be_cancelled()
     mut b := Browser.new("{testdata()}/keys.html", 80, 30)

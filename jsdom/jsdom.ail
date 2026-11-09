@@ -271,6 +271,12 @@ pub fn Session.idle(mut self, mut d html.Doc, budget_ms float) Outcome
 pub fn Session.measure(mut self, boxes List[List[float]], scroll float)
     machine.measure(boxes, scroll)
 
+## Tells the page's scripts the window's page area in CSS pixels, its device
+## pixel ratio and the page's laid-out height (`Vm.viewport`); `resize` fires
+## when the area changes.
+pub fn Session.viewport(mut self, w float, h float, dpr float, page_height float)
+    machine.viewport(w, h, dpr, page_height)
+
 ## How many timers the page still has waiting.
 pub fn Session.pending(self) int
     machine.timers.len()

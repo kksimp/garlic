@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html><head><title>Viewport test</title></head>
+<body>
+<p id="out">idle</p><button id="go">Read</button><span id="resized"></span>
+<script>
+const out = document.getElementById("out");
+let n = 0;
+window.addEventListener("resize", () => { n++; document.getElementById("resized").textContent = "resized" + n; });
+document.getElementById("go").addEventListener("click", () => {
+  const e = document.documentElement;
+  out.textContent = [innerWidth, innerHeight, outerWidth, e.clientWidth, e.clientHeight, devicePixelRatio, screen.width].join(" ");
+});
+</script>
+</body></html>

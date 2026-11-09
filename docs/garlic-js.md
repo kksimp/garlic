@@ -52,6 +52,12 @@ did.
    the browser's structs; a page that wants a ninth worker gets an `error`
    event. Check by hand: `ail run garlic.ail testdata/worker.html` shows
    "worker said ..." after a moment.
+   **Viewport**: in the window, `Gui.refresh` hands the page area (CSS px)
+   and the laid-out page height to `Vm.viewport`; `innerWidth/Height`,
+   `outerWidth/Height`, `screen.width/height` and `documentElement.clientWidth/Height`
+   follow it, `body` gets the page height, and `resize` fires when the area
+   changes. A headless run keeps 1280x800. `devicePixelRatio` stays 1 until
+   std.app reports the display's scale.
 7. **Later**: BigInt, import maps.
 
 ## Layout

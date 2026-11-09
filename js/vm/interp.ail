@@ -40,6 +40,14 @@ pub struct Vm
     pub rects Map[int, List[float]]
     ## How far the page is scrolled, for viewport-relative rectangles.
     pub scroll_y float
+    ## The browser window's page area in CSS pixels, set by `viewport`
+    ## (dom.ail); `view_set` stays false for a headless run, which keeps
+    ## 1280x800.
+    pub view_w float
+    pub view_h float
+    pub view_dpr float
+    pub page_h float
+    pub view_set bool
     pub mutations List[Mutation]
     pub recording bool
     pub node_objs Map[int, Value]
