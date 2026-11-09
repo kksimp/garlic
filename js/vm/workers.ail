@@ -288,7 +288,7 @@ SCOPE_PRELUDE := r"""
 """
 
 ## JavaScript string literal text for `s`, without the quotes.
-fn lit(s str) str
+fn js_lit(s str) str
     s
         .replace("\\", "\\\\")
         .replace("\"", "\\\"")
@@ -307,17 +307,17 @@ pub fn Vm.worker_setup(mut self)
 pub fn Vm.worker_scope_setup(mut self, name str)
     run_script_text(CLONE_PRELUDE)
     run_script_text(SCOPE_PRELUDE)
-    run_script_text("__workerBoot(\"{lit(name)}\")")
+    run_script_text("__workerBoot(\"{js_lit(name)}\")")
 
 ## A message the page posted (encoded by the page's clone code), run through
 ## the worker's `message` handlers.
 pub fn Vm.worker_deliver(mut self, payload str)
-    run_script_text("__workerDeliver(\"{lit(payload)}\")")
+    run_script_text("__workerDeliver(\"{js_lit(payload)}\")")
 
 ## An event for the page's `Worker` number `id`: "message" (`payload` the
 ## encoded data), "error" (`payload` the text) or "closed".
 pub fn Vm.worker_event(mut self, id int, kind str, payload str)
-    run_script_text("__workerEvent({id}, \"{kind}\", \"{lit(payload)}\")")
+    run_script_text("__workerEvent({id}, \"{kind}\", \"{js_lit(payload)}\")")
 
 ## A `fetch` that worker `id` made, made by the page for it: request `rid`
 ## with `packed` (content type, a newline, the body). The answer goes back
@@ -326,4 +326,4 @@ pub fn Vm.worker_fetch(mut self, id int, rid int, method str, url str, packed st
     at := packed.find("\n") else -1
     kind := if at < 0 then packed else packed.slice(0, at)
     body := if at < 0 then "" else packed.slice(at + 1, packed.chars().len())
-    run_script_text("__workerFetch({id}, {rid}, \"{lit(method)}\", \"{lit(url)}\", \"{lit(kind)}\", \"{lit(body)}\")")
+    run_script_text("__workerFetch({id}, {rid}, \"{js_lit(method)}\", \"{js_lit(url)}\", \"{js_lit(kind)}\", \"{js_lit(body)}\")")
