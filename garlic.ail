@@ -4693,6 +4693,22 @@ fn at_of(ts List[str], word str) List[float]
             return [parts[0].to_float() else 0.0, parts[1].to_float() else 0.0]
     []
 
+@test fn a_leading_dot_number_sets_the_margin_below_a_heading_in_a_positioned_header()
+    ## browserleaks /javascript: `margin: 0 0 .45em 0` was read as 0, so the
+    ## buttons after the heading were drawn over it.
+    rules := "header\{position:relative} h1\{font-size:22px;line-height:1em;margin:0 0 .45em 0;padding-top:1em} #jspick1,#jspick2\{width:175px;height:24px;line-height:14px}"
+    src := """
+        <header><h1><a href="/javascript">Heading</a></h1></header>
+        <div id=jspick><button id=jspick1>window</button> <button id=jspick2>iframe</button></div>
+        """
+    ts := pixel_text(gfx.layout(html.parse(src), "file:///t.html", 1000.0, css.parse(rules, 0)).ops)
+    h := at_of(ts, "Heading")
+    b := at_of(ts, "window")
+    assert(b[1] >= h[1] + 22.0)
+    assert_eq(gfx.length(".45em", 20.0, 0.0) else -1.0, 9.0)
+    assert_eq(gfx.length("-.5px", 20.0, 0.0) else 0.0, -0.5)
+    assert_eq(gfx.number(".5") else -1.0, 0.5)
+
 @test fn list_style_none_applies_from_the_item_the_list_or_an_ancestor()
     src := """
         <style>.n \{ list-style: none outside } .i li \{ list-style-type: none } nav \{ list-style: none }</style>
