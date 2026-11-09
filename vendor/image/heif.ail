@@ -172,7 +172,7 @@ pub fn heif(d List[int]) Heif ! ImageError
             i := hf_item_index(items, id)
             if i >= 0
                 items[i].extents = ex
-    mut matrix := 1
+    mut matrix := -1
     mut full := true
     mut rotation := 0
     mut mirror := -1
@@ -302,12 +302,3 @@ pub fn avif_dims(d List[int]) List[int]
     if i < 0 or (r.items[i].kind != "av01" and r.items[i].kind != "grid")
         return [0, 0]
     [r.out_w, r.out_h]
-
-## The picture of an AVIF file. The AV1 decoder is not written yet, so this
-## says so; `avif_dims` already gives the size for layout.
-pub fn avif(d List[int]) Rgba ! ImageError
-    r := heif(d)?
-    i := hf_item_index(r.items, r.primary)
-    if i < 0 or r.items[i].extents.len() == 0
-        return Bad(why: "AVIF primary item has no data")
-    Unsupported(what: "AVIF (AV1) pixel decoding")

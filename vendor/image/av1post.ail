@@ -1,0 +1,577 @@
+## AV1 post filters for still pictures (AV1 bitstream specification, section 7.14
+## to 7.17): the deblocking filter, CDEF and loop restoration, run over the whole
+## reconstructed frame after the tiles are decoded. Written from the specification
+## and checked against dav1d (BSD-2-Clause, VideoLAN) for the exact arithmetic.
+## Only intra frames without super-resolution exist (`av1hdr.ail` rejects the rest).
+
+fn av1_hv(m Map[str, int], k str) int
+    m.get(k) else 0
+
+fn av1_ulog2(v int) int
+    mut n := 0
+    mut x := v
+    while x > 1
+        x = x.shr(1)
+        n += 1
+    n
+
+# ---- deblocking filter (7.14) ----
+
+## The filter level for the edge of 4x4 block `mi`: `i` is 0 (luma vertical edges),
+## 1 (luma horizontal), 2 (U) or 3 (V).
+fn av1_lf_level(hdr Av1Hdr, info BlockInfo, i int, mi int) int
+    mut lvl := [hdr.f["lf0"], hdr.f["lf1"], hdr.f["lfu"], hdr.f["lfv"]][i]
+    if av1_hv(hdr.f, "dlf_present") == 1
+        k := if av1_hv(hdr.f, "dlf_multi") == 1 then i else 0
+        lvl = (lvl + info.dlf[mi * 4 + k]).max(0).min(63)
+    if av1_hv(hdr.f, "seg") == 1
+        lvl = (lvl + hdr.seg_lf[info.seg[mi] * 4 + i]).max(0).min(63)
+    if av1_hv(hdr.f, "lf_delta_enabled") == 1
+        lvl = (lvl + hdr.f["lf_ref0"] * 1.shl(lvl.shr(5))).max(0).min(63)
+    lvl
+
+## Filters the 4 samples across one edge. `q` is the index of the first sample
+## after the edge (q0), `st` the step across the edge (1 for a vertical edge,
+## the stride for a horizontal one), `wd` the filter length (4, 6, 8 or 16).
+fn av1_lf_line(mut pix List[int], q int, st int, wd int, blimit int, limit int, thresh int, bd int)
+    sh := bd - 8
+    fl := 1.shl(sh)
+    ee := blimit.shl(sh)
+    ii := limit.shl(sh)
+    hh := thresh.shl(sh)
+    p1 := pix[q - 2 * st]
+    p0 := pix[q - st]
+    q0 := pix[q]
+    q1 := pix[q + st]
+    mut fm := (p1 - p0).abs() <= ii and (q1 - q0).abs() <= ii
+    if (p0 - q0).abs() * 2 + (p1 - q1).abs().shr(1) > ee
+        fm = false
+    mut p2 := 0
+    mut q2 := 0
+    mut p3 := 0
+    mut q3 := 0
+    if wd > 4
+        p2 = pix[q - 3 * st]
+        q2 = pix[q + 2 * st]
+        if (p2 - p1).abs() > ii or (q2 - q1).abs() > ii
+            fm = false
+        if wd > 6
+            p3 = pix[q - 4 * st]
+            q3 = pix[q + 3 * st]
+            if (p3 - p2).abs() > ii or (q3 - q2).abs() > ii
+                fm = false
+    if not fm
+        return
+    mut flat_out := false
+    if wd >= 16
+        flat_out = av1_near(pix[q - 7 * st], p0, fl) and av1_near(pix[q - 6 * st], p0, fl)
+        flat_out = flat_out and av1_near(pix[q - 5 * st], p0, fl) and av1_near(pix[q + 4 * st], q0, fl)
+        flat_out = flat_out and av1_near(pix[q + 5 * st], q0, fl) and av1_near(pix[q + 6 * st], q0, fl)
+    mut flat_in := false
+    if wd >= 6
+        flat_in = av1_near(p2, p0, fl) and av1_near(p1, p0, fl)
+        flat_in = flat_in and av1_near(q1, q0, fl) and av1_near(q2, q0, fl)
+        if wd >= 8
+            flat_in = flat_in and av1_near(p3, p0, fl) and av1_near(q3, q0, fl)
+    if wd >= 16 and flat_out and flat_in
+        av1_lf_wide(mut pix, q, st, 6)
+    elif wd >= 8 and flat_in
+        av1_lf_wide(mut pix, q, st, 3)
+    elif wd == 6 and flat_in
+        av1_lf_wide(mut pix, q, st, 2)
+    else
+        hev := (p1 - p0).abs() > hh or (q1 - q0).abs() > hh
+        lo := -128 * fl
+        hi := 128 * fl - 1
+        top := 128 * fl - 1
+        pmax := 1.shl(bd) - 1
+        if hev
+            mut fv := (p1 - q1).max(lo).min(hi)
+            fv = (3 * (q0 - p0) + fv).max(lo).min(hi)
+            f1 := (fv + 4).min(top).shr(3)
+            f2 := (fv + 3).min(top).shr(3)
+            pix[q - st] = (p0 + f2).max(0).min(pmax)
+            pix[q] = (q0 - f1).max(0).min(pmax)
+        else
+            fv := (3 * (q0 - p0)).max(lo).min(hi)
+            f1 := (fv + 4).min(top).shr(3)
+            f2 := (fv + 3).min(top).shr(3)
+            pix[q - st] = (p0 + f2).max(0).min(pmax)
+            pix[q] = (q0 - f1).max(0).min(pmax)
+            f3 := (f1 + 1).shr(1)
+            pix[q - 2 * st] = (p1 + f3).max(0).min(pmax)
+            pix[q + st] = (q1 - f3).max(0).min(pmax)
+
+fn av1_near(a int, b int, t int) bool
+    (a - b).abs() <= t
+
+## The smoothing filters: `n` is 2 (6-tap, chroma), 3 (8-tap) or 6 (16-wide).
+## Sample positions run `-(n + 1) ..= n` around the edge (`-1` is p0, `0` is q0).
+fn av1_lf_wide(mut pix List[int], q int, st int, n int)
+    mut s := List[int]()
+    for k in -(n + 1)..n + 1
+        s.push(pix[q + k * st])
+    shift := if n == 6 then 4 else 3
+    mut o := List[int]()
+    for i in -n..n
+        mut t := 0
+        for j in -n..n + 1
+            pos := (i + j).max(-(n + 1)).min(n)
+            wt := if n == 3 then (if j == 0 then 2 else 1) else (if j.abs() <= 1 then 2 else 1)
+            t += wt * s[pos + n + 1]
+        o.push((t + 1.shl(shift - 1)).shr(shift))
+    for i in -n..n
+        pix[q + i * st] = o[i + n]
+
+## Runs the deblocking filter over every plane of `f`.
+fn av1_deblock(mut f Av1Frame, hdr Av1Hdr, info BlockInfo)
+    fw := hdr.f["w"]
+    fh := hdr.f["h"]
+    bd := f.bd
+    sharp := hdr.f["lf_sharp"]
+    shr_lim := if sharp > 4 then 2 else (if sharp > 0 then 1 else 0)
+    for pl in 0..f.planes.len()
+        lk := if pl == 1 then "lfu" else "lfv"
+        if pl > 0 and hdr.f[lk] == 0
+            continue
+        ssx := if pl == 0 then 0 else f.sub_x
+        ssy := if pl == 0 then 0 else f.sub_y
+        cols4 := info.mi_cols.shr(ssx)
+        rows4 := info.mi_rows.shr(ssy)
+        stride := f.planes[pl].stride
+        mut pix := f.planes[pl].pix
+        for pass in 0..2
+            li := if pl == 0 then pass else pl + 1
+            dx := if pass == 0 then 1 else 0
+            dy := 1 - dx
+            for r4 in 0..rows4
+                for c4 in 0..cols4
+                    row := r4.shl(ssy)
+                    col := c4.shl(ssx)
+                    if col * 4 >= fw or row * 4 >= fh
+                        continue
+                    if (pass == 0 and c4 == 0) or (pass == 1 and r4 == 0)
+                        continue
+                    pr4 := r4 - dy
+                    pc4 := c4 - dx
+                    tx := if pl == 0 then info.tx_y[row * info.mi_cols + col] else info.tx_c[r4 * cols4 + c4]
+                    ptx := if pl == 0 then info.tx_y[pr4 * info.mi_cols + pc4] else info.tx_c[pr4 * cols4 + pc4]
+                    mut size := 0
+                    mut edge := false
+                    if pass == 0
+                        tw := AV1_TXFM_DIM[tx * 8] * 4
+                        edge = (c4 * 4) % tw == 0
+                        size = tw.min(AV1_TXFM_DIM[ptx * 8] * 4)
+                    else
+                        th := AV1_TXFM_DIM[tx * 8 + 1] * 4
+                        edge = (r4 * 4) % th == 0
+                        size = th.min(AV1_TXFM_DIM[ptx * 8 + 1] * 4)
+                    if not edge
+                        continue
+                    mi := row.bit_or(ssy) * info.mi_cols + col.bit_or(ssx)
+                    mut lvl := av1_lf_level(hdr, info, li, mi)
+                    if lvl == 0
+                        pmi := (pr4.shl(ssy)).bit_or(ssy) * info.mi_cols + (pc4.shl(ssx)).bit_or(ssx)
+                        lvl = av1_lf_level(hdr, info, li, pmi)
+                    if lvl == 0
+                        continue
+                    limit := if sharp > 0 then (lvl.shr(shr_lim)).min(9 - sharp).max(1) else (lvl.shr(shr_lim)).max(1)
+                    blimit := 2 * (lvl + 2) + limit
+                    wd := if pl == 0 then size.min(16) else (if size >= 8 then 6 else 4)
+                    for k in 0..4
+                        if pass == 0
+                            av1_lf_line(mut pix, (r4 * 4 + k) * stride + c4 * 4, 1, wd, blimit, limit, lvl.shr(4), bd)
+                        else
+                            av1_lf_line(mut pix, r4 * 4 * stride + c4 * 4 + k, stride, wd, blimit, limit, lvl.shr(4), bd)
+        f.planes[pl].pix = pix
+
+# ---- CDEF (7.15) ----
+
+## The direction (0..7) and variance of the 8x8 block of luma at (x0, y0).
+fn av1_cdef_dir(pix List[int], stride int, x0 int, y0 int, bd int) List[int]
+    mut hv := [0 for _ in 0..16]
+    mut dg := [0 for _ in 0..30]
+    mut al := [0 for _ in 0..44]
+    for y in 0..8
+        for x in 0..8
+            px := (pix[(y0 + y) * stride + x0 + x].shr(bd - 8)) - 128
+            dg[y + x] = dg[y + x] + px
+            al[y + x.shr(1)] = al[y + x.shr(1)] + px
+            hv[y] = hv[y] + px
+            al[11 + 3 + y - x.shr(1)] = al[11 + 3 + y - x.shr(1)] + px
+            dg[15 + 7 + y - x] = dg[15 + 7 + y - x] + px
+            al[22 + 3 - y.shr(1) + x] = al[22 + 3 - y.shr(1) + x] + px
+            hv[8 + x] = hv[8 + x] + px
+            al[33 + y.shr(1) + x] = al[33 + y.shr(1) + x] + px
+    mut cost := [0 for _ in 0..8]
+    for n in 0..8
+        cost[2] = cost[2] + hv[n] * hv[n]
+        cost[6] = cost[6] + hv[8 + n] * hv[8 + n]
+    cost[2] = cost[2] * 105
+    cost[6] = cost[6] * 105
+    dv := [840, 420, 280, 210, 168, 140, 120]
+    for n in 0..7
+        d := dv[n]
+        cost[0] = cost[0] + (dg[n] * dg[n] + dg[14 - n] * dg[14 - n]) * d
+        cost[4] = cost[4] + (dg[15 + n] * dg[15 + n] + dg[15 + 14 - n] * dg[15 + 14 - n]) * d
+    cost[0] = cost[0] + dg[7] * dg[7] * 105
+    cost[4] = cost[4] + dg[15 + 7] * dg[15 + 7] * 105
+    for n in 0..4
+        ci := n * 2 + 1
+        for m in 0..5
+            cost[ci] = cost[ci] + al[n * 11 + 3 + m] * al[n * 11 + 3 + m]
+        cost[ci] = cost[ci] * 105
+        for m in 0..3
+            d := dv[2 * m + 1]
+            cost[ci] = cost[ci] + (al[n * 11 + m] * al[n * 11 + m] + al[n * 11 + 10 - m] * al[n * 11 + 10 - m]) * d
+    mut best := 0
+    mut best_cost := cost[0]
+    for n in 1..8
+        if cost[n] > best_cost
+            best_cost = cost[n]
+            best = n
+    [best, (best_cost - cost[best.bit_xor(4)]).shr(10)]
+
+fn av1_cd_get(src List[int], stride int, aw int, ah int, x int, y int) int
+    if x < 0 or y < 0 or x >= aw or y >= ah
+        return -1
+    src[y * stride + x]
+
+fn av1_constrain(diff int, thr int, shift int) int
+    ad := diff.abs()
+    v := ad.min((thr - ad.shr(shift)).max(0))
+    if diff < 0
+        return -v
+    v
+
+## The two (dx, dy) offsets of direction row `row` of the CDEF direction table,
+## as `[dx0, dy0, dx1, dy1]`.
+fn av1_cd_off(row int) List[int]
+    mut out := List[int]()
+    for k in 0..2
+        o := AV1_CDEF_DIRS[row * 2 + k]
+        dy := (o + 126) / 12 - 10
+        out.push(o - dy * 12)
+        out.push(dy)
+    out
+
+## Filters the `w` x `h` block at (bx, by) of `src` into `dst`.
+fn av1_cdef_block(src List[int], mut dst List[int], stride int, aw int, ah int, bx int, by int, w int, h int, pri int, sec int, dir int, damping int, bd int)
+    po := av1_cd_off(dir + 2)
+    s1 := av1_cd_off(dir + 4)
+    s2 := av1_cd_off(dir)
+    pri_tap := 4 - ((pri.shr(bd - 8)).bit_and(1))
+    pri_shift := if pri > 0 then (damping - av1_ulog2(pri)).max(0) else 0
+    sec_shift := if sec > 0 then damping - av1_ulog2(sec) else 0
+    pmax := 1.shl(bd) - 1
+    for yy in 0..h
+        for xx in 0..w
+            cx := bx + xx
+            cy := by + yy
+            px := src[cy * stride + cx]
+            mut sum := 0
+            mut lo := px
+            mut hi := px
+            for k in 0..2
+                if pri > 0
+                    tap := if k == 0 then pri_tap else (pri_tap.bit_and(3)).bit_or(2)
+                    for sg in [1, -1]
+                        v := av1_cd_get(src, stride, aw, ah, cx + sg * po[k * 2], cy + sg * po[k * 2 + 1])
+                        if v >= 0
+                            sum += tap * av1_constrain(v - px, pri, pri_shift)
+                            lo = lo.min(v)
+                            hi = hi.max(v)
+                if sec > 0
+                    stap := 2 - k
+                    for sg in [1, -1]
+                        v1 := av1_cd_get(src, stride, aw, ah, cx + sg * s1[k * 2], cy + sg * s1[k * 2 + 1])
+                        if v1 >= 0
+                            sum += stap * av1_constrain(v1 - px, sec, sec_shift)
+                            lo = lo.min(v1)
+                            hi = hi.max(v1)
+                        v2 := av1_cd_get(src, stride, aw, ah, cx + sg * s2[k * 2], cy + sg * s2[k * 2 + 1])
+                        if v2 >= 0
+                            sum += stap * av1_constrain(v2 - px, sec, sec_shift)
+                            lo = lo.min(v2)
+                            hi = hi.max(v2)
+            adj := px + (sum - (if sum < 0 then 1 else 0) + 8).shr(4)
+            dst[cy * stride + cx] = if pri > 0 and sec > 0 then adj.max(lo).min(hi) else adj.max(0).min(pmax)
+
+fn av1_cdef_adjust(strength int, var int) int
+    if var == 0
+        return 0
+    i := if var.shr(6) > 0 then av1_ulog2(var.shr(6)).min(12) else 0
+    (strength * (4 + i) + 8).shr(4)
+
+## The strengths a CDEF index gives: [pri, sec] for luma then chroma, with the
+## secondary 3 meaning 4 and everything shifted up to the bit depth.
+fn av1_cdef_str(level int, bm8 int) List[int]
+    mut sec := level.bit_and(3)
+    if sec == 3
+        sec = 4
+    [(level.shr(2)).shl(bm8), sec.shl(bm8)]
+
+## CDEF over the deblocked planes `pre`; returns the filtered planes' samples.
+## The 8x8 blocks to filter are found and their directions measured first (on
+## luma), then each plane is filtered from the unfiltered input.
+fn av1_cdef(pre List[Av1Plane], f Av1Frame, hdr Av1Hdr, info BlockInfo) List[List[int]]
+    bd := f.bd
+    bm8 := bd - 8
+    damping := hdr.f["cdef_damping"] + bm8
+    fbw := (info.mi_cols + 15).shr(4)
+    nbx := info.mi_cols.shr(1)
+    nby := info.mi_rows.shr(1)
+    mut act := List[int]()
+    mut dirs := List[int]()
+    mut vars := List[int]()
+    for br in 0..nby
+        for bc in 0..nbx
+            r := br * 2
+            c := bc * 2
+            idx := info.cdef_idx[r.shr(4) * fbw + c.shr(4)]
+            mut on := idx >= 0
+            if on and hdr.cdef_y[idx] == 0 and hdr.cdef_uv[idx] == 0
+                on = false
+            m0 := r * info.mi_cols + c
+            if on and info.skip[m0] == 1 and info.skip[m0 + 1] == 1
+                if info.skip[m0 + info.mi_cols] == 1 and info.skip[m0 + info.mi_cols + 1] == 1
+                    on = false
+            mut dir := 0
+            mut variance := 0
+            if on
+                ys := av1_cdef_str(hdr.cdef_y[idx], bm8)
+                uvs := av1_cdef_str(hdr.cdef_uv[idx], bm8)
+                if ys[0] > 0 or uvs[0] > 0
+                    dv := av1_cdef_dir(pre[0].pix, pre[0].stride, c * 4, r * 4, bd)
+                    dir = dv[0]
+                    variance = dv[1]
+            act.push(if on then idx else -1)
+            dirs.push(dir)
+            vars.push(variance)
+    uvdirs := [7, 0, 2, 4, 5, 6, 6, 6]
+    mut out := List[List[int]]()
+    for pl in 0..pre.len()
+        if pl > 0 and f.mono
+            out.push(pre[pl].pix)
+            continue
+        ssx := if pl == 0 then 0 else f.sub_x
+        ssy := if pl == 0 then 0 else f.sub_y
+        stride := pre[pl].stride
+        aw := (info.mi_cols * 4).shr(ssx)
+        ah := (info.mi_rows * 4).shr(ssy)
+        mut o := pre[pl].pix
+        for br in 0..nby
+            for bc in 0..nbx
+                idx := act[br * nbx + bc]
+                if idx < 0
+                    continue
+                dir := dirs[br * nbx + bc]
+                bx := (bc * 8).shr(ssx)
+                by := (br * 8).shr(ssy)
+                if pl == 0
+                    ys := av1_cdef_str(hdr.cdef_y[idx], bm8)
+                    if ys[0] > 0
+                        adj := av1_cdef_adjust(ys[0], vars[br * nbx + bc])
+                        if adj > 0 or ys[1] > 0
+                            av1_cdef_block(pre[0].pix, mut o, stride, aw, ah, bx, by, 8, 8, adj, ys[1], dir, damping, bd)
+                    elif ys[1] > 0
+                        av1_cdef_block(pre[0].pix, mut o, stride, aw, ah, bx, by, 8, 8, 0, ys[1], 0, damping, bd)
+                elif hdr.cdef_uv[idx] != 0
+                    uvs := av1_cdef_str(hdr.cdef_uv[idx], bm8)
+                    uvdir := if uvs[0] == 0 then 0 else (if ssx == 1 and ssy == 0 then uvdirs[dir] else dir)
+                    av1_cdef_block(pre[pl].pix, mut o, stride, aw, ah, bx, by, 8.shr(ssx), 8.shr(ssy), uvs[0], uvs[1], uvdir, damping - 1, bd)
+        out.push(o)
+    out
+
+# ---- loop restoration (7.17) ----
+
+## The samples of the block at (x0, y0), `w` x `h`, plus a margin of 3 on every
+## side, as rows of `w + 6`. Rows outside the stripe `s0..s1` come from `pre`
+## (deblocked, before CDEF), at most 2 rows past the stripe; everything is
+## clamped to the plane.
+fn av1_lr_window(pre List[int], cdf List[int], stride int, pw int, ph int, s0 int, s1 int, x0 int, y0 int, w int, h int) List[int]
+    mut win := List[int]()
+    for j in -3..h + 3
+        mut yy := (y0 + j).max(0).min(ph - 1)
+        mut use_pre := false
+        if yy < s0
+            yy = yy.max(s0 - 2)
+            use_pre = true
+        elif yy > s1
+            yy = yy.min(s1 + 2)
+            use_pre = true
+        for i in -3..w + 3
+            xx := (x0 + i).max(0).min(pw - 1)
+            v := if use_pre then pre[yy * stride + xx] else cdf[yy * stride + xx]
+            win.push(v)
+    win
+
+fn av1_wiener(win List[int], w int, h int, cf List[int], bd int) List[int]
+    ww := w + 6
+    rbh := if bd == 12 then 5 else 3
+    rbv := if bd == 12 then 9 else 11
+    fv := [cf[0], cf[1], cf[2], 128 - 2 * (cf[0] + cf[1] + cf[2]), cf[2], cf[1], cf[0]]
+    fh := [cf[3], cf[4], cf[5], 128 - 2 * (cf[3] + cf[4] + cf[5]), cf[5], cf[4], cf[3]]
+    hmax := 1.shl(bd + 1 + 7 - rbh) - 1
+    mut inter := List[int]()
+    for j in 0..h + 6
+        for x in 0..w
+            mut s := 1.shl(bd + 6)
+            for t in 0..7
+                s += fh[t] * win[j * ww + x + t]
+            inter.push(((s + 1.shl(rbh - 1)).shr(rbh)).max(0).min(hmax))
+    pmax := 1.shl(bd) - 1
+    mut out := List[int]()
+    for y in 0..h
+        for x in 0..w
+            mut s := -1.shl(bd + rbv - 1)
+            for t in 0..7
+                s += fv[t] * inter[(y + t) * w + x]
+            out.push(((s + 1.shl(rbv - 1)).shr(rbv)).max(0).min(pmax))
+    out
+
+## The A and B arrays of the self-guided filter for box radius `r` (`n` = 9 or
+## 25 samples), over rows and columns `-1 ..= h` and `-1 ..= w`, row-major with
+## row length `w + 2`: A is the scaled sum, B the weight `x`.
+fn av1_sgr_ab(win List[int], w int, h int, r int, s int, bd int, only_odd bool) List[List[int]]
+    ww := w + 6
+    n := if r == 2 then 25 else 9
+    one_by_n := if r == 2 then 164 else 455
+    mut av := List[int]()
+    mut bv := List[int]()
+    for j in -1..h + 1
+        for i in -1..w + 1
+            if only_odd and j.bit_and(1) == 0
+                av.push(0)
+                bv.push(0)
+                continue
+            mut sq := 0
+            mut sm := 0
+            for dy in -r..r + 1
+                for dx in -r..r + 1
+                    v := win[(j + 3 + dy) * ww + i + 3 + dx]
+                    sq += v * v
+                    sm += v
+            a := av1_round2(sq, 2 * (bd - 8))
+            b := av1_round2(sm, bd - 8)
+            p := (a * n - b * b).max(0)
+            z := av1_round2(p * s, 20)
+            x := AV1_SGR_X_BY_X[z.min(255)]
+            av.push((x * sm * one_by_n + 2048).shr(12))
+            bv.push(x)
+    [av, bv]
+
+fn av1_round2(x int, n int) int
+    if n == 0
+        return x
+    (x + 1.shl(n - 1)).shr(n)
+
+## The self-guided filter of one block; `cf` is [set, xqd0, xqd1, ...].
+fn av1_sgr(win List[int], w int, h int, cf List[int], bd int) List[int]
+    ww := w + 6
+    set := cf[0]
+    w0 := cf[1]
+    w1 := cf[2]
+    w2 := 128 - w0 - w1
+    s0 := AV1_SGR_PARAMS[set * 2]
+    s1 := AV1_SGR_PARAMS[set * 2 + 1]
+    aw := w + 2
+    mut a5 := List[int]()
+    mut b5 := List[int]()
+    mut a3 := List[int]()
+    mut b3 := List[int]()
+    if s0 > 0
+        ab5 := av1_sgr_ab(win, w, h, 2, s0, bd, true)
+        a5 = ab5[0]
+        b5 = ab5[1]
+    if s1 > 0
+        ab3 := av1_sgr_ab(win, w, h, 1, s1, bd, false)
+        a3 = ab3[0]
+        b3 = ab3[1]
+    pmax := 1.shl(bd) - 1
+    mut out := List[int]()
+    for y in 0..h
+        for x in 0..w
+            src := win[(y + 3) * ww + x + 3]
+            mut d0 := 0
+            mut d1 := 0
+            c := (y + 1) * aw + x + 1
+            if s0 > 0
+                if y.bit_and(1) == 0
+                    up := c - aw
+                    dn := c + aw
+                    pa := (b5[up] + b5[dn]) * 6 + (b5[up - 1] + b5[dn - 1] + b5[up + 1] + b5[dn + 1]) * 5
+                    pb := (a5[up] + a5[dn]) * 6 + (a5[up - 1] + a5[dn - 1] + a5[up + 1] + a5[dn + 1]) * 5
+                    d0 = (pb - pa * src + 256).shr(9)
+                else
+                    pa := b5[c] * 6 + (b5[c - 1] + b5[c + 1]) * 5
+                    pb := a5[c] * 6 + (a5[c - 1] + a5[c + 1]) * 5
+                    d0 = (pb - pa * src + 128).shr(8)
+            if s1 > 0
+                up := c - aw
+                dn := c + aw
+                qa := (b3[c] + b3[c - 1] + b3[c + 1] + b3[up] + b3[dn]) * 4 + (b3[up - 1] + b3[up + 1] + b3[dn - 1] + b3[dn + 1]) * 3
+                qb := (a3[c] + a3[c - 1] + a3[c + 1] + a3[up] + a3[dn]) * 4 + (a3[up - 1] + a3[up + 1] + a3[dn - 1] + a3[dn + 1]) * 3
+                d1 = (qb - qa * src + 256).shr(9)
+            out.push((src + (w0 * d0 + w2 * d1 + 1024).shr(11)).max(0).min(pmax))
+    out
+
+## Loop restoration of plane `pl`: `pre` is the deblocked plane, `cdf` the
+## CDEF output (also the starting point of the result, `out`).
+fn av1_lr_plane(pre List[int], cdf List[int], mut out List[int], stride int, pw int, ph int, ssy int, unit_log2 int, lr Av1Lr, bd int)
+    usz := 1.shl(unit_log2)
+    mut k := 0
+    while true
+        s_start := (64 * k - 8).shr(ssy)
+        s_end := s_start + 64.shr(ssy) - 1
+        y0 := s_start.max(0)
+        y1 := s_end.min(ph - 1)
+        if y0 > ph - 1
+            break
+        k += 1
+        urow := ((y0 + 8.shr(ssy)) / usz).min(lr.units_y - 1)
+        h := y1 - y0 + 1
+        for ucol in 0..lr.units_x
+            x0 := ucol * usz
+            x1 := if ucol == lr.units_x - 1 then pw - 1 else x0 + usz - 1
+            ui := urow * lr.units_x + ucol
+            kind := lr.kind[ui]
+            if kind == 0 or x0 > pw - 1
+                continue
+            w := x1 - x0 + 1
+            win := av1_lr_window(pre, cdf, stride, pw, ph, s_start, s_end, x0, y0, w, h)
+            cf := lr.coef[ui * 6..ui * 6 + 6]
+            res := if kind == 1 then av1_wiener(win, w, h, cf, bd) else av1_sgr(win, w, h, cf, bd)
+            for yy in 0..h
+                for xx in 0..w
+                    out[(y0 + yy) * stride + x0 + xx] = res[yy * w + xx]
+
+## Runs the post filters over `f` in place: deblocking, CDEF, loop restoration.
+pub fn av1_post(mut f Av1Frame, hdr Av1Hdr, info BlockInfo) ! ImageError
+    if hdr.f["sr_denom"] != 8
+        return Unsupported(what: "AV1 super-resolution")
+    if hdr.f["lf0"] > 0 or hdr.f["lf1"] > 0
+        av1_deblock(mut f, hdr, info)
+    want_lr := hdr.f["lr0"] > 0 or hdr.f["lr1"] > 0 or hdr.f["lr2"] > 0
+    cdef_on := av1_hv(hdr.f, "cdef_on") == 1
+    if not cdef_on and not want_lr
+        return
+    pre := f.planes
+    mut cdf := [p.pix for p in pre]
+    if cdef_on
+        cdf = av1_cdef(pre, f, hdr, info)
+    mut res := cdf
+    if want_lr
+        for pl in 0..pre.len()
+            if hdr.f["lr{pl}"] == 0
+                continue
+            ssx := if pl == 0 then 0 else f.sub_x
+            ssy := if pl == 0 then 0 else f.sub_y
+            pw := (hdr.f["w"] + ssx).shr(ssx)
+            ph := (hdr.f["h"] + ssy).shr(ssy)
+            ulog := if pl == 0 then hdr.f["lr_unit0"] else hdr.f["lr_unit1"]
+            mut o := res[pl]
+            av1_lr_plane(pre[pl].pix, cdf[pl], mut o, pre[pl].stride, pw, ph, ssy, ulog, info.lr[pl], f.bd)
+            res[pl] = o
+    for pl in 0..pre.len()
+        f.planes[pl].pix = res[pl]

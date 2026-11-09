@@ -1,0 +1,213 @@
+## AVIF pictures (AV1 still images in HEIF, `heif.ail`): decodes the primary
+## item (or the tiles of a grid) with the AV1 decoder (`av1tile.ail`,
+## `av1post.ail`), then makes colour: chroma upsampling, YUV to RGB, the alpha
+## plane, and the `irot`/`imir` orientation. The arithmetic is libyuv's fixed-point
+## conversion with its bilinear chroma upsampling, which libavif (and so Chrome)
+## uses for 8-bit pictures, so 8-bit pictures match libavif exactly. Deeper
+## pictures are brought to 8 bits first.
+
+## The AV1 data of item `idx`: its `av1C` configuration OBUs, then its bytes.
+fn avif_obus(r Heif, idx int) List[int]
+    mut out := List[int]()
+    cfg := r.items[idx].av1c
+    if cfg.len() > 4
+        out.extend(cfg[4..])
+    out.extend(r.item_bytes(idx))
+    out
+
+## The decoded frame of item `idx`, a grid being stitched from its tiles.
+fn avif_frame(r Heif, idx int) Av1Frame ! ImageError
+    kind := r.items[idx].kind
+    if kind == "grid"
+        return avif_grid(r)
+    if kind != "av01"
+        return Unsupported(what: "AVIF item of type {kind}")
+    av1_decode(avif_obus(r, idx))
+
+## The tiles of the primary grid item joined into one frame of `out_w` x `out_h`.
+fn avif_grid(r Heif) Av1Frame ! ImageError
+    n := r.tiles.len()
+    if n == 0 or n != r.rows * r.cols
+        return Bad(why: "AVIF grid tile count")
+    mut frames := List[Av1Frame]()
+    for tid in r.tiles
+        ti := hf_item_index(r.items, tid)
+        if ti < 0 or r.items[ti].kind != "av01"
+            return Bad(why: "AVIF grid tile is not an AV1 image")
+        frames.push(av1_decode(avif_obus(r, ti))?)
+    first := frames[0]
+    mut planes := List[Av1Plane]()
+    for pl in 0..first.planes.len()
+        sx := if pl == 0 then 0 else first.sub_x
+        sy := if pl == 0 then 0 else first.sub_y
+        pw := (r.out_w + sx).shr(sx)
+        ph := (r.out_h + sy).shr(sy)
+        tw := first.planes[pl].w
+        th := first.planes[pl].h
+        mut pix := [0 for _ in 0..pw * ph]
+        for t in 0..n
+            x0 := (t % r.cols) * tw
+            y0 := (t / r.cols) * th
+            tp := frames[t].planes[pl]
+            for yy in 0..tp.h
+                if y0 + yy >= ph
+                    break
+                for xx in 0..tp.w
+                    if x0 + xx >= pw
+                        break
+                    pix[(y0 + yy) * pw + x0 + xx] = tp.pix[yy * tp.stride + xx]
+        planes.push(Av1Plane(w: pw, h: ph, stride: pw, pix: pix))
+    Av1Frame(planes: planes, bd: first.bd, sub_x: first.sub_x, sub_y: first.sub_y, mono: first.mono)
+
+fn avif_to8(v int, bd int) int
+    if bd == 8
+        return v
+    ((v + 1.shl(bd - 9)).shr(bd - 8)).min(255)
+
+## Plane `p` as 8-bit samples at the full picture size `w` x `h`. Chroma planes
+## (`sx`, `sy` = 1 for a halved side) are upsampled bilinearly the way libyuv
+## does: the nearer sample counts 3, the farther 1 (9, 3, 3, 1 in two
+## directions); the last column of an odd width takes the nearest sample.
+fn avif_plane8(p Av1Plane, bd int, w int, h int, sx int, sy int) List[int]
+    mut out := List[int]()
+    st := p.stride
+    for y in 0..h
+        mut ia := y
+        mut ja := y
+        if sy == 1
+            ia = y.shr(1)
+            ja = (if y.bit_and(1) == 0 then ia - 1 else ia + 1).max(0).min(p.h - 1)
+        for x in 0..w
+            mut ib := x
+            mut jb := x
+            if sx == 1
+                ib = x.shr(1)
+                jb = (if x.bit_and(1) == 0 then ib - 1 else ib + 1).max(0).min(p.w - 1)
+                if x == w - 1 and w.bit_and(1) == 1
+                    jb = ib
+            a := p.pix[ia * st + ib]
+            mut v := a
+            if sx == 1 and sy == 1
+                v = (9 * a + 3 * p.pix[ia * st + jb] + 3 * p.pix[ja * st + ib] + p.pix[ja * st + jb] + 8).shr(4)
+            elif sx == 1
+                v = (3 * a + p.pix[ia * st + jb] + 2).shr(2)
+            elif sy == 1
+                v = (3 * a + p.pix[ja * st + ib] + 2).shr(2)
+            out.push(avif_to8(v, bd))
+    out
+
+## libyuv's constants for the matrix coefficients `mtrx` (1 is BT.709, 9 and 10
+## BT.2020, everything else BT.601) and range: [ub, ug, vg, vr, yg, yb].
+fn avif_coef(mtrx int, full bool) List[int]
+    yg := if full then 16320 else 18997
+    yb := if full then 32 else -1160
+    if mtrx == 1
+        if full
+            return [119, 12, 30, 101, yg, yb]
+        return [128, 14, 34, 115, yg, yb]
+    if mtrx == 9 or mtrx == 10
+        if full
+            return [120, 11, 37, 94, yg, yb]
+        return [128, 12, 42, 107, yg, yb]
+    if full
+        return [113, 22, 46, 90, yg, yb]
+    [128, 25, 52, 102, yg, yb]
+
+## `0xRRGGBB` for every sample of the 8-bit planes.
+fn avif_rgb(yv List[int], uv List[int], vv List[int], mtrx int, full bool) List[int]
+    mut out := List[int]()
+    if mtrx == 0
+        for i in 0..yv.len()
+            out.push(vv[i].shl(16).bit_or(yv[i].shl(8)).bit_or(uv[i]))
+        return out
+    cf := avif_coef(mtrx, full)
+    for i in 0..yv.len()
+        y1 := (yv[i] * 257 * cf[4]).shr(16)
+        du := uv[i] - 128
+        dv := vv[i] - 128
+        b := ((y1 + cf[0] * du + cf[5]).shr(6)).max(0).min(255)
+        g := ((y1 - cf[1] * du - cf[2] * dv + cf[5]).shr(6)).max(0).min(255)
+        r := ((y1 + cf[3] * dv + cf[5]).shr(6)).max(0).min(255)
+        out.push(r.shl(16).bit_or(g.shl(8)).bit_or(b))
+    out
+
+## `irot` (quarter turns anticlockwise) then `imir` (0: left and right swap,
+## 1: top and bottom swap) applied to a picture.
+fn avif_orient(img Rgba, rot int, mir int) Rgba
+    mut cur := img
+    if rot > 0
+        w := cur.width
+        h := cur.height
+        nw := if rot == 2 then w else h
+        nh := if rot == 2 then h else w
+        mut px := List[int]()
+        for y in 0..nh
+            for x in 0..nw
+                if rot == 1
+                    px.push(cur.px[x * w + (w - 1 - y)])
+                elif rot == 2
+                    px.push(cur.px[(h - 1 - y) * w + (w - 1 - x)])
+                else
+                    px.push(cur.px[(h - 1 - x) * w + y])
+        cur = Rgba(width: nw, height: nh, px: px)
+    if mir >= 0
+        w2 := cur.width
+        h2 := cur.height
+        mut px2 := List[int]()
+        for y in 0..h2
+            for x in 0..w2
+                if mir == 0
+                    px2.push(cur.px[y * w2 + (w2 - 1 - x)])
+                else
+                    px2.push(cur.px[(h2 - 1 - y) * w2 + x])
+        cur = Rgba(width: w2, height: h2, px: px2)
+    cur
+
+## The picture of an AVIF file.
+pub fn avif(d List[int]) Rgba ! ImageError
+    r := heif(d)?
+    pi := hf_item_index(r.items, r.primary)
+    if pi < 0 or r.items[pi].extents.len() == 0
+        return Bad(why: "AVIF primary item has no data")
+    w := r.out_w
+    h := r.out_h
+    obus := avif_obus(r, pi)
+    hdr := av1_parse(obus)?
+    seq := hdr.s
+    fr := avif_frame(r, pi)?
+    if fr.planes[0].w < w or fr.planes[0].h < h
+        return Bad(why: "AVIF picture is smaller than its declared size")
+    mtrx := if r.matrix >= 0 then r.matrix else seq["mtrx"]
+    full := if r.matrix >= 0 then r.full_range else seq["range"] == 1
+    yv := avif_plane8(fr.planes[0], fr.bd, w, h, 0, 0)
+    mut uv := [128 for _ in 0..w * h]
+    mut vv := [128 for _ in 0..w * h]
+    if not fr.mono
+        uv = avif_plane8(fr.planes[1], fr.bd, w, h, fr.sub_x, fr.sub_y)
+        vv = avif_plane8(fr.planes[2], fr.bd, w, h, fr.sub_x, fr.sub_y)
+    rgb := avif_rgb(yv, uv, vv, mtrx, full)
+    mut alpha := [255 for _ in 0..w * h]
+    if r.alpha >= 0
+        ai := hf_item_index(r.items, r.alpha)
+        if ai < 0 or r.items[ai].kind != "av01"
+            return Unsupported(what: "AVIF alpha plane that is not a single AV1 image")
+        aobus := avif_obus(r, ai)
+        ahdr := av1_parse(aobus)?
+        aseq := ahdr.s
+        af := avif_frame(r, ai)?
+        if af.planes[0].w < w or af.planes[0].h < h
+            return Bad(why: "AVIF alpha plane is smaller than the picture")
+        alpha = avif_plane8(af.planes[0], af.bd, w, h, 0, 0)
+        if aseq["range"] == 0
+            alpha = [((a - 16) * 255 / 219).max(0).min(255) for a in alpha]
+    mut px := List[int]()
+    for i in 0..w * h
+        a := alpha[i]
+        mut c := rgb[i]
+        if r.premult and a > 0 and a < 255
+            cr := (c.shr(16).bit_and(255) * 255 + a / 2) / a
+            cg := (c.shr(8).bit_and(255) * 255 + a / 2) / a
+            cb := (c.bit_and(255) * 255 + a / 2) / a
+            c = cr.min(255).shl(16).bit_or(cg.min(255).shl(8)).bit_or(cb.min(255))
+        px.push(a.shl(24).bit_or(c))
+    avif_orient(Rgba(width: w, height: h, px: px), r.rotation, r.mirror)

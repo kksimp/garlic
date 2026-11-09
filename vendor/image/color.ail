@@ -211,3 +211,28 @@ fn load(name str, ext str) List[int] ! fs.IoError
 @test fn avif_dims_comes_from_the_container() !
     for name in ["avif_rgb", "avif_rgba"]
         assert_eq(dims(load(name, "avif")?), [37, 29])
+
+@test fn avif_matches_libavif() !
+    # The colour step is libyuv's, as libavif uses it: chroma layouts, both
+    # ranges, grey, alpha, odd and even sizes. (Needs the AV1 decoder.)
+    for name in [
+        "avif_rgb",
+        "avif_rgba",
+        "avif_444",
+        "avif_422",
+        "avif_limited",
+        "avif_gray",
+        "avif_q20",
+        "avif_q95",
+        "avif_alpha_444",
+        "avif_160x96",
+        "avif_even_64x48",
+    ]
+        img := decode(load(name, "avif")?)?
+        assert_eq(off_by(img, name)?, [0, 0])
+
+@test fn avif_premultiplied_alpha_is_undone() !
+    # libavif divides in another rounding; within 2 of its result.
+    img := decode(load("avif_alpha_premul", "avif")?)?
+    off := off_by(img, "avif_alpha_premul")?
+    assert(off[0] >= 0 and off[0] <= 2)
