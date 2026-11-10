@@ -1,0 +1,813 @@
+## The canvas 2D bitmap (HTML §4.12.5): one RGBA surface per canvas, kept
+## natively so drawing is fast, and the natives `canvas2d_prelude.ail`'s
+## JavaScript calls for every drawing operation. Pixels are `0xAARRGGBB`
+## ints with straight alpha, row by row, like `image.Rgba`.
+##
+## The JavaScript side (state stack, path building, strokes, colour
+## parsing) hands this file device-space geometry: polygons as flat
+## `x, y` lists with a point count per subpath. `fill` rasterizes them with
+## the signed-area accumulator of `image.Canvas` (exact coverage, non-zero
+## or even-odd), `blit` draws a surface through a matrix, `text` draws a
+## string with a system TrueType face, `png` encodes a surface (std.compress
+## zlib), and `flush` publishes changed pixels of canvases in the page to
+## the browser as a `data-garlic-pixels` attribute on the node (the log of
+## changes only, so scripts never see it).
+use image
+use std.compress
+use std.fs
+
+## One canvas bitmap.
+pub struct Surface
+    w int
+    h int
+    px List[int]
+    ## Clip coverage 0..255 for every pixel, empty when nothing is clipped.
+    mask List[int]
+    ## Masks stored by `save`, restored by `restore`.
+    saved List[List[int]]
+    ## The canvas element's node id, or -1, and whether pixels changed since
+    ## the last `flush`.
+    node int
+    dirty bool
+
+pub struct CanvasState
+    surfaces Map[int, ref Surface]
+    seq int
+    ## Fonts by "kind/bold" ("0/0" sans, "1/0" serif, "2/0" mono); an empty
+    ## list records that none was found.
+    fonts Map[str, List[image.Font]]
+    ## Decoded `data:` pictures by their address.
+    pics Map[str, int]
+
+pub fn new_canvas_state() ref CanvasState
+    ref CanvasState(surfaces: {}, seq: 0, fonts: {}, pics: {})
+
+## Most pixels one canvas may have.
+MAX_CANVAS_PIXELS := 16777216
+
+# ----------------------------------------------------------------- helpers
+
+## Whether every number is finite and under a billion, so it converts to an
+## int without trapping.
+fn sane(xs List[float]) bool
+    for v in xs
+        if not (v.abs() < 1000000000.0)
+            return false
+    true
+
+fn argf(args List[Value], i int) float
+    num_of(arg_at(args, i)) else 0.0
+
+fn argi(args List[Value], i int) int
+    argf(args, i).floor().to_int()
+
+fn px_a(p int) int
+    p.shr(24).bit_and(255)
+
+fn px_r(p int) int
+    p.shr(16).bit_and(255)
+
+fn px_g(p int) int
+    p.shr(8).bit_and(255)
+
+fn px_b(p int) int
+    p.bit_and(255)
+
+fn clamp255(v float) int
+    r := v.round()
+    if r <= 0.0
+        return 0
+    if r >= 255.0
+        return 255
+    r.to_int()
+
+fn pack(r float, g float, b float, a float) int
+    clamp255(a * 255.0).shl(24) + clamp255(r).shl(16) + clamp255(g).shl(8) + clamp255(b)
+
+## `dst` with colour (`r`, `g`, `b` in 0..255) over it at opacity `sa`.
+fn over(dst int, r float, g float, b float, sa float) int
+    if sa <= 0.0
+        return dst
+    da := px_a(dst).to_float() / 255.0
+    oa := sa + da * (1.0 - sa)
+    if oa <= 0.0
+        return 0
+    k := da * (1.0 - sa)
+    nr := (r * sa + px_r(dst).to_float() * k) / oa
+    ng := (g * sa + px_g(dst).to_float() * k) / oa
+    nb := (b * sa + px_b(dst).to_float() * k) / oa
+    pack(nr, ng, nb, oa)
+
+## `dst` with `sa` of its alpha erased (destination-out).
+fn erase(dst int, sa float) int
+    da := px_a(dst).to_float() * (1.0 - sa)
+    na := clamp255(da)
+    if na == 0
+        return 0
+    na.shl(24) + dst.bit_and(0xffffff)
+
+fn Surface.new_blank(w int, h int) Surface
+    Surface(w: w, h: h, px: [0 for _ in 0..w * h], mask: [], saved: [], node: -1, dirty: true)
+
+# ------------------------------------------------------------------ paints
+
+## The colour of `paint` at device point (`x`, `y`), as `0xAARRGGBB`.
+## A paint is a flat list: `0, r, g, b, a` (solid, a in 0..1), or `1, x0, y0,
+## x1, y1, n` / `2, x0, y0, r0, x1, y1, r1, n` (linear, radial) followed by
+## `n` stops `offset, r, g, b, a`.
+fn paint_at(paint List[float], x float, y float) int
+    kind := paint[0].to_int()
+    if kind == 0
+        return pack(paint[1], paint[2], paint[3], paint[4])
+    mut t := 0.0
+    mut head := 6
+    if kind == 1
+        dx := paint[3] - paint[1]
+        dy := paint[4] - paint[2]
+        len2 := dx * dx + dy * dy
+        if len2 <= 0.0
+            return 0
+        t = ((x - paint[1]) * dx + (y - paint[2]) * dy) / len2
+    else
+        head = 8
+        cdx := paint[4] - paint[1]
+        cdy := paint[5] - paint[2]
+        dr := paint[6] - paint[3]
+        qx := x - paint[1]
+        qy := y - paint[2]
+        a := cdx * cdx + cdy * cdy - dr * dr
+        b := qx * cdx + qy * cdy + paint[3] * dr
+        c := qx * qx + qy * qy - paint[3] * paint[3]
+        mut found := false
+        if a.abs() < 0.000000001
+            if b.abs() > 0.000000001
+                t = c / (2.0 * b)
+                found = paint[3] + t * dr >= 0.0
+        else
+            disc := b * b - a * c
+            if disc >= 0.0
+                root := disc.sqrt()
+                s1 := (b + root) / a
+                s2 := (b - root) / a
+                hi := if s1 > s2 then s1 else s2
+                lo := if s1 > s2 then s2 else s1
+                if paint[3] + hi * dr >= 0.0
+                    t = hi
+                    found = true
+                elif paint[3] + lo * dr >= 0.0
+                    t = lo
+                    found = true
+        if not found
+            return 0
+    n := paint[head - 1].to_int()
+    if n == 0
+        return 0
+    if t <= paint[head]
+        return pack(paint[head + 1], paint[head + 2], paint[head + 3], paint[head + 4])
+    for i in 1..n
+        o1 := head + i * 5
+        o0 := o1 - 5
+        if t <= paint[o1]
+            span := paint[o1] - paint[o0]
+            f := if span <= 0.0 then 1.0 else (t - paint[o0]) / span
+            return pack(
+                paint[o0 + 1] + (paint[o1 + 1] - paint[o0 + 1]) * f,
+                paint[o0 + 2] + (paint[o1 + 2] - paint[o0 + 2]) * f,
+                paint[o0 + 3] + (paint[o1 + 3] - paint[o0 + 3]) * f,
+                paint[o0 + 4] + (paint[o1 + 4] - paint[o0 + 4]) * f,
+            )
+    last := head + (n - 1) * 5
+    pack(paint[last + 1], paint[last + 2], paint[last + 3], paint[last + 4])
+
+# -------------------------------------------------------------------- fill
+
+## One edge into `cv`, with the parts left of the canvas or right of it
+## pushed onto its border (so coverage to the right stays right).
+fn clip_edge(mut cv image.Canvas, ax float, ay float, bx float, by float, wid float)
+    if ax >= 0.0 and ax <= wid and bx >= 0.0 and bx <= wid
+        cv.line(ax, ay, bx, by)
+        return
+    if ax <= 0.0 and bx <= 0.0
+        cv.line(0.0, ay, 0.0, by)
+        return
+    if ax >= wid and bx >= wid
+        cv.line(wid, ay, wid, by)
+        return
+    if (ax < 0.0 and bx > 0.0) or (bx < 0.0 and ax > 0.0)
+        t := (0.0 - ax) / (bx - ax)
+        my := ay + t * (by - ay)
+        clip_edge(mut cv, ax, ay, 0.0, my, wid)
+        clip_edge(mut cv, 0.0, my, bx, by, wid)
+        return
+    t := (wid - ax) / (bx - ax)
+    my := ay + t * (by - ay)
+    clip_edge(mut cv, ax, ay, wid, my, wid)
+    clip_edge(mut cv, wid, my, bx, by, wid)
+
+## Composites the coverage `cv` (whose corner is at (`ox`, `oy`) on the
+## surface) in `paint`, at opacity `alpha`; `mode` 0 is source-over and 1
+## erases (destination-out).
+fn Surface.cover(
+    mut self,
+    cv image.Canvas,
+    ox int,
+    oy int,
+    evenodd bool,
+    paint List[float],
+    alpha float,
+    mode int,
+)
+    stride := cv.width + 2
+    solid := paint[0].to_int() == 0
+    mut sc := 0
+    if solid
+        sc = paint_at(paint, 0.0, 0.0)
+    for y in 0..cv.height
+        sy := oy + y
+        if sy < 0 or sy >= h
+            continue
+        mut a := 0.0
+        row := y * stride
+        for x in 0..cv.width
+            a += cv.acc[row + x]
+            sx := ox + x
+            if sx < 0 or sx >= w
+                continue
+            m := a.abs()
+            mut cov := m.min(1.0)
+            if evenodd
+                r2 := m - 2.0 * (m / 2.0).floor()
+                cov = if r2 > 1.0 then 2.0 - r2 else r2
+            if cov < 0.004
+                continue
+            if cov > 0.996
+                cov = 1.0
+            at := sy * w + sx
+            if mask.len() > 0
+                cov = cov * mask[at].to_float() / 255.0
+                if cov <= 0.0
+                    continue
+            c := if solid then sc else paint_at(paint, sx.to_float() + 0.5, sy.to_float() + 0.5)
+            sa := cov * alpha * px_a(c).to_float() / 255.0
+            if mode == 1
+                px[at] = erase(px[at], sa)
+            elif sa >= 0.999
+                px[at] = 0xff000000 + c.bit_and(0xffffff)
+            else
+                px[at] = over(
+                    px[at],
+                    px_r(c).to_float(),
+                    px_g(c).to_float(),
+                    px_b(c).to_float(),
+                    sa,
+                )
+    dirty = true
+
+## Rasterizes the polygons `pts` (flat x, y; `counts` points each).
+fn Surface.fill_polys(
+    mut self,
+    pts List[float],
+    counts List[int],
+    evenodd bool,
+    paint List[float],
+    alpha float,
+    mode int,
+)
+    if pts.len() < 4 or not sane(pts)
+        return
+    mut minx := pts[0]
+    mut maxx := pts[0]
+    mut miny := pts[1]
+    mut maxy := pts[1]
+    mut i := 2
+    while i + 1 < pts.len()
+        minx = minx.min(pts[i])
+        maxx = maxx.max(pts[i])
+        miny = miny.min(pts[i + 1])
+        maxy = maxy.max(pts[i + 1])
+        i += 2
+    x0 := minx.floor().max(0.0).to_int()
+    y0 := miny.floor().max(0.0).to_int()
+    x1 := maxx.ceil().min(w.to_float()).to_int()
+    y1 := maxy.ceil().min(h.to_float()).to_int()
+    if x1 <= x0 or y1 <= y0
+        return
+    mut cv := image.Canvas.new(x1 - x0, y1 - y0)
+    wid := (x1 - x0).to_float()
+    mut at := 0
+    for n in counts
+        if n >= 2
+            for k in 0..n
+                j := if k + 1 == n then 0 else k + 1
+                ax := pts[(at + k) * 2] - x0.to_float()
+                ay := pts[(at + k) * 2 + 1] - y0.to_float()
+                bx := pts[(at + j) * 2] - x0.to_float()
+                by := pts[(at + j) * 2 + 1] - y0.to_float()
+                clip_edge(mut cv, ax, ay, bx, by, wid)
+        at += n
+    cover(cv, x0, y0, evenodd, paint, alpha, mode)
+
+## Intersects the clip with the area the polygons cover.
+fn Surface.clip_polys(mut self, pts List[float], counts List[int], evenodd bool)
+    mut cur := mask
+    if cur.len() == 0
+        cur = [255 for _ in 0..w * h]
+    mut cov := Surface.new_blank(w, h)
+    cov.fill_polys(pts, counts, evenodd, [0.0, 255.0, 255.0, 255.0, 1.0], 1.0, 0)
+    mut out := List[int]()
+    for i in 0..w * h
+        out.push(cur[i] * px_a(cov.px[i]) / 255)
+    mask = out
+
+# ------------------------------------------------------------------ images
+
+## Draws `src` through the matrix `m` (a, b, c, d, e, f): its rectangle
+## (`sx`, `sy`, `sw`, `sh`) onto (`dx`, `dy`, `dw`, `dh`) in user space.
+fn Surface.blit(mut self, src ref Surface, v List[float], smooth bool)
+    m := v[0..6]
+    sx := v[6]
+    sy := v[7]
+    sw := v[8]
+    sh := v[9]
+    dx := v[10]
+    dy := v[11]
+    dw := v[12]
+    dh := v[13]
+    alpha := v[14]
+    if not sane(v)
+        return
+    det := m[0] * m[3] - m[1] * m[2]
+    if det.abs() < 0.000000000001 or dw <= 0.0 or dh <= 0.0 or sw <= 0.0 or sh <= 0.0
+        return
+    cxs := [dx, dx + dw, dx, dx + dw]
+    cys := [dy, dy, dy + dh, dy + dh]
+    mut minx := 1000000000.0
+    mut maxx := -1000000000.0
+    mut miny := 1000000000.0
+    mut maxy := -1000000000.0
+    for k in 0..4
+        qx := m[0] * cxs[k] + m[2] * cys[k] + m[4]
+        qy := m[1] * cxs[k] + m[3] * cys[k] + m[5]
+        minx = minx.min(qx)
+        maxx = maxx.max(qx)
+        miny = miny.min(qy)
+        maxy = maxy.max(qy)
+    bx0 := minx.floor().max(0.0).to_int()
+    by0 := miny.floor().max(0.0).to_int()
+    bx1 := maxx.ceil().min(w.to_float()).to_int()
+    by1 := maxy.ceil().min(h.to_float()).to_int()
+    lx := sx.floor().max(0.0).to_int()
+    ly := sy.floor().max(0.0).to_int()
+    hx := (sx + sw).ceil().min(src.w.to_float()).to_int() - 1
+    hy := (sy + sh).ceil().min(src.h.to_float()).to_int() - 1
+    if hx < lx or hy < ly
+        return
+    scale_x := sw / dw
+    scale_y := sh / dh
+    bilinear := smooth
+        and (scale_x != 1.0 or scale_y != 1.0 or m[0] != 1.0 or m[3] != 1.0 or m[1] != 0.0 or m[2] != 0.0)
+    for py in by0..by1
+        for pxx in bx0..bx1
+            fx := pxx.to_float() + 0.5 - m[4]
+            fy := py.to_float() + 0.5 - m[5]
+            ux := (m[3] * fx - m[2] * fy) / det
+            uy := (0.0 - m[1] * fx + m[0] * fy) / det
+            if ux < dx or ux >= dx + dw or uy < dy or uy >= dy + dh
+                continue
+            tx := sx + (ux - dx) * scale_x
+            ty := sy + (uy - dy) * scale_y
+            mut c := 0
+            if bilinear
+                gx := tx - 0.5
+                gy := ty - 0.5
+                i0 := gx.floor().to_int()
+                j0 := gy.floor().to_int()
+                fxr := gx - i0.to_float()
+                fyr := gy - j0.to_float()
+                mut sa := 0.0
+                mut sr := 0.0
+                mut sg := 0.0
+                mut sb := 0.0
+                for q in 0..4
+                    ii := (if q % 2 == 0 then i0 else i0 + 1).max(lx).min(hx)
+                    jj := (if q < 2 then j0 else j0 + 1).max(ly).min(hy)
+                    wx := if q % 2 == 0 then 1.0 - fxr else fxr
+                    wy := if q < 2 then 1.0 - fyr else fyr
+                    p := src.px[jj * src.w + ii]
+                    wa := wx * wy * px_a(p).to_float()
+                    sa += wa
+                    sr += wa * px_r(p).to_float()
+                    sg += wa * px_g(p).to_float()
+                    sb += wa * px_b(p).to_float()
+                if sa > 0.0
+                    c = pack(sr / sa, sg / sa, sb / sa, sa / 255.0)
+            else
+                ii := tx.floor().to_int().max(lx).min(hx)
+                jj := ty.floor().to_int().max(ly).min(hy)
+                c = src.px[jj * src.w + ii]
+            at := py * w + pxx
+            mut cov := alpha * px_a(c).to_float() / 255.0
+            if mask.len() > 0
+                cov = cov * mask[at].to_float() / 255.0
+            if cov <= 0.0
+                continue
+            px[at] = over(px[at], px_r(c).to_float(), px_g(c).to_float(), px_b(c).to_float(), cov)
+    dirty = true
+
+# --------------------------------------------------------------------- png
+
+fn crc_table() List[int]
+    mut t := List[int]()
+    poly := 0xedb88320
+    for n in 0..256
+        mut c := n
+        for _ in 0..8
+            if c.bit_and(1) == 1
+                c = poly.bit_xor(c.shr(1))
+            else
+                c = c.shr(1)
+        t.push(c)
+    t
+
+fn be32(v int) List[int]
+    [v.shr(24).bit_and(255), v.shr(16).bit_and(255), v.shr(8).bit_and(255), v.bit_and(255)]
+
+fn png_chunk(table List[int], kind str, chunk List[int]) List[int]
+    mut body := List[int]()
+    for ch in kind.chars()
+        body.push(ch.code())
+    body.extend(chunk)
+    mut c := 0xffffffff
+    for b in body
+        c = table[c.bit_xor(b).bit_and(255)].bit_xor(c.shr(8))
+    mut out := be32(chunk.len())
+    out.extend(body)
+    out.extend(be32(c.bit_xor(0xffffffff)))
+    out
+
+## The surface as a PNG file (RGBA, 8 bits, std.compress zlib).
+fn Surface.png_bytes(self) List[int]
+    table := crc_table()
+    mut raw := List[int]()
+    for y in 0..h
+        raw.push(0)
+        for x in 0..w
+            p := px[y * w + x]
+            raw.push(px_r(p))
+            raw.push(px_g(p))
+            raw.push(px_b(p))
+            raw.push(px_a(p))
+    packed := compress.zlib(bytes.from_list([v.to_u8() for v in raw]))
+    z := [v.to_int() for v in packed.to_list()]
+    mut head := be32(w)
+    head.extend(be32(h))
+    head.extend([8, 6, 0, 0, 0])
+    mut out := [137, 80, 78, 71, 13, 10, 26, 10]
+    out.extend(png_chunk(table, "IHDR", head))
+    out.extend(png_chunk(table, "IDAT", z))
+    out.extend(png_chunk(table, "IEND", []))
+    out
+
+fn Surface.data_url(self) str
+    if w == 0 or h == 0
+        return "data:,"
+    b64 := bytes.from_list([v.to_u8() for v in png_bytes()]).base64()
+    "data:image/png;base64,{b64}"
+
+# ------------------------------------------------------------------- fonts
+
+## Where a system TrueType face for (`kind` 0 sans, 1 serif, 2 mono; `bold`)
+## may be: macOS, Linux (DejaVu, Liberation) and Windows.
+fn font_paths(kind int, bold bool) List[str]
+    if kind == 2
+        if bold
+            return [
+                "/System/Library/Fonts/Supplemental/Courier New Bold.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
+                "C:/Windows/Fonts/courbd.ttf",
+            ]
+        return [
+            "/System/Library/Fonts/Supplemental/Courier New.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+            "C:/Windows/Fonts/cour.ttf",
+        ]
+    if kind == 1
+        if bold
+            return [
+                "/System/Library/Fonts/Supplemental/Times New Roman Bold.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf",
+                "C:/Windows/Fonts/timesbd.ttf",
+            ]
+        return [
+            "/System/Library/Fonts/Supplemental/Times New Roman.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
+            "C:/Windows/Fonts/times.ttf",
+        ]
+    if bold
+        return [
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "C:/Windows/Fonts/arialbd.ttf",
+        ]
+    [
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+    ]
+
+## The face for (`kind`, `bold`), loaded once; the list is empty when no
+## file could be read (text then measures by a guess and draws nothing).
+fn Vm.face(mut self, kind int, bold bool) List[image.Font]
+    key := "{kind}/{if bold then 1 else 0}"
+    if cached := cvs.fonts.get(key)
+        return cached
+    mut found := List[image.Font]()
+    for p in font_paths(kind, bold)
+        raw := fs.read_bytes(p) else continue
+        f := image.Font.parse([v.to_int() for v in raw.to_list()]) else continue
+        found.push(f)
+        break
+    cvs.fonts[key] = found
+    found
+
+# ----------------------------------------------------------------- natives
+
+fn Vm.floats(mut self, v Value) List[float] ! Thrown
+    mut out := List[float]()
+    for x in iterate(v)?
+        out.push(num_of(x) else 0.0)
+    out
+
+fn Vm.ints(mut self, v Value) List[int] ! Thrown
+    mut out := List[int]()
+    for x in iterate(v)?
+        out.push((num_of(x) else 0.0).floor().to_int())
+    out
+
+## The bytes of a base64 `data:` picture address.
+fn canvas_data_bytes(src str) List[int]?
+    if not src.starts_with("data:")
+        return none
+    comma := src.find(",") else return none
+    meta := src.slice(5, comma).to_lower()
+    if not meta.ends_with(";base64")
+        return none
+    raw := bytes.from_base64(src.slice(comma + 1, src.chars().len())) else return none
+    [v.to_int() for v in raw.to_list()]
+
+## The `canvas.NAME` natives (`m` is the whole name).
+pub fn Vm.canvas_native(mut self, m str, args List[Value]) Value ! Thrown
+    if m == "canvas.new" or m == "canvas.resize"
+        first := if m == "canvas.new" then 0 else 1
+        cw := argi(args, first)
+        ch := argi(args, first + 1)
+        if cw < 0 or ch < 0 or cw * ch > MAX_CANVAS_PIXELS
+            return Value.Num(-1.0)
+        if m == "canvas.new"
+            cvs.seq += 1
+            cvs.surfaces[cvs.seq] = ref Surface(
+                w: cw,
+                h: ch,
+                px: [0 for _ in 0..cw * ch],
+                mask: [],
+                saved: [],
+                node: -1,
+                dirty: true,
+            )
+            return Value.Num(cvs.seq.to_float())
+        s := cvs.surfaces.get(argi(args, 0)) else return Undef
+        s.w = cw
+        s.h = ch
+        s.px = [0 for _ in 0..cw * ch]
+        s.mask = []
+        s.saved = []
+        s.dirty = true
+        return Undef
+    if m == "canvas.measure" or m == "canvas.ascent" or m == "canvas.descent"
+        return text_metric(m, args)?
+    if m == "canvas.image"
+        return Value.Num(canvas_image(to_string(arg_at(args, 0))?).to_float())
+    id := argi(args, 0)
+    s := cvs.surfaces.get(id) else return Value.Num(-1.0)
+    if m == "canvas.bind"
+        if n := node_id(arg_at(args, 1))
+            s.node = n
+        return Undef
+    if m == "canvas.size"
+        return array([Value.Num(s.w.to_float()), Value.Num(s.h.to_float())])
+    if m == "canvas.fill"
+        pts := floats(arg_at(args, 1))?
+        counts := ints(arg_at(args, 2))?
+        paint := floats(arg_at(args, 4))?
+        if paint.len() >= 5
+            s.fill_polys(pts, counts, argi(args, 3) == 1, paint, argf(args, 5), argi(args, 6))
+        return Undef
+    if m == "canvas.clip"
+        s.clip_polys(floats(arg_at(args, 1))?, ints(arg_at(args, 2))?, argi(args, 3) == 1)
+        return Undef
+    if m == "canvas.save"
+        s.saved.push(s.mask)
+        return Undef
+    if m == "canvas.restore"
+        n := s.saved.len()
+        if n > 0
+            s.mask = s.saved[n - 1]
+            s.saved.remove_at(n - 1)
+        return Undef
+    if m == "canvas.reset"
+        s.px = [0 for _ in 0..s.w * s.h]
+        s.mask = []
+        s.saved = []
+        s.dirty = true
+        return Undef
+    if m == "canvas.png"
+        return Value.Str(s.data_url())
+    if m == "canvas.pngbytes"
+        return new_bytes_array(s.png_bytes())?
+    if m == "canvas.read"
+        o := obj_of(arg_at(args, 5)) else return Undef
+        buf := obj_of(o.prim) else return Undef
+        base := view_off(o)
+        rx := argi(args, 1)
+        ry := argi(args, 2)
+        rw := argi(args, 3)
+        rh := argi(args, 4)
+        for j in 0..rh
+            for i in 0..rw
+                sx := rx + i
+                sy := ry + j
+                if sx < 0 or sy < 0 or sx >= s.w or sy >= s.h
+                    continue
+                p := s.px[sy * s.w + sx]
+                k := base + (j * rw + i) * 4
+                buf.elems[k] = Value.Num(px_r(p).to_float())
+                buf.elems[k + 1] = Value.Num(px_g(p).to_float())
+                buf.elems[k + 2] = Value.Num(px_b(p).to_float())
+                buf.elems[k + 3] = Value.Num(px_a(p).to_float())
+        return Undef
+    if m == "canvas.write"
+        bytes_in := bytes_of(arg_at(args, 5))?
+        wx := argi(args, 1)
+        wy := argi(args, 2)
+        ww := argi(args, 3)
+        j0 := argi(args, 7)
+        i0 := argi(args, 6)
+        j1 := j0 + argi(args, 9)
+        i1 := i0 + argi(args, 8)
+        for j in j0..j1
+            for i in i0..i1
+                tx := wx + i
+                ty := wy + j
+                if tx < 0 or ty < 0 or tx >= s.w or ty >= s.h or i < 0 or j < 0
+                    continue
+                k := (j * ww + i) * 4
+                if k + 3 >= bytes_in.len()
+                    continue
+                s.px[ty * s.w + tx] = bytes_in[k + 3].shl(24)
+                    + bytes_in[k].shl(16)
+                    + bytes_in[k + 1].shl(8)
+                    + bytes_in[k + 2]
+        s.dirty = true
+        return Undef
+    if m == "canvas.blit"
+        sid := argi(args, 1)
+        src := cvs.surfaces.get(sid) else return Undef
+        if sid == id
+            # Drawing a canvas onto itself reads a copy of it.
+            snap := ref Surface(
+                w: s.w,
+                h: s.h,
+                px: s.px,
+                mask: [],
+                saved: [],
+                node: -1,
+                dirty: false,
+            )
+            do_blit(s, snap, args)?
+        else
+            do_blit(s, src, args)?
+        return Undef
+    if m == "canvas.text"
+        return text_draw(s, args)?
+    type_error("{m} is not supported")
+
+## `canvas.blit` (id, src, matrix, sx, sy, sw, sh, dx, dy, dw, dh, alpha, smooth).
+fn Vm.do_blit(mut self, s ref Surface, src ref Surface, args List[Value]) ! Thrown
+    mat := floats(arg_at(args, 2))?
+    if mat.len() != 6
+        return
+    mut v := mat
+    for i in 3..12
+        v.push(argf(args, i))
+    s.blit(src, v, argi(args, 12) == 1)
+
+## The picture at a `data:` address as a surface of its own, by handle, or -1.
+pub fn Vm.canvas_image(mut self, src str) int
+    if id := cvs.pics.get(src)
+        return id
+    raw := canvas_data_bytes(src) else return -1
+    px := image.decode(raw) else return -1
+    if px.width * px.height > MAX_CANVAS_PIXELS
+        return -1
+    cvs.seq += 1
+    cvs.surfaces[cvs.seq] = ref Surface(
+        w: px.width,
+        h: px.height,
+        px: px.px,
+        mask: [],
+        saved: [],
+        node: -1,
+        dirty: false,
+    )
+    cvs.pics[src] = cvs.seq
+    cvs.seq
+
+## `canvas.measure` (text, px, kind, bold) is the advance width,
+## `canvas.ascent` and `canvas.descent` (px, kind, bold) the face's.
+fn Vm.text_metric(mut self, m str, args List[Value]) Value ! Thrown
+    mut text := ""
+    mut base := 0
+    if m == "canvas.measure"
+        text = to_string(arg_at(args, 0))?
+        base = 1
+    size := argf(args, base)
+    fnts := face(argi(args, base + 1), argi(args, base + 2) == 1)
+    if fnts.len() == 0
+        if m == "canvas.measure"
+            return Value.Num(text.chars().len().to_float() * size * (if argi(args, base + 1) == 2 then 0.6 else 0.55))
+        return Value.Num(size * (if m == "canvas.ascent" then 0.9 else 0.2))
+    k := size / fnts[0].units.to_float()
+    if m == "canvas.ascent"
+        return Value.Num(fnts[0].ascent.to_float() * k)
+    if m == "canvas.descent"
+        return Value.Num(fnts[0].descent.abs().to_float() * k)
+    mut total := 0.0
+    for ch in text.chars()
+        total += fnts[0].advance(fnts[0].glyph(ch)).to_float() * k
+    Value.Num(total)
+
+## `canvas.text` (id, text, x, y, px, kind, bold, paint, alpha, mode) draws
+## the text with its baseline-left origin at device point (x, y).
+fn Vm.text_draw(mut self, s ref Surface, args List[Value]) Value ! Thrown
+    text := to_string(arg_at(args, 1))?
+    size := argf(args, 4)
+    fnts := face(argi(args, 5), argi(args, 6) == 1)
+    if fnts.len() == 0 or size <= 0.0 or size > 2000.0
+        return Undef
+    paint := floats(arg_at(args, 7))?
+    if paint.len() < 5
+        return Undef
+    x := argf(args, 2)
+    y := argf(args, 3)
+    if not sane([x, y, size])
+        return Undef
+    k := size / fnts[0].units.to_float()
+    mut total := 0.0
+    for ch in text.chars()
+        total += fnts[0].advance(fnts[0].glyph(ch)).to_float() * k
+    ox := x.floor().to_int() - 4
+    oy := (y - size * 1.3).floor().to_int() - 2
+    cw := (total + 8.0 + size * 0.5).ceil().to_int()
+    chh := (size * 1.8 + 6.0).ceil().to_int()
+    if cw <= 0 or chh <= 0 or cw * chh > MAX_CANVAS_PIXELS
+        return Undef
+    mut cv := image.Canvas.new(cw, chh)
+    cv.text(fnts[0], text, x - ox.to_float(), y - oy.to_float(), size, 0.0)
+    s.cover(cv, ox, oy, false, paint, argf(args, 8), argi(args, 9))
+    Undef
+
+## Publishes the pixels of every canvas that changed and is in the page:
+## the browser's copy of the node gets `data-garlic-pixels`, the `data:`
+## picture of its bitmap, so the page draws it like an `<img>`.
+pub fn Vm.canvas_flush(mut self)
+    if not recording
+        return
+    for id in cvs.surfaces.keys()
+        s := cvs.surfaces.get(id) else continue
+        if s.dirty and s.node >= 0 and s.node < dom.len() and connected(s.node)
+            s.dirty = false
+            mutations.push(Mutation(
+                op: "set_attr",
+                node: s.node,
+                parent: -1,
+                before: -1,
+                name: "data-garlic-pixels",
+                value: s.data_url(),
+            ))
+
+## Defines the hidden `__canvas` object the 2D prelude calls.
+pub fn Vm.canvas_setup(mut self)
+    o := object("Object", proto_of("Object"))
+    methods(
+        o,
+        "bin.canvas",
+        "new:2 resize:3 bind:2 size:1 fill:7 clip:4 save:1 restore:1 reset:1 png:1 pngbytes:1 read:6 write:10 blit:13 measure:4 ascent:3 descent:3 text:10 image:1",
+    )
+    global_obj.props["__canvas"] = hidden(Value.Obj(o))
+    run_script_text(CANVAS2D_PRELUDE)

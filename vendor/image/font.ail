@@ -295,13 +295,15 @@ fn Font.add_composite(self, start int, m List[float], mut out List[List[float]],
 pub struct Canvas
     pub width int
     pub height int
-    acc List[float]
+    ## The signed area per pixel, row by row (stride `width + 2`); summed along
+    ## a row it is the coverage.
+    pub acc List[float]
 
 pub fn Canvas.new(width int, height int) Canvas
     Canvas(width: width, height: height, acc: [0.0 for _ in 0..(width + 2) * height])
 
 ## Adds one edge's signed area to the pixels it crosses.
-fn Canvas.line(mut self, ax float, ay float, bx float, by float)
+pub fn Canvas.line(mut self, ax float, ay float, bx float, by float)
     if ay == by
         return
     mut dir := 1.0

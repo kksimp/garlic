@@ -5034,6 +5034,25 @@ fn bench(args List[str])
             draw.Op.Str(_, _, _, _, _, _, _, _, _) => 0
     assert_eq(got, [[37.0, 29.0], [74.0, 58.0]])
 
+PIXEL_PNG := "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+
+@test fn a_canvas_with_published_pixels_is_drawn_as_a_picture()
+    d := html.parse("<p>Chart:</p><canvas width=\"20\" height=\"10\" data-garlic-pixels=\"{PIXEL_PNG}\"></canvas><canvas width=\"5\" height=\"5\"></canvas>")
+    mut sizes := Map[str, List[int]]()
+    mut bits := Map[str, images.Bitmap]()
+    images.prefetch(d, "file:///t.html", "", jar.new(), options(), mut sizes, mut bits)
+    assert_eq(sizes[PIXEL_PNG], [1, 1])
+    assert_eq(bits[PIXEL_PNG].w, 1)
+    scene := gfx.layout_with(d, "file:///t.html", 400.0, css.parse("", 0), sizes)
+    mut got := List[List[float]]()
+    for op in scene.ops
+        match op
+            draw.Op.Pic(x, y, w, h, src) => got.push([w, h])
+            draw.Op.Rect(_, _, _, _, _) => 0
+            draw.Op.Text(_, _, _, _, _, _, _) => 0
+            draw.Op.Str(_, _, _, _, _, _, _, _, _) => 0
+    assert_eq(got, [[20.0, 10.0]])
+
 @test fn the_screen_model_names_links_and_colours()
     d := html.parse("<p><a href=\"/pay\">Pay now</a></p><button>Go</button>")
     scene := gfx.layout_with(d, "https://shop.example/", 400.0, css.parse("", 0), {})

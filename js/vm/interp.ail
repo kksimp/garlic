@@ -99,6 +99,8 @@ pub struct Vm
     pub agen_queues Map[int, List[AgenRequest]]
     ## Module records and the loads in flight (modules.ail).
     pub modules ref ModState
+    ## The 2D canvases' bitmaps (canvas2d.ail).
+    pub cvs ref CanvasState
 
 ## How a statement ended (§6.2.4 Completion Records); a throw is the `Thrown` error.
 pub enum Flow

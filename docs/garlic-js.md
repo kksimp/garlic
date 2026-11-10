@@ -395,9 +395,31 @@ it comes later for speed, and these frames will move onto it).
   Zone names are IANA names: `Date.prototype.toString` ends in
   "(America/New_York)" and `timeZoneName: "short"` gives "GMT-5", where
   Chrome writes "Eastern Standard Time" and "EST".
-- A canvas 2D context keeps its state and draws nothing (webapi.ail):
-  `getImageData` is transparent black and `toDataURL` a blank PNG. WebGL
-  and WebGPU contexts are null. Streams, `Worker`, `WebAssembly`,
+- A canvas 2D context draws real pixels (canvas2d.ail, canvas2d_prelude.ail).
+  Each canvas has a native RGBA surface (`0xAARRGGBB`, straight alpha);
+  the JavaScript context keeps the state stack and transform, parses
+  colours, builds paths (curves and arcs flattened in device space) and
+  strokes (joins, caps, dashes as polygons) and calls `__canvas` natives:
+  `fill` (exact-coverage scanline fill from `image.Canvas`, non-zero or
+  even-odd, linear and radial gradients, source-over and destination-out),
+  `clip` (a coverage mask), `blit` (`drawImage` of a canvas or a `data:`
+  picture, nearest or bilinear), `text` (`fillText` with a system TrueType
+  face: Arial, Times New Roman and Courier New on macOS and Windows,
+  DejaVu or Liberation on Linux; with none the width is a guess and nothing
+  is drawn), `read`/`write` (`getImageData`/`putImageData`) and `png`
+  (`toDataURL`, `toBlob`; std.compress zlib). A canvas in the page is
+  published to the browser as `data-garlic-pixels` (a `data:` PNG) by
+  `Vm.canvas_flush` in the log of changes (scripts never see the attribute)
+  and `gfx` draws it as a picture like an `<img>`. Not done: shadows,
+  filters, `createPattern` (paints nothing), compositing other than
+  source-over and destination-out, rotated or letter-spaced text,
+  `strokeText` (drawn filled), `drawImage` of fetched `<img>` pictures or
+  `ImageBitmap`s (only `data:` ones), `OffscreenCanvas`, and the Blob that
+  `toBlob` makes is text-backed until Blob holds bytes. A `webgl` context
+  (webgl.ail, WebGL 1) keeps its state and validates like
+  Chromium's but rasterizes nothing except `clear`: draw calls do nothing
+  and the window never shows it. `webgl2` is the same with the WebGL 2
+  API; WebGPU is null. Streams, `Worker`, `WebAssembly`,
   geolocation and service workers are missing: pages that feature-test
   them report them unsupported.
 - Media (mediaapi.ail): `navigator.mediaDevices`, `MediaStream`,
