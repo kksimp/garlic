@@ -236,6 +236,138 @@ WEB_PRELUDE := r"""
       });
     });
   }
+  (function () {
+    function acceptOf(node, what, filter) {
+      if ((what & (1 << (node.nodeType - 1))) === 0) return 3;
+      if (!filter) return 1;
+      return typeof filter === "function" ? filter(node) : filter.acceptNode(node);
+    }
+    function TreeWalker(root, what, filter) {
+      this.root = root;
+      this.whatToShow = what === undefined ? 0xFFFFFFFF : what >>> 0;
+      this.filter = filter || null;
+      this.currentNode = root;
+    }
+    var tw = TreeWalker.prototype;
+    tw._acc = function (n) { return acceptOf(n, this.whatToShow, this.filter); };
+    tw.parentNode = function () {
+      var n = this.currentNode;
+      while (n && n !== this.root) {
+        n = n.parentNode;
+        if (n && this._acc(n) === 1) { this.currentNode = n; return n; }
+      }
+      return null;
+    };
+    tw._children = function (first) {
+      var k = first ? "firstChild" : "lastChild", s = first ? "nextSibling" : "previousSibling";
+      var node = this.currentNode[k];
+      while (node) {
+        var r = this._acc(node);
+        if (r === 1) { this.currentNode = node; return node; }
+        if (r === 3 && node[k]) { node = node[k]; continue; }
+        while (node) {
+          if (node[s]) { node = node[s]; break; }
+          var p = node.parentNode;
+          if (!p || p === this.root || p === this.currentNode) return null;
+          node = p;
+        }
+      }
+      return null;
+    };
+    tw.firstChild = function () { return this._children(true); };
+    tw.lastChild = function () { return this._children(false); };
+    tw._siblings = function (next) {
+      var s = next ? "nextSibling" : "previousSibling", k = next ? "firstChild" : "lastChild";
+      var node = this.currentNode;
+      if (node === this.root) return null;
+      while (true) {
+        var sib = node[s];
+        while (sib) {
+          node = sib;
+          var r = this._acc(node);
+          if (r === 1) { this.currentNode = node; return node; }
+          sib = node[k];
+          if (r === 2 || !sib) sib = node[s];
+        }
+        node = node.parentNode;
+        if (!node || node === this.root) return null;
+        if (this._acc(node) === 1) return null;
+      }
+    };
+    tw.nextSibling = function () { return this._siblings(true); };
+    tw.previousSibling = function () { return this._siblings(false); };
+    tw.nextNode = function () {
+      var node = this.currentNode, result = 1;
+      while (true) {
+        while (result !== 2 && node.firstChild) {
+          node = node.firstChild;
+          result = this._acc(node);
+          if (result === 1) { this.currentNode = node; return node; }
+        }
+        var sibling = null, temp = node;
+        while (temp) {
+          if (temp === this.root) return null;
+          sibling = temp.nextSibling;
+          if (sibling) { node = sibling; break; }
+          temp = temp.parentNode;
+        }
+        if (!sibling) return null;
+        result = this._acc(node);
+        if (result === 1) { this.currentNode = node; return node; }
+      }
+    };
+    tw.previousNode = function () {
+      var node = this.currentNode;
+      while (node !== this.root) {
+        var sibling = node.previousSibling;
+        while (sibling) {
+          node = sibling;
+          var result = this._acc(node);
+          while (result !== 2 && node.lastChild) { node = node.lastChild; result = this._acc(node); }
+          if (result === 1) { this.currentNode = node; return node; }
+          sibling = node.previousSibling;
+        }
+        if (node === this.root || !node.parentNode) return null;
+        node = node.parentNode;
+        if (this._acc(node) === 1) { this.currentNode = node; return node; }
+      }
+      return null;
+    };
+    function NodeIterator(root, what, filter) {
+      this.root = root;
+      this.whatToShow = what === undefined ? 0xFFFFFFFF : what >>> 0;
+      this.filter = filter || null;
+      this.referenceNode = root;
+      this.pointerBeforeReferenceNode = true;
+    }
+    NodeIterator.prototype._order = function () {
+      var out = [], root = this.root;
+      (function walk(n) { out.push(n); for (var c = n.firstChild; c; c = c.nextSibling) walk(c); })(root);
+      return out;
+    };
+    NodeIterator.prototype._step = function (dir) {
+      var all = this._order(), i = all.indexOf(this.referenceNode);
+      if (i < 0) return null;
+      var before = this.pointerBeforeReferenceNode;
+      while (true) {
+        if (dir > 0) { if (before) before = false; else i++; }
+        else { if (!before) before = true; else i--; }
+        if (i < 0 || i >= all.length) return null;
+        if (acceptOf(all[i], this.whatToShow, this.filter) === 1) {
+          this.referenceNode = all[i];
+          this.pointerBeforeReferenceNode = before;
+          return all[i];
+        }
+      }
+    };
+    NodeIterator.prototype.nextNode = function () { return this._step(1); };
+    NodeIterator.prototype.previousNode = function () { return this._step(-1); };
+    NodeIterator.prototype.detach = function () {};
+    g.TreeWalker = TreeWalker;
+    g.NodeIterator = NodeIterator;
+    document.createTreeWalker = function (root, what, filter) { return new TreeWalker(root, what, filter); };
+    document.createNodeIterator = function (root, what, filter) { return new NodeIterator(root, what, filter); };
+  })();
 })(this);
 """
 

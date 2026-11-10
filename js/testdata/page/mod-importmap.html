@@ -1,0 +1,13 @@
+<!DOCTYPE html><html><head><title>Import map</title>
+<script type="importmap">
+{"imports": {"lib": "./mod-lib.js", "pre/": "./", "dyn": "./mod-dyn.js"}, "scopes": {"./deep/": {"lib": "./mod-throws.js"}}}
+</script>
+</head><body>
+<script type="module">
+import { bump, counter } from "lib";
+import { counter as again } from "pre/mod-lib.js";
+bump();
+console.log("bare", counter, again);
+try { await import("nope"); } catch (e) { console.log(e.name); }
+</script>
+</body></html>
