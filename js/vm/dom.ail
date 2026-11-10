@@ -73,6 +73,33 @@ pub fn Vm.measure(mut self, boxes List[List[float]], scroll float)
         rects[b[0].to_int()] = [b[1], b[2], b[3], b[4]]
     scroll_y = scroll
 
+## The browser window's page area: `w` x `h` CSS pixels at `dpr` device
+## pixels per CSS pixel, and `page_height`, the laid-out page's height.
+## `innerWidth` and friends follow it, and `resize` fires on the window when
+## the area changes after the first report. A headless run never calls this
+## and keeps 1280x800.
+pub fn Vm.viewport(mut self, w float, h float, dpr float, page_height float)
+    changed := view_set and (w != view_w or h != view_h or dpr != view_dpr)
+    view_w = w
+    view_h = h
+    view_dpr = dpr
+    page_h = page_height
+    view_set = true
+    for pair in [
+        ("innerWidth", w),
+        ("innerHeight", h),
+        ("outerWidth", w),
+        ("outerHeight", h),
+        ("devicePixelRatio", dpr),
+    ]
+        global_obj.props[pair.0] = data(Num(pair.1))
+    if sp := global_obj.props.get("screen")
+        if so := obj_of(sp.value)
+            for pair in [("width", w), ("height", h), ("availWidth", w), ("availHeight", h)]
+                so.props[pair.0] = data(Num(pair.1))
+    if changed
+        fire(-1, "resize", false)
+
 ## A DOMRect of `id`'s border box, relative to the viewport.
 fn Vm.rect_value(mut self, id int) Value
     b := rect_of(id)
@@ -98,6 +125,11 @@ fn Vm.rect_value(mut self, id int) Value
 fn Vm.rect_of(self, id int) List[float]
     if r := rects.get(id)
         return r
+    if view_set and id >= 0 and id < dom.len() and dom[id].kind == 1
+        if dom[id].tag == "html"
+            return [0.0, 0.0, view_w, view_h.max(page_h)]
+        if dom[id].tag == "body"
+            return [0.0, 0.0, view_w, page_h]
     if id < 0 or id >= dom.len() or dom[id].kind != 1
         return [0.0, 0.0, 0.0, 0.0]
     text := text_content(id)
@@ -302,7 +334,7 @@ fn Vm.after_insert(mut self, id int)
         mode := script_mode(s)
         if mode == "skip"
             continue
-        if mode == "module"
+        if mode == "module" or mode == "importmap"
             run_script_node(s, mode)
             continue
         if src := attr_of(s, "src")
@@ -325,6 +357,8 @@ fn Vm.script_mode(self, s int) str
     kind := (attr_of(s, "type") else "").to_lower().trim()
     if kind == "module"
         return "module"
+    if kind == "importmap"
+        return "importmap"
     if attr_of(s, "nomodule") != none
         return "skip"
     if kind == ""
@@ -337,6 +371,9 @@ fn Vm.script_mode(self, s int) str
 
 ## Run script element `s` of the given mode now.
 fn Vm.run_script_node(mut self, s int, mode str)
+    if mode == "importmap"
+        add_import_map(text_content(s))
+        return
     if mode == "module"
         if src := attr_of(s, "src")
             run_module_script(resolve_url(src))
@@ -466,6 +503,25 @@ pub fn Vm.dom_setup(mut self)
     for item in ["ELEMENT_NODE=1", "TEXT_NODE=3", "COMMENT_NODE=8", "DOCUMENT_NODE=9"]
         kv := item.split("=")
         constant(node_proto, kv[0], Num(string_to_number(kv[1])))
+    nf := object("Object", object_proto)
+    for item in [
+        "FILTER_ACCEPT=1",
+        "FILTER_REJECT=2",
+        "FILTER_SKIP=3",
+        "SHOW_ALL=4294967295",
+        "SHOW_ELEMENT=1",
+        "SHOW_ATTRIBUTE=2",
+        "SHOW_TEXT=4",
+        "SHOW_CDATA_SECTION=8",
+        "SHOW_PROCESSING_INSTRUCTION=64",
+        "SHOW_COMMENT=128",
+        "SHOW_DOCUMENT=256",
+        "SHOW_DOCUMENT_TYPE=512",
+        "SHOW_DOCUMENT_FRAGMENT=1024",
+    ]
+        kv := item.split("=")
+        constant(nf, kv[0], Num(string_to_number(kv[1])))
+    global_obj.props["NodeFilter"] = hidden(Obj(nf))
     element_proto := object("Object", Obj(node_proto))
     protos["Element"] = Obj(element_proto)
     for name in [
@@ -524,7 +580,7 @@ pub fn Vm.dom_setup(mut self)
     methods(
         element_proto,
         "dom",
-        "getAttribute:1 setAttribute:2 removeAttribute:1 replaceChildren:0 normalize:0 hasAttribute:1 toggleAttribute:1 getAttributeNames:0 getElementsByTagName:1 getElementsByClassName:1 querySelector:1 querySelectorAll:1 closest:1 matches:1 remove:0 append:0 prepend:0 before:0 after:0 replaceWith:0 click:0 focus:0 blur:0 submit:0 reset:0 select:0 getBoundingClientRect:0 getClientRects:0 insertAdjacentHTML:2 insertAdjacentElement:2 insertAdjacentText:2 scrollIntoView:0 animate:0 requestSubmit:0 checkValidity:0 attachShadow:1",
+        "getAttribute:1 setAttribute:2 removeAttribute:1 getAttributeNS:2 setAttributeNS:3 removeAttributeNS:2 hasAttributeNS:2 replaceChildren:0 normalize:0 hasAttribute:1 toggleAttribute:1 getAttributeNames:0 getElementsByTagName:1 getElementsByClassName:1 querySelector:1 querySelectorAll:1 closest:1 matches:1 remove:0 append:0 prepend:0 before:0 after:0 replaceWith:0 click:0 focus:0 blur:0 submit:0 reset:0 select:0 getBoundingClientRect:0 getClientRects:0 insertAdjacentHTML:2 insertAdjacentElement:2 insertAdjacentText:2 scrollIntoView:0 animate:0 requestSubmit:0 checkValidity:0 attachShadow:1",
     )
     html_element := object("Object", Obj(element_proto))
     protos["HTMLElement"] = Obj(html_element)
@@ -591,13 +647,14 @@ pub fn Vm.dom_setup(mut self)
         p := obj_of(proto_of(name)) else continue
         interface(name, p)
     element_interfaces()
+    sub_interface("DocumentFragment", "Node")
 
     event_proto := object("Object", object_proto)
     protos["Event"] = Obj(event_proto)
     methods(
         event_proto,
         "dom.event",
-        "preventDefault:0 stopPropagation:0 stopImmediatePropagation:0 composedPath:0",
+        "preventDefault:0 stopPropagation:0 stopImmediatePropagation:0 composedPath:0 initEvent:3 initCustomEvent:4",
     )
     for name in ["Event"]
         c := obj_of(native_fn("dom.Event", name, 1)) else continue
@@ -1032,7 +1089,7 @@ pub fn Vm.dom_native(
     if p := m.strip_prefix("window.")
         return window_method(p, args)
     if p := m.strip_prefix("event.")
-        return event_method(p, this_val)
+        return event_method(p, this_val, args)
     if p := m.strip_prefix("style.")
         return style_method(p, this_val, args)
     if p := m.strip_prefix("classList.")
@@ -1332,6 +1389,8 @@ fn Vm.dom_get(mut self, p str, this_val Value) Value ! Thrown
                 if attr_of(opts[i], "selected") != none
                     return Value.Num(i.to_float())
             Value.Num(if opts.len() > 0 then 0.0 else -1.0)
+        "clientWidth" if n.tag == "html" => Value.Num(view_w.round())
+        "clientHeight" if n.tag == "html" => Value.Num(view_h.round())
         "offsetWidth" | "clientWidth" => Value.Num(rect_of(id)[2].round())
         "offsetHeight" | "clientHeight" => Value.Num(rect_of(id)[3].round())
         "documentElement" => node_value(first_element(n.children, false))
@@ -1513,6 +1572,10 @@ fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
                 style_objs.remove(id)
             ce_attr_changed(id, name, old, value)
             Undef
+        "getAttributeNS" => return node_method("getAttribute", id, [a1])?
+        "setAttributeNS" => return node_method("setAttribute", id, [a1, arg_at(args, 2)])?
+        "removeAttributeNS" => return node_method("removeAttribute", id, [a1])?
+        "hasAttributeNS" => return node_method("hasAttribute", id, [a1])?
         "removeAttribute" =>
             name := to_string(a0)?.to_lower()
             old := attr_of(id, name)
@@ -1887,8 +1950,17 @@ fn event_flag(ev Value, key str) bool
             return p.value == Bool(true)
     false
 
-fn Vm.event_method(mut self, m str, this_val Value) Value ! Thrown
+fn Vm.event_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
     match m
+        "initEvent" | "initCustomEvent" =>
+            # The legacy initialisers (DOM §2.6): type, bubbles, cancelable and,
+            # for CustomEvent, detail.
+            if o := obj_of(this_val)
+                o.props["type"] = data(Str(to_string(arg_at(args, 0))?))
+                o.props["bubbles"] = data(Bool(truthy(arg_at(args, 1))))
+                o.props["cancelable"] = data(Bool(truthy(arg_at(args, 2))))
+                if m == "initCustomEvent"
+                    o.props["detail"] = data(arg_at(args, 3))
         "preventDefault" =>
             if event_flag(this_val, "cancelable")
                 set_event_flag(this_val, "defaultPrevented", true)

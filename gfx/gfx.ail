@@ -192,6 +192,18 @@ fn fmin(a float, b float) float
 
 # ---- Values ---------------------------------------------------------------
 
+## A CSS number as a float: `to_float` needs a digit before the point, CSS
+## does not (`.45em`, `.5`, `+.5`, `-.5`; CSS Values 4 §4.2).
+pub fn css_float(v str) float?
+    t := v.trim()
+    if t.starts_with(".")
+        return "0{t}".to_float()
+    if t.starts_with("+")
+        return css_float(t.slice(1, t.chars().len()))
+    if t.starts_with("-.")
+        return "-0{t.slice(1, t.chars().len())}".to_float()
+    t.to_float()
+
 ## A length in pixels: `px`, `em`, `rem`, `pt`, `%` (of `rel`) or `0`.
 ## `none` for `auto`, keywords and anything else.
 pub fn length(v str, size float, rel float) float?
@@ -216,7 +228,7 @@ pub fn length(v str, size float, rel float) float?
         num = r
     elif t != "0"
         return none
-    x := num.trim().to_float()?
+    x := css_float(num)?
     x * scale
 
 ## A unitless number, plain or as a `calc()` of numbers only (CSS Values 4
@@ -224,7 +236,7 @@ pub fn length(v str, size float, rel float) float?
 ## a length. `none` once a unit or `%` appears.
 pub fn number(v str) float?
     t := v.trim()
-    if x := t.to_float()
+    if x := css_float(t)
         return x
     inner := t.strip_prefix("calc(")?
     body := inner.slice(0, inner.chars().len() - 1)
@@ -289,7 +301,7 @@ fn calc_atom(s str, size float, rel float) float?
         return calc_sum(t.slice(5, t.chars().len() - 1), size, rel)
     if v := length(t, size, rel)
         return v
-    t.to_float()
+    css_float(t)
 
 NAMED := {
     "black": 0x000000,
@@ -377,9 +389,9 @@ pub fn color_over(v str, under int) int?
             if q == ""
                 continue
             if r := q.strip_suffix("%")
-                parts.push((r.to_float()? * 2.55))
+                parts.push((css_float(r)? * 2.55))
             else
-                parts.push(q.to_float()?)
+                parts.push(css_float(q)?)
         if parts.len() < 3
             return none
         mut alpha := 1.0
@@ -2149,11 +2161,11 @@ fn Ctx.flex(mut self, id int, st St, cs Map[str, str], x float, w float, min_h f
         ist := text_style(d.nodes[it].tag, ics, st)
         ib := box_of(d.nodes[it].tag, ics, ist, w)
         extra := ib.ml + ib.mr + ib.bl + ib.br + ib.pl + ib.pr
-        mut grow := (ics.get("flex-grow") else "0").to_float() else 0.0
+        mut grow := css_float(ics.get("flex-grow") else "0") else 0.0
         if f := ics.get("flex")
             ts := tokens(f)
             if ts.len() > 0
-                grow = ts[0].to_float() else grow
+                grow = css_float(ts[0]) else grow
         grows.push(grow)
         if basis := ics.get("flex-basis")
             sizes.push((length(basis, ist.size, w) else self.max_content(it, st)) + extra)
@@ -2231,7 +2243,7 @@ fn grid_track(t str, size float, w float) float?
             return grid_track(parts[0].trim(), size, w)
         return none
     if r := t.strip_suffix("fr")
-        return r.to_float()
+        return css_float(r)
     v := length(t, size, w)?
     0.0 - v
 

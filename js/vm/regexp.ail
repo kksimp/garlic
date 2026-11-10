@@ -85,12 +85,28 @@ fn Vm.regexp_parts(mut self, v Value) RegexParts ! Thrown
     src := plain_string(o, "source") else ""
     fl := plain_string(o, "flags") else ""
     re := regex.compile(translate(src, fl)) else err
-        return throw_error("SyntaxError", "Invalid regular expression: /{src}/{fl}: {err.message}")
-    RegexParts(o: o, re: re, global: fl.contains('g') or fl.contains('y'))
+        # Lookaround and backreferences need the backtracking engine.
+        bp := bt_compile(src, fl)
+        if bp.failed != ""
+            return throw_error(
+                "SyntaxError",
+                "Invalid regular expression: /{src}/{fl}: {err.message}",
+            )
+        return RegexParts(
+            o: o,
+            re: Matcher(re: none, bt: bp),
+            global: fl.contains('g') or fl.contains('y'),
+        )
+    RegexParts(o: o, re: Matcher(re: re, bt: none), global: fl.contains('g') or fl.contains('y'))
+
+## A compiled pattern: std.regex when it can run it, else the backtracker.
+struct Matcher
+    re regex.Regex?
+    bt BtProg?
 
 struct RegexParts
     o ref JsObject
-    re regex.Regex
+    re Matcher
     global bool
 
 ## One match: where it is in code units, and its groups.
@@ -101,10 +117,14 @@ struct Found
     named Map[str, str]
 
 ## The first match at or after code unit `from`.
-fn find_from(re regex.Regex, s str, from int) Found?
+fn find_from(m Matcher, s str, from int) Found?
     us := units(s)
     if from > us.len()
         return none
+    if prog := m.bt
+        c2 := bt_find(prog, s, from) else return none
+        return Found(start: c2.start, end: c2.end, groups: c2.groups, named: c2.named)
+    re := m.re else return none
     tail := from_units(us[from..])
     c := regex.captures(re, tail) else return none
     before := unit_len(tail.slice(0, c.start))
@@ -166,7 +186,7 @@ fn Vm.regexp_method(mut self, m str, this_val Value, args List[Value]) Value ! T
         _ => return type_error("RegExp.prototype.{m} is not supported yet")
 
 ## Every match from the start, as `g` finds them (§22.2.6.8 step 6).
-fn all_matches(re regex.Regex, s str) List[Found]
+fn all_matches(re Matcher, s str) List[Found]
     mut out := List[Found]()
     mut from := 0
     n := unit_len(s)
