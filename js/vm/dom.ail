@@ -73,6 +73,33 @@ pub fn Vm.measure(mut self, boxes List[List[float]], scroll float)
         rects[b[0].to_int()] = [b[1], b[2], b[3], b[4]]
     scroll_y = scroll
 
+## The browser window's page area: `w` x `h` CSS pixels at `dpr` device
+## pixels per CSS pixel, and `page_height`, the laid-out page's height.
+## `innerWidth` and friends follow it, and `resize` fires on the window when
+## the area changes after the first report. A headless run never calls this
+## and keeps 1280x800.
+pub fn Vm.viewport(mut self, w float, h float, dpr float, page_height float)
+    changed := view_set and (w != view_w or h != view_h or dpr != view_dpr)
+    view_w = w
+    view_h = h
+    view_dpr = dpr
+    page_h = page_height
+    view_set = true
+    for pair in [
+        ("innerWidth", w),
+        ("innerHeight", h),
+        ("outerWidth", w),
+        ("outerHeight", h),
+        ("devicePixelRatio", dpr),
+    ]
+        global_obj.props[pair.0] = data(Num(pair.1))
+    if sp := global_obj.props.get("screen")
+        if so := obj_of(sp.value)
+            for pair in [("width", w), ("height", h), ("availWidth", w), ("availHeight", h)]
+                so.props[pair.0] = data(Num(pair.1))
+    if changed
+        fire(-1, "resize", false)
+
 ## A DOMRect of `id`'s border box, relative to the viewport.
 fn Vm.rect_value(mut self, id int) Value
     b := rect_of(id)
@@ -98,6 +125,11 @@ fn Vm.rect_value(mut self, id int) Value
 fn Vm.rect_of(self, id int) List[float]
     if r := rects.get(id)
         return r
+    if view_set and id >= 0 and id < dom.len() and dom[id].kind == 1
+        if dom[id].tag == "html"
+            return [0.0, 0.0, view_w, view_h.max(page_h)]
+        if dom[id].tag == "body"
+            return [0.0, 0.0, view_w, page_h]
     if id < 0 or id >= dom.len() or dom[id].kind != 1
         return [0.0, 0.0, 0.0, 0.0]
     text := text_content(id)
@@ -1332,6 +1364,8 @@ fn Vm.dom_get(mut self, p str, this_val Value) Value ! Thrown
                 if attr_of(opts[i], "selected") != none
                     return Value.Num(i.to_float())
             Value.Num(if opts.len() > 0 then 0.0 else -1.0)
+        "clientWidth" if n.tag == "html" => Value.Num(view_w.round())
+        "clientHeight" if n.tag == "html" => Value.Num(view_h.round())
         "offsetWidth" | "clientWidth" => Value.Num(rect_of(id)[2].round())
         "offsetHeight" | "clientHeight" => Value.Num(rect_of(id)[3].round())
         "documentElement" => node_value(first_element(n.children, false))
