@@ -1,0 +1,20 @@
+<!doctype html>
+<title>Channels, shared workers, service workers</title>
+<body>
+<pre id="out">waiting</pre>
+<script>
+var lines = [];
+function log(s) { lines.push(s); document.getElementById("out").textContent = lines.join("\n"); }
+var mc = new MessageChannel();
+mc.port1.onmessage = function (e) { log("channel " + e.data.hello); };
+mc.port2.postMessage({ hello: "port" });
+var bc1 = new BroadcastChannel("t"), bc2 = new BroadcastChannel("t");
+bc2.onmessage = function (e) { log("broadcast " + e.data); };
+bc1.postMessage("hi");
+var src = "onconnect = function (e) { var p = e.ports[0]; p.onmessage = function (m) { p.postMessage('shared ' + m.data + ' ' + self.name); }; };";
+var sw = new SharedWorker(URL.createObjectURL(new Blob([src])), "s1");
+sw.port.onmessage = function (e) { log(e.data); };
+sw.port.postMessage("ping");
+log("serviceWorker " + typeof navigator.serviceWorker);
+navigator.serviceWorker.register("/sw.js").then(function () { log("registered"); }, function (e) { log("register rejected: " + e.name); });
+</script>
