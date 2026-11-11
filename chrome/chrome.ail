@@ -93,7 +93,10 @@ TAB_TOP := 8.0
 TAB_H := 34.0
 TAB_R := 8.0
 MAX_TAB_W := 240.0
-MIN_TAB_W := 56.0
+MIN_TAB_W := 24.0
+## A tab narrower than this shows no title: its favicon alone, or, when it is
+## the shown tab, its close button alone (as Chromium does).
+pub TITLE_MIN := 72.0
 LEFT := 8.0
 PLUS_W := 28.0
 CLOSE_W := 16.0
@@ -133,6 +136,14 @@ pub fn tab_w(n int, width float, left float) float
 pub fn tab_x(k int, n int, width float, left float) float
     LEFT + left + k.to_float() * tab_w(n, width, left)
 
+## Whether the tabs are too narrow for titles when `n` share the strip.
+pub fn tiny(n int, width float, left float) bool
+    tab_w(n, width, left) < TITLE_MIN
+
+## The new-tab button's left edge: after the last tab, kept inside the strip.
+fn plus_x(n int, width float, left float) float
+    (tab_x(n, n, width, left) + 6.0).min(width - PLUS_W - 4.0)
+
 ## The omnibox's left edge and width; `agent` leaves room for the chip.
 pub fn omni_w(width float, agent bool) float
     (width - OMNI_X - MENU_BTN_W - (if agent then AGENT_W + 8.0 else 0.0) - 8.0).max(80.0)
@@ -149,16 +160,17 @@ pub fn hit(x float, y float, n int, width float, left float, agent bool, with_in
     if y < STRIP_H
         if y < TAB_TOP
             return miss()
+        ## The new-tab button first: with more tabs than fit it sits over them.
+        px := plus_x(n, width, left)
+        if x >= px and x < px + PLUS_W
+            return Hit(kind: "plus", k: 0)
         w := tab_w(n, width, left)
         for k in 0..n
             x0 := tab_x(k, n, width, left)
             if x >= x0 and x < x0 + w
-                if x >= x0 + w - CLOSE_W - 12.0 and x < x0 + w - 8.0
+                if w >= TITLE_MIN and x >= x0 + w - CLOSE_W - 12.0 and x < x0 + w - 8.0
                     return Hit(kind: "close", k: k)
                 return Hit(kind: "tab", k: k)
-        px := tab_x(n, n, width, left) + 6.0
-        if x >= px and x < px + PLUS_W
-            return Hit(kind: "plus", k: 0)
         return miss()
     if y < H
         if in_btn(x, y, LEFT, BTN_Y)
@@ -344,6 +356,17 @@ fn txt(x float, y float, s str, fg int, bold bool, size float) app.Op
         underline: false,
     )
 
+## The key a measured sans run's width is kept under.
+pub fn width_key(s str, size float) str
+    "{size}|{s}"
+
+## The width of sans text `s`: the host's measure when `meas` has it, else
+## `tw`'s estimate.
+fn run_w(meas Map[str, float], tw fn(str, float) float, s str, size float) float
+    if w := meas.get(width_key(s, size))
+        return w
+    tw(s, size)
+
 fn line(x1 float, y1 float, x2 float, y2 float, c int, w float) app.Op
     app.Op.Stroke(x1: x1, y1: y1, x2: x2, y2: y2, color: c, width: w)
 
@@ -438,6 +461,19 @@ fn padlock(mut ops List[app.Op], x float, y float, c int, bg int)
     round(mut ops, x, y + 5.0, 10.0, 7.0, 1.5, c, bg)
     arc(mut ops, x + 5.0, y + 4.5, 3.0, 3.14, 6.28, c, 1.5, 12)
 
+## A magnifier, 14 points high, its top-left at (x, y): the omnibox while it
+## is edited or empty.
+fn magnifier(mut ops List[app.Op], x float, y float, c int)
+    arc(mut ops, x + 5.5, y + 5.5, 4.5, 0.0, 6.2832, c, 1.5, 16)
+    ops.push(line(x + 8.9, y + 8.9, x + 13.0, y + 13.0, c, 1.5))
+
+## Chromium's "i" in a ring, 14 points high, its top-left at (x, y): a page
+## that did not come over https.
+fn info_icon(mut ops List[app.Op], x float, y float, c int)
+    arc(mut ops, x + 7.0, y + 7.0, 6.0, 0.0, 6.2832, c, 1.5, 20)
+    ops.push(line(x + 7.0, y + 6.5, x + 7.0, y + 10.5, c, 1.5))
+    ops.push(app.draw_rect(x + 6.25, y + 3.25, 1.5, 1.5, c))
+
 ## The spark of the agent chip: a four-point star.
 fn spark(mut ops List[app.Op], cx float, cy float, c int)
     ops.push(line(cx, cy - 6.0, cx, cy + 6.0, c, 2.0))
@@ -474,9 +510,17 @@ fn button_bg(mut ops List[app.Op], th Theme, st State, x float, y float, on bool
         disc(mut ops, x, y, BTN, th.hover, th.toolbar)
 
 ## The display list for the chrome canvas: the tabs, the toolbar and, if
-## `st.ask` is set, the infobar. `tw` measures sans text at 12 and 14 points
-## (Garlic passes the layout's estimate).
-pub fn draw(th Theme, items List[Item], cur int, st State, tw fn(str, float) float) List[app.Op]
+## `st.ask` is set, the infobar. `tw` estimates sans text at 12 and 14 points
+## (Garlic passes the layout's estimate); `meas` holds the widths the host
+## measured, by `width_key`, which win.
+pub fn draw(
+    th Theme,
+    items List[Item],
+    cur int,
+    st State,
+    tw fn(str, float) float,
+    meas Map[str, float],
+) List[app.Op]
     width := st.width.max(1.0)
     mut ops := [
         app.draw_rect(0.0, 0.0, width, STRIP_H, th.frame),
@@ -494,22 +538,27 @@ pub fn draw(th Theme, items List[Item], cur int, st State, tw fn(str, float) flo
         st.agent != "",
         false,
     ) else miss()
+    hover_k := if hover_tab.kind == "tab" or hover_tab.kind == "close" then hover_tab.k else -1
+    small := w < TITLE_MIN
     for k in 0..n
         x0 := tab_x(k, n, width, left)
         shown := k == cur
-        hovered := (hover_tab.kind == "tab" or hover_tab.kind == "close") and hover_tab.k == k
+        hovered := hover_k == k
         if shown
             tab_shape(mut ops, x0, TAB_TOP, w, TAB_H, TAB_R, th.toolbar, th.frame)
         elif hovered
             tab_shape(mut ops, x0, TAB_TOP, w, TAB_H, TAB_R, th.tab_hover, th.frame)
-        elif k + 1 < n and k + 1 != cur and not (hover_tab.kind == "tab" and hover_tab.k == k + 1)
+        elif k + 1 < n and k + 1 != cur and k + 1 != hover_k
             ops.push(app.draw_rect(x0 + w - 0.5, TAB_TOP + 9.0, 1.0, TAB_H - 18.0, th.sep))
         bg := if shown then th.toolbar else (if hovered then th.tab_hover else th.frame)
         fg := if shown then th.text else th.dim
-        close := shown or hovered or w >= 120.0
-        if items[k].icon != ""
+        close := if small then shown else (shown or hovered or w >= 120.0)
+        ix := if small then x0 + (w - 16.0) / 2.0 else x0 + 10.0
+        ## A narrow shown tab has room for its close button only.
+        has_icon := not (small and shown)
+        if has_icon and items[k].icon != ""
             ops.push(app.Op.Bitmap(
-                x: x0 + 10.0,
+                x: ix,
                 y: TAB_TOP + 9.0,
                 w: 16.0,
                 h: 16.0,
@@ -518,24 +567,28 @@ pub fn draw(th Theme, items List[Item], cur int, st State, tw fn(str, float) flo
                 ph: items[k].icon_h,
                 data: items[k].icon_data,
             ))
-        elif items[k].loading
-            spinner(mut ops, x0 + 18.0, TAB_TOP + 17.0, th.accent)
-        else
-            globe(mut ops, x0 + 10.0, TAB_TOP + 9.0, th.dim, bg)
-        title := if items[k].title == "" then "New tab" else items[k].title
-        room := w - 32.0 - (if close then CLOSE_W + 12.0 else 10.0)
-        ops.push(app.Op.Clip(x: x0 + 32.0, y: TAB_TOP, w: room.max(0.0), h: TAB_H))
-        ops.push(txt(x0 + 32.0, TAB_TOP + 10.0, title, fg, false, 12.0))
-        ops.push(app.Op.Unclip)
+        elif has_icon and items[k].loading
+            spinner(mut ops, ix + 8.0, TAB_TOP + 17.0, th.accent)
+        elif has_icon
+            globe(mut ops, ix, TAB_TOP + 9.0, th.dim, bg)
+        if not small
+            title := if items[k].title == "" then "New tab" else items[k].title
+            room := w - 32.0 - (if close then CLOSE_W + 12.0 else 10.0)
+            ops.push(app.Op.Clip(x: x0 + 32.0, y: TAB_TOP, w: room.max(0.0), h: TAB_H))
+            ops.push(txt(x0 + 32.0, TAB_TOP + 10.0, title, fg, false, 12.0))
+            ops.push(app.Op.Unclip)
         if close
-            cx := x0 + w - 8.0 - CLOSE_W / 2.0
+            cx := if small then x0 + w / 2.0 else x0 + w - 8.0 - CLOSE_W / 2.0
             cy := TAB_TOP + TAB_H / 2.0
-            if hover_tab.kind == "close" and hover_tab.k == k
+            if (hover_tab.kind == "close" or (small and hover_tab.kind == "tab")) and hover_k == k
                 disc(mut ops, cx - 8.0, cy - 8.0, 16.0, th.hover, bg)
             cross(mut ops, cx, cy, fg)
     ## The new-tab button.
-    px := tab_x(n, n, width, left) + 6.0
+    px := plus_x(n, width, left)
     py := TAB_TOP + 3.0
+    if px < tab_x(n, n, width, left) + 6.0
+        ## More tabs than fit: the button covers the ones under it.
+        ops.push(app.draw_rect(px - 4.0, 0.0, width - px + 4.0, STRIP_H, th.frame))
     if hot(st, px, py)
         disc(mut ops, px, py, BTN, th.tab_hover, th.frame)
     plus(mut ops, px, py, th.dim)
@@ -552,7 +605,7 @@ pub fn draw(th Theme, items List[Item], cur int, st State, tw fn(str, float) flo
     )
     button_bg(mut ops, th, st, LEFT + 2.0 * BTN_STEP, BTN_Y, true)
     reload_icon(mut ops, LEFT + 2.0 * BTN_STEP, BTN_Y, th.dim)
-    omnibox(mut ops, th, st, tw)
+    omnibox(mut ops, th, st, tw, meas)
     ow := omni_w(width, st.agent != "")
     if st.agent != ""
         ax := OMNI_X + ow + 8.0
@@ -580,7 +633,13 @@ pub fn draw(th Theme, items List[Item], cur int, st State, tw fn(str, float) flo
 
 ## The omnibox: a pill with a padlock, the address (host bright, the rest
 ## dim) or the text being edited with its caret or selection.
-fn omnibox(mut ops List[app.Op], th Theme, st State, tw fn(str, float) float)
+fn omnibox(
+    mut ops List[app.Op],
+    th Theme,
+    st State,
+    tw fn(str, float) float,
+    meas Map[str, float],
+)
     width := st.width.max(1.0)
     ow := omni_w(width, st.agent != "")
     o := st.omni
@@ -628,9 +687,18 @@ fn omnibox(mut ops List[app.Op], th Theme, st State, tw fn(str, float) float)
     tx := OMNI_X + 40.0
     ty := OMNI_Y + 8.0
     field_bg := if o.editing then (if th.is_light then th.toolbar else th.omni) else (if over then th.omni_hot else th.omni)
-    padlock(mut ops, OMNI_X + 14.0, OMNI_Y + 10.0, th.dim, field_bg)
-    ops.push(app.Op.Clip(x: tx, y: OMNI_Y, w: (ow - 52.0).max(0.0), h: OMNI_H))
+    if o.editing or o.text == ""
+        magnifier(mut ops, OMNI_X + 13.0, OMNI_Y + 10.0, th.dim)
+    elif o.text.starts_with("https://")
+        padlock(mut ops, OMNI_X + 14.0, OMNI_Y + 10.0, th.dim, field_bg)
+    else
+        info_icon(mut ops, OMNI_X + 12.0, OMNI_Y + 10.0, th.dim)
+    room := (ow - 52.0).max(0.0)
+    ops.push(app.Op.Clip(x: tx, y: OMNI_Y, w: room, h: OMNI_H))
     if o.editing
+        ## The text slides left to keep the caret in view.
+        caret := run_w(meas, tw, o.text.slice(0, o.cursor), 14.0)
+        slide := if o.all then 0.0 else (caret - room + 4.0).max(0.0)
         if o.text == ""
             ops.push(txt(tx, ty, "Search DuckDuckGo or type a URL", th.dim, false, 14.0))
         else
@@ -638,15 +706,14 @@ fn omnibox(mut ops List[app.Op], th Theme, st State, tw fn(str, float) float)
                 ops.push(app.Op.Shade(
                     x: tx - 1.0,
                     y: OMNI_Y + 6.0,
-                    w: tw(o.text, 14.0) + 2.0,
+                    w: run_w(meas, tw, o.text, 14.0) + 2.0,
                     h: OMNI_H - 12.0,
                     color: th.accent,
                     alpha: 0.35,
                 ))
-            ops.push(txt(tx, ty, o.text, th.text, false, 14.0))
+            ops.push(txt(tx - slide, ty, o.text, th.text, false, 14.0))
         if not o.all
-            cx := tx + tw(o.text.slice(0, o.cursor), 14.0)
-            ops.push(app.draw_rect(cx, OMNI_Y + 8.0, 1.5, OMNI_H - 16.0, th.text))
+            ops.push(app.draw_rect(tx - slide + caret, OMNI_Y + 8.0, 1.5, OMNI_H - 16.0, th.text))
     else
         if o.text == ""
             ops.push(txt(tx, ty, "Search DuckDuckGo or type a URL", th.dim, false, 14.0))
@@ -654,7 +721,7 @@ fn omnibox(mut ops List[app.Op], th Theme, st State, tw fn(str, float) float)
             hp := pretty(o.text)
             ops.push(txt(tx, ty, hp.0, th.text, false, 14.0))
             if hp.1 != ""
-                ops.push(txt(tx + tw(hp.0, 14.0), ty, hp.1, th.dim, false, 14.0))
+                ops.push(txt(tx + run_w(meas, tw, hp.0, 14.0), ty, hp.1, th.dim, false, 14.0))
     ops.push(app.Op.Unclip)
 
 ## The infobar under the toolbar: the question at the left, Deny and Allow
@@ -702,11 +769,18 @@ pub fn menu_hit(x float, y float, n int, mx float, my float) int
 
 ## The status bubble at the bottom-left of a page `h` high (Chromium shows
 ## the link under the pointer there): empty for an empty line.
-pub fn status_ops(th Theme, msg str, h float, bg int, tw fn(str, float) float) List[app.Op]
+pub fn status_ops(
+    th Theme,
+    msg str,
+    h float,
+    bg int,
+    tw fn(str, float) float,
+    meas Map[str, float],
+) List[app.Op]
     mut ops := List[app.Op]()
     if msg == ""
         return ops
-    w := tw(msg, 12.0) + 24.0
+    w := run_w(meas, tw, msg, 12.0) + 24.0
     round(mut ops, 0.0 - 8.0, h - 24.0, w + 8.0, 32.0, 8.0, th.sep, bg)
     round(mut ops, 0.0 - 8.0, h - 23.0, w + 7.0, 32.0, 7.0, th.toolbar, th.sep)
     ops.push(txt(8.0, h - 18.0, msg, th.text, false, 12.0))
@@ -721,6 +795,14 @@ FIND_BTN := 32.0
 fn find_x(width float) float
     (width - FIND_W - 16.0).max(0.0)
 
+## The find bar's count as Chromium writes it: `1/5`, `0/0`, or "" for no text.
+pub fn find_count(o Omni, k int, n int) str
+    if o.text == ""
+        return ""
+    if n == 0
+        return "0/0"
+    "{k + 1}/{n}"
+
 ## The find bar: a card under the toolbar at the right with the text typed
 ## (`o`), the match shown and the count (`k` of `n`, Chromium's `1/5`, or
 ## `0/0`), then previous, next and close.
@@ -732,6 +814,7 @@ pub fn find_ops(
     width float,
     bg int,
     tw fn(str, float) float,
+    meas Map[str, float],
 ) List[app.Op]
     mut ops := List[app.Op]()
     x := find_x(width)
@@ -740,9 +823,9 @@ pub fn find_ops(
     ops.push(app.draw_rect(x, 0.0, FIND_W, 1.0, mix(th.toolbar, th.sep, 0.5)))
     tx := x + 16.0
     ty := 12.0
-    count := if o.text == "" then "" else "{k + 1}/{n}"
+    count := find_count(o, k, n)
     sep_x := x + FIND_W - 3.0 * FIND_BTN - 12.0
-    cw := tw(count, 12.0)
+    cw := run_w(meas, tw, count, 12.0)
     ops.push(app.Op.Clip(x: tx, y: 0.0, w: (sep_x - cw - 24.0 - tx).max(0.0), h: FIND_H))
     if o.text == ""
         ops.push(txt(tx, ty, "Find in page", th.dim, false, 14.0))
@@ -751,14 +834,14 @@ pub fn find_ops(
             ops.push(app.Op.Shade(
                 x: tx - 1.0,
                 y: 6.0,
-                w: tw(o.text, 14.0) + 2.0,
+                w: run_w(meas, tw, o.text, 14.0) + 2.0,
                 h: FIND_H - 12.0,
                 color: th.accent,
                 alpha: 0.35,
             ))
         ops.push(txt(tx, ty, o.text, th.text, false, 14.0))
     if o.editing and not o.all
-        cx := tx + tw(o.text.slice(0, o.cursor), 14.0)
+        cx := tx + run_w(meas, tw, o.text.slice(0, o.cursor), 14.0)
         ops.push(app.draw_rect(cx, 8.0, 1.5, FIND_H - 16.0, th.text))
     ops.push(app.Op.Unclip)
     if count != ""
@@ -818,6 +901,7 @@ pub fn suggest_ops(
     agent bool,
     bg int,
     tw fn(str, float) float,
+    meas Map[str, float],
 ) List[app.Op]
     mut ops := List[app.Op]()
     if rows.len() == 0
@@ -834,7 +918,7 @@ pub fn suggest_ops(
         if s.url == ""
             ops.push(txt(OMNI_X + 40.0, ry + 10.0, s.title, th.menu_text, false, 14.0))
             ops.push(txt(
-                OMNI_X + 40.0 + tw(s.title, 14.0),
+                OMNI_X + 40.0 + run_w(meas, tw, s.title, 14.0),
                 ry + 10.0,
                 " - DuckDuckGo Search",
                 th.dim,
@@ -852,10 +936,10 @@ pub fn suggest_ops(
             )
             hp := pretty(s.url)
             ops.push(app.Op.Clip(x: OMNI_X + 40.0, y: ry, w: (w - 48.0).max(0.0), h: SUG_ROW))
-            lead := if s.title == "" then "" else "{s.title} - "
+            lead := lead_of(s)
             ops.push(txt(OMNI_X + 40.0, ry + 10.0, lead, th.menu_text, false, 14.0))
             ops.push(txt(
-                OMNI_X + 40.0 + tw(lead, 14.0),
+                OMNI_X + 40.0 + run_w(meas, tw, lead, 14.0),
                 ry + 10.0,
                 "{hp.0}{hp.1}",
                 th.dim,
@@ -864,6 +948,46 @@ pub fn suggest_ops(
             ))
             ops.push(app.Op.Unclip)
     ops
+
+## A history row's first text: its title and a dash, "" without a title.
+fn lead_of(s Suggestion) str
+    if s.title == "" then "" else "{s.title} - "
+
+## One run of sans text the chrome places other things by.
+pub struct Run
+    pub text str
+    pub size float
+
+## The sans runs whose widths place the caret, the selection, the dim part
+## of the address, the dropdown's second texts, the find bar's count and
+## the status bubble. Garlic asks the host for the ones it has no width for.
+pub fn runs(
+    o Omni,
+    rows List[Suggestion],
+    finding bool,
+    find Omni,
+    k int,
+    n int,
+    status str,
+) List[Run]
+    mut all := List[Run]()
+    if o.editing
+        all.push(Run(text: o.text, size: 14.0))
+        all.push(Run(text: o.text.slice(0, o.cursor), size: 14.0))
+    else
+        all.push(Run(text: pretty(o.text).0, size: 14.0))
+    for s in rows
+        all.push(Run(text: if s.url == "" then s.title else lead_of(s), size: 14.0))
+    if finding
+        all.push(Run(text: find.text, size: 14.0))
+        all.push(Run(text: find.text.slice(0, find.cursor), size: 14.0))
+        all.push(Run(text: find_count(find, k, n), size: 12.0))
+    all.push(Run(text: status, size: 12.0))
+    mut out := List[Run]()
+    for r in all
+        if r.text != ""
+            out.push(r)
+    out
 
 ## Which row of a dropdown of `n` rows a click at (x, y) on the page lands
 ## on, or -1.
@@ -906,7 +1030,7 @@ pub fn suggestions(typed str, history List[Suggestion]) List[Suggestion]
     assert_eq(find_hit(x0 + FIND_W - 20.0, 20.0, w), "close")
     assert_eq(find_hit(x0 - 10.0, 20.0, w), "")
     assert_eq(find_hit(x0 + 40.0, 50.0, w), "")
-    ops := find_ops(dark(), omni("ale"), 0, 3, w, 0x202124, est)
+    ops := find_ops(dark(), omni("ale"), 0, 3, w, 0x202124, est, Map[str, float]())
     assert(ops.len() > 10)
 
 @test fn the_dropdown_lists_the_typed_text_then_matching_history_newest_first()
@@ -923,7 +1047,7 @@ pub fn suggestions(typed str, history List[Suggestion]) List[Suggestion]
     assert_eq(suggest_hit(OMNI_X + 10.0, 40.0, 3, 800.0, false), 1)
     assert_eq(suggest_hit(OMNI_X + 10.0, 200.0, 3, 800.0, false), -1)
     assert_eq(suggest_hit(10.0, 10.0, 3, 800.0, false), -1)
-    assert(suggest_ops(dark(), rows, 1, 800.0, false, 0x202124, est).len() > 6)
+    assert(suggest_ops(dark(), rows, 1, 800.0, false, 0x202124, est, Map[str, float]()).len() > 6)
 
 @test fn clicks_land_on_the_tab_its_x_the_plus_and_the_toolbar()
     w := 800.0
@@ -1009,10 +1133,59 @@ pub fn suggestions(typed str, history List[Suggestion]) List[Suggestion]
         0,
         st,
         est,
+        Map[str, float](),
     )
     assert(ops.len() > 40)
-    assert(status_ops(th, "", 600.0, 0xffffff, est).len() == 0)
-    assert(status_ops(th, "https://a.b", 600.0, 0xffffff, est).len() > 2)
+    assert(status_ops(th, "", 600.0, 0xffffff, est, Map[str, float]()).len() == 0)
+    assert(status_ops(th, "https://a.b", 600.0, 0xffffff, est, Map[str, float]()).len() > 2)
+
+@test fn measured_widths_win_over_the_estimate_and_place_the_dim_path()
+    mut st := State(
+        omni: omni("https://example.com/x"),
+        can_back: false,
+        can_forward: false,
+        hover_x: 0.0 - 1.0,
+        hover_y: 0.0 - 1.0,
+        agent: "",
+        ask: "",
+        width: 800.0,
+        inset_left: 0.0,
+    )
+    mut meas := Map[str, float]()
+    meas[width_key("example.com", 14.0)] = 100.0
+    mut path_x := 0.0
+    for op in draw(dark(), [], 0, st, est, meas)
+        match op
+            Str(x, _, text, _, _, _, _, _, _) => if text == "/x"
+                path_x = x
+            _ => path_x = path_x
+    assert_eq(path_x, OMNI_X + 40.0 + 100.0)
+    assert_eq(
+        runs(st.omni, [], false, omni(""), 0, 0, "https://a.b"),
+        [Run(text: "example.com", size: 14.0), Run(text: "https://a.b", size: 12.0)],
+    )
+    ## While typing, the caret stays inside the field however long the text is.
+    mut big := "a"
+    for _ in 0..9
+        big = "{big}{big}"
+    st.omni = omni(big)
+    st.omni.editing = true
+    mut caret_x := 0.0
+    for op in draw(dark(), [], 0, st, est, Map[str, float]())
+        match op
+            Fill(x, _, w, _, _) => if w == 1.5
+                caret_x = x
+            _ => caret_x = caret_x
+    assert(caret_x > OMNI_X and caret_x < OMNI_X + omni_w(800.0, false))
+
+@test fn narrow_tabs_show_no_title_and_only_the_shown_one_closes()
+    assert(tiny(30, 800.0, 0.0))
+    assert(not tiny(3, 800.0, 0.0))
+    w := tab_w(30, 800.0, 0.0)
+    x0 := tab_x(4, 30, 800.0, 0.0)
+    assert_eq(hit(x0 + w - 12.0, 20.0, 30, 800.0, 0.0, false, false), Hit(kind: "tab", k: 4))
+    ## The new-tab button stays inside the strip however many tabs there are.
+    assert_eq(hit(800.0 - 20.0, 20.0, 60, 800.0, 0.0, false, false).kind, "plus")
 
 ## A text width for the tests: a little over half the size per character.
 fn est(s str, size float) float

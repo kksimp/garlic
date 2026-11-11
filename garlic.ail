@@ -2687,6 +2687,13 @@ struct Garlic
     hover_x float
     hover_y float
     hover_href str
+    ## The pointer over the page canvas (`page_x` below 0 when away), for the
+    ## row it is on in a menu or the omnibox's dropdown.
+    page_x float
+    page_y float
+    ## The widths the host measured for the chrome's own text, by
+    ## `chrome.width_key`.
+    cw Map[str, float]
     ## Chromium's light look instead of the dark one (`--light`).
     light bool
     ## Edge mode (std.app.25): the room the host's window controls take, and
@@ -2757,6 +2764,9 @@ fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
         hover_x: -1.0,
         hover_y: -1.0,
         hover_href: "",
+        page_x: -1.0,
+        page_y: -1.0,
+        cw: {},
         light: false,
         inset_left: 0.0,
         inset_top: 0.0,
@@ -3083,6 +3093,7 @@ fn Garlic.menu_pick(mut self, r int)
 ## A click on the chrome canvas.
 fn Garlic.chrome_click(mut self, ev app.Event)
     h := chrome.hit(ev.x, ev.y, tabs.len(), strip_w, inset_left, attached, pending != "")
+    menu_was := menu_tab
     menu_tab = -1
     if h.kind == "none" and ev.y < chrome.STRIP_H and ev.text == "left"
         ## The empty strip is the title bar: it moves the window (std.app.25).
@@ -3098,6 +3109,9 @@ fn Garlic.chrome_click(mut self, ev app.Event)
                 menu_y = 0.0
             elif ev.text == "other"
                 close_at(h.k)
+            elif h.k == cur and chrome.tiny(tabs.len(), strip_w, inset_left)
+                ## A narrow shown tab is all close button.
+                close_at(h.k)
             else
                 switch(h.k)
         "close" => close_at(h.k)
@@ -3110,9 +3124,11 @@ fn Garlic.chrome_click(mut self, ev app.Event)
             want = "chrome"
         "agent" => show_agent = not show_agent
         "menu" =>
-            menu_tab = -2
-            menu_x = (strip_w - chrome.MENU_W - 8.0).max(0.0)
-            menu_y = 0.0
+            ## A second click on the button closes its menu.
+            if menu_was != -2
+                menu_tab = -2
+                menu_x = (strip_w - chrome.MENU_W - 8.0).max(0.0)
+                menu_y = 0.0
         "allow" => decide(true)
         "deny" => decide(false)
         _ => menu_tab = -1
@@ -3131,6 +3147,10 @@ fn Garlic.bubble(self) str
     if shown != "" and shown != g.b.url
         return shown
     if show_agent then agent_line() else ""
+
+## The chrome's text runs that place other things (`chrome.runs`).
+fn Garlic.chrome_runs(self) List[chrome.Run]
+    chrome.runs(omni, suggestions(), finding, find, g.find_k, g.find_n, bubble())
 
 ## Sans text widths for the chrome, from the layout's estimate.
 fn sans_w(s str, size float) float
@@ -3215,7 +3235,9 @@ fn Garlic.page_menu(mut self, x float, y float)
     menu_text = g.text_at(x, y + g.top)
     menu_tab = -3
     menu_x = x.min((g.area_w - chrome.MENU_W).max(0.0))
-    menu_y = y
+    ## Kept inside the page: a menu opened near the bottom moves up.
+    menu_h := menu_rows().len().to_float() * chrome.ROW_H + 16.0
+    menu_y = y.min((g.area_h - menu_h).max(0.0))
 
 ## Opens `url` in a new tab behind the shown one, as Chromium's menu does.
 fn Garlic.open_in_new_tab(mut self, url str)
@@ -3300,7 +3322,7 @@ fn Garlic.chrome_node(self) app.Node
         "chrome",
         0.0,
         chrome.height(pending != ""),
-        chrome.draw(theme(), items, cur, st, sans_w),
+        chrome.draw(theme(), items, cur, st, sans_w, cw),
     )
 
 impl app.App for Garlic
@@ -3334,19 +3356,14 @@ impl app.App for Garlic
                     chrome_click(ev)
                 else
                     r := chrome.menu_hit(ev.x, ev.y, menu_rows().len(), menu_x, menu_y)
+                    ## The dropdown's rows first: a click outside them ends the edit.
+                    sugg := suggestions()
+                    sr := chrome.suggest_hit(ev.x, ev.y, sugg.len(), strip_w, attached)
                     if omni.editing
                         omni = chrome.omni(g.b.url)
                     fh := if finding then chrome.find_hit(ev.x, ev.y, g.area_w) else ""
-                    sr := if omni.editing then chrome.suggest_hit(
-                        ev.x,
-                        ev.y,
-                        suggestions().len(),
-                        strip_w,
-                        attached,
-                    ) else -1
                     if sr >= 0
-                        row := suggestions()[sr]
-                        omni = chrome.omni(g.b.url)
+                        row := sugg[sr]
                         start_load("open:{if row.url == "" then row.title else row.url}")
                     elif r >= 0
                         menu_pick(r)
@@ -3377,6 +3394,8 @@ impl app.App for Garlic
                     hover_x = ev.x
                     hover_y = ev.y
                 elif g.pixel
+                    page_x = ev.x
+                    page_y = ev.y
                     g.drag(ev.x, ev.y)
                     hover_href = ""
                     if h := g.scene.hit_at(ev.x, ev.y + g.top)
@@ -3386,6 +3405,8 @@ impl app.App for Garlic
                     hover_x = -1.0
                 else
                     hover_href = ""
+                    page_x = -1.0
+                    page_y = -1.0
             "paste" =>
                 if omni.editing
                     omni.insert(ev.text)
@@ -3468,17 +3489,28 @@ impl app.App for Garlic
     fn view(self) app.Node
         ## A canvas of 0 by 0 fills the window; the host reports its size.
         mut page_ops := [to_app(op, g) for op in g.display()]
-        page_ops.extend(chrome.status_ops(theme(), bubble(), g.area_h, g.scene.bg, sans_w))
-        page_ops.extend(chrome.menu_ops(theme(), menu_rows(), menu_x, menu_y, g.scene.bg, -1))
+        page_ops.extend(chrome.status_ops(theme(), bubble(), g.area_h, g.scene.bg, sans_w, cw))
+        page_ops.extend(chrome.menu_ops(
+            theme(),
+            menu_rows(),
+            menu_x,
+            menu_y,
+            g.scene.bg,
+            chrome.menu_hit(page_x, page_y, menu_rows().len(), menu_x, menu_y),
+        ))
         if omni.editing
+            ## The row the arrow keys chose, else the one under the pointer.
+            sugg := suggestions()
+            under := chrome.suggest_hit(page_x, page_y, sugg.len(), strip_w, attached)
             page_ops.extend(chrome.suggest_ops(
                 theme(),
-                suggestions(),
-                pick_row,
+                sugg,
+                if pick_row >= 0 then pick_row else under,
                 strip_w,
                 attached,
                 g.scene.bg,
                 sans_w,
+                cw,
             ))
         if finding
             page_ops.extend(chrome.find_ops(
@@ -3489,6 +3521,7 @@ impl app.App for Garlic
                 g.area_w,
                 g.scene.bg,
                 sans_w,
+                cw,
             ))
         app.column([chrome_node(), app.canvas("page", 0.0, 0.0, page_ops)])
 
@@ -3510,10 +3543,27 @@ impl app.App for Garlic
         "{g.b.pg.title} - Garlic"
 
     fn measures(self) List[app.Measure]
-        g.wanted()
+        ## The page's runs, then the chrome's own.
+        mut out := g.wanted()
+        for r in chrome_runs()
+            if not cw.contains(chrome.width_key(r.text, r.size))
+                out.push(app.Measure(
+                    text: r.text,
+                    font: "sans",
+                    size: r.size,
+                    bold: false,
+                    italic: false,
+                ))
+        out
 
     fn measured(mut self, runs List[app.Measure], widths List[float])
-        g.learn(runs, widths)
+        n := g.wanted().len().min(runs.len())
+        if n > 0
+            g.learn([runs[i] for i in 0..n], [widths[i] for i in 0..n])
+        if cw.len() > 4000
+            cw = {}
+        for i in n..runs.len()
+            cw[chrome.width_key(runs[i].text, runs[i].size)] = widths[i]
 
     fn focus(self) str
         want
@@ -5944,6 +5994,56 @@ fn fwd_slashes(p str) str
     a.update(menu)
     assert_eq(a.menu_tab, -2)
     assert(a.menu_rows().contains("Light theme"))
+    ## A second click on the button closes its menu.
+    a.update(menu)
+    assert_eq(a.menu_tab, -1)
+
+@test fn a_click_on_a_dropdown_row_opens_it_and_the_pointer_lights_rows()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut a := Garlic.new(b, 600.0, 300.0, 7.5, 15.0)
+    a.g.pixel = true
+    a.update(resized(600.0, 300.0))
+    a.visits.push(chrome.Suggestion(title: "Second", url: "{testdata()}/second.html"))
+    mut l := app.key("l")
+    l.meta = true
+    a.update(l)
+    for c in "seco".chars()
+        a.update(app.key("{c}"))
+    assert_eq(a.suggestions().len(), 2)
+    ## The pointer over the second row: the view lights it.
+    mut over := app.event("move")
+    over.id = "page"
+    over.x = 200.0
+    over.y = 50.0
+    a.update(over)
+    assert_eq((a.page_x, a.page_y), (200.0, 50.0))
+    a.view()
+    mut ev := app.event("click")
+    ev.id = "page"
+    ev.x = 200.0
+    ev.y = 50.0
+    ev.text = "left"
+    a.update(ev)
+    assert_eq(a.g.b.pg.title, "Second page")
+    assert(not a.omni.editing)
+
+@test fn the_chrome_asks_the_host_for_its_own_text_widths_once()
+    b := Browser.new("{testdata()}/index.html", 60, 12)
+    mut a := Garlic.new(b, 600.0, 300.0, 7.5, 15.0)
+    a.g.pixel = true
+    a.update(resized(600.0, 300.0))
+    a.hover_href = "https://example.com/a"
+    want := a.measures()
+    page_n := a.g.wanted().len()
+    assert(want.len() > page_n)
+    assert_eq(want[want.len() - 1].text, "https://example.com/a")
+    mut widths := List[float]()
+    for _ in 0..want.len()
+        widths.push(7.0)
+    a.measured(want, widths)
+    got := a.cw.get(chrome.width_key("https://example.com/a", 12.0)) else 0.0
+    assert_eq(got, 7.0)
+    assert_eq(a.measures().len(), a.g.wanted().len())
 
 @test fn font_keywords_inherit_oblique_and_the_font_shorthand()
     assert(page.font_italic("oblique 10deg", false))
