@@ -633,13 +633,7 @@ pub fn draw(
 
 ## The omnibox: a pill with a padlock, the address (host bright, the rest
 ## dim) or the text being edited with its caret or selection.
-fn omnibox(
-    mut ops List[app.Op],
-    th Theme,
-    st State,
-    tw fn(str, float) float,
-    meas Map[str, float],
-)
+fn omnibox(mut ops List[app.Op], th Theme, st State, tw fn(str, float) float, meas Map[str, float])
     width := st.width.max(1.0)
     ow := omni_w(width, st.agent != "")
     o := st.omni
@@ -1160,10 +1154,10 @@ pub fn suggestions(typed str, history List[Suggestion]) List[Suggestion]
                 path_x = x
             _ => path_x = path_x
     assert_eq(path_x, OMNI_X + 40.0 + 100.0)
-    assert_eq(
-        runs(st.omni, [], false, omni(""), 0, 0, "https://a.b"),
-        [Run(text: "example.com", size: 14.0), Run(text: "https://a.b", size: 12.0)],
-    )
+    assert_eq(runs(st.omni, [], false, omni(""), 0, 0, "https://a.b"), [
+        Run(text: "example.com", size: 14.0),
+        Run(text: "https://a.b", size: 12.0),
+    ])
     ## While typing, the caret stays inside the field however long the text is.
     mut big := "a"
     for _ in 0..9
