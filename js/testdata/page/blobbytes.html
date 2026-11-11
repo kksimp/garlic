@@ -1,0 +1,28 @@
+<!DOCTYPE html><html><head><title>Binary-safe Blob and fetch</title></head><body><p id="p">waiting</p>
+<script>
+const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+const blob = new Blob([new Uint8Array([0, 255, 128])]);
+console.log(blob.size);
+blob.arrayBuffer().then((buf) => {
+  console.log(Array.from(new Uint8Array(buf)).join(","));
+  console.log(Array.from(new Uint8Array(blob.slice(1, 3).size === 2 ? [1] : [0])).join(","));
+  return fetch(PNG);
+}).then((r) => {
+  console.log(r.status, r.ok, r.headers.get("content-type"));
+  return r.blob();
+}).then((b) => {
+  console.log(b.type, b.size);
+  return b.arrayBuffer().then((ab) => {
+    const u = new Uint8Array(ab);
+    console.log(u[0], u[1], u[2], u[3]);
+    return createImageBitmap(b);
+  });
+}).then((bmp) => {
+  console.log(bmp.width, bmp.height, Object.prototype.toString.call(bmp));
+  return createImageBitmap(new Blob([new Uint8Array(4)]));
+}).then(() => console.log("unexpected"), (e) => {
+  console.log("rejected", e.name);
+  document.getElementById("p").textContent = "done";
+});
+</script>
+</body></html>

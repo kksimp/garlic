@@ -247,6 +247,15 @@ regex engine is written.
   the JSON reply to the live engine (`Session.reply`), which runs the
   page's callback. No script runs twice. Pages restored by Back have no
   engine, so they make no requests.
+- **Blob and Response are binary-safe** (webapi.ail, netapi.ail). A `Blob`
+  keeps its bytes (`_bytes`, a Uint8Array; `_text` decodes them as UTF-8), so
+  `arrayBuffer`, `slice`, `FileReader` and `Response.blob/arrayBuffer/bytes`
+  round-trip any byte. `fetch("data:...")` is answered in the engine
+  (base64 or percent-encoded, RFC 2397) with no host request.
+  `createImageBitmap(blob)` asks `__imageDims` (`image.dims`, the header's
+  size) and resolves an `ImageBitmap`; unknown bytes reject
+  `InvalidStateError`. It reads sizes only, not pixels, and WebP and AVIF
+  succeed once `vendor/image` `dims` knows them.
 - **WebSocket** is a JavaScript class over `__hostWs` (open, send, close).
   The browser (`ws/ws.ail`, RFC 6455 over `net.connect`/`net.connect_tls`)
   makes the connection with the page's origin and cookies, and delivers
@@ -440,9 +449,10 @@ it comes later for speed, and these frames will move onto it).
   the laid-out page height to `Vm.viewport`; `innerWidth/Height`,
   `outerWidth/Height` and `documentElement.clientWidth/Height` follow it,
   `body` gets the page height, and `resize` fires when the area changes.
-  A headless run keeps 1280x800. `screen.width/height` equal the window
-  area for now and will change once std.app reports the display size;
-  `devicePixelRatio` stays 1 until std.app reports the display's scale.
+  A headless run keeps 1280x800. `screen.width/height` and
+  `devicePixelRatio` come from the host's `screen_w`, `screen_h` and `scale`
+  (std.app.31, kept by `Garlic.note_display`); the window area and 1 stand
+  in when the host reports none.
 - Platform APIs (platform.ail): `navigator.clipboard.writeText` and
   `write` go to the system clipboard; `readText` and `read` are refused
   (NotAllowedError), as Chrome does without the permission.

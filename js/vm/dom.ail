@@ -76,9 +76,18 @@ pub fn Vm.measure(mut self, boxes List[List[float]], scroll float)
 ## The browser window's page area: `w` x `h` CSS pixels at `dpr` device
 ## pixels per CSS pixel, and `page_height`, the laid-out page's height.
 ## `innerWidth` and friends follow it, and `resize` fires on the window when
-## the area changes after the first report. A headless run never calls this
+## the area changes after the first report. `screen_w` x `screen_h` is the
+## display (0 when unknown: the window area stands in). A headless run never calls this
 ## and keeps 1280x800.
-pub fn Vm.viewport(mut self, w float, h float, dpr float, page_height float)
+pub fn Vm.viewport(
+    mut self,
+    w float,
+    h float,
+    dpr float,
+    page_height float,
+    screen_w float,
+    screen_h float,
+)
     changed := view_set and (w != view_w or h != view_h or dpr != view_dpr)
     view_w = w
     view_h = h
@@ -95,7 +104,9 @@ pub fn Vm.viewport(mut self, w float, h float, dpr float, page_height float)
         global_obj.props[pair.0] = data(Num(pair.1))
     if sp := global_obj.props.get("screen")
         if so := obj_of(sp.value)
-            for pair in [("width", w), ("height", h), ("availWidth", w), ("availHeight", h)]
+            sw := if screen_w > 0.0 then screen_w else w
+            sh := if screen_h > 0.0 then screen_h else h
+            for pair in [("width", sw), ("height", sh), ("availWidth", sw), ("availHeight", sh)]
                 so.props[pair.0] = data(Num(pair.1))
     if changed
         fire(-1, "resize", false)
@@ -735,7 +746,7 @@ pub fn Vm.dom_setup(mut self)
     methods(
         global_obj,
         "dom.window",
-        "setTimeout:1 setInterval:1 clearTimeout:1 clearInterval:1 requestAnimationFrame:1 cancelAnimationFrame:1 queueMicrotask:1 requestIdleCallback:1 structuredClone:1 addEventListener:2 removeEventListener:2 dispatchEvent:1 getComputedStyle:1 matchMedia:1 alert:1 confirm:1 prompt:1 scrollTo:2 scrollBy:2 scroll:2 open:1 close:0 focus:0 blur:0 postMessage:1 atob:1 btoa:1 __hostFetch:3 __hostWs:3 __hostClipboard:1 __hostWorker:3",
+        "setTimeout:1 setInterval:1 clearTimeout:1 clearInterval:1 requestAnimationFrame:1 cancelAnimationFrame:1 queueMicrotask:1 requestIdleCallback:1 structuredClone:1 addEventListener:2 removeEventListener:2 dispatchEvent:1 getComputedStyle:1 matchMedia:1 alert:1 confirm:1 prompt:1 scrollTo:2 scrollBy:2 scroll:2 open:1 close:0 focus:0 blur:0 postMessage:1 atob:1 btoa:1 __hostFetch:3 __hostWs:3 __hostClipboard:1 __hostWorker:3 __imageDims:1",
     )
     global_obj.props["location"] = Prop(
         value: Undef,
@@ -2642,6 +2653,11 @@ fn Vm.window_method(mut self, m str, args List[Value]) Value ! Thrown
                 text: to_string(arg_at(args, 2))?,
             ))
             Num(id.to_float())
+        "__imageDims" =>
+            # `createImageBitmap(blob)` (webapi.ail): the picture's size from
+            # its header, "0,0" for bytes no decoder knows.
+            size := image.dims(bytes_of(a0)?)
+            Value.Str("{size[0]},{size[1]}")
         "__hostClipboard" =>
             # `navigator.clipboard.writeText` (platform.ail): the browser puts
             # the text on the system clipboard.
