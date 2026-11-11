@@ -383,7 +383,8 @@ fn skip_at_rule(cs List[char], at int) int
         if cs[i] == ';'
             return i + 1
         if cs[i] == '{'
-            return block_end(cs, i) + 1
+            ## An unclosed block ends with the sheet.
+            return (block_end(cs, i) + 1).min(cs.len())
         i += 1
     i
 

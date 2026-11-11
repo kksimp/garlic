@@ -338,9 +338,10 @@ fn tab_shape(mut ops List[app.Op], x float, y float, w float, h float, r float, 
         d := r - i.to_float() - 0.5
         inset := r - (r * r - d * d).max(0.0).sqrt()
         band(mut ops, x + inset, x + w - inset, y + i.to_float(), c, bg)
-        ## The flare: the bottom row is `r` wider on each side, the top of
-        ## the flare meets the sides.
-        flare := r - (r * r - (i.to_float() + 0.5) * (i.to_float() + 0.5)).max(0.0).sqrt()
+        ## The flare: a concave quarter circle on each side, `r` wide on the
+        ## bottom row and meeting the tab's side `r` above it.
+        up := r - i.to_float() - 0.5
+        flare := (r * r - up * up).max(0.0).sqrt()
         band(mut ops, x - r + flare, x + w + r - flare, y + h - i.to_float() - 1.0, c, bg)
 
 fn txt(x float, y float, s str, fg int, bold bool, size float) app.Op
@@ -736,6 +737,23 @@ fn infobar(mut ops List[app.Op], th Theme, st State, width float)
 
 # ---- Over the page: menus and the status bubble ------------------------------------
 
+## A soft shadow under a card at (x, y): three translucent layers, each a
+## little larger and lower, with their corners cut so none pokes out from
+## behind the card's round corners.
+fn shadow(mut ops List[app.Op], x float, y float, w float, h float)
+    for k in 1..4
+        d := k.to_float() * 2.0
+        ops.push(app.Op.Shade(
+            x: x - d + 6.0,
+            y: y + h - 6.0,
+            w: w + 2.0 * d - 12.0,
+            h: 6.0 + d + 1.0,
+            color: 0x000000,
+            alpha: 0.07,
+        ))
+        ops.push(app.Op.Shade(x: x - d, y: y + 8.0, w: d, h: h - 14.0, color: 0x000000, alpha: 0.07))
+        ops.push(app.Op.Shade(x: x + w, y: y + 8.0, w: d, h: h - 14.0, color: 0x000000, alpha: 0.07))
+
 ## A dropdown menu with `rows` whose top-left corner is at (x, y) on a canvas
 ## coloured `bg`; `hot` is the row under the pointer, or -1.
 pub fn menu_ops(th Theme, rows List[str], x float, y float, bg int, hot_row int) List[app.Op]
@@ -743,7 +761,7 @@ pub fn menu_ops(th Theme, rows List[str], x float, y float, bg int, hot_row int)
     if rows.len() == 0
         return ops
     h := rows.len().to_float() * ROW_H + 2.0 * MENU_PAD
-    ops.push(app.Op.Shade(x: x + 2.0, y: y + 3.0, w: MENU_W, h: h, color: 0x000000, alpha: 0.25))
+    shadow(mut ops, x, y, MENU_W, h)
     round(mut ops, x, y, MENU_W, h, 8.0, th.menu, bg)
     for r in 0..rows.len()
         ry := y + MENU_PAD + r.to_float() * ROW_H
@@ -812,7 +830,7 @@ pub fn find_ops(
 ) List[app.Op]
     mut ops := List[app.Op]()
     x := find_x(width)
-    ops.push(app.Op.Shade(x: x + 1.0, y: 2.0, w: FIND_W, h: FIND_H, color: 0x000000, alpha: 0.25))
+    shadow(mut ops, x, 0.0, FIND_W, FIND_H)
     round(mut ops, x, 0.0 - 8.0, FIND_W, FIND_H + 8.0, 8.0, th.toolbar, bg)
     ops.push(app.draw_rect(x, 0.0, FIND_W, 1.0, mix(th.toolbar, th.sep, 0.5)))
     tx := x + 16.0
@@ -902,7 +920,7 @@ pub fn suggest_ops(
         return ops
     w := omni_w(width.max(1.0), agent)
     h := rows.len().to_float() * SUG_ROW + 8.0
-    ops.push(app.Op.Shade(x: OMNI_X + 2.0, y: 3.0, w: w, h: h, color: 0x000000, alpha: 0.25))
+    shadow(mut ops, OMNI_X, 0.0, w, h)
     round(mut ops, OMNI_X, 0.0 - 8.0, w, h + 8.0, 8.0, th.menu, bg)
     for r in 0..rows.len()
         ry := r.to_float() * SUG_ROW

@@ -2732,6 +2732,9 @@ struct Garlic
     load_next str
     has_inbox bool
     inbox app.Inbox
+    ## Whether the page named at start is still to load: the window opens
+    ## first and shows the spinner, as for any other load.
+    first bool
     ## Favicons by address (zero size for a site without one), and which
     ## ones the host already holds (`icon_fresh` goes with this view).
     icons Map[str, images.Bitmap]
@@ -2759,6 +2762,7 @@ fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
         finding: false,
         find: chrome.omni(""),
         load_next: "",
+        first: false,
         has_inbox: false,
         inbox: app.new_inbox(),
         hover_x: -1.0,
@@ -2959,7 +2963,8 @@ fn Garlic.new_tab(mut self)
 fn Garlic.item(self, k int) chrome.Item
     t := if k == cur then g else tabs[k]
     mut it := chrome.Item(
-        title: t.b.pg.title,
+        ## A page without a title (or still loading) goes by its address.
+        title: if t.b.pg.title != "" then t.b.pg.title else chrome.pretty(t.b.url).0,
         url: t.b.url,
         icon: "",
         icon_w: 0,
@@ -3195,6 +3200,8 @@ fn Garlic.do_load(mut self)
         g.b.go_forward()
     elif what == "reload"
         g.b.reload()
+    elif what == "first"
+        g.b.load(g.b.url, "GET", "")
 
 ## The omnibox dropdown's rows for what is typed (none while it shows the
 ## address as it is).
@@ -3329,6 +3336,9 @@ impl app.App for Garlic
     fn attach(mut self, box app.Inbox)
         has_inbox = true
         inbox = box
+        if first
+            first = false
+            start_load("first")
 
     fn update(mut self, ev app.Event)
         want = ""
@@ -3618,8 +3628,17 @@ GUI_H := 600.0
 GUI_CELL_W := 7.8
 GUI_CELL_H := 16.0
 
-fn app_main(b Browser, pixel bool, attached bool, sites str, light bool, inbox app.Inbox) !
+fn app_main(
+    b Browser,
+    pixel bool,
+    attached bool,
+    sites str,
+    light bool,
+    inbox app.Inbox,
+    first bool,
+) !
     mut a := Garlic.new(b, GUI_W, GUI_H, GUI_CELL_W, GUI_CELL_H)
+    a.first = first
     a.g.pixel = pixel
     a.light = light
     a.history_file = history.default_path()
@@ -3631,10 +3650,14 @@ fn app_main(b Browser, pixel bool, attached bool, sites str, light bool, inbox a
         return
     host := app.host_path() else err
         print("garlic: no native window ({err.message}); the page as text:")
+        if a.first
+            a.g.b.load(a.g.b.url, "GET", "")
         print(a.g.b.pg.text())
         return
     app.run_with(mut a, host, [], inbox) else err
         print("garlic: no native window ({err.message}); the page as text:")
+        if a.first
+            a.g.b.load(a.g.b.url, "GET", "")
         print(a.g.b.pg.text())
 
 ## "Garlic COMMIT · ail COMMIT" from the checkout the program runs in
@@ -3909,7 +3932,14 @@ fn run_cli(args List[str], width int, height int, pool jsdom.Pool, inbox app.Inb
     mut b := Browser.empty(cli_target(target_of(args)), width, height)
     b.zone = tz.system()
     b.workers = pool
-    b.load(b.url, "GET", "")
+    ## The window opens before its first page loads; everything else needs
+    ## the page now.
+    mut eager := args.contains("--follow") or args.contains("--find") or args.contains("--do")
+    for f in HEADLESS
+        if args.contains(f)
+            eager = true
+    if eager
+        b.load(b.url, "GET", "")
     b.viewport_only = args.contains("--viewport")
     b.diff = args.contains("--diff")
     b.budget = (flag(args, "--budget") else "0").to_int() else 0
@@ -3973,6 +4003,7 @@ fn run_cli(args List[str], width int, height int, pool jsdom.Pool, inbox app.Inb
             flag(args, "--allow") else "",
             args.contains("--light"),
             inbox,
+            not eager,
         ) else err
             print("garlic: {err}")
 
