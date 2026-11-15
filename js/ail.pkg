@@ -1,2 +1,3 @@
 package garlicjs
+ail 0.1
 dep image path ../vendor/image caps fs
