@@ -969,78 +969,78 @@ fn Browser.empty(url str, width int, height int) Browser
 
 ## Rows of page the window shows: all but the status row.
 fn Browser.view(self) int
-    (height - 1).max(1)
+    (self.height - 1).max(1)
 
 fn Browser.max_scroll(self) int
-    (pg.rows.len() - view()).max(0)
+    (self.pg.rows.len() - self.view()).max(0)
 
 fn Browser.scroll_to(mut self, row int)
-    scroll = row.max(0).min(max_scroll())
+    self.scroll = row.max(0).min(self.max_scroll())
 
 ## Lays the page out again, after a resize or a change to a form control.
 fn Browser.relayout(mut self)
-    pg = page.layout_with(doc, url, width, sheet)
-    stamp += 1
-    scroll_to(scroll)
+    self.pg = page.layout_with(self.doc, self.url, self.width, self.sheet)
+    self.stamp += 1
+    self.scroll_to(self.scroll)
 
 ## Opens `target`, remembering the current page for Back.
 fn Browser.go(mut self, target str)
-    refer = url
-    go_typed(target)
+    self.refer = self.url
+    self.go_typed(target)
 
 ## `go` for an address the person typed: no referring page.
 fn Browser.go_typed(mut self, target str)
-    leave()
-    ahead.clear()
-    load(target, "GET", "")
+    self.leave()
+    self.ahead.clear()
+    self.load(target, "GET", "")
 
 ## Pushes the current page on Back's stack and keeps its tree and place, so
 ## coming back needs no request.
 fn Browser.leave(mut self)
-    back.push(url)
-    keep()
+    self.back.push(self.url)
+    self.keep()
 
 fn Browser.keep(mut self)
-    if not kept.contains(url)
-        kept_order.push(url)
-        if kept_order.len() > MAX_KEPT
-            kept.remove(kept_order.remove_at(0))
-    kept[url] = Kept(doc, sheet, scroll)
+    if not self.kept.contains(self.url)
+        self.kept_order.push(self.url)
+        if self.kept_order.len() > MAX_KEPT
+            self.kept.remove(self.kept_order.remove_at(0))
+    self.kept[self.url] = Kept(doc: self.doc, sheet: self.sheet, scroll: self.scroll)
 
 ## Shows `target` from the kept pages if it's there (with its scroll place),
 ## else fetches it.
 fn Browser.revisit(mut self, target str)
-    if k := kept.get(target)
-        url = target
-        doc = k.doc
-        sheet = k.sheet
-        pg = page.layout_with(doc, url, width, sheet)
-        stop_workers()
-        js = none
-        stamp += 1
-        scroll_to(k.scroll)
-        focus = 0
-        message = ""
+    if k := self.kept.get(target)
+        self.url = target
+        self.doc = k.doc
+        self.sheet = k.sheet
+        self.pg = page.layout_with(self.doc, self.url, self.width, self.sheet)
+        self.stop_workers()
+        self.js = none
+        self.stamp += 1
+        self.scroll_to(k.scroll)
+        self.focus = 0
+        self.message = ""
     else
-        load(target, "GET", "")
+        self.load(target, "GET", "")
 
 ## Closes the page's WebSockets, as leaving the page does.
 fn Browser.close_sockets(mut self)
-    for id in socks.keys()
-        mut s := socks.get(id) else continue
+    for id in self.socks.keys()
+        mut s := self.socks.get(id) else continue
         s.close(1001)
-        socks.remove(id)
+        self.socks.remove(id)
 
 ## Whether a page's engine is kept.
 fn Browser.has_js(self) bool
-    s := js else return false
+    s := self.js else return false
     s.pending() >= 0
 
 ## Stops the page's Web Workers (leaving the page does).
 fn Browser.stop_workers(mut self)
-    mut s := js else return
+    mut s := self.js else return
     s.stop_workers()
-    js = s
+    self.js = s
 
 ## Delivers what the page's open sockets have received (the host calls this
 ## as events arrive), and shows what the page did with it.
@@ -1051,27 +1051,27 @@ fn Browser.stop_workers(mut self)
 ## WebSocket was open or an agent asked for `wait:idle`, so a test that
 ## finished through a timer showed its "working" state for ever.
 fn Browser.advance(mut self)
-    s := js else return
-    if s.pending() == 0 and socks.len() == 0 and not s.workers_live()
+    s := self.js else return
+    if s.pending() == 0 and self.socks.len() == 0 and not s.workers_live()
         return
-    if settle()
+    if self.settle()
         return
 
 fn Browser.pump(mut self)
-    mut s := js else return
-    if socks.len() == 0 and not s.workers_live()
+    mut s := self.js else return
+    if self.socks.len() == 0 and not s.workers_live()
         return
-    out := serve_page(mut s, mut doc, quiet(), url, mut cj, mut socks)
-    js = s
-    record(out)
-    if not js_went(out)
-        relayout()
+    out := serve_page(mut s, mut self.doc, quiet(), self.url, mut self.cj, mut self.socks)
+    self.js = s
+    self.record(out)
+    if not self.js_went(out)
+        self.relayout()
 
 ## Gives the page's scripts the layout's element boxes, so they can measure.
 fn Browser.measure(mut self, boxes List[gfx.Box], top float)
-    mut s := js else return
+    mut s := self.js else return
     s.measure([[b.node.to_float(), b.x, b.y, b.w, b.h] for b in boxes], top)
-    js = s
+    self.js = s
 
 ## Hands the page's scripts the window's page area (`window.innerWidth` and
 ## the root element's `clientWidth`) and the laid-out page's height.
@@ -1084,30 +1084,37 @@ fn Browser.viewport(
     screen_w float,
     screen_h float,
 )
-    mut s := js else return
+    mut s := self.js else return
     s.viewport(w, h, dpr, page_height, screen_w, screen_h)
-    js = s
+    self.js = s
 
 ## Remembers what the page logged and requested, for the page model.
 fn Browser.record(mut self, out jsdom.Outcome)
-    console_log.extend(out.console)
-    clips.extend(out.clips)
-    net_log.extend(out.net)
-    if console_log.len() > LOG_KEEP
-        console_log = console_log[console_log.len() - LOG_KEEP..]
-    if net_log.len() > LOG_KEEP
-        net_log = net_log[net_log.len() - LOG_KEEP..]
+    self.console_log.extend(out.console)
+    self.clips.extend(out.clips)
+    self.net_log.extend(out.net)
+    if self.console_log.len() > LOG_KEEP
+        self.console_log = self.console_log[self.console_log.len() - LOG_KEEP..]
+    if self.net_log.len() > LOG_KEEP
+        self.net_log = self.net_log[self.net_log.len() - LOG_KEEP..]
 
 ## Lets the page's timers, requests and sockets run for one second of its
 ## clock. True when something happened (a change, a request or a log line) or a
 ## timer is still waiting.
 fn Browser.settle(mut self) bool
-    mut s := js else return false
-    mut out := serve_page(mut s, mut doc, s.idle(mut doc, 1000.0), url, mut cj, mut socks)
-    js = s
-    record(out)
-    if not js_went(out)
-        relayout()
+    mut s := self.js else return false
+    mut out := serve_page(
+        mut s,
+        mut self.doc,
+        s.idle(mut self.doc, 1000.0),
+        self.url,
+        mut self.cj,
+        mut self.socks,
+    )
+    self.js = s
+    self.record(out)
+    if not self.js_went(out)
+        self.relayout()
     out.changes > 0
         or out.net.len() > 0
         or out.console.len() > 0
@@ -1120,144 +1127,144 @@ fn Browser.settle(mut self) bool
 fn Browser.wait(mut self, arg str)
     want := if arg.starts_with("text=") then arg.slice(5, arg.chars().len()) else ""
     for _ in 0..MAX_WAIT_ROUNDS
-        if want != "" and pg.text().to_lower().contains(want.to_lower())
-            message = "found `{want}`"
+        if want != "" and self.pg.text().to_lower().contains(want.to_lower())
+            self.message = "found `{want}`"
             return
-        if not settle()
+        if not self.settle()
             break
     if want == ""
-        message = "idle"
-    elif pg.text().to_lower().contains(want.to_lower())
-        message = "found `{want}`"
+        self.message = "idle"
+    elif self.pg.text().to_lower().contains(want.to_lower())
+        self.message = "found `{want}`"
     else
-        message = "`{want}` did not appear"
+        self.message = "`{want}` did not appear"
 
 ## Fetches the current page again, asking the server about any kept copy.
 fn Browser.reload(mut self)
-    reloading = true
-    load(url, "GET", "")
+    self.reloading = true
+    self.load(self.url, "GET", "")
 
 fn Browser.load(mut self, target str, method str, body str)
-    close_sockets()
-    stop_workers()
+    self.close_sockets()
+    self.stop_workers()
     loaded := load_doc(
         target,
         method,
         body,
-        refer,
-        reloading,
-        mut cj,
-        mut cache,
-        mut socks,
-        zone,
-        workers,
+        self.refer,
+        self.reloading,
+        mut self.cj,
+        mut self.cache,
+        mut self.socks,
+        self.zone,
+        self.workers,
     )
-    reloading = false
-    refer = ""
-    url = loaded.url
-    doc = loaded.doc
+    self.reloading = false
+    self.refer = ""
+    self.url = loaded.url
+    self.doc = loaded.doc
     if not env.args().contains("--noisy")
-        hush.apply(mut doc)
-    js = loaded.js
-    console_log = []
-    net_log = []
-    record(loaded.out)
-    sheet = linked_sheets(doc, url, mut cj, mut cache)
-    pg = page.layout_with(doc, url, width, sheet)
-    stamp += 1
-    scroll = 0
-    focus = 0
-    message = ""
+        hush.apply(mut self.doc)
+    self.js = loaded.js
+    self.console_log = []
+    self.net_log = []
+    self.record(loaded.out)
+    self.sheet = linked_sheets(self.doc, self.url, mut self.cj, mut self.cache)
+    self.pg = page.layout_with(self.doc, self.url, self.width, self.sheet)
+    self.stamp += 1
+    self.scroll = 0
+    self.focus = 0
+    self.message = ""
     ## A fresh load replaces any copy kept for that address.
-    kept.remove(url)
-    kept_order = [u for u in kept_order if u != url]
+    self.kept.remove(self.url)
+    self.kept_order = [u for u in self.kept_order if u != self.url]
 
 ## Whether there is a page to go back or forward to.
 fn Browser.can_back(self) bool
-    back.len() > 0
+    self.back.len() > 0
 
 fn Browser.can_forward(self) bool
-    ahead.len() > 0
+    self.ahead.len() > 0
 
 fn Browser.go_back(mut self)
-    prev := back.pop() else
-        message = "no page to go back to"
+    prev := self.back.pop() else
+        self.message = "no page to go back to"
         return
-    ahead.push(url)
-    keep()
-    revisit(prev)
+    self.ahead.push(self.url)
+    self.keep()
+    self.revisit(prev)
 
 fn Browser.go_forward(mut self)
-    next := ahead.pop() else
-        message = "no page to go forward to"
+    next := self.ahead.pop() else
+        self.message = "no page to go forward to"
         return
-    back.push(url)
-    keep()
-    revisit(next)
+    self.back.push(self.url)
+    self.keep()
+    self.revisit(next)
 
 ## Follows link `n` (1-based).
 fn Browser.follow(mut self, n int)
-    if n < 1 or n > pg.links.len()
-        message = "no link {n}"
+    if n < 1 or n > self.pg.links.len()
+        self.message = "no link {n}"
         return
-    href := pg.boxes[pg.links[n - 1]].href
+    href := self.pg.boxes[self.pg.links[n - 1]].href
     if href.starts_with("#")
         return
-    go(href)
+    self.go(href)
 
 ## Moves focus to the next target (`forward`) or the previous one,
 ## wrapping, and scrolls it into view.
 fn Browser.step_focus(mut self, forward bool)
-    n := pg.targets.len()
+    n := self.pg.targets.len()
     if n == 0
-        message = "nothing to focus on this page"
+        self.message = "nothing to focus on this page"
         return
     if forward
-        focus = focus % n + 1
+        self.focus = self.focus % n + 1
     else
-        focus = if focus <= 1 then n else focus - 1
-    b := pg.boxes[pg.targets[focus - 1]]
-    if b.row < scroll or b.end_row > scroll + view()
-        scroll_to(b.row - view() / 3)
-    js_focus(b.id)
+        self.focus = if self.focus <= 1 then n else self.focus - 1
+    b := self.pg.boxes[self.pg.targets[self.focus - 1]]
+    if b.row < self.scroll or b.end_row > self.scroll + self.view()
+        self.scroll_to(b.row - self.view() / 3)
+    self.js_focus(b.id)
 
 ## Tells the page's scripts focus moved to node `id` (`blur`, `focus`).
 fn Browser.js_focus(mut self, id int)
-    if not has_js()
+    if not self.has_js()
         return
-    mut s := js else return
-    out := s.focus(mut doc, id, 1000.0)
-    js = s
+    mut s := self.js else return
+    out := s.focus(mut self.doc, id, 1000.0)
+    self.js = s
     if out.changes > 0
-        relayout()
+        self.relayout()
 
 ## Tells the page's scripts the user pressed `key` in node `id`. True when
 ## a listener cancelled it, so the browser's own action should not follow.
 fn Browser.js_key(mut self, id int, key str) bool
-    if not has_js()
+    if not self.has_js()
         return false
-    mut s := js else return false
-    out := s.key(mut doc, id, key, 1000.0)
-    js = s
-    if js_went(out)
+    mut s := self.js else return false
+    out := s.key(mut self.doc, id, key, 1000.0)
+    self.js = s
+    if self.js_went(out)
         return true
     if out.changes > 0
-        relayout()
+        self.relayout()
     s.prevented
 
 ## Scrolls to the next row after the top one that contains `needle`.
 fn Browser.find(mut self, needle str)
-    last_find = needle
+    self.last_find = needle
     if needle == ""
         return
-    if r := pg.find(needle, scroll + 1)
-        scroll_to(r)
-        message = "found `{needle}` on row {r + 1}"
-    elif r := pg.find(needle, 0)
-        scroll_to(r)
-        message = "found `{needle}` on row {r + 1} (wrapped)"
+    if r := self.pg.find(needle, self.scroll + 1)
+        self.scroll_to(r)
+        self.message = "found `{needle}` on row {r + 1}"
+    elif r := self.pg.find(needle, 0)
+        self.scroll_to(r)
+        self.message = "found `{needle}` on row {r + 1} (wrapped)"
     else
-        message = "`{needle}` not found"
+        self.message = "`{needle}` not found"
 
 ## `text` after a key typed into a prompt: Backspace deletes, a character
 ## adds; none when the key does neither.
@@ -1272,245 +1279,259 @@ fn edit_text(text str, key str) str?
 
 ## Handles a key; false when the browser should close.
 fn Browser.key(mut self, key str, alt bool, shift bool) bool
-    match prompt
+    match self.prompt
         Url(text) =>
-            prompt = Status
+            self.prompt = Status
             if key == "enter"
                 if text != ""
-                    go(text)
+                    self.go(text)
             elif key != "escape"
-                prompt = Url(edit_text(text, key) else text)
+                self.prompt = Url(edit_text(text, key) else text)
             return true
         Find(text) =>
-            prompt = Status
+            self.prompt = Status
             if key == "enter"
-                find(text)
+                self.find(text)
             elif key != "escape"
-                prompt = Find(edit_text(text, key) else text)
+                self.prompt = Find(edit_text(text, key) else text)
             return true
         Field(id, text) =>
-            prompt = Status
+            self.prompt = Status
             if key == "enter"
-                type_into(id, text)
-                if not js_key(id, "Enter")
-                    submit(id)
+                self.type_into(id, text)
+                if not self.js_key(id, "Enter")
+                    self.submit(id)
             elif key == "tab"
-                type_into(id, text)
-                step_focus(not shift)
+                self.type_into(id, text)
+                self.step_focus(not shift)
             elif key != "escape"
-                prompt = Field(id, edit_text(text, key) else text)
+                self.prompt = Field(id, edit_text(text, key) else text)
             return true
-        Status => message = ""
+        Status => self.message = ""
     match key
         "q" | "escape" => return false
-        "tab" => step_focus(not shift)
+        "tab" => self.step_focus(not shift)
         "enter" =>
-            if focus > 0
-                activate(pg.boxes[pg.targets[focus - 1]].id)
-        "backspace" => go_back()
+            if self.focus > 0
+                self.activate(self.pg.boxes[self.pg.targets[self.focus - 1]].id)
+        "backspace" => self.go_back()
         "left" =>
             if alt
-                go_back()
+                self.go_back()
         "right" =>
             if alt
-                go_forward()
-        "up" => scroll_to(scroll - 1)
-        "down" => scroll_to(scroll + 1)
-        "pageup" => scroll_to(scroll - view())
-        "pagedown" | "space" => scroll_to(scroll + view())
-        "home" => scroll_to(0)
-        "end" => scroll_to(max_scroll())
-        "g" => prompt = Url("")
-        "/" => prompt = Find("")
-        "n" => find(last_find)
-        "r" => reload()
+                self.go_forward()
+        "up" => self.scroll_to(self.scroll - 1)
+        "down" => self.scroll_to(self.scroll + 1)
+        "pageup" => self.scroll_to(self.scroll - self.view())
+        "pagedown" | "space" => self.scroll_to(self.scroll + self.view())
+        "home" => self.scroll_to(0)
+        "end" => self.scroll_to(self.max_scroll())
+        "g" => self.prompt = Url("")
+        "/" => self.prompt = Find("")
+        "n" => self.find(self.last_find)
+        "r" => self.reload()
         _ => return true
     true
 
 ## The box of target node `id`, or none when `id` takes no action.
 fn Browser.target(self, id int) page.Box?
-    for t in pg.targets
-        if pg.boxes[t].id == id
-            return pg.boxes[t]
+    for t in self.pg.targets
+        if self.pg.boxes[t].id == id
+            return self.pg.boxes[t]
     none
 
 ## Acts on target node `id` as Enter or a click does: follows a link,
 ## edits a text field (in the window), submits with a button, toggles a
 ## check box, chooses a radio button.
 fn Browser.activate(mut self, id int)
-    b := target(id) else
-        message = "node {id} has no action"
+    b := self.target(id) else
+        self.message = "node {id} has no action"
         return
     if b.role == "textbox"
-        prompt = Field(id, b.value)
+        self.prompt = Field(id, b.value)
         return
-    if js_click(id)
+    if self.js_click(id)
         return
     if b.link > 0
-        follow(b.link)
+        self.follow(b.link)
         return
     match b.role
-        "link" => follow(b.link)
+        "link" => self.follow(b.link)
         "button" =>
             # Only a submit button inside a form submits (HTML §4.10.6); a
             # `type=button` the page's scripts handle does nothing more.
-            kind := (doc.attr(id, "type") else "submit").to_lower()
-            if (kind == "submit" or kind == "") and doc.enclosing(id, "form") != none
-                submit(id)
-        "checkbox" | "radio" => check(id)
-        _ => message = "use select:{id}=OPTION to choose an option"
+            kind := (self.doc.attr(id, "type") else "submit").to_lower()
+            if (kind == "submit" or kind == "") and self.doc.enclosing(id, "form") != none
+                self.submit(id)
+        "checkbox" | "radio" => self.check(id)
+        _ => self.message = "use select:{id}=OPTION to choose an option"
 
 ## The page's scripts take a click on node `id` first. True when they dealt
 ## with it (cancelled it, navigated, or toggled a check box); false when
 ## the browser's own action should follow.
 fn Browser.js_click(mut self, id int) bool
-    mut s := js else return false
-    out := serve_page(mut s, mut doc, s.click(mut doc, id, 1000.0), url, mut cj, mut socks)
-    js = s
-    record(out)
-    if js_went(out)
+    mut s := self.js else return false
+    out := serve_page(
+        mut s,
+        mut self.doc,
+        s.click(mut self.doc, id, 1000.0),
+        self.url,
+        mut self.cj,
+        mut self.socks,
+    )
+    self.js = s
+    self.record(out)
+    if self.js_went(out)
         return true
     if s.prevented
-        relayout()
+        self.relayout()
         return true
-    if role_of(id) == "checkbox"
-        relayout()
+    if self.role_of(id) == "checkbox"
+        self.relayout()
         return true
     if out.changes > 0
-        relayout()
+        self.relayout()
     false
 
 ## Follows a navigation a script or a default action asked for.
 fn Browser.js_went(mut self, out jsdom.Outcome) bool
     next := local_url(out.url)
-    if out.url == "" or next == url
+    if out.url == "" or next == self.url
         if out.changes > 0
-            relayout()
+            self.relayout()
         return false
-    leave()
-    ahead.clear()
-    load(next, if out.method == "" then "GET" else out.method, out.body)
+    self.leave()
+    self.ahead.clear()
+    self.load(next, if out.method == "" then "GET" else out.method, out.body)
     true
 
 ## Types `text` into text field `id`, replacing its value.
 fn Browser.type_into(mut self, id int, text str)
-    b := target(id) else
-        message = "node {id} has no action"
+    b := self.target(id) else
+        self.message = "node {id} has no action"
         return
     if b.role != "textbox"
-        message = "node {id} is a {b.role}, not a textbox"
+        self.message = "node {id} is a {b.role}, not a textbox"
         return
-    if has_js()
-        mut s := js else return
+    if self.has_js()
+        mut s := self.js else return
         out := serve_page(
             mut s,
-            mut doc,
-            s.input(mut doc, id, text, 1000.0),
-            url,
-            mut cj,
-            mut socks,
+            mut self.doc,
+            s.input(mut self.doc, id, text, 1000.0),
+            self.url,
+            mut self.cj,
+            mut self.socks,
         )
-        js = s
-        record(out)
-        if not js_went(out)
-            relayout()
+        self.js = s
+        self.record(out)
+        if not self.js_went(out)
+            self.relayout()
         return
-    doc.set_attr(id, "value", text)
-    relayout()
+    self.doc.set_attr(id, "value", text)
+    self.relayout()
 
 ## Toggles check box `id`, or checks radio button `id` and unchecks the
 ## others of its group (same `name` in the same form).
 fn Browser.check(mut self, id int)
-    b := target(id) else
-        message = "node {id} has no action"
+    b := self.target(id) else
+        self.message = "node {id} has no action"
         return
     if b.role == "checkbox"
         if b.checked
-            doc.remove_attr(id, "checked")
+            self.doc.remove_attr(id, "checked")
         else
-            doc.set_attr(id, "checked", "")
+            self.doc.set_attr(id, "checked", "")
     elif b.role == "radio"
-        group := doc.attr(id, "name") else ""
-        form := doc.enclosing(id, "form") else 0
-        for r in doc.all("input")
-            if page.input_type(doc, r) == "radio" and doc.attr(
+        group := self.doc.attr(id, "name") else ""
+        form := self.doc.enclosing(id, "form") else 0
+        for r in self.doc.all("input")
+            if page.input_type(
+                self.doc,
                 r,
-                "name",
-            ) == group and doc.within(r, form)
-                doc.remove_attr(r, "checked")
-        doc.set_attr(id, "checked", "")
+            ) == "radio" and self.doc.attr(r, "name") == group and self.doc.within(r, form)
+                self.doc.remove_attr(r, "checked")
+        self.doc.set_attr(id, "checked", "")
     else
-        message = "node {id} is a {b.role}, not a checkbox or radio"
+        self.message = "node {id} is a {b.role}, not a checkbox or radio"
         return
-    relayout()
+    self.relayout()
 
 ## The role of control `id`, or "" when it has none.
 fn Browser.role_of(self, id int) str
-    t := target(id) else return ""
+    t := self.target(id) else return ""
     t.role
 
 ## The text field being typed into (a node), or -1.
 fn Browser.editing(self) int
-    match prompt
+    match self.prompt
         Field(id, _) => id
         Url(_) | Find(_) | Status => -1
 
 ## Moves select `id` to its next option, wrapping round.
 fn Browser.cycle(mut self, id int)
     mut opts := List[int]()
-    for o in doc.all("option")
-        if doc.within(o, id)
+    for o in self.doc.all("option")
+        if self.doc.within(o, id)
             opts.push(o)
     if opts.len() == 0
         return
     mut at := 0
     for k in 0..opts.len()
-        if doc.attr(opts[k], "selected") != none
+        if self.doc.attr(opts[k], "selected") != none
             at = k
     next := opts[(at + 1) % opts.len()]
-    choose(id, html.collapse(doc.text(next)))
+    self.choose(id, html.collapse(self.doc.text(next)))
 
 ## Chooses the option of select `id` whose text or value is `choice`.
 fn Browser.choose(mut self, id int, choice str)
-    for o in doc.all("option")
-        if not doc.within(o, id)
+    for o in self.doc.all("option")
+        if not self.doc.within(o, id)
             continue
-        text := html.collapse(doc.text(o))
-        if text == choice or doc.attr(o, "value") == choice
-            for other in doc.all("option")
-                if doc.within(other, id)
-                    doc.remove_attr(other, "selected")
-            doc.set_attr(o, "selected", "")
-            relayout()
+        text := html.collapse(self.doc.text(o))
+        if text == choice or self.doc.attr(o, "value") == choice
+            for other in self.doc.all("option")
+                if self.doc.within(other, id)
+                    self.doc.remove_attr(other, "selected")
+            self.doc.set_attr(o, "selected", "")
+            self.relayout()
             return
-    message = "node {id} has no option `{choice}`"
+    self.message = "node {id} has no option `{choice}`"
 
 ## Submits the form that control `id` is in (HTML 4.10.21, simplified):
 ## GET puts the fields in the query of the form's `action`, POST sends them
 ## as the body. `id` itself counts as the submitter when it is a button.
 fn Browser.submit(mut self, id int)
-    form := doc.enclosing(id, "form") else
-        message = "node {id} is not in a form"
+    form := self.doc.enclosing(id, "form") else
+        self.message = "node {id} is not in a form"
         return
-    if has_js()
-        mut s := js else return
-        out := serve_page(mut s, mut doc, s.submit(mut doc, id, 1000.0), url, mut cj, mut socks)
-        js = s
-        record(out)
-        if not js_went(out)
-            relayout()
+    if self.has_js()
+        mut s := self.js else return
+        out := serve_page(
+            mut s,
+            mut self.doc,
+            s.submit(mut self.doc, id, 1000.0),
+            self.url,
+            mut self.cj,
+            mut self.socks,
+        )
+        self.js = s
+        self.record(out)
+        if not self.js_went(out)
+            self.relayout()
         return
-    fields := form_fields(doc, form, id)
-    action := page.resolve(page.base_of(doc, url), doc.attr(form, "action") else "")
-    method := (doc.attr(form, "method") else "get").to_upper()
-    leave()
-    ahead.clear()
-    refer = url
+    fields := form_fields(self.doc, form, id)
+    action := page.resolve(page.base_of(self.doc, self.url), self.doc.attr(form, "action") else "")
+    method := (self.doc.attr(form, "method") else "get").to_upper()
+    self.leave()
+    self.ahead.clear()
+    self.refer = self.url
     if method == "POST"
-        load(action, "POST", fields)
+        self.load(action, "POST", fields)
     else
         base := action.split("#")[0].split("?")[0]
-        load("{base}?{fields}", "GET", "")
+        self.load("{base}?{fields}", "GET", "")
 
 ## The form's fields, URL-encoded (`application/x-www-form-urlencoded`):
 ## named, enabled controls; checked boxes and radios; the submitter only
@@ -1570,56 +1591,56 @@ fn utf8(k int) List[int]
 ## `ID=OPTION`, `open` a URL, `back`, `find` text, `scroll` to a row,
 ## `reload`. False for an unknown action.
 fn Browser.act(mut self, name str, arg str) bool
-    message = ""
+    self.message = ""
     eq := arg.find("=") else arg.chars().len()
     id := arg.slice(0, eq).to_int() else -1
     rest := arg.slice((eq + 1).min(arg.chars().len()), arg.chars().len())
-    step := step_for(name, arg, id)
+    step := self.step_for(name, arg, id)
     match name
-        "follow" => follow(arg.to_int() else 0)
-        "click" => activate(id)
-        "type" => type_into(id, rest)
-        "submit" => submit(id)
-        "check" => check(id)
-        "select" => choose(id, rest)
-        "fill" => fill(arg)
-        "wait" => wait(arg)
-        "set" => set(arg)
-        "save" => save_flow(arg)
-        "run" => run_flow(arg)
-        "open" => go(arg)
-        "back" => go_back()
-        "forward" => go_forward()
-        "pump" => pump()
-        "find" => find(arg)
-        "scroll" => scroll_to(arg.to_int() else 0)
-        "reload" => reload()
+        "follow" => self.follow(arg.to_int() else 0)
+        "click" => self.activate(id)
+        "type" => self.type_into(id, rest)
+        "submit" => self.submit(id)
+        "check" => self.check(id)
+        "select" => self.choose(id, rest)
+        "fill" => self.fill(arg)
+        "wait" => self.wait(arg)
+        "set" => self.set(arg)
+        "save" => self.save_flow(arg)
+        "run" => self.run_flow(arg)
+        "open" => self.go(arg)
+        "back" => self.go_back()
+        "forward" => self.go_forward()
+        "pump" => self.pump()
+        "find" => self.find(arg)
+        "scroll" => self.scroll_to(arg.to_int() else 0)
+        "reload" => self.reload()
         _ =>
-            message = "unknown action `{name}`: try follow, click, type, submit, check, select, fill, set, wait, save, run, open, back, forward, find, scroll or reload"
+            self.message = "unknown action `{name}`: try follow, click, type, submit, check, select, fill, set, wait, save, run, open, back, forward, find, scroll or reload"
             return false
-    note_step(name, step)
-    if prompt != Status
-        prompt = Status
+    self.note_step(name, step)
+    if self.prompt != Status
+        self.prompt = Status
     true
 
 ## `set:{"label": value, ...}`: like `fill`, but does not submit.
 fn Browser.set(mut self, spec str)
-    set_fields(spec, false)
+    self.set_fields(spec, false)
 
 ## `fill:{"label": value, ...}`: sets each field named by its label (see the
 ## `forms` schema) and submits the form of the last one. A label no field
 ## matches stops it before anything is typed.
 fn Browser.fill(mut self, spec str)
-    set_fields(spec, true)
+    self.set_fields(spec, true)
 
 ## `fill` without the submit: sets the fields by label. False, with a message, when
 ## the spec is not a JSON object or a label matches no field.
 fn Browser.set_fields(mut self, spec str, send bool) bool
     j := parse_json(spec) else
-        message = "fill needs a JSON object of label: value"
+        self.message = "fill needs a JSON object of label: value"
         return false
     members := j.as_obj() else
-        message = "fill needs a JSON object of label: value"
+        self.message = "fill needs a JSON object of label: value"
         return false
     mut pairs := List[(str, str)]()
     for m in members
@@ -1630,35 +1651,35 @@ fn Browser.set_fields(mut self, spec str, send bool) bool
             Null | Arr(_) | Obj(_) => ""
         pairs.push((m.key, v))
     mut missing := List[str]()
-    steps := forms.plan(doc, pairs, mut missing)
+    steps := forms.plan(self.doc, pairs, mut missing)
     if missing.len() > 0
-        message = "no field is labelled: {missing.join(", ")}; see the forms schema"
+        self.message = "no field is labelled: {missing.join(", ")}; see the forms schema"
         return false
     for st in steps
         match st.kind
-            "type" => type_into(st.id, st.arg)
-            "check" => check(st.id)
-            "select" => choose(st.id, st.arg)
+            "type" => self.type_into(st.id, st.arg)
+            "check" => self.check(st.id)
+            "select" => self.choose(st.id, st.arg)
             _ =>
                 if send
-                    submit(st.id)
+                    self.submit(st.id)
     true
 
 ## Activates the link, button or control whose visible name is `name` (ignoring
 ## case; else the first whose name contains it). The name of a node is what the
 ## page model calls it.
 fn Browser.press(mut self, name str) bool
-    id := named_target(name) else
-        message = "nothing here is named `{name}`"
+    id := self.named_target(name) else
+        self.message = "nothing here is named `{name}`"
         return false
-    activate(id)
+    self.activate(id)
     true
 
 fn Browser.named_target(self, name str) int?
     want := name.to_lower()
     mut partial := -1
-    for t in pg.targets
-        bx := pg.boxes[t]
+    for t in self.pg.targets
+        bx := self.pg.boxes[t]
         low := bx.name.to_lower()
         if low == want
             return bx.id
@@ -1670,26 +1691,26 @@ fn Browser.named_target(self, name str) int?
 
 ## The page's own name for node `id`, for a flow step.
 fn Browser.name_of(self, id int) str
-    t := target(id) else return ""
+    t := self.target(id) else return ""
     t.name
 
 ## The flow step an action stands for, worked out before it runs (the page and
 ## its node numbers are about to change); "" for actions a flow doesn't keep.
 fn Browser.step_for(self, name str, arg str, id int) str
-    label := if id >= 0 then forms.field_label(doc, id) else ""
+    label := if id >= 0 then forms.field_label(self.doc, id) else ""
     value := arg.slice((arg.find("=") else -1) + 1, arg.chars().len())
     match name
         "open" => "open {arg}"
-        "follow" => "press {name_of_link(arg.to_int() else 0)}"
-        "click" => "press {name_of(id)}"
+        "follow" => "press {self.name_of_link(arg.to_int() else 0)}"
+        "click" => "press {self.name_of(id)}"
         "fill" => "fill {arg}"
         "set" => "set {arg}"
         "wait" => "wait {arg}"
         "type" | "select" => "set \{{page.quote(label)}:{page.quote(value)}}"
         "check" =>
-            now := doc.attr(id, "checked") == none or page.input_type(doc, id) == "radio"
+            now := self.doc.attr(id, "checked") == none or page.input_type(self.doc, id) == "radio"
             "set \{{page.quote(label)}:{now}}"
-        "submit" => "submit {if label != "" then label else name_of(id)}"
+        "submit" => "submit {if label != "" then label else self.name_of(id)}"
         _ => ""
 
 ## Adds `step` to the trail (an `open` starts a new one).
@@ -1697,76 +1718,76 @@ fn Browser.note_step(mut self, name str, step str)
     if step == ""
         return
     if name == "open"
-        trail = [step]
-    elif trail.len() > 0
-        trail.push(step)
+        self.trail = [step]
+    elif self.trail.len() > 0
+        self.trail.push(step)
 
 fn Browser.name_of_link(self, n int) str
-    if n < 1 or n > pg.links.len()
+    if n < 1 or n > self.pg.links.len()
         return ""
-    pg.boxes[pg.links[n - 1]].name
+    self.pg.boxes[self.pg.links[n - 1]].name
 
 ## Saves the trail as flow `name` for this site.
 fn Browser.save_flow(mut self, name str)
-    if trail.len() < 1 or name == ""
-        message = "nothing to save: open a page and act on it first, and name the flow"
+    if self.trail.len() < 1 or name == ""
+        self.message = "nothing to save: open a page and act on it first, and name the flow"
         return
-    flows.save(flows_file, host_of(url), name, trail) else err
-        message = "could not save the flow: {err}"
+    flows.save(self.flows_file, host_of(self.url), name, self.trail) else err
+        self.message = "could not save the flow: {err}"
         return
-    message = "saved flow `{name}` ({trail.len()} steps)"
+    self.message = "saved flow `{name}` ({self.trail.len()} steps)"
 
 ## Replays flow `name`, stopping at the first step that does not work.
 fn Browser.run_flow(mut self, name str)
-    f := flows.find(flows.load(flows_file), host_of(url), name) else
-        message = "no flow named `{name}` for this site"
+    f := flows.find(flows.load(self.flows_file), host_of(self.url), name) else
+        self.message = "no flow named `{name}` for this site"
         return
     mut done := 0
     for step in f.steps
-        if not run_step(step)
-            message = "flow `{name}` stopped at step {done + 1} (`{step}`): {message}"
+        if not self.run_step(step)
+            self.message = "flow `{name}` stopped at step {done + 1} (`{step}`): {self.message}"
             return
         done += 1
-    trail = f.steps
-    message = "ran flow `{name}` ({done} steps)"
+    self.trail = f.steps
+    self.message = "ran flow `{name}` ({done} steps)"
 
 fn Browser.run_step(mut self, step str) bool
     parts := flows.split_step(step)
     match parts.0
         "open" =>
-            go(parts.1)
+            self.go(parts.1)
             true
-        "set" => set_fields(parts.1, false)
-        "fill" => set_fields(parts.1, true)
-        "press" => press(parts.1)
+        "set" => self.set_fields(parts.1, false)
+        "fill" => self.set_fields(parts.1, true)
+        "press" => self.press(parts.1)
         "submit" =>
-            id := named_target(parts.1) else
-                message = "nothing here is named `{parts.1}`"
+            id := self.named_target(parts.1) else
+                self.message = "nothing here is named `{parts.1}`"
                 return false
-            submit(id)
+            self.submit(id)
             true
         "wait" =>
-            wait(parts.1)
+            self.wait(parts.1)
             true
         _ =>
-            message = "unknown step"
+            self.message = "unknown step"
             false
 
 ## The page model, within the token budget if one is set, with the last
 ## action's message.
 fn Browser.model(self) str
-    if budget > 0
-        return with_message(pg.to_json_budget(scroll, view(), budget * 4))
-    with_message(pg.to_json(scroll, view(), viewport_only))
+    if self.budget > 0
+        return self.with_message(self.pg.to_json_budget(self.scroll, self.view(), self.budget * 4))
+    self.with_message(self.pg.to_json(self.scroll, self.view(), self.viewport_only))
 
 fn Browser.with_message(self, j str) str
     mut extra := ""
-    if message != ""
-        extra = ",\"message\":{page.quote(message)}"
-    if console_log.len() > 0
-        extra = "{extra},\"console\":[{[page.quote(l) for l in console_log].join(",")}]"
-    if net_log.len() > 0
-        extra = "{extra},\"network\":[{[page.quote(l) for l in net_log].join(",")}]"
+    if self.message != ""
+        extra = ",\"message\":{page.quote(self.message)}"
+    if self.console_log.len() > 0
+        extra = "{extra},\"console\":[{[page.quote(l) for l in self.console_log].join(",")}]"
+    if self.net_log.len() > 0
+        extra = "{extra},\"network\":[{[page.quote(l) for l in self.net_log].join(",")}]"
     if extra == ""
         return j
     j.replace(",\"nodes\":[", "{extra},\"nodes\":[")
@@ -1775,31 +1796,31 @@ fn Browser.with_message(self, j str) str
 ## that are new or changed (`visible` included), and the ids `removed`.
 ## The whole model after loading a page.
 fn Browser.diff_model(mut self) str
-    now := pg.node_objects(scroll, view())
-    if url != last_url
-        last_url = url
-        last_nodes = now
-        return model()
-    changed := [now[k] for k in now.keys() if last_nodes.get(k) != now[k]]
-    removed := [k for k in last_nodes.keys() if not now.contains(k)]
-    last_nodes = now
-    head := pg.head_json(scroll, view())
-    with_message("\{{head},\"diff\":true,\"removed\":[{removed.join(",")}],\"nodes\":[{changed.join(",")}]}")
+    now := self.pg.node_objects(self.scroll, self.view())
+    if self.url != self.last_url
+        self.last_url = self.url
+        self.last_nodes = now
+        return self.model()
+    changed := [now[k] for k in now.keys() if self.last_nodes.get(k) != now[k]]
+    removed := [k for k in self.last_nodes.keys() if not now.contains(k)]
+    self.last_nodes = now
+    head := self.pg.head_json(self.scroll, self.view())
+    self.with_message("\{{head},\"diff\":true,\"removed\":[{removed.join(",")}],\"nodes\":[{changed.join(",")}]}")
 
 ## The model `--session` sends: a diff with `--diff`, else the whole model.
 fn Browser.answer(mut self) str
-    if diff
-        return diff_model()
-    model()
+    if self.diff
+        return self.diff_model()
+    self.model()
 
 ## One action from a session line: `\{"do":"follow","link":3}`. The
 ## argument is `link`, `id` or `row` (a number), or `url` or `text`; with
 ## both `id` and `text` (`type`, `select`), `ID=TEXT`.
 fn Browser.act_json(mut self, line str)
     j := parse_json(line) else err
-        message = "bad JSON: {err}"
+        self.message = "bad JSON: {err}"
         return
-    act_from(j)
+    self.act_from(j)
 
 ## Does the action in JSON `j` (see `act_json`).
 fn Browser.act_from(mut self, j Json)
@@ -1819,18 +1840,18 @@ fn Browser.act_from(mut self, j Json)
     if name == "fill"
         if f := j.get("fields")
             arg = f.to_text()
-    act(name, arg)
+    self.act(name, arg)
 
 ## `--session`: reads one JSON action per line on stdin and answers each
 ## with the page model on one line, so an agent keeps one browser open.
 fn Browser.session(mut self)
-    print(answer())
+    print(self.answer())
     while true
         line := io.read_line() else break
         if line.trim() == ""
             continue
-        act_json(line)
-        print(answer())
+        self.act_json(line)
+        print(self.answer())
 
 ## The JSON-RPC id of request `j`, as it goes back: a number or a string.
 fn rpc_id(j Json) str
@@ -1858,9 +1879,9 @@ fn host_of(url str) str
     hostport.split(":")[0]
 
 fn Guard.permits(self, url str) bool
-    if allow.contains("*") or not url.contains("://")
+    if self.allow.contains("*") or not url.contains("://")
         return true
-    allow.contains(host_of(url))
+    self.allow.contains(host_of(url))
 
 ## Whether `do` sends data: it needs `"confirm":true` to run.
 fn sends(name str) bool
@@ -1889,43 +1910,43 @@ fn Browser.tool(mut self, mut g Guard, name str, a Json) str
     g.log.push("{name} {a.str("url") else (a.str("do") else (a.str("text") else ""))}")
     if name == "open" and not g.permits(a.str("url") else "")
         return "refused: the agent may not open `{a.str("url") else ""}`; allowed sites: {g.allow.join(", ")}"
-    if not g.permits(url)
-        return "refused: the agent may not use `{host_of(url)}`; allowed sites: {g.allow.join(", ")}"
+    if not g.permits(self.url)
+        return "refused: the agent may not use `{host_of(self.url)}`; allowed sites: {g.allow.join(", ")}"
     if name == "act" and sends(a.str("do") else "") and not (a.flag("confirm", false) or g.ok_once)
-        return "confirm required: `{a.str("do") else ""}` sends data to {url}. Repeat it with \"confirm\":true if the user wants that."
+        return "confirm required: `{a.str("do") else ""}` sends data to {self.url}. Repeat it with \"confirm\":true if the user wants that."
     match name
         "open" =>
-            act("open", a.str("url") else "")
-            answer()
-        "observe" => answer()
+            self.act("open", a.str("url") else "")
+            self.answer()
+        "observe" => self.answer()
         "act" =>
-            act_from(a)
-            answer()
+            self.act_from(a)
+            self.answer()
         "find" =>
-            act("find", a.str("text") else "")
-            answer()
-        "extract" => pg.text()
-        "forms" => forms.schema(doc)
+            self.act("find", a.str("text") else "")
+            self.answer()
+        "extract" => self.pg.text()
+        "forms" => forms.schema(self.doc)
         "flows" => flows.list_json(
-            flows.load(flows_file),
-            if a.flag("all", false) then "" else host_of(url),
+            flows.load(self.flows_file),
+            if a.flag("all", false) then "" else host_of(self.url),
         )
-        "tables" => extract.tables_json(doc)
-        "reader" => extract.reader_json(doc)
-        "fields" => extract.fields_json(doc, a.str("text") else "")
-        "at" => pg.at_json(a.int("x") else 0, a.int("y") else 0)
-        "where" => pg.where_json(a.str("text") else "")
+        "tables" => extract.tables_json(self.doc)
+        "reader" => extract.reader_json(self.doc)
+        "fields" => extract.fields_json(self.doc, a.str("text") else "")
+        "at" => self.pg.at_json(a.int("x") else 0, a.int("y") else 0)
+        "where" => self.pg.where_json(a.str("text") else "")
         "screenshot" | "screen" =>
             images.prefetch(
-                doc,
-                page.base_of(doc, url),
-                url,
-                cj,
+                self.doc,
+                page.base_of(self.doc, self.url),
+                self.url,
+                self.cj,
                 image_options(),
-                mut sizes,
-                mut bits,
+                mut self.sizes,
+                mut self.bits,
             )
-            s := gfx.layout_with(doc, url, 960.0, sheet, sizes)
+            s := gfx.layout_with(self.doc, self.url, 960.0, self.sheet, self.sizes)
             if name == "screen"
                 return look_answer(look.of(s, 960.0, 640.0, 0.0), a)
             mut lines := ["canvas {s.bg.to_hex()} height {s.height.round()}"]
@@ -1961,7 +1982,7 @@ fn Browser.rpc(mut self, mut g Guard, line str) str
                 return "{head}\"error\":\{\"code\":-32602,\"message\":\"missing params\"}}"
             args := params.need("arguments") else err
                 params
-            text := tool(mut g, params.str("name") else "", args)
+            text := self.tool(mut g, params.str("name") else "", args)
             "{head}\"result\":\{\"content\":[\{\"type\":\"text\",\"text\":{page.quote(text)}}]}}"
         _ => "{head}\"error\":\{\"code\":-32601,\"message\":\"unknown method\"}}"
 
@@ -1973,15 +1994,15 @@ fn Browser.serve(mut self, allow List[str])
         line := io.read_line() else break
         if line.trim() == ""
             continue
-        out := rpc(mut g, line)
+        out := self.rpc(mut g, line)
         if out != ""
             print(out)
 
 ## The target node drawn at window cell (`col`, `row`), or none.
 fn Browser.target_at(self, col int, row int) int?
-    r := row + scroll
-    for t in pg.targets
-        b := pg.boxes[t]
+    r := row + self.scroll
+    for t in self.pg.targets
+        b := self.pg.boxes[t]
         if r >= b.row and r < b.end_row
             starts := r > b.row or col >= b.col
             ends := r < b.end_row - 1 or col < b.end_col
@@ -1991,23 +2012,23 @@ fn Browser.target_at(self, col int, row int) int?
 
 ## The status row's text.
 fn Browser.status(self) str
-    match prompt
+    match self.prompt
         Url(text) => "Open: {text}_"
         Find(text) => "Find: {text}_"
         Field(_, text) => "Type: {text}_  (Enter submits, Tab moves on, Esc cancels)"
         Status =>
-            if message != ""
-                return message
-            if focus > 0
-                b := pg.boxes[pg.targets[focus - 1]]
+            if self.message != ""
+                return self.message
+            if self.focus > 0
+                b := self.pg.boxes[self.pg.targets[self.focus - 1]]
                 return if b.role
                     == "link" then "[{b.link}] {b.href}" else "{b.role} {b.name}: Enter to use"
-            last := (scroll + view()).min(pg.rows.len())
-            "{url}  rows {scroll + 1}-{last} of {pg.rows.len()}"
+            last := (self.scroll + self.view()).min(self.pg.rows.len())
+            "{self.url}  rows {self.scroll + 1}-{last} of {self.pg.rows.len()}"
 
 ## Whether no prompt is open, so keys are commands rather than text.
 fn Browser.reading(self) bool
-    match prompt
+    match self.prompt
         Status => true
         Url(_) | Find(_) | Field(_, _) => false
 
@@ -2115,60 +2136,77 @@ fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
 ## The page area is now `w` by `h` points with cells of `cell_w` by
 ## `cell_h`: lays the page out again for that many columns.
 fn Gui.resize(mut self, w float, h float, cw float, ch float)
-    cell_w = cw
-    cell_h = ch
-    area_w = w
-    area_h = h
+    self.cell_w = cw
+    self.cell_h = ch
+    self.area_w = w
+    self.area_h = h
     size := draw.grid_size(w, h, cw, ch)
-    cols = size.0
-    rows = size.1
-    b.width = cols
-    b.height = rows + 1
-    b.relayout()
-    refresh()
+    self.cols = size.0
+    self.rows = size.1
+    self.b.width = self.cols
+    self.b.height = self.rows + 1
+    self.b.relayout()
+    self.refresh()
 
 ## Lays the page out in pixels again when the page or the window width has
 ## changed since the last time.
 fn Gui.refresh(mut self)
-    if not pixel
+    if not self.pixel
         return
-    if b.stamp != scene_stamp or area_w != scene_w or b.editing() != scene_edit
+    if self.b.stamp != self.scene_stamp
+        or self.area_w != self.scene_w
+        or self.b.editing() != self.scene_edit
         images.prefetch(
-            b.doc,
-            page.base_of(b.doc, b.url),
-            b.url,
-            b.cj,
+            self.b.doc,
+            page.base_of(self.b.doc, self.b.url),
+            self.b.url,
+            self.b.cj,
             image_options(),
-            mut b.sizes,
-            mut b.bits,
+            mut self.b.sizes,
+            mut self.b.bits,
         )
-        scene = gfx.layout_measured(b.doc, b.url, area_w, b.sheet, b.sizes, meas, b.editing())
-        scene_edit = b.editing()
-        scene_stamp = b.stamp
-        scene_w = area_w
-        for k in scene.bits.keys()
-            if not b.bits.contains(k)
-                b.bits[k] = scene.bits[k]
-        if b.url != scene_url
-            top = 0.0
-            scene_url = b.url
-    top = top.max(0.0).min((scene.height - area_h).max(0.0))
-    b.measure(scene.boxes, top)
-    b.viewport(area_w, area_h, scene.height, scale, screen_w, screen_h)
-    mark_fresh()
+        self.scene = gfx.layout_measured(
+            self.b.doc,
+            self.b.url,
+            self.area_w,
+            self.b.sheet,
+            self.b.sizes,
+            self.meas,
+            self.b.editing(),
+        )
+        self.scene_edit = self.b.editing()
+        self.scene_stamp = self.b.stamp
+        self.scene_w = self.area_w
+        for k in self.scene.bits.keys()
+            if not self.b.bits.contains(k)
+                self.b.bits[k] = self.scene.bits[k]
+        if self.b.url != self.scene_url
+            self.top = 0.0
+            self.scene_url = self.b.url
+    self.top = self.top.max(0.0).min((self.scene.height - self.area_h).max(0.0))
+    self.b.measure(self.scene.boxes, self.top)
+    self.b.viewport(
+        self.area_w,
+        self.area_h,
+        self.scene.height,
+        self.scale,
+        self.screen_w,
+        self.screen_h,
+    )
+    self.mark_fresh()
 
 ## Marks as fresh the decoded pictures the view will draw that the host
 ## hasn't been given: only a picture inside the shown part of the page goes
 ## out, so one marked when it was laid out but scrolled or cut off then was
 ## counted as sent without its data ever reaching the host.
 fn Gui.mark_fresh(mut self)
-    fresh = {}
-    if not pixel
+    self.fresh = {}
+    if not self.pixel
         return
-    for op in display()
+    for op in self.display()
         src := pic_src(op)
-        if src != "" and b.bits.contains(src) and not sent.contains(src)
-            fresh.add(src)
+        if src != "" and self.b.bits.contains(src) and not self.sent.contains(src)
+            self.fresh.add(src)
 
 ## The address of picture `op`, "" for any other operation.
 fn pic_src(op draw.Op) str
@@ -2178,68 +2216,68 @@ fn pic_src(op draw.Op) str
 
 ## A click at (`x`, `y`) points in the page area: uses the target there.
 fn Gui.click(mut self, x float, y float)
-    if pixel
-        if h := scene.hit_at(x, y + top)
+    if self.pixel
+        if h := self.scene.hit_at(x, y + self.top)
             if h.node >= 0
-                role := b.role_of(h.node)
+                role := self.b.role_of(h.node)
                 if role == "combobox"
-                    b.cycle(h.node)
+                    self.b.cycle(h.node)
                 else
-                    b.activate(h.node)
+                    self.b.activate(h.node)
             else
-                b.go(h.href)
+                self.b.go(h.href)
         else
-            b.prompt = Status
+            self.b.prompt = Status
         return
-    at := draw.cell_at(x, y, cell_w, cell_h)
-    if id := b.target_at(at.0, at.1)
-        b.activate(id)
+    at := draw.cell_at(x, y, self.cell_w, self.cell_h)
+    if id := self.b.target_at(at.0, at.1)
+        self.b.activate(id)
 
 ## A scroll of `dy` points, positive towards the end of the page. Whole
 ## rows move the page; the rest waits for the next scroll.
 fn Gui.scroll(mut self, dy float)
-    if pixel
-        top = (top + dy).max(0.0).min((scene.height - area_h).max(0.0))
+    if self.pixel
+        self.top = (self.top + dy).max(0.0).min((self.scene.height - self.area_h).max(0.0))
         return
-    pending += dy
-    lines := (pending / cell_h).to_int()
+    self.pending += dy
+    lines := (self.pending / self.cell_h).to_int()
     if lines != 0
-        pending -= lines.to_float() * cell_h
-        b.scroll_to(b.scroll + lines)
+        self.pending -= lines.to_float() * self.cell_h
+        self.b.scroll_to(self.b.scroll + lines)
 
 ## A key in the page area, by the host's key names. False when it asks to quit.
 fn Gui.key(mut self, key str, alt bool, shift bool) bool
-    pending = 0.0
-    if pixel and b.reading()
-        page_h := area_h * 0.9
+    self.pending = 0.0
+    if self.pixel and self.b.reading()
+        page_h := self.area_h * 0.9
         match key
-            "down" | "j" => scroll(40.0)
-            "up" | "k" => scroll(-40.0)
-            "pagedown" | "space" => scroll(if shift then 0.0 - page_h else page_h)
-            "pageup" => scroll(0.0 - page_h)
-            "home" => top = 0.0
-            "end" => top = scene.height
+            "down" | "j" => self.scroll(40.0)
+            "up" | "k" => self.scroll(-40.0)
+            "pagedown" | "space" => self.scroll(if shift then 0.0 - page_h else page_h)
+            "pageup" => self.scroll(0.0 - page_h)
+            "home" => self.top = 0.0
+            "end" => self.top = self.scene.height
             _ => return self.typed(key, alt, shift)
         return true
     self.typed(key, alt, shift)
 
 ## A key for the browser; text typed into a field shows in it at once.
 fn Gui.typed(mut self, key str, alt bool, shift bool) bool
-    if pixel and key == "enter"
-        match b.prompt
+    if self.pixel and key == "enter"
+        match self.b.prompt
             Find(text) =>
-                b.prompt = Status
+                self.b.prompt = Status
                 self.find_text(text)
                 return true
-            Url(_) | Field(_, _) | Status => pending = 0.0
-    if pixel and key == "n" and b.prompt == Status and found != ""
-        self.find_text(found)
+            Url(_) | Field(_, _) | Status => self.pending = 0.0
+    if self.pixel and key == "n" and self.b.prompt == Status and self.found != ""
+        self.find_text(self.found)
         return true
-    stay := b.key(key, alt, shift)
-    if pixel
-        match b.prompt
-            Field(id, text) => b.type_into(id, text)
-            Url(_) | Find(_) | Status => pending = 0.0
+    stay := self.b.key(key, alt, shift)
+    if self.pixel
+        match self.b.prompt
+            Field(id, text) => self.b.type_into(id, text)
+            Url(_) | Find(_) | Status => self.pending = 0.0
     stay
 
 ## What a typed address means: a URL as it is, a path to a file that exists
@@ -2279,13 +2317,13 @@ fn search_url(t str) str
 fn Gui.open(mut self, text str)
     t := address(text)
     if t != ""
-        b.go_typed(t)
+        self.b.go_typed(t)
 
 ## The status line: the address in pixel mode, else the cell view's status.
 fn Gui.status(self) str
-    if pixel and b.message == "" and b.reading()
-        return b.url
-    b.status()
+    if self.pixel and self.b.message == "" and self.b.reading()
+        return self.b.url
+    self.b.status()
 
 ## The text runs the layout estimated, for the host to measure, at most
 ## `MEASURE_RUNS` at a time.
@@ -2293,10 +2331,10 @@ MEASURE_RUNS := 5000
 
 fn Gui.wanted(self) List[app.Measure]
     mut out := List[app.Measure]()
-    for p in scene.probes
+    for p in self.scene.probes
         if out.len() == MEASURE_RUNS
             break
-        if not meas.contains(gfx.probe_key(p.text, p.size, p.bold, p.italic, p.font))
+        if not self.meas.contains(gfx.probe_key(p.text, p.size, p.bold, p.italic, p.font))
             out.push(app.Measure(
                 text: p.text,
                 font: p.font,
@@ -2310,20 +2348,20 @@ fn Gui.wanted(self) List[app.Measure]
 fn Gui.learn(mut self, runs List[app.Measure], widths List[float])
     for k in 0..runs.len()
         r := runs[k]
-        meas[gfx.probe_key(r.text, r.size, r.bold, r.italic, r.font)] = widths[k]
-    scene_stamp = -1
-    refresh()
+        self.meas[gfx.probe_key(r.text, r.size, r.bold, r.italic, r.font)] = widths[k]
+    self.scene_stamp = -1
+    self.refresh()
 
 ## The scene's operations with a highlight behind each `found` match.
 fn Gui.marked(self) List[draw.Op]
-    if found == "" and not sel_on
-        return scene.ops
-    want := found.to_lower()
+    if self.found == "" and not self.sel_on
+        return self.scene.ops
+    want := self.found.to_lower()
     sel := self.selected()
     mut out := List[draw.Op]()
     mut i := 0
     mut k := 0
-    for op in scene.ops
+    for op in self.scene.ops
         k += 1
         match op
             Str(x, y, t, font, size, fg, bold, _, _) =>
@@ -2337,7 +2375,7 @@ fn Gui.marked(self) List[draw.Op]
                         h: size * 1.3,
                         color: 0xb3d4fc,
                     ))
-                if found == ""
+                if self.found == ""
                     out.push(op)
                     continue
                 at := t.to_lower().find(want) else
@@ -2347,9 +2385,9 @@ fn Gui.marked(self) List[draw.Op]
                 out.push(draw.Op.Rect(
                     x: x + gfx.text_width(before, size, bold, font == "mono"),
                     y: y,
-                    w: gfx.text_width(found, size, bold, font == "mono"),
+                    w: gfx.text_width(self.found, size, bold, font == "mono"),
                     h: size * 1.3,
-                    color: if i == find_k then 0xff9632 else 0xffe066,
+                    color: if i == self.find_k then 0xff9632 else 0xffe066,
                 ))
                 i += 1
                 out.push(op)
@@ -2365,50 +2403,51 @@ fn Gui.find_text(mut self, needle str)
 ## wrapping round; 0, or a new `needle`, picks the first match at or below
 ## the top of the view. The page scrolls only when the match is off it.
 fn Gui.find_step(mut self, needle str, dir int)
-    anew := needle != found or dir == 0
-    was := find_k
-    found = needle
-    b.last_find = needle
-    find_n = 0
-    find_k = 0
+    anew := needle != self.found or dir == 0
+    was := self.find_k
+    self.found = needle
+    self.b.last_find = needle
+    self.find_n = 0
+    self.find_k = 0
     if needle == ""
         return
     want := needle.to_lower()
     mut ys := List[float]()
-    for op in scene.ops
+    for op in self.scene.ops
         match op
             Str(_, y, t, _, _, _, _, _, _) => if t.to_lower().contains(want)
                 ys.push(y)
             Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Pic(_, _, _, _, _) => ys = ys
-    find_n = ys.len()
+    self.find_n = ys.len()
     if ys.len() == 0
-        b.message = "`{needle}` not found"
+        self.b.message = "`{needle}` not found"
         return
     if anew
         mut picked := false
         for i in 0..ys.len()
-            if not picked and ys[i] >= top - 1.0
-                find_k = i
+            if not picked and ys[i] >= self.top - 1.0
+                self.find_k = i
                 picked = true
     else
-        find_k = (was + dir + ys.len()) % ys.len()
-    y := ys[find_k]
-    if y < top or y > top + area_h - 40.0
-        top = (y - 40.0).max(0.0).min((scene.height - area_h).max(0.0))
-    b.message = "found `{needle}` ({ys.len()} matches)"
+        self.find_k = (was + dir + ys.len()) % ys.len()
+    y := ys[self.find_k]
+    if y < self.top or y > self.top + self.area_h - 40.0
+        self.top = (y - 40.0).max(0.0).min((self.scene.height - self.area_h).max(0.0))
+    self.b.message = "found `{needle}` ({ys.len()} matches)"
 
 ## The runs the drag selected: by index in `scene.ops`, the characters
 ## (from, to) of each. Lines are taken by their vertical middle; the first
 ## and last lines are cut at the drag's x positions.
 fn Gui.selected(self) Map[int, (int, int)]
     mut out := Map[int, (int, int)]()
-    if not sel_on
+    if not self.sel_on
         return out
-    top_first := sel_y0 < sel_y1 or (sel_y0 == sel_y1 and sel_x0 <= sel_x1)
-    ay := if top_first then sel_y0 else sel_y1
-    ax := if top_first then sel_x0 else sel_x1
-    by := if top_first then sel_y1 else sel_y0
-    bx := if top_first then sel_x1 else sel_x0
+    top_first := self.sel_y0 < self.sel_y1
+        or (self.sel_y0 == self.sel_y1 and self.sel_x0 <= self.sel_x1)
+    ay := if top_first then self.sel_y0 else self.sel_y1
+    ax := if top_first then self.sel_x0 else self.sel_x1
+    by := if top_first then self.sel_y1 else self.sel_y0
+    bx := if top_first then self.sel_x1 else self.sel_x0
     ## The lines the drag starts and ends on, as the runs under those points
     ## have them, so a superscript of the line above is not swept in.
     a_line := self.line_at(ay)
@@ -2419,7 +2458,7 @@ fn Gui.selected(self) Map[int, (int, int)]
     cb := self.column_at(bx, b_line)
     col := (ca.0.min(cb.0), ca.1.max(cb.1))
     mut k := 0
-    for op in scene.ops
+    for op in self.scene.ops
         k += 1
         match op
             Str(x, y, t, font, size, _, bold, _, _) =>
@@ -2454,7 +2493,7 @@ fn Gui.selected(self) Map[int, (int, int)]
 fn Gui.line_at(self, py float)(float, float)
     mut best := (py, py)
     mut best_d := 1.0e9
-    for op in scene.ops
+    for op in self.scene.ops
         match op
             Str(_, y, _, _, size, _, _, _, _) =>
                 h := size * 1.3
@@ -2471,7 +2510,7 @@ fn Gui.line_at(self, py float)(float, float)
 ## `px` with gaps under 48 points, as one paragraph's words are.
 fn Gui.column_at(self, px float, line (float, float))(float, float)
     mut runs := List[(float, float)]()
-    for op in scene.ops
+    for op in self.scene.ops
         match op
             Str(x, y, t, font, size, _, bold, _, _) =>
                 mid := y + size * 0.65
@@ -2539,7 +2578,7 @@ fn Gui.selection(self) str
     mut last_bottom := 0.0
     mut last_piece := ""
     mut k := 0
-    for op in scene.ops
+    for op in self.scene.ops
         k += 1
         match op
             Str(_, y, t, _, size, _, _, _, _) =>
@@ -2565,28 +2604,28 @@ fn Gui.selection(self) str
 ## A press on the page starts a drag at (`x`, `y`) of the view and drops
 ## the old selection; moves stretch it; the release ends it.
 fn Gui.press(mut self, x float, y float)
-    sel_x0 = x
-    sel_y0 = y + top
-    sel_x1 = sel_x0
-    sel_y1 = sel_y0
-    dragging = true
-    sel_on = false
+    self.sel_x0 = x
+    self.sel_y0 = y + self.top
+    self.sel_x1 = self.sel_x0
+    self.sel_y1 = self.sel_y0
+    self.dragging = true
+    self.sel_on = false
 
 fn Gui.drag(mut self, x float, y float)
-    if not dragging
+    if not self.dragging
         return
-    sel_x1 = x
-    sel_y1 = y + top
-    if (sel_x1 - sel_x0).abs() > 3.0 or (sel_y1 - sel_y0).abs() > 3.0
-        sel_on = true
+    self.sel_x1 = x
+    self.sel_y1 = y + self.top
+    if (self.sel_x1 - self.sel_x0).abs() > 3.0 or (self.sel_y1 - self.sel_y0).abs() > 3.0
+        self.sel_on = true
 
 fn Gui.release(mut self)
-    dragging = false
+    self.dragging = false
 
 ## The text run drawn under point (`x`, `y`) of the page, "" for none.
 fn Gui.text_at(self, x float, y float) str
     mut hit := ""
-    for op in scene.ops
+    for op in self.scene.ops
         match op
             Str(ox, oy, t, font, size, _, bold, _, _) =>
                 w := gfx.text_width(t, size, bold, font == "mono")
@@ -2597,14 +2636,22 @@ fn Gui.text_at(self, x float, y float) str
 
 ## What the page area shows, as drawing operations.
 fn Gui.display(self) List[draw.Op]
-    if pixel
+    if self.pixel
         mut ops := self.marked()
-        if ids
-            ops.extend(id_marks())
-        return draw.shift(ops, scene.bg, area_w, area_h, top)
-    mut ops := draw.display_list(b.pg, b.scroll, rows, cols, b.focus, cell_w, cell_h)
-    if ids
-        ops.extend(id_marks())
+        if self.ids
+            ops.extend(self.id_marks())
+        return draw.shift(ops, self.scene.bg, self.area_w, self.area_h, self.top)
+    mut ops := draw.display_list(
+        self.b.pg,
+        self.b.scroll,
+        self.rows,
+        self.cols,
+        self.b.focus,
+        self.cell_w,
+        self.cell_h,
+    )
+    if self.ids
+        ops.extend(self.id_marks())
     ops
 
 ## One node number as a yellow tag with its digits, its top left corner at (x, y).
@@ -2627,18 +2674,18 @@ fn id_tag(x float, y float, id int) List[draw.Op]
 ## the agent's actions name them (`Cmd-I` shows them to the person watching).
 fn Gui.id_marks(self) List[draw.Op]
     mut out := List[draw.Op]()
-    if pixel
-        for h in scene.hits
+    if self.pixel
+        for h in self.scene.hits
             id := if h.node >= 0 then h.node else h.anchor
             if id >= 0
                 out.extend(id_tag(h.x, h.y - 2.0, id))
         return out
-    for t in b.pg.targets
-        bx := b.pg.boxes[t]
-        if bx.row >= b.scroll and bx.row < b.scroll + rows
+    for t in self.b.pg.targets
+        bx := self.b.pg.boxes[t]
+        if bx.row >= self.b.scroll and bx.row < self.b.scroll + self.rows
             out.extend(id_tag(
-                bx.col.to_float() * cell_w,
-                (bx.row - b.scroll).to_float() * cell_h,
+                bx.col.to_float() * self.cell_w,
+                (bx.row - self.b.scroll).to_float() * self.cell_h,
                 bx.id,
             ))
     out
@@ -2799,61 +2846,64 @@ fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
 ## the ones the tabs show plus those allowed at launch, and the answer goes
 ## back through the bridge.
 fn Garlic.agent_call(mut self, body str)
-    mut sites := guard.fixed
-    for t in tabs
+    mut sites := self.guard.fixed
+    for t in self.tabs
         sites.push(host_of(t.b.url))
-    sites.push(host_of(g.b.url))
-    guard.allow = sites
+    sites.push(host_of(self.g.b.url))
+    self.guard.allow = sites
     j := parse_json(body) else err
-        bridge.replies.send(g.b.rpc(mut guard, body))
+        self.bridge.replies.send(self.g.b.rpc(mut self.guard, body))
         return
-    calls += 1
+    self.calls += 1
     params := j.need("params") else err
-        bridge.replies.send(g.b.rpc(mut guard, body))
+        self.bridge.replies.send(self.g.b.rpc(mut self.guard, body))
         return
     name := params.str("name") else ""
     args := params.need("arguments") else err
         params
     if j.str("method") == "tools/call" and WATCH_TOOLS.contains(name)
-        guard.log.push("{name}")
-        bridge.replies.send(rpc_reply(rpc_id(j), watch_tool(name, args)))
+        self.guard.log.push("{name}")
+        self.bridge.replies.send(rpc_reply(rpc_id(j), self.watch_tool(name, args)))
         return
-    answer := g.b.rpc(mut guard, body)
-    guard.ok_once = false
+    answer := self.g.b.rpc(mut self.guard, body)
+    self.guard.ok_once = false
     if answer.contains("confirm required:")
-        pending = body
-        asks = "send data from {g.b.url} ({name})"
-        ask_site = ""
-        g.b.message = "An agent wants to {asks}: Allow or Deny"
+        self.pending = body
+        self.asks = "send data from {self.g.b.url} ({name})"
+        self.ask_site = ""
+        self.g.b.message = "An agent wants to {self.asks}: Allow or Deny"
         return
     if answer.contains("refused: the agent may not")
-        site := host_of(if name == "open" then (args.str("url") else "") else g.b.url)
+        site := host_of(if name == "open" then (args.str("url") else "") else self.g.b.url)
         if site != "" and ["open", "act", "find"].contains(name)
-            pending = body
-            asks = "use {site}"
-            ask_site = site
-            g.b.message = "An agent wants to {asks}: Allow or Deny"
+            self.pending = body
+            self.asks = "use {site}"
+            self.ask_site = site
+            self.g.b.message = "An agent wants to {self.asks}: Allow or Deny"
             return
-    bridge.replies.send(answer)
+    self.bridge.replies.send(answer)
 
 ## The user's answer to a pending agent request: allowed, the request runs
 ## again with that one permission; denied, the agent is told so.
 fn Garlic.decide(mut self, allowed bool)
-    if pending == ""
+    if self.pending == ""
         return
-    body := pending
-    pending = ""
+    body := self.pending
+    self.pending = ""
     if not allowed
-        guard.log.push("denied: {asks}")
+        self.guard.log.push("denied: {self.asks}")
         id := rpc_id(parse_json(body) else Json.Null)
-        bridge.replies.send(rpc_reply(id, "denied: the user did not allow the agent to {asks}"))
+        self.bridge.replies.send(rpc_reply(
+            id,
+            "denied: the user did not allow the agent to {self.asks}",
+        ))
         return
-    guard.log.push("allowed: {asks}")
-    if ask_site != ""
-        guard.fixed.push(ask_site)
+    self.guard.log.push("allowed: {self.asks}")
+    if self.ask_site != ""
+        self.guard.fixed.push(self.ask_site)
     else
-        guard.ok_once = true
-    agent_call(body)
+        self.guard.ok_once = true
+    self.agent_call(body)
 
 ## The tools that set and read watches; the window answers them, not the page.
 WATCH_TOOLS := {"watch", "unwatch", "watches", "events", "schedule", "schedules", "unschedule"}
@@ -2865,24 +2915,24 @@ fn Garlic.watch_tool(mut self, name str, args Json) str
     match name
         "watch" =>
             url := args.str("url") else ""
-            if url != "" and not guard.permits(url)
+            if url != "" and not self.guard.permits(url)
                 return "refused: the agent may not watch `{url}`"
             w := attach.Watch.start(
-                next_watch,
+                self.next_watch,
                 url,
                 args.str("contains") else "",
                 (args.num("every") else 30.0).to_int(),
-                seconds,
-                if url == "" then g.b.pg.text() else watched_text(url),
+                self.seconds,
+                if url == "" then self.g.b.pg.text() else watched_text(url),
             )
-            next_watch += 1
-            watches.push(w)
+            self.next_watch += 1
+            self.watches.push(w)
             "watching {w.line()}"
         "unwatch" =>
             id := (args.num("id") else 0.0).to_int()
-            watches = [w for w in watches if w.id != id]
+            self.watches = [w for w in self.watches if w.id != id]
             "stopped watch {id}"
-        "watches" => [w.line() for w in watches].join("\n")
+        "watches" => [w.line() for w in self.watches].join("\n")
         "schedule" =>
             call := args.str("tool") else ""
             if call == "" or WATCH_TOOLS.contains(call)
@@ -2890,22 +2940,22 @@ fn Garlic.watch_tool(mut self, name str, args Json) str
             inner := args.need("arguments") else err
                 Json.Obj([])
             job := attach.Job(
-                id: next_watch,
-                due: seconds + (args.num("in") else 0.0).to_int(),
+                id: self.next_watch,
+                due: self.seconds + (args.num("in") else 0.0).to_int(),
                 tool: call,
                 args: inner.to_text(),
             )
-            next_watch += 1
-            jobs.push(job)
-            "scheduled {job.line(seconds)}"
-        "schedules" => [j.line(seconds) for j in jobs].join("\n")
+            self.next_watch += 1
+            self.jobs.push(job)
+            "scheduled {job.line(self.seconds)}"
+        "schedules" => [j.line(self.seconds) for j in self.jobs].join("\n")
         "unschedule" =>
             id := (args.num("id") else 0.0).to_int()
-            jobs = [j for j in jobs if j.id != id]
+            self.jobs = [j for j in self.jobs if j.id != id]
             "cancelled job {id}"
         _ =>
-            out := events.join("\n")
-            events = []
+            out := self.events.join("\n")
+            self.events = []
             if out == "" then "no changes" else out
 
 fn watched_text(url str) str
@@ -2914,54 +2964,55 @@ fn watched_text(url str) str
 ## One timer tick (once a second): looks at each watch that is due and
 ## notes what changed.
 fn Garlic.tick(mut self)
-    seconds += 1
-    g.b.advance()
-    due := [j for j in jobs if j.due <= seconds]
-    jobs = [j for j in jobs if j.due > seconds]
+    self.seconds += 1
+    self.g.b.advance()
+    due := [j for j in self.jobs if j.due <= self.seconds]
+    self.jobs = [j for j in self.jobs if j.due > self.seconds]
     for j in due
-        mut sites := guard.fixed
-        for t in tabs
+        mut sites := self.guard.fixed
+        for t in self.tabs
             sites.push(host_of(t.b.url))
-        sites.push(host_of(g.b.url))
-        guard.allow = sites
-        answer := g.b.rpc(mut guard, j.request())
-        events.push("job {j.id} ({j.tool}) ran: {answer.slice(0, answer.chars().len().min(160))}")
-    for k in 0..watches.len()
-        if seconds < watches[k].due
+        sites.push(host_of(self.g.b.url))
+        self.guard.allow = sites
+        answer := self.g.b.rpc(mut self.guard, j.request())
+        self.events.push("job {j.id} ({j.tool}) ran: {answer.slice(0, answer.chars().len().min(160))}")
+    for k in 0..self.watches.len()
+        if self.seconds < self.watches[k].due
             continue
-        text := if watches[k].url == "" then g.b.pg.text() else watched_text(watches[k].url)
-        change := watches[k].look(text, seconds)
+        text := if self.watches[k].url
+            == "" then self.g.b.pg.text() else watched_text(self.watches[k].url)
+        change := self.watches[k].look(text, self.seconds)
         if change != ""
-            events.push(change)
-            g.b.message = change
+            self.events.push(change)
+            self.g.b.message = change
 
 ## Makes tab `k` the one shown.
 fn Garlic.switch(mut self, k int)
-    if k < 0 or k >= tabs.len() or k == cur
+    if k < 0 or k >= self.tabs.len() or k == self.cur
         return
-    tabs[cur] = g
-    g = tabs[k]
-    cur = k
-    g.refresh()
+    self.tabs[self.cur] = self.g
+    self.g = self.tabs[k]
+    self.cur = k
+    self.g.refresh()
 
 ## Opens an empty tab and shows it.
 fn Garlic.new_tab(mut self)
-    tabs[cur] = g
-    mut fresh := Browser.empty("", g.b.width, g.b.height).with_workers(g.b.workers)
-    fresh.zone = g.b.zone
-    mut fresh_gui := Gui.new(fresh, g.area_w, g.area_h, g.cell_w, g.cell_h)
-    fresh_gui.pixel = g.pixel
+    self.tabs[self.cur] = self.g
+    mut fresh := Browser.empty("", self.g.b.width, self.g.b.height).with_workers(self.g.b.workers)
+    fresh.zone = self.g.b.zone
+    mut fresh_gui := Gui.new(fresh, self.g.area_w, self.g.area_h, self.g.cell_w, self.g.cell_h)
+    fresh_gui.pixel = self.g.pixel
     fresh_gui.refresh()
-    tabs.push(fresh_gui)
-    cur = tabs.len() - 1
-    g = fresh_gui
-    omni = chrome.omni("")
-    omni.start()
-    want = "chrome"
+    self.tabs.push(fresh_gui)
+    self.cur = self.tabs.len() - 1
+    self.g = fresh_gui
+    self.omni = chrome.omni("")
+    self.omni.start()
+    self.want = "chrome"
 
 ## The shown tab's page, or tab `k`'s, as the strip lists it.
 fn Garlic.item(self, k int) chrome.Item
-    t := if k == cur then g else tabs[k]
+    t := if k == self.cur then self.g else self.tabs[k]
     mut it := chrome.Item(
         ## A page without a title (or still loading) goes by its address.
         title: if t.b.pg.title != "" then t.b.pg.title else chrome.pretty(t.b.url).0,
@@ -2970,192 +3021,208 @@ fn Garlic.item(self, k int) chrome.Item
         icon_w: 0,
         icon_h: 0,
         icon_data: "",
-        loading: k == cur and load_next != "",
+        loading: k == self.cur and self.load_next != "",
     )
-    if bm := icons.get(t.icon)
+    if bm := self.icons.get(t.icon)
         if bm.w > 0
             it.icon = t.icon
             it.icon_w = bm.w
             it.icon_h = bm.h
-            if icon_fresh.contains(t.icon)
+            if self.icon_fresh.contains(t.icon)
                 it.icon_data = bm.data
     it
 
 ## Closes tab `k` and remembers it for `reopen` (the last tab stays).
 fn Garlic.close_at(mut self, k int)
-    if tabs.len() < 2 or k < 0 or k >= tabs.len()
+    if self.tabs.len() < 2 or k < 0 or k >= self.tabs.len()
         return
-    it := item(k)
+    it := self.item(k)
     if it.url != ""
-        closed.push(it)
-    tabs[cur] = g
-    mut dead := tabs[k]
+        self.closed.push(it)
+    self.tabs[self.cur] = self.g
+    mut dead := self.tabs[k]
     dead.b.stop_workers()
-    tabs.remove_at(k)
-    if k < cur
-        cur -= 1
-    cur = cur.min(tabs.len() - 1)
-    g = tabs[cur]
-    g.refresh()
+    self.tabs.remove_at(k)
+    if k < self.cur
+        self.cur -= 1
+    self.cur = self.cur.min(self.tabs.len() - 1)
+    self.g = self.tabs[self.cur]
+    self.g.refresh()
 
 ## Closes the shown tab (the last one stays).
 fn Garlic.close_tab(mut self)
-    close_at(cur)
+    self.close_at(self.cur)
 
 ## Closes every tab but `k`, from the right so `k` keeps its place until last.
 fn Garlic.close_others(mut self, k int)
-    mut n := tabs.len() - 1
+    mut n := self.tabs.len() - 1
     mut keep := k
     while n >= 0
         if n < keep
             break
         if n != keep
-            close_at(n)
+            self.close_at(n)
         n -= 1
     while keep > 0
-        close_at(0)
+        self.close_at(0)
         keep -= 1
 
 ## Closes the tabs to the right of tab `k`.
 fn Garlic.close_right(mut self, k int)
-    while tabs.len() > k + 1
-        close_at(tabs.len() - 1)
+    while self.tabs.len() > k + 1
+        self.close_at(self.tabs.len() - 1)
 
 ## Opens the tab closed last in a new tab, as Cmd-Shift-T does.
 fn Garlic.reopen(mut self)
-    if closed.len() == 0
+    if self.closed.len() == 0
         return
-    it := closed[closed.len() - 1]
-    closed.remove_at(closed.len() - 1)
-    new_tab()
-    g.open(it.url)
-    want = ""
+    it := self.closed[self.closed.len() - 1]
+    self.closed.remove_at(self.closed.len() - 1)
+    self.new_tab()
+    self.g.open(it.url)
+    self.want = ""
 
 ## The rows of the open menu (a tab's, or the toolbar's); none when no
 ## menu is open.
 fn Garlic.menu_rows(self) List[str]
-    if menu_tab == -2
+    if self.menu_tab == -2
         mut rows := ["New tab"]
-        if closed.len() > 0
+        if self.closed.len() > 0
             rows.push("Reopen closed tab")
         rows.push("Find in page")
         rows.push("Reload")
-        rows.push(if g.ids then "Hide node ids" else "Show node ids")
-        rows.push(if light then "Dark theme" else "Light theme")
+        rows.push(if self.g.ids then "Hide node ids" else "Show node ids")
+        rows.push(if self.light then "Dark theme" else "Light theme")
         rows.push("About Garlic")
         return rows
-    if menu_tab == -3
+    if self.menu_tab == -3
         mut rows := List[str]()
-        if menu_href != ""
+        if self.menu_href != ""
             rows.push("Open link in new tab")
             rows.push("Copy link address")
-        if g.selection() != ""
+        if self.g.selection() != ""
             rows.push("Copy")
-        elif menu_text != ""
+        elif self.menu_text != ""
             rows.push("Copy text")
         rows.push("Back")
         rows.push("Forward")
         rows.push("Reload")
         return rows
-    if menu_tab < 0
+    if self.menu_tab < 0
         return []
     mut rows := ["Close tab"]
-    if tabs.len() > 1
+    if self.tabs.len() > 1
         rows.push("Close other tabs")
-    if menu_tab < tabs.len() - 1
+    if self.menu_tab < self.tabs.len() - 1
         rows.push("Close tabs to the right")
-    if closed.len() > 0
+    if self.closed.len() > 0
         rows.push("Reopen closed tab")
     rows
 
 ## Does what row `r` of the tab menu says.
 fn Garlic.menu_pick(mut self, r int)
-    rows := menu_rows()
-    k := menu_tab
-    menu_tab = -1
+    rows := self.menu_rows()
+    k := self.menu_tab
+    self.menu_tab = -1
     if r < 0 or r >= rows.len()
         return
     match rows[r]
-        "Close tab" => close_at(k)
-        "Close other tabs" => close_others(k)
-        "Close tabs to the right" => close_right(k)
-        "Reopen closed tab" => reopen()
-        "New tab" => new_tab()
-        "Find in page" => open_find()
-        "Open link in new tab" => open_in_new_tab(menu_href)
-        "Copy link address" => queue.push(app.clipboard(menu_href))
-        "Copy text" => queue.push(app.clipboard(menu_text))
-        "Copy" => queue.push(app.clipboard(g.selection()))
-        "Back" => start_load("back")
-        "Forward" => start_load("forward")
-        "Reload" => start_load("reload")
-        "Show node ids" | "Hide node ids" => g.ids = not g.ids
-        "Light theme" | "Dark theme" => light = not light
-        "About Garlic" => g.b.message = if build
-            == "" then "Garlic (not run from a checkout)" else build
-        _ => menu_tab = -1
+        "Close tab" => self.close_at(k)
+        "Close other tabs" => self.close_others(k)
+        "Close tabs to the right" => self.close_right(k)
+        "Reopen closed tab" => self.reopen()
+        "New tab" => self.new_tab()
+        "Find in page" => self.open_find()
+        "Open link in new tab" => self.open_in_new_tab(self.menu_href)
+        "Copy link address" => self.queue.push(app.clipboard(self.menu_href))
+        "Copy text" => self.queue.push(app.clipboard(self.menu_text))
+        "Copy" => self.queue.push(app.clipboard(self.g.selection()))
+        "Back" => self.start_load("back")
+        "Forward" => self.start_load("forward")
+        "Reload" => self.start_load("reload")
+        "Show node ids" | "Hide node ids" => self.g.ids = not self.g.ids
+        "Light theme" | "Dark theme" => self.light = not self.light
+        "About Garlic" => self.g.b.message = if self.build
+            == "" then "Garlic (not run from a checkout)" else self.build
+        _ => self.menu_tab = -1
 
 ## A click on the chrome canvas.
 fn Garlic.chrome_click(mut self, ev app.Event)
-    h := chrome.hit(ev.x, ev.y, tabs.len(), strip_w, inset_left, attached, pending != "")
-    menu_was := menu_tab
-    menu_tab = -1
+    h := chrome.hit(
+        ev.x,
+        ev.y,
+        self.tabs.len(),
+        self.strip_w,
+        self.inset_left,
+        self.attached,
+        self.pending != "",
+    )
+    menu_was := self.menu_tab
+    self.menu_tab = -1
     if h.kind == "none" and ev.y < chrome.STRIP_H and ev.text == "left"
         ## The empty strip is the title bar: it moves the window (std.app.25).
-        queue.push(if ev.clicks == 2 then "\{\"v\":1,\"t\":\"zoom\"}" else "\{\"v\":1,\"t\":\"drag\"}")
-    if h.kind != "omni" and omni.editing
-        omni = chrome.omni(g.b.url)
+        self.queue.push(if ev.clicks == 2 then "\{\"v\":1,\"t\":\"zoom\"}" else "\{\"v\":1,\"t\":\"drag\"}")
+    if h.kind != "omni" and self.omni.editing
+        self.omni = chrome.omni(self.g.b.url)
     match h.kind
-        "plus" => new_tab()
+        "plus" => self.new_tab()
         "tab" =>
             if ev.text == "right"
-                menu_tab = h.k
-                menu_x = ev.x.min((strip_w - chrome.MENU_W).max(0.0))
-                menu_y = 0.0
+                self.menu_tab = h.k
+                self.menu_x = ev.x.min((self.strip_w - chrome.MENU_W).max(0.0))
+                self.menu_y = 0.0
             elif ev.text == "other"
-                close_at(h.k)
-            elif h.k == cur and chrome.tiny(tabs.len(), strip_w, inset_left)
+                self.close_at(h.k)
+            elif h.k == self.cur and chrome.tiny(self.tabs.len(), self.strip_w, self.inset_left)
                 ## A narrow shown tab is all close button.
-                close_at(h.k)
+                self.close_at(h.k)
             else
-                switch(h.k)
-        "close" => close_at(h.k)
-        "back" => start_load("back")
-        "forward" => start_load("forward")
-        "reload" => start_load("reload")
+                self.switch(h.k)
+        "close" => self.close_at(h.k)
+        "back" => self.start_load("back")
+        "forward" => self.start_load("forward")
+        "reload" => self.start_load("reload")
         "omni" =>
-            if not omni.editing
-                omni.start()
-            want = "chrome"
-        "agent" => show_agent = not show_agent
+            if not self.omni.editing
+                self.omni.start()
+            self.want = "chrome"
+        "agent" => self.show_agent = not self.show_agent
         "menu" =>
             ## A second click on the button closes its menu.
             if menu_was != -2
-                menu_tab = -2
-                menu_x = (strip_w - chrome.MENU_W - 8.0).max(0.0)
-                menu_y = 0.0
-        "allow" => decide(true)
-        "deny" => decide(false)
-        _ => menu_tab = -1
+                self.menu_tab = -2
+                self.menu_x = (self.strip_w - chrome.MENU_W - 8.0).max(0.0)
+                self.menu_y = 0.0
+        "allow" => self.decide(true)
+        "deny" => self.decide(false)
+        _ => self.menu_tab = -1
 
 ## The agent chip's text: empty without `--attach`.
 fn Garlic.agent_chip(self) str
-    if attached then "Agent · {calls}" else ""
+    if self.attached then "Agent · {self.calls}" else ""
 
 ## The status bubble's text: the link under the pointer, else a prompt or
 ## message (the address is in the omnibox already), else what the attached
 ## agent did when the chip was clicked.
 fn Garlic.bubble(self) str
-    if hover_href != ""
-        return hover_href
-    shown := g.status()
-    if shown != "" and shown != g.b.url
+    if self.hover_href != ""
+        return self.hover_href
+    shown := self.g.status()
+    if shown != "" and shown != self.g.b.url
         return shown
-    if show_agent then agent_line() else ""
+    if self.show_agent then self.agent_line() else ""
 
 ## The chrome's text runs that place other things (`chrome.runs`).
 fn Garlic.chrome_runs(self) List[chrome.Run]
-    chrome.runs(omni, suggestions(), finding, find, g.find_k, g.find_n, bubble())
+    chrome.runs(
+        self.omni,
+        self.suggestions(),
+        self.finding,
+        self.find,
+        self.g.find_k,
+        self.g.find_n,
+        self.bubble(),
+    )
 
 ## Sans text widths for the chrome, from the layout's estimate.
 fn sans_w(s str, size float) float
@@ -3164,376 +3231,407 @@ fn sans_w(s str, size float) float
 ## The line that tells the user an agent can drive this window; empty
 ## without `--attach`.
 fn Garlic.agent_line(self) str
-    if not attached
+    if not self.attached
         return ""
-    "Agent attached at {where}: {calls} calls so far; {watches.len()} watches, {events.len()} unread changes"
+    "Agent attached at {self.where}: {self.calls} calls so far; {self.watches.len()} watches, {self.events.len()} unread changes"
 
 ## A click on the page: a link shows the spinner first (`start_load`);
 ## anything else is `Gui.click`.
 fn Garlic.page_click(mut self, x float, y float)
-    if g.pixel
-        if h := g.scene.hit_at(x, y + g.top)
+    if self.g.pixel
+        if h := self.g.scene.hit_at(x, y + self.g.top)
             if h.node < 0 and h.href != ""
-                start_load("open:{h.href}")
+                self.start_load("open:{h.href}")
                 return
-    g.click(x, y)
+    self.g.click(x, y)
 
 ## Starts a load: with an inbox the tab shows its spinner and the load runs
 ## on the `load` event this posts, so the host draws the spinner first;
 ## headless, the load runs now.
 fn Garlic.start_load(mut self, what str)
-    load_next = what
-    if has_inbox
-        inbox.post(app.external("load", what))
+    self.load_next = what
+    if self.has_inbox
+        self.inbox.post(app.external("load", what))
     else
-        do_load()
+        self.do_load()
 
 ## Does the load `start_load` queued.
 fn Garlic.do_load(mut self)
-    what := load_next
-    load_next = ""
+    what := self.load_next
+    self.load_next = ""
     if what.starts_with("open:")
-        g.open(what.slice(5, what.chars().len()))
+        self.g.open(what.slice(5, what.chars().len()))
     elif what == "back"
-        g.b.go_back()
+        self.g.b.go_back()
     elif what == "forward"
-        g.b.go_forward()
+        self.g.b.go_forward()
     elif what == "reload"
-        g.b.reload()
+        self.g.b.reload()
     elif what == "first"
-        g.b.load(g.b.url, "GET", "")
+        self.g.b.load(self.g.b.url, "GET", "")
 
 ## The omnibox dropdown's rows for what is typed (none while it shows the
 ## address as it is).
 fn Garlic.suggestions(self) List[chrome.Suggestion]
-    if not omni.editing or omni.all
+    if not self.omni.editing or self.omni.all
         return []
-    chrome.suggestions(omni.text, visits)
+    chrome.suggestions(self.omni.text, self.visits)
 
 ## Adds the shown page to the history when it is new there (an `http(s)`
 ## page with a title), keeping the last 500.
 fn Garlic.remember(mut self)
-    u := g.b.url
-    if not u.starts_with("http") or g.b.pg.title == ""
+    u := self.g.b.url
+    if not u.starts_with("http") or self.g.b.pg.title == ""
         return
-    if last := visits.last()
+    if last := self.visits.last()
         if last.url == u
             return
-    visits.push(chrome.Suggestion(title: g.b.pg.title, url: u))
-    if history_file != ""
-        history.add(history_file, visits)
-    if visits.len() > 5000
-        visits = [visits[i] for i in 1..visits.len()]
+    self.visits.push(chrome.Suggestion(title: self.g.b.pg.title, url: u))
+    if self.history_file != ""
+        history.add(self.history_file, self.visits)
+    if self.visits.len() > 5000
+        self.visits = [self.visits[i] for i in 1..self.visits.len()]
 
 ## Copies what Cmd-C means here: the omnibox's text while it is edited, the
 ## find bar's while it has the keys, else the link under the pointer.
 fn Garlic.copy(mut self)
-    sel := g.selection()
-    text := if omni.editing then omni.text else (if finding and find.editing then find.text else (if sel != "" then sel else hover_href))
+    sel := self.g.selection()
+    text := if self.omni.editing then self.omni.text else (if self.finding and self.find.editing then self.find.text else (if sel != "" then sel else self.hover_href))
     if text != ""
-        queue.push(app.clipboard(text))
+        self.queue.push(app.clipboard(text))
 
 ## Opens the page menu at (x, y): what a right-click on a Chromium page
 ## shows, for the link and text under the pointer.
 fn Garlic.page_menu(mut self, x float, y float)
-    menu_href = ""
-    if h := g.scene.hit_at(x, y + g.top)
-        menu_href = h.href
-    menu_text = g.text_at(x, y + g.top)
-    menu_tab = -3
-    menu_x = x.min((g.area_w - chrome.MENU_W).max(0.0))
+    self.menu_href = ""
+    if h := self.g.scene.hit_at(x, y + self.g.top)
+        self.menu_href = h.href
+    self.menu_text = self.g.text_at(x, y + self.g.top)
+    self.menu_tab = -3
+    self.menu_x = x.min((self.g.area_w - chrome.MENU_W).max(0.0))
     ## Kept inside the page: a menu opened near the bottom moves up.
-    menu_h := menu_rows().len().to_float() * chrome.ROW_H + 16.0
-    menu_y = y.min((g.area_h - menu_h).max(0.0))
+    menu_h := self.menu_rows().len().to_float() * chrome.ROW_H + 16.0
+    self.menu_y = y.min((self.g.area_h - menu_h).max(0.0))
 
 ## Opens `url` in a new tab behind the shown one, as Chromium's menu does.
 fn Garlic.open_in_new_tab(mut self, url str)
-    was := cur
-    new_tab()
-    g.open(url)
-    switch(was)
-    omni = chrome.omni(g.b.url)
-    want = ""
+    was := self.cur
+    self.new_tab()
+    self.g.open(url)
+    self.switch(was)
+    self.omni = chrome.omni(self.g.b.url)
+    self.want = ""
 
 ## Opens the find bar with the last text selected (Cmd-F, or the menu); in
 ## the text layout it is the `/` prompt instead.
 fn Garlic.open_find(mut self)
-    if not g.pixel
-        g.b.prompt = Find("")
+    if not self.g.pixel
+        self.g.b.prompt = Find("")
         return
-    finding = true
-    find = chrome.omni(g.found)
-    find.start()
-    want = "page"
+    self.finding = true
+    self.find = chrome.omni(self.g.found)
+    self.find.start()
+    self.want = "page"
 
 ## Closes the find bar and drops the highlights (Escape, or its cross).
 fn Garlic.close_find(mut self)
-    finding = false
-    find = chrome.omni("")
-    g.found = ""
-    g.find_n = 0
-    g.b.message = ""
+    self.finding = false
+    self.find = chrome.omni("")
+    self.g.found = ""
+    self.g.find_n = 0
+    self.g.b.message = ""
 
 ## A key while the find bar has the keys: Return steps to the next match
 ## (Shift-Return the previous), Escape closes, and typing searches as it
 ## goes.
 fn Garlic.find_key(mut self, key str, meta bool, shift bool)
-    before := find.text
-    match find.key(key, meta, shift)
+    before := self.find.text
+    match self.find.key(key, meta, shift)
         "open" =>
-            find.editing = true
-            g.find_step(find.text, if shift then -1 else 1)
-        "cancel" => close_find()
-        _ => if find.text != before
-            g.find_step(find.text, 0)
+            self.find.editing = true
+            self.g.find_step(self.find.text, if shift then -1 else 1)
+        "cancel" => self.close_find()
+        _ => if self.find.text != before
+            self.g.find_step(self.find.text, 0)
 
 ## A click on the find bar: `up`, `down`, `close` or `text`.
 fn Garlic.find_click(mut self, what str)
     match what
-        "up" => g.find_step(find.text, -1)
-        "down" => g.find_step(find.text, 1)
-        "close" => close_find()
+        "up" => self.g.find_step(self.find.text, -1)
+        "down" => self.g.find_step(self.find.text, 1)
+        "close" => self.close_find()
         _ =>
-            find.editing = true
-            find.all = false
-            want = "page"
+            self.find.editing = true
+            self.find.all = false
+            self.want = "page"
 
 ## Keeps the display's size and scale the host reports (std.app.31); a
 ## scale of 0 is 1, and an event that carries none leaves them be.
 fn Garlic.note_display(mut self, ev app.Event)
     if ev.screen_w > 0.0 and ev.screen_h > 0.0
-        g.screen_w = ev.screen_w
-        g.screen_h = ev.screen_h
+        self.g.screen_w = ev.screen_w
+        self.g.screen_h = ev.screen_h
     if ev.scale > 0.0
-        g.scale = ev.scale
+        self.g.scale = ev.scale
 
 ## The look: Chromium's, dark unless `--light`.
 fn Garlic.theme(self) chrome.Theme
-    if light then chrome.light() else chrome.dark()
+    if self.light then chrome.light() else chrome.dark()
 
 ## The chrome: one canvas with the tabs, the toolbar and any infobar.
 fn Garlic.chrome_node(self) app.Node
-    items := [item(k) for k in 0..tabs.len()]
+    items := [self.item(k) for k in 0..self.tabs.len()]
     st := chrome.State(
-        omni: omni,
-        can_back: g.b.can_back(),
-        can_forward: g.b.can_forward(),
-        hover_x: hover_x,
-        hover_y: hover_y,
-        agent: agent_chip(),
-        ask: if pending != "" then "The agent wants to {asks}." else "",
-        width: strip_w,
-        inset_left: inset_left,
+        omni: self.omni,
+        can_back: self.g.b.can_back(),
+        can_forward: self.g.b.can_forward(),
+        hover_x: self.hover_x,
+        hover_y: self.hover_y,
+        agent: self.agent_chip(),
+        ask: if self.pending != "" then "The agent wants to {self.asks}." else "",
+        width: self.strip_w,
+        inset_left: self.inset_left,
     )
     app.canvas(
         "chrome",
         0.0,
-        chrome.height(pending != ""),
-        chrome.draw(theme(), items, cur, st, sans_w, cw),
+        chrome.height(self.pending != ""),
+        chrome.draw(self.theme(), items, self.cur, st, sans_w, self.cw),
     )
 
 impl app.App for Garlic
     fn attach(mut self, box app.Inbox)
-        has_inbox = true
-        inbox = box
-        if first
-            first = false
-            start_load("first")
+        self.has_inbox = true
+        self.inbox = box
+        if self.first
+            self.first = false
+            self.start_load("first")
 
     fn update(mut self, ev app.Event)
-        want = ""
-        g.b.pump()
-        g.sent = g.sent.union(g.fresh)
-        g.fresh = {}
-        icon_sent = icon_sent.union(icon_fresh)
-        icon_fresh = {}
+        self.want = ""
+        self.g.b.pump()
+        self.g.sent = self.g.sent.union(self.g.fresh)
+        self.g.fresh = {}
+        self.icon_sent = self.icon_sent.union(self.icon_fresh)
+        self.icon_fresh = {}
         match ev.kind
             Start =>
-                inset_left = ev.inset_left
-                inset_top = ev.inset_top
-                note_display(ev)
+                self.inset_left = ev.inset_left
+                self.inset_top = ev.inset_top
+                self.note_display(ev)
             Resize =>
-                note_display(ev)
+                self.note_display(ev)
                 if ev.inset_left > 0.0 or ev.inset_top > 0.0
-                    inset_left = ev.inset_left
-                    inset_top = ev.inset_top
+                    self.inset_left = ev.inset_left
+                    self.inset_top = ev.inset_top
                 if ev.id == "chrome"
-                    strip_w = ev.dx
+                    self.strip_w = ev.dx
                 elif ev.id == "page" or ev.id == ""
-                    g.resize(ev.dx, ev.dy, ev.cell_w, ev.cell_h)
+                    self.g.resize(ev.dx, ev.dy, ev.cell_w, ev.cell_h)
             Click =>
                 if ev.id == "chrome"
-                    chrome_click(ev)
+                    self.chrome_click(ev)
                 else
-                    r := chrome.menu_hit(ev.x, ev.y, menu_rows().len(), menu_x, menu_y)
+                    r := chrome.menu_hit(
+                        ev.x,
+                        ev.y,
+                        self.menu_rows().len(),
+                        self.menu_x,
+                        self.menu_y,
+                    )
                     ## The dropdown's rows first: a click outside them ends the edit.
-                    sugg := suggestions()
-                    sr := chrome.suggest_hit(ev.x, ev.y, sugg.len(), strip_w, attached)
-                    if omni.editing
-                        omni = chrome.omni(g.b.url)
-                    fh := if finding then chrome.find_hit(ev.x, ev.y, g.area_w) else ""
+                    sugg := self.suggestions()
+                    sr := chrome.suggest_hit(ev.x, ev.y, sugg.len(), self.strip_w, self.attached)
+                    if self.omni.editing
+                        self.omni = chrome.omni(self.g.b.url)
+                    fh := if self.finding then chrome.find_hit(ev.x, ev.y, self.g.area_w) else ""
                     if sr >= 0
                         row := sugg[sr]
-                        start_load("open:{if row.url == "" then row.title else row.url}")
+                        self.start_load("open:{if row.url == "" then row.title else row.url}")
                     elif r >= 0
-                        menu_pick(r)
+                        self.menu_pick(r)
                     elif fh != ""
-                        find_click(fh)
-                    elif ev.text == "right" and g.pixel
-                        page_menu(ev.x, ev.y)
+                        self.find_click(fh)
+                    elif ev.text == "right" and self.g.pixel
+                        self.page_menu(ev.x, ev.y)
                     else
-                        menu_tab = -1
-                        find.editing = false
-                        page_click(ev.x, ev.y)
+                        self.menu_tab = -1
+                        self.find.editing = false
+                        self.page_click(ev.x, ev.y)
             Scroll =>
                 if ev.id != "chrome"
-                    g.scroll(ev.dy)
+                    self.g.scroll(ev.dy)
             Down =>
                 if ev.id != "chrome"
                     and ev.text == "left"
-                    and g.pixel
-                    and menu_tab == -1
-                    and (not finding or chrome.find_hit(ev.x, ev.y, g.area_w) == "")
-                    and not omni.editing
-                    g.press(ev.x, ev.y)
+                    and self.g.pixel
+                    and self.menu_tab == -1
+                    and (not self.finding or chrome.find_hit(ev.x, ev.y, self.g.area_w) == "")
+                    and not self.omni.editing
+                    self.g.press(ev.x, ev.y)
             Up =>
                 if ev.id != "chrome"
-                    g.release()
+                    self.g.release()
             Move =>
                 if ev.id == "chrome"
-                    hover_x = ev.x
-                    hover_y = ev.y
-                elif g.pixel
-                    page_x = ev.x
-                    page_y = ev.y
-                    g.drag(ev.x, ev.y)
-                    hover_href = ""
-                    if h := g.scene.hit_at(ev.x, ev.y + g.top)
-                        hover_href = h.href
+                    self.hover_x = ev.x
+                    self.hover_y = ev.y
+                elif self.g.pixel
+                    self.page_x = ev.x
+                    self.page_y = ev.y
+                    self.g.drag(ev.x, ev.y)
+                    self.hover_href = ""
+                    if h := self.g.scene.hit_at(ev.x, ev.y + self.g.top)
+                        self.hover_href = h.href
             Leave =>
                 if ev.id == "chrome"
-                    hover_x = -1.0
+                    self.hover_x = -1.0
                 else
-                    hover_href = ""
-                    page_x = -1.0
-                    page_y = -1.0
+                    self.hover_href = ""
+                    self.page_x = -1.0
+                    self.page_y = -1.0
             Paste =>
-                if omni.editing
-                    omni.insert(ev.text)
-                elif finding and find.editing
-                    find.insert(ev.text)
-                    g.find_step(find.text, 0)
+                if self.omni.editing
+                    self.omni.insert(ev.text)
+                elif self.finding and self.find.editing
+                    self.find.insert(ev.text)
+                    self.g.find_step(self.find.text, 0)
             Key =>
-                if omni.editing and not ev.meta and (ev.text == "down" or ev.text == "up")
-                    n := suggestions().len()
+                if self.omni.editing and not ev.meta and (ev.text == "down" or ev.text == "up")
+                    n := self.suggestions().len()
                     if n > 0
-                        pick_row = if ev.text
-                            == "down" then (pick_row + 2) % (n + 1) - 1 else (pick_row + n + 1) % (n + 1) - 1
-                elif omni.editing
+                        self.pick_row = if ev.text
+                            == "down" then (self.pick_row + 2) % (n + 1) - 1 else (self.pick_row + n + 1) % (n + 1) - 1
+                elif self.omni.editing
                     and (not ev.meta or ev.text == "a" or ev.text == "left" or ev.text == "right")
-                    rows := suggestions()
-                    match omni.key(ev.text, ev.meta, ev.shift)
-                        "open" => start_load("open:{if pick_row >= 0 and pick_row < rows.len() and rows[pick_row].url != "" then rows[pick_row].url else omni.text}")
-                        "cancel" => omni = chrome.omni(g.b.url)
-                        _ => pick_row = -1
-                elif finding and ev.meta and (ev.text == "g" or ev.text == "G")
-                    g.find_step(find.text, if ev.shift then -1 else 1)
-                elif finding
-                    and find.editing
+                    rows := self.suggestions()
+                    match self.omni.key(ev.text, ev.meta, ev.shift)
+                        "open" => self.start_load("open:{if self.pick_row >= 0 and self.pick_row < rows.len() and rows[self.pick_row].url != "" then rows[self.pick_row].url else self.omni.text}")
+                        "cancel" => self.omni = chrome.omni(self.g.b.url)
+                        _ => self.pick_row = -1
+                elif self.finding and ev.meta and (ev.text == "g" or ev.text == "G")
+                    self.g.find_step(self.find.text, if ev.shift then -1 else 1)
+                elif self.finding
+                    and self.find.editing
                     and (not ev.meta or ev.text == "a" or ev.text == "left" or ev.text == "right")
-                    find_key(ev.text, ev.meta, ev.shift)
+                    self.find_key(ev.text, ev.meta, ev.shift)
                 elif ev.meta and ev.shift and (ev.text == "t" or ev.text == "T")
-                    reopen()
-                elif ev.text == "escape" and menu_tab != -1
-                    menu_tab = -1
-                elif ev.text == "escape" and finding
-                    close_find()
-                elif ev.text == "escape" and g.sel_on
-                    g.sel_on = false
-                elif (ev.meta and ev.text == "l") or (ev.text == "g" and g.b.reading())
-                    omni.start()
-                    want = "chrome"
+                    self.reopen()
+                elif ev.text == "escape" and self.menu_tab != -1
+                    self.menu_tab = -1
+                elif ev.text == "escape" and self.finding
+                    self.close_find()
+                elif ev.text == "escape" and self.g.sel_on
+                    self.g.sel_on = false
+                elif (ev.meta and ev.text == "l") or (ev.text == "g" and self.g.b.reading())
+                    self.omni.start()
+                    self.want = "chrome"
                 elif ev.meta and ev.text == "r"
-                    start_load("reload")
+                    self.start_load("reload")
                 elif ev.meta and ev.text == "["
-                    start_load("back")
+                    self.start_load("back")
                 elif ev.meta and ev.text == "]"
-                    start_load("forward")
+                    self.start_load("forward")
                 elif ev.meta and ev.text == "i"
-                    g.ids = not g.ids
+                    self.g.ids = not self.g.ids
                 elif ev.meta and ev.text == "f"
-                    open_find()
+                    self.open_find()
                 elif ev.meta and ev.text == "c"
-                    copy()
+                    self.copy()
                 elif ev.meta and ev.text == "t"
-                    new_tab()
+                    self.new_tab()
                 elif ev.meta and ev.text == "w"
-                    close_tab()
+                    self.close_tab()
                 elif ev.ctrl and ev.text == "tab"
-                    switch((cur + 1) % tabs.len())
+                    self.switch((self.cur + 1) % self.tabs.len())
                 else
-                    g.key(ev.text, ev.alt, ev.shift)
+                    self.g.key(ev.text, ev.alt, ev.shift)
             External =>
                 if ev.id == "load"
-                    do_load()
+                    self.do_load()
                 elif ev.id == "mcp"
-                    agent_call(ev.text)
+                    self.agent_call(ev.text)
                 elif ev.id == "tick"
-                    tick()
+                    self.tick()
             Press =>
                 if ev.id == "agent_allow"
-                    decide(true)
+                    self.decide(true)
                 elif ev.id == "agent_deny"
-                    decide(false)
-            _ => menu_tab = menu_tab
-        g.refresh()
-        if not omni.editing
-            omni = chrome.omni(g.b.url)
-            pick_row = -1
-        remember()
-        if g.pixel
-            g.icon = favicon.fetch(g.b.doc, g.b.url, g.b.cj, image_options(), mut icons)
-            if g.icon != "" and not icon_sent.contains(g.icon)
-                icon_fresh.add(g.icon)
+                    self.decide(false)
+            _ => self.menu_tab = self.menu_tab
+        self.g.refresh()
+        if not self.omni.editing
+            self.omni = chrome.omni(self.g.b.url)
+            self.pick_row = -1
+        self.remember()
+        if self.g.pixel
+            self.g.icon = favicon.fetch(
+                self.g.b.doc,
+                self.g.b.url,
+                self.g.b.cj,
+                image_options(),
+                mut self.icons,
+            )
+            if self.g.icon != "" and not self.icon_sent.contains(self.g.icon)
+                self.icon_fresh.add(self.g.icon)
 
     fn view(self) app.Node
         ## A canvas of 0 by 0 fills the window; the host reports its size.
-        mut page_ops := [to_app(op, g) for op in g.display()]
-        page_ops.extend(chrome.status_ops(theme(), bubble(), g.area_h, g.scene.bg, sans_w, cw))
-        page_ops.extend(chrome.menu_ops(
-            theme(),
-            menu_rows(),
-            menu_x,
-            menu_y,
-            g.scene.bg,
-            chrome.menu_hit(page_x, page_y, menu_rows().len(), menu_x, menu_y),
+        mut page_ops := [to_app(op, self.g) for op in self.g.display()]
+        page_ops.extend(chrome.status_ops(
+            self.theme(),
+            self.bubble(),
+            self.g.area_h,
+            self.g.scene.bg,
+            sans_w,
+            self.cw,
         ))
-        if omni.editing
+        page_ops.extend(chrome.menu_ops(
+            self.theme(),
+            self.menu_rows(),
+            self.menu_x,
+            self.menu_y,
+            self.g.scene.bg,
+            chrome.menu_hit(
+                self.page_x,
+                self.page_y,
+                self.menu_rows().len(),
+                self.menu_x,
+                self.menu_y,
+            ),
+        ))
+        if self.omni.editing
             ## The row the arrow keys chose, else the one under the pointer.
-            sugg := suggestions()
-            under := chrome.suggest_hit(page_x, page_y, sugg.len(), strip_w, attached)
+            sugg := self.suggestions()
+            under := chrome.suggest_hit(
+                self.page_x,
+                self.page_y,
+                sugg.len(),
+                self.strip_w,
+                self.attached,
+            )
             page_ops.extend(chrome.suggest_ops(
-                theme(),
+                self.theme(),
                 sugg,
-                if pick_row >= 0 then pick_row else under,
-                strip_w,
-                attached,
-                g.scene.bg,
+                if self.pick_row >= 0 then self.pick_row else under,
+                self.strip_w,
+                self.attached,
+                self.g.scene.bg,
                 sans_w,
-                cw,
+                self.cw,
             ))
-        if finding
+        if self.finding
             page_ops.extend(chrome.find_ops(
-                theme(),
-                find,
-                g.find_k,
-                g.find_n,
-                g.area_w,
-                g.scene.bg,
+                self.theme(),
+                self.find,
+                self.g.find_k,
+                self.g.find_n,
+                self.g.area_w,
+                self.g.scene.bg,
                 sans_w,
-                cw,
+                self.cw,
             ))
-        app.column([chrome_node(), app.canvas("page", 0.0, 0.0, page_ops)])
+        app.column([self.chrome_node(), app.canvas("page", 0.0, 0.0, page_ops)])
 
     fn hover(self) bool
         true
@@ -3542,21 +3640,21 @@ impl app.App for Garlic
         true
 
     fn lines(mut self) List[str]
-        for text in g.b.clips
-            queue.push(app.clipboard(text))
-        g.b.clips = []
-        sent := queue
-        queue = []
+        for text in self.g.b.clips
+            self.queue.push(app.clipboard(text))
+        self.g.b.clips = []
+        sent := self.queue
+        self.queue = []
         sent
 
     fn title(self) str
-        "{g.b.pg.title} - Garlic"
+        "{self.g.b.pg.title} - Garlic"
 
     fn measures(self) List[app.Measure]
         ## The page's runs, then the chrome's own.
-        mut out := g.wanted()
-        for r in chrome_runs()
-            if not cw.contains(chrome.width_key(r.text, r.size))
+        mut out := self.g.wanted()
+        for r in self.chrome_runs()
+            if not self.cw.contains(chrome.width_key(r.text, r.size))
                 out.push(app.Measure(
                     text: r.text,
                     font: "sans",
@@ -3567,16 +3665,16 @@ impl app.App for Garlic
         out
 
     fn measured(mut self, runs List[app.Measure], widths List[float])
-        n := g.wanted().len().min(runs.len())
+        n := self.g.wanted().len().min(runs.len())
         if n > 0
-            g.learn([runs[i] for i in 0..n], [widths[i] for i in 0..n])
-        if cw.len() > 4000
-            cw = {}
+            self.g.learn([runs[i] for i in 0..n], [widths[i] for i in 0..n])
+        if self.cw.len() > 4000
+            self.cw = {}
         for i in n..runs.len()
-            cw[chrome.width_key(runs[i].text, runs[i].size)] = widths[i]
+            self.cw[chrome.width_key(runs[i].text, runs[i].size)] = widths[i]
 
     fn focus(self) str
-        want
+        self.want
 
 ## A drawing operation of the page, as a `std.app` canvas operation.
 fn to_app(op draw.Op, g Gui) app.Op

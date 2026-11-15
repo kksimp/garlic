@@ -19,11 +19,11 @@ pub fn Vm.object(mut self, class str, proto Value) ref JsObject
 
 ## A plain object: `{}`.
 pub fn Vm.plain(mut self) ref JsObject
-    object("Object", proto_of("Object"))
+    self.object("Object", self.proto_of("Object"))
 
 ## An array of the values.
 pub fn Vm.array(mut self, items List[Value]) Value
-    mut a := object("Array", proto_of("Array"))
+    mut a := self.object("Array", self.proto_of("Array"))
     a.elems = items
     Obj(a)
 
@@ -37,7 +37,7 @@ fn is_array_like(o ref JsObject) bool
 ## The property `key` of `o` itself, as a Prop, if it has one.
 pub fn Vm.own(self, o ref JsObject, key str) Prop?
     if o.class == "Proxy"
-        return own(obj_of(o.prim) else o, key)
+        return self.own(obj_of(o.prim) else o, key)
     if o.class == "Module"
         return module_own(o, key)
     if is_view(o) and index_of_key(key) != none
@@ -92,7 +92,7 @@ pub fn Vm.get_from(mut self, start ref JsObject, key str, receiver Value) Value 
     while true
         if o.class == "Proxy"
             return proxy_get(o, key, receiver)
-        if p := own(o, key)
+        if p := self.own(o, key)
             if p.accessor
                 if is_callable(p.get)
                     return call(p.get, receiver, [])
@@ -107,9 +107,9 @@ pub fn Vm.get_from(mut self, start ref JsObject, key str, receiver Value) Value 
 ## prototype; `undefined` and `null` throw.
 pub fn Vm.get(mut self, base Value, key str) Value ! Thrown
     match base
-        Obj(o) => get_from(o, key, base)
-        Big(_) => proto_get("BigInt", key, base)
-        Sym(_) => proto_get("Symbol", key, base)
+        Obj(o) => self.get_from(o, key, base)
+        Big(_) => self.proto_get("BigInt", key, base)
+        Sym(_) => self.proto_get("Symbol", key, base)
         Str(s) =>
             if key == "length"
                 return Num(unit_len(s).to_float())
@@ -118,22 +118,22 @@ pub fn Vm.get(mut self, base Value, key str) Value ! Thrown
                 if i < us.len()
                     return Str(from_units([us[i]]))
                 return Undef
-            proto_get("String", key, base)
-        Num(_) => proto_get("Number", key, base)
-        Bool(_) => proto_get("Boolean", key, base)
+            self.proto_get("String", key, base)
+        Num(_) => self.proto_get("Number", key, base)
+        Bool(_) => self.proto_get("Boolean", key, base)
         Undef | Null =>
             what := if base == Undef then "undefined" else "null"
             return type_error("Cannot read properties of {what} (reading '{key}')")
 
 fn Vm.proto_get(mut self, name str, key str, receiver Value) Value ! Thrown
-    match proto_of(name)
-        Obj(p) => get_from(p, key, receiver)
+    match self.proto_of(name)
+        Obj(p) => self.get_from(p, key, receiver)
         Undef | Null | Bool | Num | Str | Big | Sym => Undef
 
 ## [[Set]] (§10.1.9): a setter on the chain, else an own data property.
 pub fn Vm.put(mut self, base Value, key str, v Value) ! Thrown
     match base
-        Obj(o) => put_obj(o, key, v, base)?
+        Obj(o) => self.put_obj(o, key, v, base)?
         Undef | Null =>
             what := if base == Undef then "undefined" else "null"
             return type_error("Cannot set properties of {what} (setting '{key}')")
@@ -145,7 +145,7 @@ pub fn Vm.put_obj(mut self, target ref JsObject, key str, v Value, receiver Valu
     while true
         if o.class == "Proxy"
             return proxy_set(o, key, v, receiver)
-        if p := own(o, key)
+        if p := self.own(o, key)
             if p.accessor
                 if is_callable(p.set)
                     call(p.set, receiver, [v])?
@@ -156,7 +156,7 @@ pub fn Vm.put_obj(mut self, target ref JsObject, key str, v Value, receiver Valu
         match o.proto
             Obj(next) => o = next
             Undef | Null | Bool | Num | Str | Big | Sym => break
-    set_own(target, key, v)?
+    self.set_own(target, key, v)?
 
 ## Write an own data property, keeping its attributes if it exists.
 pub fn Vm.set_own(mut self, o ref JsObject, key str, v Value) ! Thrown
@@ -206,7 +206,7 @@ pub fn Vm.set_own(mut self, o ref JsObject, key str, v Value) ! Thrown
 pub fn Vm.define(mut self, o ref JsObject, key str, p Prop) ! Thrown
     if is_array_like(o) and not p.accessor
         if index_of_key(key) != none or key == "length"
-            set_own(o, key, p.value)?
+            self.set_own(o, key, p.value)?
             return
     o.props[key] = p
 
@@ -214,7 +214,7 @@ pub fn Vm.define(mut self, o ref JsObject, key str, p Prop) ! Thrown
 pub fn Vm.has_property(self, start ref JsObject, key str) bool
     mut o := start
     while true
-        if own(o, key) != none
+        if self.own(o, key) != none
             return true
         match o.proto
             Obj(next) => o = next
@@ -242,7 +242,7 @@ pub fn Vm.delete(mut self, o ref JsObject, key str) bool
 ## then the other keys in creation order.
 pub fn Vm.own_keys(self, o ref JsObject) List[str]
     if o.class == "Proxy"
-        return own_keys(obj_of(o.prim) else o)
+        return self.own_keys(obj_of(o.prim) else o)
     mut out := view_keys(o)
     if is_array_like(o)
         for i in 0..o.elems.len()
@@ -271,8 +271,8 @@ pub fn Vm.own_symbols(self, o ref JsObject) List[str]
 ## Own enumerable keys (§7.3.23 EnumerableOwnProperties): `Object.keys`.
 pub fn Vm.enum_keys(self, o ref JsObject) List[str]
     mut out := List[str]()
-    for k in own_keys(o)
-        if p := own(o, k)
+    for k in self.own_keys(o)
+        if p := self.own(o, k)
             if p.enumerable
                 out.push(k)
     out
@@ -283,9 +283,9 @@ pub fn Vm.for_in_keys(self, start ref JsObject) List[str]
     mut seen := Set[str]()
     mut o := start
     while true
-        for k in own_keys(o)
+        for k in self.own_keys(o)
             if seen.add(k)
-                if p := own(o, k)
+                if p := self.own(o, k)
                     if p.enumerable
                         out.push(k)
         match o.proto
@@ -303,7 +303,7 @@ pub fn Vm.iterate(mut self, v Value) List[Value] ! Thrown
             for c in s.chars()
                 out.push(Str("{c}"))
             out
-        Big | Sym => type_error("{describe(v)} is not iterable")
+        Big | Sym => type_error("{self.describe(v)} is not iterable")
         Obj(o) =>
             if is_array_like(o)
                 return o.elems
@@ -317,15 +317,15 @@ pub fn Vm.iterate(mut self, v Value) List[Value] ! Thrown
                 return o.elems[i.min(o.elems.len())..]
             if items := drain_iterator(v)?
                 return items
-            len := get(v, "length")?
+            len := self.get(v, "length")?
             if len == Undef
-                return type_error("{describe(v)} is not iterable")
+                return type_error("{self.describe(v)} is not iterable")
             n := as_index(to_number(len)?) else 0
             mut out := List[Value]()
             for i in 0..n
-                out.push(get(v, "{i}")?)
+                out.push(self.get(v, "{i}")?)
             out
-        Undef | Null | Bool | Num => type_error("{describe(v)} is not iterable")
+        Undef | Null | Bool | Num => type_error("{self.describe(v)} is not iterable")
 
 ## A short description of a value for error messages.
 pub fn Vm.describe(self, v Value) str

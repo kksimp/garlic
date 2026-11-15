@@ -109,11 +109,11 @@ pub fn Vm.viewport(
             for pair in [("width", sw), ("height", sh), ("availWidth", sw), ("availHeight", sh)]
                 so.props[pair.0] = data(Num(pair.1))
     if changed
-        fire(-1, "resize", false)
+        self.fire(-1, "resize", false)
 
 ## A DOMRect of `id`'s border box, relative to the viewport.
 fn Vm.rect_value(mut self, id int) Value
-    b := rect_of(id)
+    b := self.rect_of(id)
     r := plain()
     left := b[0]
     top := b[1] - scroll_y
@@ -143,7 +143,7 @@ fn Vm.rect_of(self, id int) List[float]
             return [0.0, 0.0, view_w, page_h]
     if id < 0 or id >= dom.len() or dom[id].kind != 1
         return [0.0, 0.0, 0.0, 0.0]
-    text := text_content(id)
+    text := self.text_content(id)
     if text.trim() == ""
         return [0.0, 0.0, 0.0, 0.0]
     [0.0, 0.0, (text.chars().len().to_float() * 8.0).round(), 18.0]
@@ -182,31 +182,31 @@ pub fn Vm.dom_detach(mut self, id int)
     p := dom[id].parent
     if p < 0
         return
-    was_connected := recording and dom[id].kind == 1 and connected(id)
+    was_connected := recording and dom[id].kind == 1 and self.connected(id)
     if i := dom[p].children.index_of(id)
         dom[p].children.remove_at(i)
     dom[id].parent = -1
-    dom_log("detach", id, p, -1, "", "")
+    self.dom_log("detach", id, p, -1, "", "")
     if was_connected
         ce_disconnected(id)
 
 pub fn Vm.dom_append(mut self, parent int, id int)
-    dom_detach(id)
+    self.dom_detach(id)
     dom[parent].children.push(id)
     dom[id].parent = parent
-    dom_log("append", id, parent, -1, "", "")
-    after_insert(id)
+    self.dom_log("append", id, parent, -1, "", "")
+    self.after_insert(id)
 
 pub fn Vm.dom_insert_before(mut self, parent int, id int, before int)
     if before < 0
-        dom_append(parent, id)
+        self.dom_append(parent, id)
         return
-    dom_detach(id)
+    self.dom_detach(id)
     at := dom[parent].children.index_of(before) else dom[parent].children.len()
     dom[parent].children.insert(at, id)
     dom[id].parent = parent
-    dom_log("insert_before", id, parent, before, "", "")
-    after_insert(id)
+    self.dom_log("insert_before", id, parent, before, "", "")
+    self.after_insert(id)
 
 pub fn attr_of_node(n DomNode, name str) str?
     for a in n.attrs
@@ -219,23 +219,23 @@ pub fn Vm.attr_of(self, id int, name str) str?
 
 pub fn Vm.set_attr(mut self, id int, name str, value str)
     if name.starts_with("on")
-        handler_set(id, name)
+        self.handler_set(id, name)
         if v := node_objs.get(id)
             if o := obj_of(v)
                 o.props.remove(name)
     if name == "style"
-        refresh_style(id, value)
+        self.refresh_style(id, value)
     for i in 0..dom[id].attrs.len()
         if dom[id].attrs[i].name == name
             dom[id].attrs[i].value = value
-            dom_log("set_attr", id, -1, -1, name, value)
+            self.dom_log("set_attr", id, -1, -1, name, value)
             if recording and name == "src" and dom[id].tag == "img"
-                img_settle_later(id, value)
+                self.img_settle_later(id, value)
             return
     dom[id].attrs.push(DomAttr(name: name, value: value))
-    dom_log("set_attr", id, -1, -1, name, value)
+    self.dom_log("set_attr", id, -1, -1, name, value)
     if recording and name == "src" and dom[id].tag == "img"
-        img_settle_later(id, value)
+        self.img_settle_later(id, value)
 
 ## An image a script pointed at `src` settles on the next turn of the event
 ## loop (HTML §4.8.4.3.5 "update the image data" runs in parallel): a `data:`
@@ -250,7 +250,7 @@ fn Vm.img_settle_later(mut self, id int, src str)
         due: clock_ms,
         seq: timer_seq,
         callback: native_fn("dom.img.settle", "", 0),
-        args: [node_value(id), Value.Str(src)],
+        args: [self.node_value(id), Value.Str(src)],
         every: 0.0,
         level: 0,
     ))
@@ -258,7 +258,7 @@ fn Vm.img_settle_later(mut self, id int, src str)
 fn Vm.img_settle(mut self, args List[Value]) Value ! Thrown
     id := node_id(arg_at(args, 0)) else return Undef
     src := to_string(arg_at(args, 1))?
-    if (attr_of(id, "src") else "") != src
+    if (self.attr_of(id, "src") else "") != src
         return Undef
     mut ok := true
     mut size := [0, 0]
@@ -267,11 +267,11 @@ fn Vm.img_settle(mut self, args List[Value]) Value ! Thrown
         if raw := data_image_bytes(src)
             size = image.dims(raw)
             ok = size[0] > 0 and size[1] > 0
-    o := obj_of(node_value(id)) else return Undef
+    o := obj_of(self.node_value(id)) else return Undef
     o.props["complete"] = data(Value.Bool(true))
     o.props["naturalWidth"] = data(Value.Num(size[0].to_float()))
     o.props["naturalHeight"] = data(Value.Num(size[1].to_float()))
-    fire(id, if ok then "load" else "error", false)
+    self.fire(id, if ok then "load" else "error", false)
     Undef
 
 ## The bytes of a base64 `data:` image URL, or none.
@@ -296,19 +296,19 @@ pub fn Vm.remove_attr(mut self, id int, name str)
     for i in 0..dom[id].attrs.len()
         if dom[id].attrs[i].name == name
             dom[id].attrs.remove_at(i)
-            dom_log("remove_attr", id, -1, -1, name, "")
+            self.dom_log("remove_attr", id, -1, -1, name, "")
             return
 
 ## Replace an element's children with one text node (textContent = s).
 pub fn Vm.set_text_content(mut self, id int, s str)
     if dom[id].kind == 3 or dom[id].kind == 8
         dom[id].text = s
-        dom_log("set_text", id, -1, -1, "", s)
+        self.dom_log("set_text", id, -1, -1, "", s)
         return
     for c in dom[id].children
-        dom_detach(c)
+        self.dom_detach(c)
     if s != ""
-        dom_append(id, dom_create("#text", 3, s))
+        self.dom_append(id, self.dom_create("#text", 3, s))
 
 ## textContent: the text of every descendant text node.
 pub fn Vm.text_content(self, id int) str
@@ -316,7 +316,7 @@ pub fn Vm.text_content(self, id int) str
     if n.kind == 3 or n.kind == 8
         return n.text
     mut out := List[str]()
-    collect_text(id, mut out)
+    self.collect_text(id, mut out)
     out.join("")
 
 fn Vm.collect_text(self, id int, mut out List[str])
@@ -324,7 +324,7 @@ fn Vm.collect_text(self, id int, mut out List[str])
         if dom[c].kind == 3
             out.push(dom[c].text)
         elif dom[c].kind == 1
-            collect_text(c, mut out)
+            self.collect_text(c, mut out)
 
 ## Whether `id` is inside the document.
 pub fn Vm.connected(self, id int) bool
@@ -335,29 +335,29 @@ pub fn Vm.connected(self, id int) bool
 
 ## A script element put into the document runs (HTML §4.12.1.1).
 fn Vm.after_insert(mut self, id int)
-    if not recording or not connected(id)
+    if not recording or not self.connected(id)
         return
-    scripts := descendants_by_tag(id, "script")
+    scripts := self.descendants_by_tag(id, "script")
     for s in scripts
         if started_scripts.contains(s)
             continue
         started_scripts.add(s)
-        mode := script_mode(s)
+        mode := self.script_mode(s)
         if mode == "skip"
             continue
         if mode == "module" or mode == "importmap"
-            run_script_node(s, mode)
+            self.run_script_node(s, mode)
             continue
-        if src := attr_of(s, "src")
+        if src := self.attr_of(s, "src")
             host_requests.push(HostRequest(
                 kind: "fetch-script",
-                url: resolve_url(src),
+                url: self.resolve_url(src),
                 method: "GET",
                 node: s,
                 text: "",
             ))
         else
-            run_script_text(text_content(s))
+            self.run_script_text(self.text_content(s))
     if dom[id].kind == 1
         ce_connected(id)
 
@@ -365,12 +365,12 @@ fn Vm.after_insert(mut self, id int)
 ## for data blocks, other languages, and `nomodule` scripts (which a browser
 ## with modules does not run).
 fn Vm.script_mode(self, s int) str
-    kind := (attr_of(s, "type") else "").to_lower().trim()
+    kind := (self.attr_of(s, "type") else "").to_lower().trim()
     if kind == "module"
         return "module"
     if kind == "importmap"
         return "importmap"
-    if attr_of(s, "nomodule") != none
+    if self.attr_of(s, "nomodule") != none
         return "skip"
     if kind == ""
         or kind == "text/javascript"
@@ -383,54 +383,54 @@ fn Vm.script_mode(self, s int) str
 ## Run script element `s` of the given mode now.
 fn Vm.run_script_node(mut self, s int, mode str)
     if mode == "importmap"
-        add_import_map(text_content(s))
+        add_import_map(self.text_content(s))
         return
     if mode == "module"
-        if src := attr_of(s, "src")
-            run_module_script(resolve_url(src))
+        if src := self.attr_of(s, "src")
+            run_module_script(self.resolve_url(src))
         else
-            run_inline_module(text_content(s))
+            run_inline_module(self.text_content(s))
         return
-    if src := attr_of(s, "src")
-        if source := external_scripts.get(resolve_url(src))
-            cur_url = resolve_url(src)
-            run_script_text(source)
+    if src := self.attr_of(s, "src")
+        if source := external_scripts.get(self.resolve_url(src))
+            cur_url = self.resolve_url(src)
+            self.run_script_text(source)
         else
             host_requests.push(HostRequest(
                 kind: "fetch-script",
-                url: resolve_url(src),
+                url: self.resolve_url(src),
                 method: "GET",
                 node: s,
                 text: "",
             ))
     else
         cur_url = location_href
-        run_script_text(text_content(s))
+        self.run_script_text(self.text_content(s))
 
 ## `id` and its descendants with the tag, in document order.
 pub fn Vm.descendants_by_tag(self, id int, tag str) List[int]
     mut out := List[int]()
-    walk_tag(id, tag, mut out)
+    self.walk_tag(id, tag, mut out)
     out
 
 fn Vm.walk_tag(self, id int, tag str, mut out List[int])
     if dom[id].kind == 1 and (tag == "*" or dom[id].tag == tag)
         out.push(id)
     for c in dom[id].children
-        walk_tag(c, tag, mut out)
+        self.walk_tag(c, tag, mut out)
 
 ## Every element under `id` (not itself), in document order.
 pub fn Vm.elements_under(self, id int) List[int]
     mut out := List[int]()
     for c in dom[id].children
-        walk_tag(c, "*", mut out)
+        self.walk_tag(c, "*", mut out)
     out
 
 ## Run script source as a classic script: an error is reported, as a
 ## browser reports it, and doesn't stop the page.
 pub fn Vm.run_script_text(mut self, source str)
     prog := syntax.parse(source) else err
-        report("Uncaught SyntaxError: {err.msg}")
+        self.report("Uncaught SyntaxError: {err.msg}")
         return
     if v := run_program(prog)
         v
@@ -479,10 +479,10 @@ fn Vm.need_node(mut self, v Value, what str) int ! Thrown
     id
 
 fn Vm.node_list(mut self, ids List[int]) Value
-    array([node_value(i) for i in ids])
+    array([self.node_value(i) for i in ids])
 
 pub fn Vm.dom_setup(mut self)
-    dom_reset()
+    self.dom_reset()
     object_proto := proto_of("Object")
     event_target := object("Object", object_proto)
     protos["EventTarget"] = Obj(event_target)
@@ -503,9 +503,9 @@ pub fn Vm.dom_setup(mut self)
         "isConnected",
     ]
         getter(node_proto, name, "dom.get.{name}")
-    accessor(node_proto, "textContent")
-    accessor(node_proto, "nodeValue")
-    accessor(node_proto, "data")
+    self.accessor(node_proto, "textContent")
+    self.accessor(node_proto, "nodeValue")
+    self.accessor(node_proto, "data")
     methods(
         node_proto,
         "dom",
@@ -587,7 +587,7 @@ pub fn Vm.dom_setup(mut self)
         "content",
         "text",
     ]
-        accessor(element_proto, name)
+        self.accessor(element_proto, name)
     methods(
         element_proto,
         "dom",
@@ -637,9 +637,9 @@ pub fn Vm.dom_setup(mut self)
         "currentScript",
     ]
         getter(document_proto, name, "dom.get.{name}")
-    accessor(document_proto, "title")
-    accessor(document_proto, "cookie")
-    accessor(document_proto, "location")
+    self.accessor(document_proto, "title")
+    self.accessor(document_proto, "cookie")
+    self.accessor(document_proto, "location")
     methods(
         document_proto,
         "dom",
@@ -702,7 +702,7 @@ pub fn Vm.dom_setup(mut self)
         global_obj.props["MutationObserver"] = hidden(Obj(c))
     style_proto := object("Object", object_proto)
     protos["CSSStyle"] = Obj(style_proto)
-    accessor_named(style_proto, "cssText", "style.cssText")
+    self.accessor_named(style_proto, "cssText", "style.cssText")
     getter(style_proto, "length", "dom.get.style.length")
     methods(style_proto, "dom.style", "setProperty:2 getPropertyValue:1 removeProperty:1")
     class_list_proto := object("Object", object_proto)
@@ -731,7 +731,7 @@ pub fn Vm.dom_setup(mut self)
         )
         exception_proto.props["constructor"] = hidden(Obj(c))
         global_obj.props["DOMException"] = hidden(Obj(c))
-    document := node_value(0)
+    document := self.node_value(0)
     global_obj.props["document"] = Prop(
         value: document,
         get: Undef,
@@ -770,7 +770,7 @@ pub fn Vm.dom_setup(mut self)
         "hash",
         "origin",
     ]
-        accessor_named(location_proto, name, "location.{name}")
+        self.accessor_named(location_proto, name, "location.{name}")
     methods(location_proto, "dom.location", "assign:1 replace:1 reload:0 toString:0")
     location_obj := object("Location", Obj(location_proto))
     protos["location-object"] = Obj(location_obj)
@@ -796,9 +796,9 @@ pub fn Vm.dom_setup(mut self)
         nav_proto.props[parts[0]] = data(if parts[1] == "" and parts[0] == "doNotTrack" then Null else Str(parts[1]))
     # User-Agent Client Hints: the same brands as the `sec-ch-ua` header.
     brands := array([
-        hint_brand("Chromium", "141"),
-        hint_brand("Not?A_Brand", "8"),
-        hint_brand("Garlic", "0"),
+        self.hint_brand("Chromium", "141"),
+        self.hint_brand("Not?A_Brand", "8"),
+        self.hint_brand("Garlic", "0"),
     ])
     uad := object("NavigatorUAData", object_proto)
     uad.props["brands"] = data(brands)
@@ -960,7 +960,7 @@ pub fn Vm.dom_setup(mut self)
     selection_setup()
 
 fn Vm.accessor(mut self, target ref JsObject, name str)
-    accessor_named(target, name, name)
+    self.accessor_named(target, name, name)
 
 fn Vm.accessor_named(mut self, target ref JsObject, name str, native str)
     target.props[name] = Prop(
@@ -992,7 +992,7 @@ fn Vm.ua_data_method(mut self, m str, this_val Value, args List[Value]) Value ! 
     if not is_nullish(hints)
         for h in iterate(hints)?
             hint := to_string(h)?
-            v := hint_value(hint) else continue
+            v := self.hint_value(hint) else continue
             out.props[hint] = data(v)
     Value.Obj(promise_resolve(Value.Obj(out)))
 
@@ -1008,9 +1008,9 @@ fn Vm.hint_value(mut self, hint str) Value?
         "formFactors" => array([Value.Str("Desktop")])
         "fullVersionList" =>
             array([
-                hint_brand("Chromium", "141.0.0.0"),
-                hint_brand("Not?A_Brand", "8.0.0.0"),
-                hint_brand("Garlic", "0.1.0.0"),
+                self.hint_brand("Chromium", "141.0.0.0"),
+                self.hint_brand("Not?A_Brand", "8.0.0.0"),
+                self.hint_brand("Garlic", "0.1.0.0"),
             ])
         _ => none
 
@@ -1022,17 +1022,17 @@ fn Vm.structured_clone(mut self, v Value, depth int) Value ! Thrown
         return range_error("Maximum call stack size exceeded")
     o := obj_of(v) else return v
     if is_callable(v) or o.class == "Node" or o.class == "Proxy" or o.class == "Window"
-        return dom_exception("DataCloneError", "{describe(v)} could not be cloned.")
+        return self.dom_exception("DataCloneError", "{describe(v)} could not be cloned.")
     c := object(o.class, o.proto)
     c.prim = o.prim
     if o.class == "Array"
         c.proto = proto_of("Array")
         for x in o.elems
-            c.elems.push(structured_clone(x, depth + 1)?)
+            c.elems.push(self.structured_clone(x, depth + 1)?)
         return Value.Obj(c)
     if o.class == "Map" or o.class == "Set"
         for x in o.elems
-            c.elems.push(structured_clone(x, depth + 1)?)
+            c.elems.push(self.structured_clone(x, depth + 1)?)
         return Value.Obj(c)
     if o.class == "Date" or o.class == "RegExp"
         for k in o.props.keys()
@@ -1044,7 +1044,7 @@ fn Vm.structured_clone(mut self, v Value, depth int) Value ! Thrown
         if not p.enumerable or k.starts_with(PRIVATE)
             continue
         value := if p.accessor then get(v, k)? else p.value
-        c.props[k] = data(structured_clone(value, depth + 1)?)
+        c.props[k] = data(self.structured_clone(value, depth + 1)?)
     Value.Obj(c)
 
 ## One `{brand, version}` entry of `navigator.userAgentData.brands`.
@@ -1091,28 +1091,28 @@ pub fn Vm.dom_native(
     new_target Value,
 ) Value ! Thrown
     if p := m.strip_prefix("get.")
-        return dom_get(p, this_val)
+        return self.dom_get(p, this_val)
     if r := browser_native(m, this_val, args)?
         return r
     if p := m.strip_prefix("set.")
-        dom_set(p, this_val, arg_at(args, 0))?
+        self.dom_set(p, this_val, arg_at(args, 0))?
         return Undef
     if p := m.strip_prefix("window.")
-        return window_method(p, args)
+        return self.window_method(p, args)
     if p := m.strip_prefix("event.")
-        return event_method(p, this_val, args)
+        return self.event_method(p, this_val, args)
     if p := m.strip_prefix("style.")
-        return style_method(p, this_val, args)
+        return self.style_method(p, this_val, args)
     if p := m.strip_prefix("classList.")
-        return class_list_method(p, this_val, args)
+        return self.class_list_method(p, this_val, args)
     if p := m.strip_prefix("location.")
-        return location_method(p, args)
+        return self.location_method(p, args)
     if p := m.strip_prefix("storage.")
-        return storage_method(p, this_val, args)
+        return self.storage_method(p, this_val, args)
     if p := m.strip_prefix("history.")
         if p == "pushState" or p == "replaceState"
             if arg_at(args, 2) != Undef
-                location_href = resolve_url(to_string(arg_at(args, 2))?)
+                location_href = self.resolve_url(to_string(arg_at(args, 2))?)
         return Undef
     if p := m.strip_prefix("performance.")
         if p == "now"
@@ -1125,9 +1125,9 @@ pub fn Vm.dom_native(
     if p := m.strip_prefix("params.")
         return params_method(p, this_val, args)
     if p := m.strip_prefix("uad.")
-        return ua_data_method(p, this_val, args)
+        return self.ua_data_method(p, this_val, args)
     if m == "img.settle"
-        return img_settle(args)
+        return self.img_settle(args)
     if m == "img.decode"
         return Value.Obj(promise_resolve(Undef))
     if p := m.strip_prefix("plugins.")
@@ -1165,18 +1165,18 @@ pub fn Vm.dom_native(
             # `new DOMException(message, name)` (WebIDL §2.8.1).
             msg := if arg_at(args, 0) != Undef then to_string(arg_at(args, 0))? else ""
             kind := if arg_at(args, 1) != Undef then to_string(arg_at(args, 1))? else "Error"
-            return dom_exception(kind, msg).value
+            return self.dom_exception(kind, msg).value
         return type_error(if name == "" then "Illegal constructor" else "Failed to construct '{name}': Illegal constructor")
     if m == "Image"
         # `new Image(width, height)` (HTML §4.8.4.1).
-        img := document_method("createElement", [Value.Str("img")])?
+        img := self.document_method("createElement", [Value.Str("img")])?
         for i in 0..args.len().min(2)
             if args[i] != Undef
                 id := node_id(img) else break
-                set_attr(id, if i == 0 then "width" else "height", to_string(args[i])?)
+                self.set_attr(id, if i == 0 then "width" else "height", to_string(args[i])?)
         return img
     if p := m.strip_prefix("tt.")
-        return trusted_types(p, this_val, args)
+        return self.trusted_types(p, this_val, args)
     if m == "navigator.javaEnabled"
         return Value.Bool(false)
     if m == "navigator.sendBeacon"
@@ -1184,7 +1184,7 @@ pub fn Vm.dom_native(
         body := arg_at(args, 1)
         host_requests.push(HostRequest(
             kind: "beacon",
-            url: resolve_url(to_string(arg_at(args, 0))?),
+            url: self.resolve_url(to_string(arg_at(args, 0))?),
             method: "POST",
             node: -1,
             text: if is_nullish(body) then "" else to_string(body)?,
@@ -1194,19 +1194,19 @@ pub fn Vm.dom_native(
         "addEventListener" | "removeEventListener" | "dispatchEvent" =>
             target := if this_val
                 == Obj(global_obj) then -1 else (node_id(this_val) else return Undef)
-            listener_method(m, target, args)
+            self.listener_method(m, target, args)
         _ =>
             id := node_id(this_val) else return type_error("Illegal invocation")
             if id == 0
-                return document_method(m, args)
-            node_method(m, id, args)
+                return self.document_method(m, args)
+            self.node_method(m, id, args)
 
 fn Vm.listener_method(mut self, m str, target int, args List[Value]) Value ! Thrown
     if m == "dispatchEvent"
         ev := arg_at(args, 0)
         if not is_obj(ev)
             return type_error("Failed to execute 'dispatchEvent' on 'EventTarget': parameter 1 is not of type 'Event'.")
-        return Value.Bool(dispatch(target, ev)?)
+        return Value.Bool(self.dispatch(target, ev)?)
     type_name := to_string(arg_at(args, 0))?
     cb := arg_at(args, 1)
     opts := arg_at(args, 2)
@@ -1242,16 +1242,16 @@ fn Vm.listener_method(mut self, m str, target int, args List[Value]) Value ! Thr
 
 fn Vm.dom_get(mut self, p str, this_val Value) Value ! Thrown
     if p == "location"
-        return location_value()
+        return self.location_value()
     if p == "style.cssText" or p == "style.length"
         so := obj_of(this_val) else return type_error("Illegal invocation")
-        text := style_text(so)
+        text := self.style_text(so)
         if p == "style.cssText"
             return Value.Str(text)
         return Value.Num(style_pairs(text).len().to_float())
     if p == "classList.length" or p == "classList.value"
-        id := class_list_owner(this_val)?
-        cls := classes_of(id)
+        id := self.class_list_owner(this_val)?
+        cls := self.classes_of(id)
         return if p
             == "classList.length" then Value.Num(cls.len().to_float()) else Value.Str(cls.join(" "))
     if lp := p.strip_prefix("location.")
@@ -1259,9 +1259,9 @@ fn Vm.dom_get(mut self, p str, this_val Value) Value ! Thrown
     id := node_id(this_val) else return type_error("Illegal invocation")
     n := dom[id]
     if id == 0 and p == "title"
-        for e in elements_under(0)
+        for e in self.elements_under(0)
             if dom[e].tag == "title"
-                return Value.Str(collapse_space(text_content(e)))
+                return Value.Str(collapse_space(self.text_content(e)))
         return Value.Str("")
     if id == 0 and p == "hidden"
         return Value.Bool(false)
@@ -1270,17 +1270,17 @@ fn Vm.dom_get(mut self, p str, this_val Value) Value ! Thrown
         "nodeName" => Value.Str(if n.kind == 1 then n.tag.to_upper() else n.tag)
         "tagName" => Value.Str(n.tag.to_upper())
         "localName" => Value.Str(n.tag)
-        "parentNode" => node_value(n.parent)
-        "parentElement" => if n.parent > 0 then node_value(n.parent) else Null
-        "childNodes" => node_list(n.children)
-        "children" => node_list([c for c in n.children if dom[c].kind == 1])
+        "parentNode" => self.node_value(n.parent)
+        "parentElement" => if n.parent > 0 then self.node_value(n.parent) else Null
+        "childNodes" => self.node_list(n.children)
+        "children" => self.node_list([c for c in n.children if dom[c].kind == 1])
         "childElementCount" => Value.Num(
             [c for c in n.children if dom[c].kind == 1].len().to_float(),
         )
-        "firstChild" => if n.children.len() > 0 then node_value(n.children[0]) else Null
-        "lastChild" => if n.children.len() > 0 then node_value(n.children[n.children.len() - 1]) else Null
-        "firstElementChild" => node_value(first_element(n.children, false))
-        "lastElementChild" => node_value(first_element(n.children, true))
+        "firstChild" => if n.children.len() > 0 then self.node_value(n.children[0]) else Null
+        "lastChild" => if n.children.len() > 0 then self.node_value(n.children[n.children.len() - 1]) else Null
+        "firstElementChild" => self.node_value(self.first_element(n.children, false))
+        "lastElementChild" => self.node_value(self.first_element(n.children, true))
         "nextSibling" | "previousSibling" | "nextElementSibling" | "previousElementSibling" =>
             if n.parent < 0
                 return Null
@@ -1293,66 +1293,69 @@ fn Vm.dom_get(mut self, p str, this_val Value) Value ! Thrown
                 if i < 0 or i >= sibs.len()
                     return Null
                 if not elements_only or dom[sibs[i]].kind == 1
-                    return node_value(sibs[i])
+                    return self.node_value(sibs[i])
             Null
-        "ownerDocument" => if id == 0 then Null else node_value(0)
-        "isConnected" => Value.Bool(connected(id))
-        "textContent" => if id == 0 then Null else Value.Str(text_content(id))
-        "innerText" | "text" => Value.Str(text_content(id))
+        "ownerDocument" => if id == 0 then Null else self.node_value(0)
+        "isConnected" => Value.Bool(self.connected(id))
+        "textContent" => if id == 0 then Null else Value.Str(self.text_content(id))
+        "innerText" | "text" => Value.Str(self.text_content(id))
         "nodeValue" | "data" => if n.kind == 3 or n.kind == 8 then Value.Str(n.text) else Null
         "innerHTML" => Value.Str(inner_html(id))
         "outerHTML" => Value.Str(outer_html(id))
         "content" if n.tag == "template" =>
             if f := template_frags.get(id)
                 for c in dom[id].children
-                    dom_append(f, c)
-                return node_value(f)
-            f := dom_create("#fragment", 1, "")
+                    self.dom_append(f, c)
+                return self.node_value(f)
+            f := self.dom_create("#fragment", 1, "")
             for c in dom[id].children
-                dom_append(f, c)
+                self.dom_append(f, c)
             template_frags[id] = f
-            node_value(f)
+            self.node_value(f)
         "id" | "className" | "title" | "lang" | "name" | "placeholder" | "alt" | "rel" | "target" | "content" | "srcdoc" =>
             attr := match p
                 "className" => "class"
                 _ => p
-            Value.Str(attr_of(id, attr) else "")
-        "htmlFor" => Value.Str(attr_of(id, "for") else "")
+            Value.Str(self.attr_of(id, attr) else "")
+        "htmlFor" => Value.Str(self.attr_of(id, "for") else "")
         "type" =>
             dflt := match n.tag
                 "input" => "text"
                 "button" => "submit"
                 _ => ""
-            Value.Str((attr_of(id, "type") else dflt).to_lower())
+            Value.Str((self.attr_of(id, "type") else dflt).to_lower())
         "href" | "src" | "action" =>
-            v := attr_of(id, p) else return Value.Str(if p == "action" then location_href else "")
-            Value.Str(resolve_url(v))
-        "method" => Value.Str((attr_of(id, "method") else "get").to_lower())
+            v := self.attr_of(
+                id,
+                p,
+            ) else return Value.Str(if p == "action" then location_href else "")
+            Value.Str(self.resolve_url(v))
+        "method" => Value.Str((self.attr_of(id, "method") else "get").to_lower())
         "value" =>
             if v := field_values.get(id)
                 return Value.Str(v)
             if n.tag == "textarea"
-                return Value.Str(text_content(id))
+                return Value.Str(self.text_content(id))
             if n.tag == "select"
-                for o in descendants_by_tag(id, "option")
-                    if attr_of(o, "selected") != none
-                        return Value.Str(attr_of(o, "value") else text_content(o))
-                opts := descendants_by_tag(id, "option")
+                for o in self.descendants_by_tag(id, "option")
+                    if self.attr_of(o, "selected") != none
+                        return Value.Str(self.attr_of(o, "value") else self.text_content(o))
+                opts := self.descendants_by_tag(id, "option")
                 if opts.len() > 0
-                    return Value.Str(attr_of(opts[0], "value") else text_content(opts[0]))
+                    return Value.Str(self.attr_of(opts[0], "value") else self.text_content(opts[0]))
                 return Value.Str("")
             if n.tag == "option"
-                return Value.Str(attr_of(id, "value") else text_content(id))
-            kind := (attr_of(id, "type") else "").to_lower()
+                return Value.Str(self.attr_of(id, "value") else self.text_content(id))
+            kind := (self.attr_of(id, "type") else "").to_lower()
             if n.tag == "input" and (kind == "checkbox" or kind == "radio")
-                return Value.Str(attr_of(id, "value") else "on")
-            Value.Str(attr_of(id, "value") else "")
+                return Value.Str(self.attr_of(id, "value") else "on")
+            Value.Str(self.attr_of(id, "value") else "")
         "checked" | "disabled" | "hidden" | "selected" =>
             if p == "checked"
                 if v := field_values.get(id)
                     return Value.Bool(v == "on")
-            Value.Bool(attr_of(id, p) != none)
-        "tabIndex" => Value.Num(string_to_number(attr_of(id, "tabindex") else "-1"))
+            Value.Bool(self.attr_of(id, p) != none)
+        "tabIndex" => Value.Num(string_to_number(self.attr_of(id, "tabindex") else "-1"))
         "classList" =>
             o := object("ClassList", proto_of("ClassList"))
             o.prim = Num(id.to_float())
@@ -1363,7 +1366,7 @@ fn Vm.dom_get(mut self, p str, this_val Value) Value ! Thrown
             o := object("CSSStyle", proto_of("CSSStyle"))
             o.prim = Num(id.to_float())
             style_objs[id] = Obj(o)
-            for pair in style_pairs(attr_of(id, "style") else "")
+            for pair in style_pairs(self.attr_of(id, "style") else "")
                 o.props[style_key(pair.name)] = data(Str(pair.value))
             Value.Obj(o)
         "attributes" =>
@@ -1375,7 +1378,7 @@ fn Vm.dom_get(mut self, p str, this_val Value) Value ! Thrown
                 items.push(Obj(ao))
             array(items)
         "defaultValue" =>
-            Value.Str(if n.tag == "textarea" then text_content(id) else (attr_of(id, "value") else ""))
+            Value.Str(if n.tag == "textarea" then self.text_content(id) else (self.attr_of(id, "value") else ""))
         "dataset" =>
             o := object("DataSet", proto_of("Object"))
             o.prim = Num(id.to_float())
@@ -1387,39 +1390,45 @@ fn Vm.dom_get(mut self, p str, this_val Value) Value ! Thrown
             mut up := n.parent
             while up > 0
                 if dom[up].tag == "form"
-                    return node_value(up)
+                    return self.node_value(up)
                 up = dom[up].parent
             Null
-        "options" => node_list(descendants_by_tag(id, "option"))
+        "options" => self.node_list(self.descendants_by_tag(id, "option"))
         "elements" =>
             controls := ["input", "select", "textarea", "button", "fieldset", "output", "object"]
-            node_list([e for e in elements_under(id) if controls.contains(dom[e].tag)])
+            self.node_list([e for e in self.elements_under(id) if controls.contains(dom[e].tag)])
         "selectedIndex" =>
-            opts := descendants_by_tag(id, "option")
+            opts := self.descendants_by_tag(id, "option")
             for i in 0..opts.len()
-                if attr_of(opts[i], "selected") != none
+                if self.attr_of(opts[i], "selected") != none
                     return Value.Num(i.to_float())
             Value.Num(if opts.len() > 0 then 0.0 else -1.0)
         "clientWidth" if n.tag == "html" => Value.Num(view_w.round())
         "clientHeight" if n.tag == "html" => Value.Num(view_h.round())
-        "offsetWidth" | "clientWidth" => Value.Num(rect_of(id)[2].round())
-        "offsetHeight" | "clientHeight" => Value.Num(rect_of(id)[3].round())
-        "documentElement" => node_value(first_element(n.children, false))
+        "offsetWidth" | "clientWidth" => Value.Num(self.rect_of(id)[2].round())
+        "offsetHeight" | "clientHeight" => Value.Num(self.rect_of(id)[3].round())
+        "documentElement" => self.node_value(self.first_element(n.children, false))
         "head" | "body" =>
-            for e in elements_under(0)
+            for e in self.elements_under(0)
                 if dom[e].tag == p
-                    return node_value(e)
+                    return self.node_value(e)
             Null
-        "forms" => node_list(descendants_by_tag(0, "form"))
-        "images" => node_list(descendants_by_tag(0, "img"))
-        "scripts" => node_list(descendants_by_tag(0, "script"))
-        "styleSheets" => node_list([])
-        "links" => node_list([e for e in descendants_by_tag(0, "a") if attr_of(e, "href") != none])
+        "forms" => self.node_list(self.descendants_by_tag(0, "form"))
+        "images" => self.node_list(self.descendants_by_tag(0, "img"))
+        "scripts" => self.node_list(self.descendants_by_tag(0, "script"))
+        "styleSheets" => self.node_list([])
+        "links" => self.node_list([
+            e
+            for e in self.descendants_by_tag(0, "a") if self.attr_of(e, "href") != none
+        ])
         "readyState" => Value.Str(ready_state)
         "URL" | "documentURI" => Value.Str(location_href)
         "referrer" => Value.Str("")
         "defaultView" => Value.Obj(global_obj)
-        "activeElement" => if active >= 0 then node_value(active) else get(node_value(0), "body")
+        "activeElement" => if active >= 0 then self.node_value(active) else get(
+            self.node_value(0),
+            "body",
+        )
         "visibilityState" => Value.Str("visible")
         "characterSet" => Value.Str("UTF-8")
         "compatMode" => Value.Str("CSS1Compat")
@@ -1443,17 +1452,17 @@ pub fn collapse_space(s str) str
 
 fn Vm.dom_set(mut self, p str, this_val Value, v Value) ! Thrown
     if p == "location"
-        navigate(to_string(v)?)
+        self.navigate(to_string(v)?)
         return
     if lp := p.strip_prefix("location.")
         if lp == "href"
-            navigate(to_string(v)?)
+            self.navigate(to_string(v)?)
         elif lp == "hash"
             location_href = with_hash(location_href, to_string(v)?)
         return
     if p == "style.cssText"
         so := obj_of(this_val) else return
-        style_write(so, "cssText", v)?
+        self.style_write(so, "cssText", v)?
         return
     id := node_id(this_val) else return
     match p
@@ -1461,59 +1470,59 @@ fn Vm.dom_set(mut self, p str, this_val Value, v Value) ! Thrown
             parent := dom[id].parent
             if parent < 0
                 return
-            holder := dom_create("#fragment", 1, "")
+            holder := self.dom_create("#fragment", 1, "")
             parse_into(holder, to_string(v)?)
             for c in dom[holder].children
-                insert_checked(parent, c, id)?
-            dom_detach(id)
+                self.insert_checked(parent, c, id)?
+            self.dom_detach(id)
         "defaultValue" =>
             if dom[id].tag == "textarea"
-                set_text_content(id, to_string(v)?)
+                self.set_text_content(id, to_string(v)?)
             else
-                set_attr(id, "value", to_string(v)?)
+                self.set_attr(id, "value", to_string(v)?)
         "textContent" | "innerText" | "nodeValue" | "data" | "text" =>
             if p == "nodeValue" or p == "data"
                 if dom[id].kind == 1
                     return
-            set_text_content(id, if is_nullish(v) then "" else to_string(v)?)
+            self.set_text_content(id, if is_nullish(v) then "" else to_string(v)?)
         "innerHTML" =>
             for c in dom[id].children
-                dom_detach(c)
+                self.dom_detach(c)
             parse_into(id, to_string(v)?)
         "id" | "title" | "lang" | "name" | "placeholder" | "alt" | "rel" | "target" | "type" | "href" | "src" | "action" | "method" | "content" | "srcdoc" =>
-            set_attr(id, p, to_string(v)?)
-        "className" => set_attr(id, "class", to_string(v)?)
-        "htmlFor" => set_attr(id, "for", to_string(v)?)
-        "tabIndex" => set_attr(id, "tabindex", to_string(v)?)
+            self.set_attr(id, p, to_string(v)?)
+        "className" => self.set_attr(id, "class", to_string(v)?)
+        "htmlFor" => self.set_attr(id, "for", to_string(v)?)
+        "tabIndex" => self.set_attr(id, "tabindex", to_string(v)?)
         "value" =>
             s := to_string(v)?
             field_values[id] = s
-            dom_log("set_value", id, -1, -1, "value", s)
+            self.dom_log("set_value", id, -1, -1, "value", s)
         "checked" =>
             s := if truthy(v) then "on" else "off"
             field_values[id] = s
-            dom_log("set_value", id, -1, -1, "checked", s)
+            self.dom_log("set_value", id, -1, -1, "checked", s)
         "disabled" | "hidden" | "selected" =>
             if truthy(v)
-                set_attr(id, p, "")
+                self.set_attr(id, p, "")
             else
-                remove_attr(id, p)
+                self.remove_attr(id, p)
         "title.document" => return
-        "cookie" => set_cookie(to_string(v)?)
+        "cookie" => self.set_cookie(to_string(v)?)
         _ => return
     if id == 0 and p == "title"
-        set_title(to_string(v)?)
+        self.set_title(to_string(v)?)
 
 fn Vm.set_title(mut self, s str)
-    for e in elements_under(0)
+    for e in self.elements_under(0)
         if dom[e].tag == "title"
-            set_text_content(e, s)
+            self.set_text_content(e, s)
             return
-    heads := descendants_by_tag(0, "head")
+    heads := self.descendants_by_tag(0, "head")
     if heads.len() > 0
-        t := dom_create("title", 1, "")
-        dom_append(heads[0], t)
-        set_text_content(t, s)
+        t := self.dom_create("title", 1, "")
+        self.dom_append(heads[0], t)
+        self.set_text_content(t, s)
 
 fn Vm.set_cookie(mut self, text str)
     first := text.split(";")[0]
@@ -1540,173 +1549,173 @@ fn Vm.document_method(mut self, m str, args List[Value]) Value ! Thrown
     match m
         "getElementById" =>
             want := to_string(a0)?
-            for e in elements_under(0)
-                if attr_of(e, "id") == want
-                    return node_value(e)
+            for e in self.elements_under(0)
+                if self.attr_of(e, "id") == want
+                    return self.node_value(e)
             Null
         "createElement" | "createElementNS" =>
             tag := to_string(if m == "createElementNS" then arg_at(args, 1) else a0)?.to_lower()
-            fresh := dom_create(tag, 1, "")
+            fresh := self.dom_create(tag, 1, "")
             ce_upgrade(fresh)
-            node_value(fresh)
-        "createTextNode" => node_value(dom_create("#text", 3, to_string(a0)?))
-        "createComment" => node_value(dom_create("#comment", 8, to_string(a0)?))
-        "createDocumentFragment" => node_value(dom_create("#fragment", 1, ""))
+            self.node_value(fresh)
+        "createTextNode" => self.node_value(self.dom_create("#text", 3, to_string(a0)?))
+        "createComment" => self.node_value(self.dom_create("#comment", 8, to_string(a0)?))
+        "createDocumentFragment" => self.node_value(self.dom_create("#fragment", 1, ""))
         "getElementsByName" =>
             want := to_string(a0)?
-            node_list([e for e in elements_under(0) if attr_of(e, "name") == want])
+            self.node_list([e for e in self.elements_under(0) if self.attr_of(e, "name") == want])
         "write" | "writeln" =>
             mut text := ""
             for a in args
                 text = "{text}{to_string(a)?}"
-            body := descendants_by_tag(0, "body")
+            body := self.descendants_by_tag(0, "body")
             parse_into(if body.len() > 0 then body[0] else 0, text)
             Undef
         "hasFocus" => Value.Bool(true)
-        "createEvent" => make_event("", Undef)
-        _ => node_method(m, 0, args)
+        "createEvent" => self.make_event("", Undef)
+        _ => self.node_method(m, 0, args)
 
 fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
     a0 := arg_at(args, 0)
     a1 := arg_at(args, 1)
     match m
         "getAttribute" =>
-            if v := attr_of(id, to_string(a0)?.to_lower())
+            if v := self.attr_of(id, to_string(a0)?.to_lower())
                 return Value.Str(v)
             Null
         "setAttribute" =>
             name := to_string(a0)?.to_lower()
             value := to_string(a1)?
-            old := attr_of(id, name)
-            set_attr(id, name, value)
+            old := self.attr_of(id, name)
+            self.set_attr(id, name, value)
             if name == "style"
                 style_objs.remove(id)
             ce_attr_changed(id, name, old, value)
             Undef
-        "getAttributeNS" => return node_method("getAttribute", id, [a1])?
-        "setAttributeNS" => return node_method("setAttribute", id, [a1, arg_at(args, 2)])?
-        "removeAttributeNS" => return node_method("removeAttribute", id, [a1])?
-        "hasAttributeNS" => return node_method("hasAttribute", id, [a1])?
+        "getAttributeNS" => return self.node_method("getAttribute", id, [a1])?
+        "setAttributeNS" => return self.node_method("setAttribute", id, [a1, arg_at(args, 2)])?
+        "removeAttributeNS" => return self.node_method("removeAttribute", id, [a1])?
+        "hasAttributeNS" => return self.node_method("hasAttribute", id, [a1])?
         "removeAttribute" =>
             name := to_string(a0)?.to_lower()
-            old := attr_of(id, name)
-            remove_attr(id, name)
+            old := self.attr_of(id, name)
+            self.remove_attr(id, name)
             if old != none
                 ce_attr_changed(id, name, old, none)
             Undef
-        "hasAttribute" => Value.Bool(attr_of(id, to_string(a0)?.to_lower()) != none)
+        "hasAttribute" => Value.Bool(self.attr_of(id, to_string(a0)?.to_lower()) != none)
         "toggleAttribute" =>
             name := to_string(a0)?.to_lower()
-            if old := attr_of(id, name)
-                remove_attr(id, name)
+            if old := self.attr_of(id, name)
+                self.remove_attr(id, name)
                 ce_attr_changed(id, name, old, none)
                 return Value.Bool(false)
-            set_attr(id, name, "")
+            self.set_attr(id, name, "")
             ce_attr_changed(id, name, none, "")
             Value.Bool(true)
         "getAttributeNames" => array([Value.Str(a.name) for a in dom[id].attrs])
         "getElementsByTagName" =>
             tag := to_string(a0)?.to_lower()
-            node_list([e for e in elements_under(id) if tag == "*" or dom[e].tag == tag])
+            self.node_list([e for e in self.elements_under(id) if tag == "*" or dom[e].tag == tag])
         "getElementsByClassName" =>
             want := [c for c in to_string(a0)?.split(" ") if c != ""]
             mut out := List[int]()
-            for e in elements_under(id)
-                cls := classes_of(e)
+            for e in self.elements_under(id)
+                cls := self.classes_of(e)
                 mut all := want.len() > 0
                 for w in want
                     if not cls.contains(w)
                         all = false
                 if all
                     out.push(e)
-            node_list(out)
+            self.node_list(out)
         "querySelector" | "querySelectorAll" =>
-            sel := parse_selector(to_string(a0)?)?
+            sel := self.parse_selector(to_string(a0)?)?
             scope_id = id
             mut out := List[int]()
-            for e in elements_under(id)
-                if matches_selector(e, sel)
+            for e in self.elements_under(id)
+                if self.matches_selector(e, sel)
                     out.push(e)
                     if m == "querySelector"
-                        return node_value(e)
+                        return self.node_value(e)
             if m == "querySelector"
                 return Null
-            node_list(out)
+            self.node_list(out)
         "closest" =>
-            sel := parse_selector(to_string(a0)?)?
+            sel := self.parse_selector(to_string(a0)?)?
             scope_id = id
             mut e := id
             while e > 0
-                if dom[e].kind == 1 and matches_selector(e, sel)
-                    return node_value(e)
+                if dom[e].kind == 1 and self.matches_selector(e, sel)
+                    return self.node_value(e)
                 e = dom[e].parent
             Null
         "matches" =>
-            sel := parse_selector(to_string(a0)?)?
+            sel := self.parse_selector(to_string(a0)?)?
             scope_id = id
-            Value.Bool(matches_selector(id, sel))
+            Value.Bool(self.matches_selector(id, sel))
         "appendChild" =>
-            child := need_node(a0, "appendChild")?
-            insert_checked(id, child, -1)?
+            child := self.need_node(a0, "appendChild")?
+            self.insert_checked(id, child, -1)?
             a0
         "insertBefore" =>
-            child := need_node(a0, "insertBefore")?
-            before := if is_nullish(a1) then -1 else need_node(a1, "insertBefore")?
-            insert_checked(id, child, before)?
+            child := self.need_node(a0, "insertBefore")?
+            before := if is_nullish(a1) then -1 else self.need_node(a1, "insertBefore")?
+            self.insert_checked(id, child, before)?
             a0
         "removeChild" =>
-            child := need_node(a0, "removeChild")?
+            child := self.need_node(a0, "removeChild")?
             if dom[child].parent != id
-                return dom_exception(
+                return self.dom_exception(
                     "NotFoundError",
                     "Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of this node.",
                 )
-            dom_detach(child)
+            self.dom_detach(child)
             a0
         "replaceChild" =>
-            fresh := need_node(a0, "replaceChild")?
-            old := need_node(a1, "replaceChild")?
-            insert_checked(id, fresh, old)?
-            dom_detach(old)
+            fresh := self.need_node(a0, "replaceChild")?
+            old := self.need_node(a1, "replaceChild")?
+            self.insert_checked(id, fresh, old)?
+            self.dom_detach(old)
             a1
         "remove" =>
-            dom_detach(id)
+            self.dom_detach(id)
             Undef
         "replaceChildren" =>
             mut ids := List[int]()
             for a in args
-                ids.push(node_id(a) else dom_create("#text", 3, to_string(a)?))
+                ids.push(node_id(a) else self.dom_create("#text", 3, to_string(a)?))
             for c in dom[id].children
-                dom_detach(c)
+                self.dom_detach(c)
             mo_begin()
             for c in ids
-                insert_checked(id, c, -1)?
+                self.insert_checked(id, c, -1)?
             mo_end(id)
             Undef
         "normalize" =>
-            normalize_text(id)
+            self.normalize_text(id)
             Undef
         "append" | "prepend" | "before" | "after" | "replaceWith" =>
             mut ids := List[int]()
             for a in args
-                ids.push(node_id(a) else dom_create("#text", 3, to_string(a)?))
+                ids.push(node_id(a) else self.dom_create("#text", 3, to_string(a)?))
             parent := if m == "append" or m == "prepend" then id else dom[id].parent
             if parent < 0
                 return Undef
             mut anchor := match m
                 "prepend" => if dom[id].children.len() > 0 then dom[id].children[0] else -1
                 "before" | "replaceWith" => id
-                "after" => next_sibling(id)
+                "after" => self.next_sibling(id)
                 _ => -1
             mo_begin()
             for c in ids
-                insert_checked(parent, c, anchor)?
+                self.insert_checked(parent, c, anchor)?
             mo_end(parent)
             if m == "replaceWith"
-                dom_detach(id)
+                self.dom_detach(id)
             Undef
         "cloneNode" =>
-            node_value(clone(id, truthy(a0)))
+            self.node_value(self.clone(id, truthy(a0)))
         "contains" =>
             other := node_id(a0) else return Value.Bool(false)
             mut e := other
@@ -1717,12 +1726,12 @@ fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
             Value.Bool(false)
         "hasChildNodes" => Value.Bool(dom[id].children.len() > 0)
         "click" =>
-            ok := dispatch(id, mouse_event("click"))?
+            ok := self.dispatch(id, mouse_event("click"))?
             if ok
-                click_default(id)?
+                self.click_default(id)?
             Undef
         "submit" | "requestSubmit" =>
-            submit_form(id, -1)?
+            self.submit_form(id, -1)?
             Undef
         "focus" =>
             host_focus(id)
@@ -1733,27 +1742,28 @@ fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
             Undef
         "select" | "scrollIntoView" | "reset" | "animate" | "attachShadow" => Undef
         "checkValidity" => Value.Bool(true)
-        "getBoundingClientRect" => rect_value(id)
-        "getClientRects" => if rect_of(id)[2] == 0.0 then array([]) else array([rect_value(id)])
+        "getBoundingClientRect" => self.rect_value(id)
+        "getClientRects" => if self.rect_of(id)[2]
+            == 0.0 then array([]) else array([self.rect_value(id)])
         "insertAdjacentHTML" | "insertAdjacentText" | "insertAdjacentElement" =>
             pos := to_string(a0)?.to_lower()
-            holder := dom_create("#fragment", 1, "")
+            holder := self.dom_create("#fragment", 1, "")
             if m == "insertAdjacentHTML"
                 parse_into(holder, to_string(a1)?)
             elif m == "insertAdjacentText"
-                dom_append(holder, dom_create("#text", 3, to_string(a1)?))
+                self.dom_append(holder, self.dom_create("#text", 3, to_string(a1)?))
             else
-                dom_append(holder, need_node(a1, m)?)
+                self.dom_append(holder, self.need_node(a1, m)?)
             items := dom[holder].children
             ## One anchor for the whole fragment, so its nodes keep their order.
             first := if dom[id].children.len() > 0 then dom[id].children[0] else -1
-            after := next_sibling(id)
+            after := self.next_sibling(id)
             for c in items
                 match pos
-                    "beforebegin" => insert_checked(dom[id].parent, c, id)?
-                    "afterbegin" => insert_checked(id, c, first)?
-                    "beforeend" => insert_checked(id, c, -1)?
-                    _ => insert_checked(dom[id].parent, c, after)?
+                    "beforebegin" => self.insert_checked(dom[id].parent, c, id)?
+                    "afterbegin" => self.insert_checked(id, c, first)?
+                    "beforeend" => self.insert_checked(id, c, -1)?
+                    _ => self.insert_checked(dom[id].parent, c, after)?
             if m == "insertAdjacentElement"
                 return a1
             Undef
@@ -1765,15 +1775,15 @@ fn Vm.normalize_text(mut self, id int)
     for c in dom[id].children
         if dom[c].kind == 3
             if dom[c].text == ""
-                dom_detach(c)
+                self.dom_detach(c)
             elif prev >= 0
-                set_text_content(prev, "{dom[prev].text}{dom[c].text}")
-                dom_detach(c)
+                self.set_text_content(prev, "{dom[prev].text}{dom[c].text}")
+                self.dom_detach(c)
             else
                 prev = c
         else
             prev = -1
-            normalize_text(c)
+            self.normalize_text(c)
 
 fn Vm.next_sibling(self, id int) int
     p := dom[id].parent
@@ -1791,34 +1801,34 @@ fn Vm.insert_checked(mut self, parent int, child int, before int) ! Thrown
     mut e := parent
     while e >= 0
         if e == child
-            return dom_exception(
+            return self.dom_exception(
                 "HierarchyRequestError",
                 "Failed to execute 'appendChild' on 'Node': The new child element contains the parent.",
             )
         e = dom[e].parent
     if dom[child].tag == "#fragment"
         for c in dom[child].children
-            dom_insert_before(parent, c, before)
+            self.dom_insert_before(parent, c, before)
         return
     ## Inserting a node before itself leaves it in place (DOM 4.2.3: the
     ## reference child becomes its next sibling).
-    anchor := if before == child then next_sibling(child) else before
-    dom_insert_before(parent, child, anchor)
+    anchor := if before == child then self.next_sibling(child) else before
+    self.dom_insert_before(parent, child, anchor)
 
 fn Vm.clone(mut self, id int, deep bool) int
     n := dom[id]
-    c := dom_create(n.tag, n.kind, n.text)
+    c := self.dom_create(n.tag, n.kind, n.text)
     for a in n.attrs
-        set_attr(c, a.name, a.value)
+        self.set_attr(c, a.name, a.value)
     if deep
         for k in n.children
-            dom_append(c, clone(k, true))
+            self.dom_append(c, self.clone(k, true))
     c
 
 # --------------------------------------------------------------- classes
 
 pub fn Vm.classes_of(self, id int) List[str]
-    [c for c in (attr_of(id, "class") else "").split(" ") if c != ""]
+    [c for c in (self.attr_of(id, "class") else "").split(" ") if c != ""]
 
 fn Vm.class_list_owner(mut self, v Value) int ! Thrown
     if o := obj_of(v)
@@ -1828,8 +1838,8 @@ fn Vm.class_list_owner(mut self, v Value) int ! Thrown
     return type_error("Illegal invocation")
 
 fn Vm.class_list_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
-    id := class_list_owner(this_val)?
-    mut cls := classes_of(id)
+    id := self.class_list_owner(this_val)?
+    mut cls := self.classes_of(id)
     a0 := to_string(arg_at(args, 0))?
     mut result := Value.Undef
     match m
@@ -1862,7 +1872,7 @@ fn Vm.class_list_method(mut self, m str, this_val Value, args List[Value]) Value
             cls = [if c == a0 then b else c for c in cls]
             result = Value.Bool(true)
         _ => return type_error("classList.{m} is not a function")
-    set_attr(id, "class", cls.join(" "))
+    self.set_attr(id, "class", cls.join(" "))
     result
 
 # ----------------------------------------------------------------- style
@@ -1924,25 +1934,25 @@ pub fn Vm.style_write(mut self, o ref JsObject, key str, v Value) ! Thrown
     id := int_of(num_of(o.prim) else -1.0)
     if id < 0
         return
-    sync_style(o, id)
+    self.sync_style(o, id)
 
 fn Vm.sync_style(mut self, o ref JsObject, id int)
-    text := style_text(o)
+    text := self.style_text(o)
     if text == ""
-        remove_attr(id, "style")
+        self.remove_attr(id, "style")
     else
-        set_attr(id, "style", text)
+        self.set_attr(id, "style", text)
 
 fn Vm.style_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
     o := obj_of(this_val) else return Undef
     key := style_key(to_string(arg_at(args, 0))?)
     match m
-        "setProperty" => style_write(o, key, arg_at(args, 1))?
+        "setProperty" => self.style_write(o, key, arg_at(args, 1))?
         "removeProperty" =>
             o.props.remove(key)
             id := int_of(num_of(o.prim) else -1.0)
             if id >= 0
-                sync_style(o, id)
+                self.sync_style(o, id)
         _ => return Value.Str(if p := o.props.get(key) then (str_of(p.value) else "") else "")
     Undef
 
@@ -1990,7 +2000,7 @@ fn Vm.event_method(mut self, m str, this_val Value, args List[Value]) Value ! Th
 ## Dispatch an event (DOM §2.9): capture from the window down, the target,
 ## then bubbling up. True unless a listener called preventDefault.
 pub fn Vm.dispatch(mut self, target int, ev Value) bool ! Thrown
-    ok := dispatch_run(target, ev)?
+    ok := self.dispatch_run(target, ev)?
     if o := obj_of(ev)
         o.props.remove("{PRIVATE}path")
     ok
@@ -2008,24 +2018,24 @@ fn Vm.dispatch_run(mut self, target int, ev Value) bool ! Thrown
             path.push(-1)
     else
         path.push(-1)
-    o.props["target"] = data(target_value(target))
+    o.props["target"] = data(self.target_value(target))
     o.props["{PRIVATE}stop"] = hidden(Bool(false))
-    o.props["{PRIVATE}path"] = hidden(array([target_value(e) for e in path]))
+    o.props["{PRIVATE}path"] = hidden(array([self.target_value(e) for e in path]))
     # Capture: outermost first, the target excluded.
     mut i := path.len() - 1
     while i > 0
-        invoke_listeners(path[i], ev, type_name, 1, true)?
+        self.invoke_listeners(path[i], ev, type_name, 1, true)?
         if event_flag(ev, "{PRIVATE}stop")
             return not event_flag(ev, "defaultPrevented")
         i -= 1
-    invoke_listeners(path[0], ev, type_name, 2, true)?
+    self.invoke_listeners(path[0], ev, type_name, 2, true)?
     if not event_flag(ev, "{PRIVATE}stop")
-        invoke_listeners(path[0], ev, type_name, 2, false)?
+        self.invoke_listeners(path[0], ev, type_name, 2, false)?
     if event_flag(ev, "bubbles")
         for k in 1..path.len()
             if event_flag(ev, "{PRIVATE}stop")
                 break
-            invoke_listeners(path[k], ev, type_name, 3, false)?
+            self.invoke_listeners(path[k], ev, type_name, 3, false)?
     o.props["currentTarget"] = data(Null)
     o.props["eventPhase"] = data(Num(0.0))
     not event_flag(ev, "defaultPrevented")
@@ -2033,7 +2043,7 @@ fn Vm.dispatch_run(mut self, target int, ev Value) bool ! Thrown
 fn Vm.target_value(mut self, id int) Value
     if id < 0
         return Obj(global_obj)
-    node_value(id)
+    self.node_value(id)
 
 ## Call the listeners of one target for one phase; at the target, both
 ## capture and bubble listeners run (`capture` picks which).
@@ -2046,7 +2056,7 @@ fn Vm.invoke_listeners(
     capture bool,
 ) ! Thrown
     o := obj_of(ev) else return
-    o.props["currentTarget"] = data(target_value(target))
+    o.props["currentTarget"] = data(self.target_value(target))
     o.props["eventPhase"] = data(Num(phase.to_float()))
     snapshot := listeners
     for l in snapshot
@@ -2061,11 +2071,11 @@ fn Vm.invoke_listeners(
             ]
         if l.callback == Value.Str(HANDLER)
             # The `on...` property or attribute, at the place it was first set.
-            handler := event_handler(target, type_name)?
+            handler := self.event_handler(target, type_name)?
             if is_callable(handler)
-                if type_name == "error" and target < 0 and ev_class(ev) == "ErrorEvent"
+                if type_name == "error" and target < 0 and self.ev_class(ev) == "ErrorEvent"
                     # window.onerror(message, source, line, column, error): true cancels.
-                    r := call_listener(handler, target, ev, [
+                    r := self.call_listener(handler, target, ev, [
                         get(ev, "message")?,
                         get(ev, "filename")?,
                         get(ev, "lineno")?,
@@ -2075,13 +2085,13 @@ fn Vm.invoke_listeners(
                     if r == Bool(true)
                         set_event_flag(ev, "defaultPrevented", true)
                     continue
-                r := call_listener(handler, target, ev, [ev])?
+                r := self.call_listener(handler, target, ev, [ev])?
                 if r == Bool(false)
                     set_event_flag(ev, "defaultPrevented", true)
             continue
         cb := if is_callable(l.callback) then l.callback else get(l.callback, "handleEvent")?
         if is_callable(cb)
-            call_listener(cb, target, ev, [ev])?
+            self.call_listener(cb, target, ev, [ev])?
 
 ## Whether `key` names an event handler property (HTML §8.1.8.2).
 pub fn is_event_handler_name(key str) bool
@@ -2209,7 +2219,7 @@ pub fn Vm.handler_set(mut self, target int, key str)
 
 ## A listener runs; an exception is reported and doesn't stop the dispatch.
 fn Vm.call_listener(mut self, cb Value, target int, ev Value, args List[Value]) Value ! Thrown
-    if v := call(cb, target_value(target), args)
+    if v := call(cb, self.target_value(target), args)
         return v
     else err
         if err.limit
@@ -2224,14 +2234,14 @@ fn Vm.ev_class(mut self, ev Value) str
 ## `el.onclick`, or the handler compiled from the `onclick` attribute.
 fn Vm.event_handler(mut self, target int, type_name str) Value ! Thrown
     key := "on{type_name}"
-    t := target_value(target)
+    t := self.target_value(target)
     if o := obj_of(t)
         if p := o.props.get(key)
             if is_callable(p.value)
                 return p.value
     if target < 0
         return Undef
-    source := attr_of(target, key) else return Undef
+    source := self.attr_of(target, key) else return Undef
     f := function_constructor([Value.Str("event"), Value.Str(source)])?
     if o := obj_of(t)
         o.props[key] = hidden(f)
@@ -2244,23 +2254,23 @@ fn Vm.click_default(mut self, id int) ! Thrown
     while e > 0
         n := dom[e]
         if n.tag == "a"
-            if href := attr_of(e, "href")
+            if href := self.attr_of(e, "href")
                 if not href.starts_with("javascript:")
-                    navigate(href)
+                    self.navigate(href)
                 return
-        if n.tag == "input" and (attr_of(e, "type") else "") == "checkbox"
-            cur := field_values.get(e) else (if attr_of(e, "checked") != none then "on" else "off")
+        if n.tag == "input" and (self.attr_of(e, "type") else "") == "checkbox"
+            cur := field_values.get(e) else (if self.attr_of(e, "checked") != none then "on" else "off")
             field_values[e] = if cur == "on" then "off" else "on"
-            dom_log("set_value", e, -1, -1, "checked", field_values[e])
+            self.dom_log("set_value", e, -1, -1, "checked", field_values[e])
             return
-        submits := (n.tag == "button" and (attr_of(e, "type") else "submit") == "submit")
-            or (n.tag == "input" and (attr_of(e, "type") else "") == "submit")
+        submits := (n.tag == "button" and (self.attr_of(e, "type") else "submit") == "submit")
+            or (n.tag == "input" and (self.attr_of(e, "type") else "") == "submit")
         if submits
             mut f := dom[e].parent
             while f > 0 and dom[f].tag != "form"
                 f = dom[f].parent
             if f > 0
-                submit_form(f, e)?
+                self.submit_form(f, e)?
             return
         e = n.parent
 
@@ -2271,29 +2281,29 @@ fn Vm.submit_form(mut self, form int, submitter int) ! Thrown
         ev := make_event_as("SubmitEvent", "submit", Undef)?
         set_event_flag(ev, "bubbles", true)
         set_event_flag(ev, "cancelable", true)
-        if not dispatch(form, ev)?
+        if not self.dispatch(form, ev)?
             return
     mut pairs := List[str]()
-    for e in elements_under(form)
-        name := attr_of(e, "name") else continue
-        if name == "" or attr_of(e, "disabled") != none
+    for e in self.elements_under(form)
+        name := self.attr_of(e, "name") else continue
+        if name == "" or self.attr_of(e, "disabled") != none
             continue
         tag := dom[e].tag
-        kind := (attr_of(e, "type") else "").to_lower()
+        kind := (self.attr_of(e, "type") else "").to_lower()
         if tag == "input"
             and (kind == "submit" or kind == "button" or kind == "image" or kind == "reset")
             if e != submitter
                 continue
         if tag == "input" and (kind == "checkbox" or kind == "radio")
-            on := field_values.get(e) else (if attr_of(e, "checked") != none then "on" else "off")
+            on := field_values.get(e) else (if self.attr_of(e, "checked") != none then "on" else "off")
             if on != "on"
                 continue
         if tag == "button" and e != submitter
             continue
-        v := to_string(dom_get("value", node_value(e))?)?
+        v := to_string(self.dom_get("value", self.node_value(e))?)?
         pairs.push("{form_encode(name)}={form_encode(v)}")
-    action := resolve_url(attr_of(form, "action") else location_href)
-    method := (attr_of(form, "method") else "get").to_lower()
+    action := self.resolve_url(self.attr_of(form, "action") else location_href)
+    method := (self.attr_of(form, "method") else "get").to_lower()
     query := pairs.join("&")
     if method == "post"
         host_requests.push(HostRequest(
@@ -2305,7 +2315,7 @@ fn Vm.submit_form(mut self, form int, submitter int) ! Thrown
         ))
         return
     base := action.split("?")[0].split("#")[0]
-    navigate("{base}?{query}")
+    self.navigate("{base}?{query}")
 
 ## application/x-www-form-urlencoded (URL §5.2).
 pub fn form_encode(s str) str
@@ -2347,7 +2357,7 @@ fn Vm.parse_selector(mut self, text str) List[List[Compound]] ! Thrown
     for part in split_top(text, ',')
         cs := part.trim().chars()
         if cs.len() == 0
-            return dom_exception(
+            return self.dom_exception(
                 "SyntaxError",
                 "Failed to execute 'querySelectorAll' on 'Document': '{text}' is not a valid selector.",
             )
@@ -2390,7 +2400,7 @@ fn Vm.parse_selector(mut self, text str) List[List[Compound]] ! Thrown
                         cur.classes.push(name)
                     i = j
                 elif ch == '['
-                    j := find_at(cs, i, "]") else return dom_exception(
+                    j := find_at(cs, i, "]") else return self.dom_exception(
                         "SyntaxError",
                         "'{text}' is not a valid selector.",
                     )
@@ -2415,7 +2425,7 @@ fn Vm.parse_selector(mut self, text str) List[List[Compound]] ! Thrown
                             or pname == "where"
                             or pname == "matches"
                             or pname == "has"
-                            inner = parse_selector(pseudo.slice(
+                            inner = self.parse_selector(pseudo.slice(
                                 open + 1,
                                 pseudo.chars().len() - 1,
                             ))?
@@ -2426,7 +2436,7 @@ fn Vm.parse_selector(mut self, text str) List[List[Compound]] ! Thrown
                 else
                     j := ident_end(cs, i)
                     if j == i
-                        return dom_exception(
+                        return self.dom_exception(
                             "SyntaxError",
                             "Failed to execute 'querySelectorAll' on 'Document': '{text}' is not a valid selector.",
                         )
@@ -2473,33 +2483,33 @@ fn split_top(text str, sep char) List[str]
 
 fn Vm.matches_selector(self, id int, groups List[List[Compound]]) bool
     for chain in groups
-        if match_chain(id, chain, chain.len() - 1)
+        if self.match_chain(id, chain, chain.len() - 1)
             return true
     false
 
 fn Vm.match_chain(self, id int, chain List[Compound], k int) bool
-    if not match_compound(id, chain[k])
+    if not self.match_compound(id, chain[k])
         return false
     if k == 0
         return true
     match chain[k].combinator
         ">" =>
             p := dom[id].parent
-            p > 0 and match_chain(p, chain, k - 1)
+            p > 0 and self.match_chain(p, chain, k - 1)
         "+" =>
-            prev := previous_element(id)
-            prev >= 0 and match_chain(prev, chain, k - 1)
+            prev := self.previous_element(id)
+            prev >= 0 and self.match_chain(prev, chain, k - 1)
         "~" =>
-            mut prev := previous_element(id)
+            mut prev := self.previous_element(id)
             while prev >= 0
-                if match_chain(prev, chain, k - 1)
+                if self.match_chain(prev, chain, k - 1)
                     return true
-                prev = previous_element(prev)
+                prev = self.previous_element(prev)
             false
         _ =>
             mut p := dom[id].parent
             while p > 0
-                if match_chain(p, chain, k - 1)
+                if self.match_chain(p, chain, k - 1)
                     return true
                 p = dom[p].parent
             false
@@ -2523,15 +2533,15 @@ fn Vm.match_compound(self, id int, c Compound) bool
     if c.tag != "" and c.tag != n.tag
         return false
     for want in c.ids
-        if attr_of(id, "id") != want
+        if self.attr_of(id, "id") != want
             return false
     if c.classes.len() > 0
-        cls := classes_of(id)
+        cls := self.classes_of(id)
         for want in c.classes
             if not cls.contains(want)
                 return false
     for t in c.attrs
-        v := attr_of(id, t[0]) else return false
+        v := self.attr_of(id, t[0]) else return false
         ok := match t[1]
             "" => true
             "=" => v == t[2]
@@ -2597,12 +2607,16 @@ fn Vm.window_method(mut self, m str, args List[Value]) Value ! Thrown
         "queueMicrotask" =>
             microtasks.push(a0)
             Undef
-        "structuredClone" => structured_clone(a0, 0)
-        "addEventListener" | "removeEventListener" | "dispatchEvent" => listener_method(m, -1, args)
+        "structuredClone" => self.structured_clone(a0, 0)
+        "addEventListener" | "removeEventListener" | "dispatchEvent" => self.listener_method(
+            m,
+            -1,
+            args,
+        )
         "getComputedStyle" =>
             id := node_id(a0) else return Value.Obj(plain())
             o := object("CSSStyle", proto_of("CSSStyle"))
-            for pair in style_pairs(attr_of(id, "style") else "")
+            for pair in style_pairs(self.attr_of(id, "style") else "")
                 o.props[css_to_camel(pair.name)] = data(Str(pair.value))
             if o.props.get("display") == none
                 o.props["display"] = data(Str(if dom[id].tag == "span" or dom[id].tag == "a" then "inline" else "block"))
@@ -2635,7 +2649,7 @@ fn Vm.window_method(mut self, m str, args List[Value]) Value ! Thrown
         "open" =>
             host_requests.push(HostRequest(
                 kind: "open",
-                url: resolve_url(to_string(a0)?),
+                url: self.resolve_url(to_string(a0)?),
                 method: "GET",
                 node: -1,
                 text: "",
@@ -2647,7 +2661,7 @@ fn Vm.window_method(mut self, m str, args List[Value]) Value ! Thrown
             id := host_requests.len()
             host_requests.push(HostRequest(
                 kind: "fetch",
-                url: resolve_url(to_string(arg_at(args, 1))?),
+                url: self.resolve_url(to_string(arg_at(args, 1))?),
                 method: to_string(a0)?,
                 node: id,
                 text: to_string(arg_at(args, 2))?,
@@ -2702,7 +2716,7 @@ fn Vm.window_method(mut self, m str, args List[Value]) Value ! Thrown
                 mut raw := List[u8]()
                 for u in units(s)
                     if u > 255
-                        return dom_exception(
+                        return self.dom_exception(
                             "InvalidCharacterError",
                             "Failed to execute 'btoa' on 'Window': The string to be encoded contains characters outside of the Latin1 range.",
                         )
@@ -2718,7 +2732,7 @@ fn Vm.window_method(mut self, m str, args List[Value]) Value ! Thrown
                 2 => "{text}=="
                 3 => "{text}="
                 _ => text
-            b := bytes.from_base64(text) else return dom_exception(
+            b := bytes.from_base64(text) else return self.dom_exception(
                 "InvalidCharacterError",
                 "Failed to execute 'atob' on 'Window': The string to be decoded is not correctly encoded.",
             )
@@ -2729,7 +2743,7 @@ fn Vm.window_method(mut self, m str, args List[Value]) Value ! Thrown
 ## virtual clock passes `until_ms`, or `max_tasks` have run.
 pub fn Vm.run_event_loop(mut self, until_ms float, max_tasks int)
     mut ran := 0
-    run_microtasks()
+    self.run_microtasks()
     while timers.len() > 0 and ran < max_tasks and not stopped
         mut best := 0
         for i in 1..timers.len()
@@ -2763,7 +2777,7 @@ pub fn Vm.run_event_loop(mut self, until_ms float, max_tasks int)
             if err.limit
                 stopped = true
         timer_level = 0
-        run_microtasks()
+        self.run_microtasks()
         ran += 1
 
 pub fn Vm.run_microtasks(mut self)
@@ -2794,16 +2808,16 @@ fn Vm.location_value(mut self) Value
 fn Vm.location_method(mut self, m str, args List[Value]) Value ! Thrown
     match m
         "assign" | "replace" =>
-            navigate(to_string(arg_at(args, 0))?)
+            self.navigate(to_string(arg_at(args, 0))?)
             Undef
         "reload" =>
-            navigate(location_href)
+            self.navigate(location_href)
             Undef
         _ => Value.Str(location_href)
 
 ## Ask the browser to load `url` (resolved against the page's address).
 pub fn Vm.navigate(mut self, url str)
-    target := resolve_url(url)
+    target := self.resolve_url(url)
     if target.split("#")[0] == location_href.split("#")[0] and target.contains("#")
         location_href = target
         return
@@ -2938,33 +2952,33 @@ pub fn Vm.load_page(mut self, url str, budget_ms float)
     # Module scripts and external `defer` scripts wait until parsing ends and
     # then run in document order (HTML §4.12.1.1, "the end" of §13.2.6).
     mut deferred := List[int]()
-    for s in descendants_by_tag(0, "script")
+    for s in self.descendants_by_tag(0, "script")
         if stopped
             return
         if started_scripts.contains(s)
             continue
         started_scripts.add(s)
-        mode := script_mode(s)
+        mode := self.script_mode(s)
         if mode == "skip"
             continue
-        if mode == "module" or (attr_of(s, "src") != none and attr_of(s, "defer") != none)
+        if mode == "module" or (self.attr_of(s, "src") != none and self.attr_of(s, "defer") != none)
             deferred.push(s)
             continue
-        run_script_node(s, mode)
-    run_microtasks()
+        self.run_script_node(s, mode)
+    self.run_microtasks()
     ready_state = "interactive"
-    fire(0, "readystatechange", false)
+    self.fire(0, "readystatechange", false)
     for s in deferred
         if stopped
             return
-        run_script_node(s, script_mode(s))
-        run_microtasks()
-    fire(0, "DOMContentLoaded", true)
-    run_microtasks()
+        self.run_script_node(s, self.script_mode(s))
+        self.run_microtasks()
+    self.fire(0, "DOMContentLoaded", true)
+    self.run_microtasks()
     ready_state = "complete"
-    fire(0, "readystatechange", false)
-    fire(-1, "load", false)
-    run_event_loop(clock_ms + budget_ms, 10000)
+    self.fire(0, "readystatechange", false)
+    self.fire(-1, "load", false)
+    self.run_event_loop(clock_ms + budget_ms, 10000)
 
 fn Vm.fire(mut self, target int, type_name str, bubbles bool)
     if stopped
@@ -2976,7 +2990,7 @@ fn Vm.fire(mut self, target int, type_name str, bubbles bool)
         _ => "Event"
     ev := make_event_as(iface, type_name, Undef) else return
     set_event_flag(ev, "bubbles", bubbles)
-    if ok := dispatch(target, ev)
+    if ok := self.dispatch(target, ev)
         ok
     else err
         report_error(err)
@@ -3004,9 +3018,9 @@ pub fn Vm.host_click(mut self, id int) bool
             f = dom[f].parent
     fire_event(id, mouse_event("mouseup"))
     ev := mouse_event("click")
-    if ok := dispatch(id, ev)
+    if ok := self.dispatch(id, ev)
         if ok
-            if done := click_default(id)
+            if done := self.click_default(id)
                 done
             else err
                 report_error(err)
@@ -3034,7 +3048,7 @@ pub fn Vm.host_submit(mut self, id int)
         return
     tag := dom[id].tag
     sub := if tag == "button" or tag == "input" then id else f
-    if done := submit_form(f, sub)
+    if done := self.submit_form(f, sub)
         done
     else err
         report_error(err)

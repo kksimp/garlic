@@ -15,32 +15,36 @@ fn Vm.match_pseudo(self, id int, p str, sels List[List[Compound]]) bool
         "first-child" => previous_element(id) < 0
         "last-child" => next_element(id) < 0
         "only-child" => previous_element(id) < 0 and next_element(id) < 0
-        "first-of-type" => position_of(id, true, true) == 1
-        "last-of-type" => position_of(id, false, true) == 1
-        "only-of-type" => position_of(id, true, true) == 1 and position_of(id, false, true) == 1
-        "nth-child" => nth_matches(arg, position_of(id, true, false))
-        "nth-last-child" => nth_matches(arg, position_of(id, false, false))
-        "nth-of-type" => nth_matches(arg, position_of(id, true, true))
-        "nth-last-of-type" => nth_matches(arg, position_of(id, false, true))
+        "first-of-type" => self.position_of(id, true, true) == 1
+        "last-of-type" => self.position_of(id, false, true) == 1
+        "only-of-type" => self.position_of(id, true, true) == 1 and self.position_of(
+            id,
+            false,
+            true,
+        ) == 1
+        "nth-child" => nth_matches(arg, self.position_of(id, true, false))
+        "nth-last-child" => nth_matches(arg, self.position_of(id, false, false))
+        "nth-of-type" => nth_matches(arg, self.position_of(id, true, true))
+        "nth-last-of-type" => nth_matches(arg, self.position_of(id, false, true))
         "not" => not matches_selector(id, sels)
         "is" | "where" | "matches" | "-webkit-any" | "-moz-any" => matches_selector(id, sels)
-        "has" => has_match(id, arg, sels)
+        "has" => self.has_match(id, arg, sels)
         "checked" =>
             if n.tag == "option"
-                return option_selected(id)
+                return self.option_selected(id)
             if n.tag == "input"
                 kind := (attr_of(id, "type") else "").to_lower()
                 if kind == "checkbox" or kind == "radio"
                     return (field_values.get(id) else (if attr_of(id, "checked") != none then "on" else "off"))
                         == "on"
             false
-        "selected" => n.tag == "option" and option_selected(id)
-        "disabled" => is_disabled(id)
-        "enabled" => is_form_control(id) and not is_disabled(id)
-        "required" => attr_of(id, "required") != none and is_form_control(id)
-        "optional" => attr_of(id, "required") == none and is_form_control(id)
-        "read-only" => not is_editable(id)
-        "read-write" => is_editable(id)
+        "selected" => n.tag == "option" and self.option_selected(id)
+        "disabled" => self.is_disabled(id)
+        "enabled" => self.is_form_control(id) and not self.is_disabled(id)
+        "required" => attr_of(id, "required") != none and self.is_form_control(id)
+        "optional" => attr_of(id, "required") == none and self.is_form_control(id)
+        "read-only" => not self.is_editable(id)
+        "read-write" => self.is_editable(id)
         "placeholder-shown" =>
             (n.tag == "input" or n.tag == "textarea") and attr_of(
                 id,
@@ -80,7 +84,7 @@ fn Vm.is_form_control(self, id int) bool
     t == "input" or t == "select" or t == "textarea" or t == "button"
 
 fn Vm.is_disabled(self, id int) bool
-    if not is_form_control(id)
+    if not self.is_form_control(id)
         and dom[id].tag != "fieldset"
         and dom[id].tag != "option"
         and dom[id].tag != "optgroup"

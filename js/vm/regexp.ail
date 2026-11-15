@@ -159,8 +159,8 @@ fn Vm.last_index(mut self, o ref JsObject) int ! Thrown
 
 ## RegExp.prototype.exec as a Found, updating lastIndex for /g and /y.
 fn Vm.exec_found(mut self, rv Value, s str) Found? ! Thrown
-    p := regexp_parts(rv)?
-    from := if p.global then last_index(p.o)? else 0
+    p := self.regexp_parts(rv)?
+    from := if p.global then self.last_index(p.o)? else 0
     if f := find_from(p.re, s, from)
         if p.global
             set_own(p.o, "lastIndex", Num(f.end.to_float()))?
@@ -175,11 +175,11 @@ fn Vm.regexp_method(mut self, m str, this_val Value, args List[Value]) Value ! T
     match m
         "test" =>
             s := to_string(arg_at(args, 0))?
-            Value.Bool(exec_found(this_val, s)? != none)
+            Value.Bool(self.exec_found(this_val, s)? != none)
         "exec" =>
             s := to_string(arg_at(args, 0))?
-            f := exec_found(this_val, s)? else return Null
-            match_array(f, s)
+            f := self.exec_found(this_val, s)? else return Null
+            self.match_array(f, s)
         "toString" =>
             o := obj_of(this_val) else return Value.Str("/(?:)/")
             Value.Str("/{plain_string(o, "source") else ""}/{plain_string(o, "flags") else ""}")
@@ -202,7 +202,7 @@ fn Vm.regexp_string_method(mut self, m str, s str, pattern Value) Value ! Thrown
         if pattern == Undef then "(?:)" else to_string(pattern)?,
         if m == "matchAll" then "g" else "",
     )
-    p := regexp_parts(rv)?
+    p := self.regexp_parts(rv)?
     match m
         "search" =>
             f := find_from(p.re, s, 0) else return Value.Num(-1.0)
@@ -216,14 +216,14 @@ fn Vm.regexp_string_method(mut self, m str, s str, pattern Value) Value ! Thrown
                 us := units(s)
                 return array([Value.Str(from_units(us[f.start..f.end])) for f in found])
             f := find_from(p.re, s, 0) else return Null
-            match_array(f, s)
+            self.match_array(f, s)
         _ =>
             if not p.global
                 return type_error("String.prototype.matchAll called with a non-global RegExp argument")
-            array([match_array(f, s) for f in all_matches(p.re, s)])
+            array([self.match_array(f, s) for f in all_matches(p.re, s)])
 
 fn Vm.regexp_split(mut self, rv Value, s str, limit int) Value ! Thrown
-    p := regexp_parts(rv)?
+    p := self.regexp_parts(rv)?
     us := units(s)
     mut out := List[Value]()
     if limit == 0
@@ -254,7 +254,7 @@ fn Vm.regexp_split(mut self, rv Value, s str, limit int) Value ! Thrown
     array(out)
 
 fn Vm.regexp_replace(mut self, rv Value, s str, replacement Value, all bool) Value ! Thrown
-    p := regexp_parts(rv)?
+    p := self.regexp_parts(rv)?
     if all and not p.global
         return type_error("replaceAll must be called with a global RegExp")
     us := units(s)

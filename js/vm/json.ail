@@ -22,14 +22,14 @@ fn skip_ws(mut r JsonReader)
 ## JSON.parse(text, reviver) (§25.5.1).
 fn Vm.json_parse(mut self, text str, reviver Value) Value ! Thrown
     mut r := JsonReader(cs: text.chars(), pos: 0)
-    v := json_value(mut r, text)?
+    v := self.json_value(mut r, text)?
     skip_ws(mut r)
     if r.pos < r.cs.len()
-        return json_error(r, text)
+        return self.json_error(r, text)
     if is_callable(reviver)
         root := plain()
         root.props[""] = data(v)
-        return revive(Obj(root), "", reviver)
+        return self.revive(Obj(root), "", reviver)
     v
 
 fn Vm.revive(mut self, holder Value, key str, reviver Value) Value ! Thrown
@@ -41,7 +41,7 @@ fn Vm.revive(mut self, holder Value, key str, reviver Value) Value ! Thrown
         ] else [Value.Str(k) for k in enum_keys(o)]
         for kv in keys
             k := str_of(kv) else ""
-            nv := revive(v, k, reviver)?
+            nv := self.revive(v, k, reviver)?
             if nv == Undef
                 delete(o, k)
             else
@@ -51,7 +51,7 @@ fn Vm.revive(mut self, holder Value, key str, reviver Value) Value ! Thrown
 fn Vm.json_value(mut self, mut r JsonReader, text str) Value ! Thrown
     skip_ws(mut r)
     if r.pos >= r.cs.len()
-        return json_error(r, text)
+        return self.json_error(r, text)
     c := r.cs[r.pos]
     if c == '{'
         r.pos += 1
@@ -63,13 +63,13 @@ fn Vm.json_value(mut self, mut r JsonReader, text str) Value ! Thrown
         while true
             skip_ws(mut r)
             if r.pos >= r.cs.len() or r.cs[r.pos] != '"'
-                return json_error(r, text)
-            key := json_string(mut r, text)?
+                return self.json_error(r, text)
+            key := self.json_string(mut r, text)?
             skip_ws(mut r)
             if r.pos >= r.cs.len() or r.cs[r.pos] != ':'
-                return json_error(r, text)
+                return self.json_error(r, text)
             r.pos += 1
-            v := json_value(mut r, text)?
+            v := self.json_value(mut r, text)?
             if key == "__proto__"
                 o.props[key] = data(v)
             else
@@ -81,7 +81,7 @@ fn Vm.json_value(mut self, mut r JsonReader, text str) Value ! Thrown
             if r.pos < r.cs.len() and r.cs[r.pos] == '}'
                 r.pos += 1
                 return Obj(o)
-            return json_error(r, text)
+            return self.json_error(r, text)
     if c == '['
         r.pos += 1
         mut items := List[Value]()
@@ -90,7 +90,7 @@ fn Vm.json_value(mut self, mut r JsonReader, text str) Value ! Thrown
             r.pos += 1
             return array(items)
         while true
-            items.push(json_value(mut r, text)?)
+            items.push(self.json_value(mut r, text)?)
             skip_ws(mut r)
             if r.pos < r.cs.len() and r.cs[r.pos] == ','
                 r.pos += 1
@@ -98,15 +98,15 @@ fn Vm.json_value(mut self, mut r JsonReader, text str) Value ! Thrown
             if r.pos < r.cs.len() and r.cs[r.pos] == ']'
                 r.pos += 1
                 return array(items)
-            return json_error(r, text)
+            return self.json_error(r, text)
     if c == '"'
-        return Value.Str(json_string(mut r, text)?)
+        return Value.Str(self.json_string(mut r, text)?)
     if c == '-' or c.is_digit()
         start := r.pos
         if r.cs[r.pos] == '-'
             r.pos += 1
         if r.pos >= r.cs.len() or not r.cs[r.pos].is_digit()
-            return json_error(r, text)
+            return self.json_error(r, text)
         if r.cs[r.pos] == '0'
             r.pos += 1
         else
@@ -115,7 +115,7 @@ fn Vm.json_value(mut self, mut r JsonReader, text str) Value ! Thrown
         if r.pos < r.cs.len() and r.cs[r.pos] == '.'
             r.pos += 1
             if r.pos >= r.cs.len() or not r.cs[r.pos].is_digit()
-                return json_error(r, text)
+                return self.json_error(r, text)
             while r.pos < r.cs.len() and r.cs[r.pos].is_digit()
                 r.pos += 1
         if r.pos < r.cs.len() and (r.cs[r.pos] == 'e' or r.cs[r.pos] == 'E')
@@ -123,7 +123,7 @@ fn Vm.json_value(mut self, mut r JsonReader, text str) Value ! Thrown
             if r.pos < r.cs.len() and (r.cs[r.pos] == '+' or r.cs[r.pos] == '-')
                 r.pos += 1
             if r.pos >= r.cs.len() or not r.cs[r.pos].is_digit()
-                return json_error(r, text)
+                return self.json_error(r, text)
             while r.pos < r.cs.len() and r.cs[r.pos].is_digit()
                 r.pos += 1
         return Value.Num(string_to_number(r.cs[start..r.pos].join("")))
@@ -135,7 +135,7 @@ fn Vm.json_value(mut self, mut r JsonReader, text str) Value ! Thrown
                 "true" => Value.Bool(true)
                 "false" => Value.Bool(false)
                 _ => Value.Null
-    json_error(r, text)
+    self.json_error(r, text)
 
 fn Vm.json_string(mut self, mut r JsonReader, text str) str ! Thrown
     r.pos += 1
@@ -161,7 +161,7 @@ fn Vm.json_string(mut self, mut r JsonReader, text str) str ! Thrown
             continue
         r.pos += 1
         if r.pos >= r.cs.len()
-            return json_error(r, text)
+            return self.json_error(r, text)
         e := r.cs[r.pos]
         r.pos += 1
         match e
@@ -177,7 +177,7 @@ fn Vm.json_string(mut self, mut r JsonReader, text str) str ! Thrown
                 mut v := 0
                 for _ in 0..4
                     if r.pos >= r.cs.len()
-                        return json_error(r, text)
+                        return self.json_error(r, text)
                     d := r.cs[r.pos].to_digit(16) else return throw_error(
                         "SyntaxError",
                         "Bad Unicode escape in JSON at position {r.pos}",
@@ -206,7 +206,7 @@ fn Vm.json_stringify(mut self, v Value, replacer Value, space Value) Value ! Thr
     if is_array(replacer)
         mut keys := List[str]()
         for item in elements_of(replacer)?
-            k := allow_key(item)?
+            k := self.allow_key(item)?
             if k == ""
                 continue
             if not keys.contains(k)
@@ -228,7 +228,7 @@ fn Vm.json_stringify(mut self, v Value, replacer Value, space Value) Value ! Thr
     )
     holder := plain()
     holder.props[""] = data(v)
-    r := serialize(mut st, Obj(holder), "", v)?
+    r := self.serialize(mut st, Obj(holder), "", v)?
     if r == OMIT
         return Undef
     Value.Str(r)
@@ -274,7 +274,7 @@ fn Vm.serialize(mut self, mut st Stringifier, holder Value, key str, start Value
             is_arr := o.class == "Array"
             if is_arr
                 for i in 0..o.elems.len()
-                    item := serialize(mut st, v, "{i}", o.elems[i]) else err
+                    item := self.serialize(mut st, v, "{i}", o.elems[i]) else err
                         busy.remove(o.id)
                         return err
                     parts.push(if item == OMIT then "null" else item)
@@ -284,7 +284,7 @@ fn Vm.serialize(mut self, mut st Stringifier, holder Value, key str, start Value
                     pv := get(v, k) else err
                         busy.remove(o.id)
                         return err
-                    item := serialize(mut st, v, k, pv) else err
+                    item := self.serialize(mut st, v, k, pv) else err
                         busy.remove(o.id)
                         return err
                     if item != OMIT

@@ -123,36 +123,36 @@ pub PRIVATE := "\u{0}#"
 
 ## Count a step, failing past the run limit.
 pub fn Vm.tick(mut self) ! Thrown
-    step_count += 1
-    if step_limit > 0 and step_count > step_limit
-        return Thrown(value: Undef, text: "step limit of {step_limit} reached", limit: true)
+    self.step_count += 1
+    if self.step_limit > 0 and self.step_count > self.step_limit
+        return Thrown(value: Undef, text: "step limit of {self.step_limit} reached", limit: true)
 
 # ---------------------------------------------------------------- errors
 
 ## Where an error is made: "url:line:col" when tracing, else "<anonymous>".
 pub fn Vm.at_text(self) str
-    if trace and cur_pos.line > 0
-        return "{cur_url}:{cur_pos.line}:{cur_pos.col}"
+    if self.trace and self.cur_pos.line > 0
+        return "{self.cur_url}:{self.cur_pos.line}:{self.cur_pos.col}"
     "<anonymous>"
 
 ## A new error object of a built-in kind ("TypeError", ...).
 pub fn Vm.make_error(mut self, kind str, msg str) Value
     o := object("Error", proto_of(kind))
     o.props["message"] = hidden(Str(msg))
-    o.props["stack"] = hidden(Str("{kind}: {msg}\n    at {at_text()}"))
+    o.props["stack"] = hidden(Str("{kind}: {msg}\n    at {self.at_text()}"))
     Obj(o)
 
 pub fn Vm.throw_error(mut self, kind str, msg str) Thrown
-    Thrown(value: make_error(kind, msg), text: "{kind}: {msg}", limit: false)
+    Thrown(value: self.make_error(kind, msg), text: "{kind}: {msg}", limit: false)
 
 pub fn Vm.type_error(mut self, msg str) Thrown
-    throw_error("TypeError", msg)
+    self.throw_error("TypeError", msg)
 
 pub fn Vm.range_error(mut self, msg str) Thrown
-    throw_error("RangeError", msg)
+    self.throw_error("RangeError", msg)
 
 pub fn Vm.reference_error(mut self, msg str) Thrown
-    throw_error("ReferenceError", msg)
+    self.throw_error("ReferenceError", msg)
 
 ## A thrown value as `throw` makes it, with the text an uncaught throw shows.
 pub fn Vm.thrown(self, v Value) Thrown
@@ -162,16 +162,16 @@ pub fn Vm.thrown(self, v Value) Thrown
 pub fn Vm.uncaught_text(self, err Thrown) str
     if err.limit
         return err.text
-    "Uncaught {error_text(err.value)}{error_where(err.value)}"
+    "Uncaught {self.error_text(err.value)}{self.error_where(err.value)}"
 
 ## " (at url:line:col)" for an error made while tracing.
 pub fn Vm.error_where(self, v Value) str
-    if not trace
+    if not self.trace
         return ""
     o := obj_of(v) else return ""
     if o.class != "Error"
         return ""
-    stack := plain_string(o, "stack") else return ""
+    stack := self.plain_string(o, "stack") else return ""
     parts := stack.split("\n    at ")
     if parts.len() < 2 or parts[1] == "<anonymous>"
         return ""
@@ -183,8 +183,8 @@ pub fn Vm.error_text(self, v Value) str
     match v
         Obj(o) =>
             if o.class == "Error"
-                name := plain_string(o, "name") else "Error"
-                msg := plain_string(o, "message") else ""
+                name := self.plain_string(o, "name") else "Error"
+                msg := self.plain_string(o, "message") else ""
                 if msg == ""
                     return name
                 return "{name}: {msg}"
@@ -215,10 +215,10 @@ pub fn Vm.to_primitive(mut self, v Value, hint str) Value ! Thrown
     for name in order
         method := get(v, name)?
         if is_callable(method)
-            r := call(method, v, [])?
+            r := self.call(method, v, [])?
             if not is_obj(r)
                 return r
-    return type_error("Cannot convert object to primitive value")
+    return self.type_error("Cannot convert object to primitive value")
 
 ## ToNumber (§7.1.4).
 pub fn Vm.to_number(mut self, v Value) float ! Thrown
@@ -228,9 +228,9 @@ pub fn Vm.to_number(mut self, v Value) float ! Thrown
         Bool(b) => if b then 1.0 else 0.0
         Num(n) => n
         Str(s) => string_to_number(s)
-        Big => type_error("Cannot convert a BigInt value to a number")
-        Sym => type_error("Cannot convert a Symbol value to a number")
-        Obj => to_number(to_primitive(v, "number")?)
+        Big => self.type_error("Cannot convert a BigInt value to a number")
+        Sym => self.type_error("Cannot convert a Symbol value to a number")
+        Obj => self.to_number(self.to_primitive(v, "number")?)
 
 ## ToString (§7.1.17).
 pub fn Vm.to_string(mut self, v Value) str ! Thrown
@@ -241,8 +241,8 @@ pub fn Vm.to_string(mut self, v Value) str ! Thrown
         Num(n) => syntax.number_to_string(n)
         Str(s) => s
         Big(b) => b.to_text()
-        Sym => type_error("Cannot convert a Symbol value to a string")
-        Obj => to_string(to_primitive(v, "string")?)
+        Sym => self.type_error("Cannot convert a Symbol value to a string")
+        Obj => self.to_string(self.to_primitive(v, "string")?)
 
 ## ToPropertyKey (§7.1.19): a symbol is its own key.
 pub fn Vm.to_key(mut self, v Value) str ! Thrown
@@ -250,19 +250,19 @@ pub fn Vm.to_key(mut self, v Value) str ! Thrown
         Str(s) => string_key(s)
         Sym(k) => k
         Num(n) => syntax.number_to_string(n)
-        Undef | Null | Bool | Big => to_string(v)
-        Obj => to_key(to_primitive(v, "string")?)
+        Undef | Null | Bool | Big => self.to_string(v)
+        Obj => self.to_key(self.to_primitive(v, "string")?)
 
 ## ToObject (§7.1.18): a primitive's wrapper.
 pub fn Vm.to_object(mut self, v Value) ref JsObject ! Thrown
     match v
         Obj(o) => o
-        Undef | Null => return type_error("Cannot convert undefined or null to object")
-        Bool => wrap("Boolean", v)
-        Num => wrap("Number", v)
-        Str => wrap("String", v)
-        Big => wrap("BigInt", v)
-        Sym => wrap("Symbol", v)
+        Undef | Null => return self.type_error("Cannot convert undefined or null to object")
+        Bool => self.wrap("Boolean", v)
+        Num => self.wrap("Number", v)
+        Str => self.wrap("String", v)
+        Big => self.wrap("BigInt", v)
+        Sym => self.wrap("Symbol", v)
 
 pub fn Vm.wrap(mut self, class str, v Value) ref JsObject
     o := object(class, proto_of(class))
@@ -276,18 +276,18 @@ pub fn Vm.loose_eq(mut self, a Value, b Value) bool ! Thrown
     if is_nullish(a) or is_nullish(b)
         return is_nullish(a) and is_nullish(b)
     if type_of(a) == "boolean"
-        return loose_eq(Num(to_number(a)?), b)
+        return self.loose_eq(Num(self.to_number(a)?), b)
     if type_of(b) == "boolean"
-        return loose_eq(a, Num(to_number(b)?))
+        return self.loose_eq(a, Num(self.to_number(b)?))
     if is_obj(a) and not is_obj(b)
-        return loose_eq(to_primitive(a, "default")?, b)
+        return self.loose_eq(self.to_primitive(a, "default")?, b)
     if is_obj(b) and not is_obj(a)
-        return loose_eq(a, to_primitive(b, "default")?)
+        return self.loose_eq(a, self.to_primitive(b, "default")?)
     if is_obj(a) or is_obj(b)
         return a == b
     if type_of(a) == "symbol" or type_of(b) == "symbol"
         return false
-    to_number(a)? == to_number(b)?
+    self.to_number(a)? == self.to_number(b)?
 
 ## SameValueZero (§7.2.11): `===` except that NaN equals NaN.
 pub fn same_value_zero(a Value, b Value) bool
@@ -303,16 +303,16 @@ pub fn Vm.less_than(mut self, a Value, b Value, left_first bool) bool? ! Thrown
     mut pa := Value.Undef
     mut pb := Value.Undef
     if left_first
-        pa = to_primitive(a, "number")?
-        pb = to_primitive(b, "number")?
+        pa = self.to_primitive(a, "number")?
+        pb = self.to_primitive(b, "number")?
     else
-        pb = to_primitive(b, "number")?
-        pa = to_primitive(a, "number")?
+        pb = self.to_primitive(b, "number")?
+        pa = self.to_primitive(a, "number")?
     if x := str_of(pa)
         if y := str_of(pb)
             return x < y
-    nx := to_number(pa)?
-    ny := to_number(pb)?
+    nx := self.to_number(pa)?
+    ny := self.to_number(pb)?
     if is_nan(nx) or is_nan(ny)
         return none
     nx < ny
@@ -336,9 +336,9 @@ fn this_scope(env ref Env) ref Env
 ## Declare a `var`: on the global object at the top level (§9.1.1.4.17).
 pub fn Vm.declare_var(mut self, env ref Env, name str)
     scope := var_scope(env)
-    if scope == global_env
-        if global_obj.props.get(name) == none
-            global_obj.props[name] = Prop(
+    if scope == self.global_env
+        if self.global_obj.props.get(name) == none
+            self.global_obj.props[name] = Prop(
                 value: Undef,
                 get: Undef,
                 set: Undef,
@@ -361,18 +361,18 @@ pub fn Vm.lookup(mut self, name str, env ref Env) Value ! Thrown
     while true
         if b := e.vars.get(name)
             if not b.ready
-                return reference_error("Cannot access '{name}' before initialization")
+                return self.reference_error("Cannot access '{name}' before initialization")
             return b.value
-        if name == "arguments" and e.has_this and e.is_function and e != global_env
+        if name == "arguments" and e.has_this and e.is_function and e != self.global_env
             if is_obj(e.func)
-                args := make_arguments(e.args)
+                args := self.make_arguments(e.args)
                 e.vars["arguments"] = Binding(value: args, mutable: true, ready: true)
                 return args
         if o := obj_of(e.object)
             if has_property(o, name)
                 return get_from(o, name, e.object)
         e = e.parent else break
-    return reference_error("{name} is not defined")
+    return self.reference_error("{name} is not defined")
 
 ## `typeof name`: "undefined" for a name that isn't declared (§13.5.3.1).
 pub fn Vm.is_declared(self, name str, env ref Env) bool
@@ -392,19 +392,19 @@ pub fn Vm.assign_name(mut self, name str, v Value, env ref Env) ! Thrown
     while true
         if b := e.vars.get(name)
             if not b.ready
-                return reference_error("Cannot access '{name}' before initialization")
+                return self.reference_error("Cannot access '{name}' before initialization")
             if not b.mutable
-                return type_error("Assignment to constant variable.")
+                return self.type_error("Assignment to constant variable.")
             e.vars[name] = Binding(value: v, mutable: true, ready: true)
             return
         if o := obj_of(e.object)
             if has_property(o, name) or e.parent == none
                 if e.parent == none and not has_property(o, name) and env.strict
-                    return reference_error("{name} is not defined")
+                    return self.reference_error("{name} is not defined")
                 put_obj(o, name, v, e.object)?
                 return
         e = e.parent else break
-    put_obj(global_obj, name, v, Obj(global_obj))?
+    put_obj(self.global_obj, name, v, Obj(global_obj))?
 
 pub fn copy_env(e ref Env) ref Env
     ref Env(
@@ -455,7 +455,7 @@ fn collect_names(p syntax.Pat, mut out List[str])
 ## blocks also get a `var` (Annex B.3.2).
 pub fn Vm.hoist_vars(mut self, body List[syntax.Stmt], env ref Env, top bool)
     for s in body
-        hoist_stmt(s, env, top)
+        self.hoist_stmt(s, env, top)
 
 fn Vm.hoist_stmt(mut self, s syntax.Stmt, env ref Env, top bool)
     match s
@@ -463,46 +463,46 @@ fn Vm.hoist_stmt(mut self, s syntax.Stmt, env ref Env, top bool)
             if d.kind == "var"
                 for decl in d.decls
                     for name in pattern_names(decl.target)
-                        declare_var(env, name)
+                        self.declare_var(env, name)
         FuncDecl(f) =>
             if not top and not env.strict
                 if name := f.name
-                    declare_var(env, name)
+                    self.declare_var(env, name)
         If(_, yes, no, _) =>
-            hoist_stmt(yes, env, false)
+            self.hoist_stmt(yes, env, false)
             if n := no
-                hoist_stmt(n, env, false)
-        Block(b, _) => hoist_vars(b, env, false)
+                self.hoist_stmt(n, env, false)
+        Block(b, _) => self.hoist_vars(b, env, false)
         For(init, _, _, b, _) =>
-            hoist_stmt(b, env, false)
+            self.hoist_stmt(b, env, false)
             if i := init
                 match i
-                    InitDecl(d) => hoist_stmt(syntax.Stmt.Var(d), env, false)
+                    InitDecl(d) => self.hoist_stmt(syntax.Stmt.Var(d), env, false)
                     InitExpr => return
         ForIn(left, _, b, _, _, _) =>
             if d := left_decl(left)
-                hoist_stmt(syntax.Stmt.Var(d), env, false)
-            hoist_stmt(b, env, false)
-        While(_, b, _) => hoist_stmt(b, env, false)
-        DoWhile(b, _, _) => hoist_stmt(b, env, false)
+                self.hoist_stmt(syntax.Stmt.Var(d), env, false)
+            self.hoist_stmt(b, env, false)
+        While(_, b, _) => self.hoist_stmt(b, env, false)
+        DoWhile(b, _, _) => self.hoist_stmt(b, env, false)
         Try(block, _, handler, finalizer, _) =>
-            hoist_vars(block, env, false)
+            self.hoist_vars(block, env, false)
             if h := handler
-                hoist_vars(h, env, false)
+                self.hoist_vars(h, env, false)
             if f := finalizer
-                hoist_vars(f, env, false)
+                self.hoist_vars(f, env, false)
         Switch(_, cases, _) =>
             for c in cases
-                hoist_vars(c.body, env, false)
-        Labeled(_, b, _) => hoist_stmt(b, env, top)
-        With(_, b, _) => hoist_stmt(b, env, false)
+                self.hoist_vars(c.body, env, false)
+        Labeled(_, b, _) => self.hoist_stmt(b, env, top)
+        With(_, b, _) => self.hoist_stmt(b, env, false)
         Exp | ClassDecl | Return | Empty | Break | Continue | Throw | Debugger | Module => return
 
 ## Declare a block's `let`, `const`, `class` and functions (§14.2.3
 ## BlockDeclarationInstantiation): bindings in the dead zone, functions made.
 pub fn Vm.declare_block(mut self, body List[syntax.Stmt], env ref Env) ! Thrown
     for s in body
-        declare_lexical(s, env)?
+        self.declare_lexical(s, env)?
 
 fn Vm.declare_lexical(mut self, s syntax.Stmt, env ref Env) ! Thrown
     match s
@@ -519,25 +519,25 @@ fn Vm.declare_lexical(mut self, s syntax.Stmt, env ref Env) ! Thrown
             if name := c.name
                 env.vars[name] = Binding(value: Undef, mutable: true, ready: false)
         FuncDecl(f) =>
-            fv := make_function(f, env, Undef, "normal")
+            fv := self.make_function(f, env, Undef, "normal")
             name := f.name else ""
-            if env == global_env
-                put_obj(global_obj, name, fv, Obj(global_obj))?
+            if env == self.global_env
+                put_obj(self.global_obj, name, fv, Obj(global_obj))?
             else
                 init_binding(env, name, fv, true)
-        Labeled(_, b, _) => declare_lexical(b, env)?
+        Labeled(_, b, _) => self.declare_lexical(b, env)?
         Exp | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | With | Debugger | Module => return
 
 # ------------------------------------------------------------- statements
 
 ## Run a script (§16.1.6 ScriptEvaluation).
 pub fn Vm.run_program(mut self, prog syntax.Program) Value ! Thrown
-    global_env.strict = prog.strict
-    hoist_vars(prog.body, global_env, true)
-    declare_block(prog.body, global_env)?
+    self.global_env.strict = prog.strict
+    self.hoist_vars(prog.body, self.global_env, true)
+    self.declare_block(prog.body, self.global_env)?
     mut last := Value.Undef
     for s in prog.body
-        f := exec(s, global_env)?
+        f := self.exec(s, self.global_env)?
         if v := returned(f)
             last = v
     last
@@ -557,15 +557,15 @@ fn needs_scope(body List[syntax.Stmt]) bool
 
 ## The statements of a block, in `env` (made by the caller).
 pub fn Vm.exec_block(mut self, body List[syntax.Stmt], env ref Env) Flow ! Thrown
-    declare_block(body, env)?
+    self.declare_block(body, env)?
     for s in body
-        f := exec(s, env)?
+        f := self.exec(s, env)?
         if f != Normal
             return f
     Normal
 
 pub fn Vm.exec(mut self, s syntax.Stmt, env ref Env) Flow ! Thrown
-    exec_in(s, env, [])
+    self.exec_in(s, env, [])
 
 ## What a loop does with its body's completion: "next", "break", or "out"
 ## (leave the loop with it) (§14.7.1.1 LoopContinues).
@@ -578,56 +578,56 @@ fn loop_action(f Flow, labels List[str]) str
 
 ## A statement with the labels in front of it (§14.13).
 fn Vm.exec_in(mut self, s syntax.Stmt, env ref Env, labels List[str]) Flow ! Thrown
-    tick()?
-    if trace
-        cur_pos = stmt_pos(s)
+    self.tick()?
+    if self.trace
+        self.cur_pos = stmt_pos(s)
     match s
         Exp(e, _) =>
-            eval(e, env)?
+            self.eval(e, env)?
             Normal
         Var(d) =>
-            var_decl(d, env)?
+            self.var_decl(d, env)?
             Normal
         FuncDecl(f) =>
             # Annex B.3.2.1: a sloppy block function is also copied to its `var`.
             if not env.is_function and not env.strict
                 if name := f.name
-                    v := lookup(name, env)?
+                    v := self.lookup(name, env)?
                     scope := var_scope(env)
-                    if scope == global_env
-                        put_obj(global_obj, name, v, Obj(global_obj))?
+                    if scope == self.global_env
+                        put_obj(self.global_obj, name, v, Obj(global_obj))?
                     else
                         init_binding(scope, name, v, true)
             Normal
         ClassDecl(c) =>
-            v := make_class(c, env)?
+            v := self.make_class(c, env)?
             init_binding(env, c.name else "", v, true)
             Normal
         Return(value, _) =>
             if v := value
-                return Ret(eval(v, env)?)
+                return Ret(self.eval(v, env)?)
             Ret(Undef)
         If(test, yes, no, _) =>
-            if truthy(eval(test, env)?)
-                return exec(yes, env)
+            if truthy(self.eval(test, env)?)
+                return self.exec(yes, env)
             if n := no
-                return exec(n, env)
+                return self.exec(n, env)
             Normal
         Block(body, _) =>
             if needs_scope(body)
-                return exec_block(body, new_env(env, false))
+                return self.exec_block(body, new_env(env, false))
             for st in body
-                f := exec(st, env)?
+                f := self.exec(st, env)?
                 if f != Normal
                     return f
             Normal
         Empty => Normal
         Debugger | Module => Normal
-        For(init, test, update, body, _) => for_loop(init, test, update, body, env, labels)
-        ForIn(left, right, body, of, _, _) => for_in(left, right, body, of, env, labels)
+        For(init, test, update, body, _) => self.for_loop(init, test, update, body, env, labels)
+        ForIn(left, right, body, of, _, _) => self.for_in(left, right, body, of, env, labels)
         While(test, body, _) =>
-            while truthy(eval(test, env)?)
-                f := exec(body, env)?
+            while truthy(self.eval(test, env)?)
+                f := self.exec(body, env)?
                 act := loop_action(f, labels)
                 if act == "break"
                     break
@@ -636,30 +636,30 @@ fn Vm.exec_in(mut self, s syntax.Stmt, env ref Env, labels List[str]) Flow ! Thr
             Normal
         DoWhile(body, test, _) =>
             while true
-                f := exec(body, env)?
+                f := self.exec(body, env)?
                 act := loop_action(f, labels)
                 if act == "break"
                     break
                 if act == "out"
                     return f
-                if not truthy(eval(test, env)?)
+                if not truthy(self.eval(test, env)?)
                     break
             Normal
         Break(label, _) => Brk(label else "")
         Continue(label, _) => Cont(label else "")
-        Throw(value, _) => return thrown(eval(value, env)?)
-        Try(block, param, handler, finalizer, _) => try_statement(
+        Throw(value, _) => return self.thrown(self.eval(value, env)?)
+        Try(block, param, handler, finalizer, _) => self.try_statement(
             block,
             param,
             handler,
             finalizer,
             env,
         )
-        Switch(disc, cases, _) => switch_statement(disc, cases, env)
+        Switch(disc, cases, _) => self.switch_statement(disc, cases, env)
         Labeled(label, body, _) =>
             mut inner := labels
             inner.push(label)
-            f := exec_in(body, env, inner)?
+            f := self.exec_in(body, env, inner)?
             match f
                 Brk(l) =>
                     if l == label
@@ -667,19 +667,19 @@ fn Vm.exec_in(mut self, s syntax.Stmt, env ref Env, labels List[str]) Flow ! Thr
                     f
                 Normal | Ret | Cont => f
         With(object, body, _) =>
-            o := to_object(eval(object, env)?)?
+            o := self.to_object(self.eval(object, env)?)?
             w := new_env(env, false)
             w.object = Obj(o)
-            exec(body, w)
+            self.exec(body, w)
 
 ## `var`, `let` and `const` declarations (§14.3.1.2, §14.3.2.1).
 fn Vm.var_decl(mut self, d syntax.VarDecl, env ref Env) ! Thrown
     for decl in d.decls
         if init := decl.init
-            v := eval_named(init, single_name(decl.target), env)?
-            bind_pattern(decl.target, v, env, d.kind)?
+            v := self.eval_named(init, single_name(decl.target), env)?
+            self.bind_pattern(decl.target, v, env, d.kind)?
         elif d.kind != "var"
-            bind_pattern(decl.target, Undef, env, d.kind)?
+            self.bind_pattern(decl.target, Undef, env, d.kind)?
 
 fn single_name(p syntax.Pat) str
     match p
@@ -701,17 +701,17 @@ fn Vm.for_loop(
         match i
             InitDecl(d) =>
                 if d.kind != "var"
-                    declare_lexical(syntax.Stmt.Var(d), loop_env)?
+                    self.declare_lexical(syntax.Stmt.Var(d), loop_env)?
                     per_iteration = d.kind == "let"
-                var_decl(d, loop_env)?
-            InitExpr(e) => eval(e, loop_env)?
+                self.var_decl(d, loop_env)?
+            InitExpr(e) => self.eval(e, loop_env)?
     # §14.7.4.4 CreatePerIterationEnvironment: closures see each turn's `let`.
     mut iter_env := if per_iteration then copy_env(loop_env) else loop_env
     while true
         if t := test
-            if not truthy(eval(t, iter_env)?)
+            if not truthy(self.eval(t, iter_env)?)
                 break
-        f := exec(body, iter_env)?
+        f := self.exec(body, iter_env)?
         act := loop_action(f, labels)
         if act == "break"
             break
@@ -720,7 +720,7 @@ fn Vm.for_loop(
         if per_iteration
             iter_env = copy_env(iter_env)
         if u := update
-            eval(u, iter_env)?
+            self.eval(u, iter_env)?
     Normal
 
 ## `for-in` and `for-of` (§14.7.5).
@@ -737,11 +737,11 @@ fn Vm.for_in(
     if d := left_decl(left)
         if d.kind != "var"
             head_env = new_env(env, false)
-            declare_lexical(syntax.Stmt.Var(d), head_env)?
+            self.declare_lexical(syntax.Stmt.Var(d), head_env)?
         elif decl_init(d) != none
             # Annex B.3.5: `for (var x = 1 in o)` assigns first.
-            var_decl(d, env)?
-    subject := eval(right, head_env)?
+            self.var_decl(d, env)?
+    subject := self.eval(right, head_env)?
     mut items := List[Value]()
     if of
         if o := obj_of(subject)
@@ -751,16 +751,16 @@ fn Vm.for_in(
                 or o.class == "Iterator" and o.props.get(ITERATOR) == none
             if not eager
                 it := open_iterator(subject)?
-                return for_of_lazy(left, it, body, env, labels)
+                return self.for_of_lazy(left, it, body, env, labels)
         items = iterate(subject)?
     else
         match subject
             Undef | Null => return Normal
             Bool | Num | Str | Big | Sym | Obj =>
-                for k in for_in_keys(to_object(subject)?)
+                for k in for_in_keys(self.to_object(subject)?)
                     items.push(Str(k))
     for item in items
-        f := loop_turn(left, item, body, env)?
+        f := self.loop_turn(left, item, body, env)?
         act := loop_action(f, labels)
         if act == "break"
             break
@@ -778,9 +778,9 @@ fn Vm.loop_turn(
 ) Flow ! Thrown
     iter_env := new_env(env, false)
     match left
-        LeftDecl(d) => bind_pattern(d.decls[0].target, item, iter_env, d.kind)?
-        LeftPat(p) => bind_pattern(p, item, iter_env, "assign")?
-    exec(body, iter_env)
+        LeftDecl(d) => self.bind_pattern(d.decls[0].target, item, iter_env, d.kind)?
+        LeftPat(p) => self.bind_pattern(p, item, iter_env, "assign")?
+    self.exec(body, iter_env)
 
 ## `for-of` over an iterator that is stepped as the loop goes, so it may be
 ## endless; leaving early closes it (§7.4.11 IteratorClose).
@@ -794,23 +794,23 @@ fn Vm.for_of_lazy(
 ) Flow ! Thrown
     next := get(it, "next")?
     while true
-        r := call(next, it, [])?
+        r := self.call(next, it, [])?
         if not is_obj(r)
-            return type_error("Iterator result {describe(r)} is not an object")
+            return self.type_error("Iterator result {describe(r)} is not an object")
         if truthy(get(r, "done")?)
             break
         item := get(r, "value")?
-        f := loop_turn(left, item, body, env) else err
+        f := self.loop_turn(left, item, body, env) else err
             if not err.limit
-                close_iterator(it) else ignored
+                self.close_iterator(it) else ignored
                     return err
             return err
         act := loop_action(f, labels)
         if act == "break"
-            close_iterator(it)?
+            self.close_iterator(it)?
             break
         if act == "out"
-            close_iterator(it)?
+            self.close_iterator(it)?
             return f
     Normal
 
@@ -819,9 +819,9 @@ pub fn Vm.close_iterator(mut self, it Value) ! Thrown
     m := get(it, "return")?
     if is_nullish(m)
         return
-    r := call(m, it, [])?
+    r := self.call(m, it, [])?
     if not is_obj(r)
-        return type_error("Iterator result {describe(r)} is not an object")
+        return self.type_error("Iterator result {describe(r)} is not an object")
 
 fn decl_init(d syntax.VarDecl) syntax.Expr?
     if d.decls.len() == 0
@@ -839,7 +839,7 @@ fn Vm.try_statement(
 ) Flow ! Thrown
     mut flow := Flow.Normal
     mut failed := none
-    if f := exec_block(block, new_env(env, false))
+    if f := self.exec_block(block, new_env(env, false))
         flow = f
     else err
         if err.limit or handler == none
@@ -849,8 +849,8 @@ fn Vm.try_statement(
             if p := param
                 for name in pattern_names(p)
                     catch_env.vars[name] = Binding(value: Undef, mutable: true, ready: true)
-                bind_pattern(p, err.value, catch_env, "let")?
-            if f2 := exec_block(h, new_env(catch_env, false))
+                self.bind_pattern(p, err.value, catch_env, "let")?
+            if f2 := self.exec_block(h, new_env(catch_env, false))
                 flow = f2
             else err2
                 failed = err2
@@ -858,7 +858,7 @@ fn Vm.try_statement(
         if e := failed
             if e.limit
                 return e
-        f3 := exec_block(fin, new_env(env, false))?
+        f3 := self.exec_block(fin, new_env(env, false))?
         if f3 != Normal
             return f3
     if e := failed
@@ -872,14 +872,14 @@ fn Vm.switch_statement(
     cases List[syntax.Case],
     env ref Env,
 ) Flow ! Thrown
-    v := eval(disc, env)?
+    v := self.eval(disc, env)?
     block := new_env(env, false)
     for c in cases
-        declare_block(c.body, block)?
+        self.declare_block(c.body, block)?
     mut start := -1
     for i in 0..cases.len()
         if t := cases[i].test
-            if eval(t, block)? == v
+            if self.eval(t, block)? == v
                 start = i
                 break
     if start < 0
@@ -890,7 +890,7 @@ fn Vm.switch_statement(
         return Normal
     for i in start..cases.len()
         for s in cases[i].body
-            f := exec(s, block)?
+            f := self.exec(s, block)?
             if f == Brk("")
                 return Normal
             if f != Normal
@@ -908,54 +908,54 @@ pub fn Vm.bind_pattern(mut self, p syntax.Pat, v Value, env ref Env, mode str) !
             if mode == "let" or mode == "const" or mode == "param"
                 init_binding(env, name, v, mode != "const")
             else
-                assign_name(name, v, env)?
-        PatTarget(e) => assign_to(e, v, env)?
+                self.assign_name(name, v, env)?
+        PatTarget(e) => self.assign_to(e, v, env)?
         PatDefault(target, value, _) =>
             mut actual := v
             if v == Undef
-                actual = eval_named(value, single_name(target), env)?
-            bind_pattern(target, actual, env, mode)?
+                actual = self.eval_named(value, single_name(target), env)?
+            self.bind_pattern(target, actual, env, mode)?
         PatArr(items, rest, _) =>
             if is_nullish(v)
-                return type_error("{describe(v)} is not iterable")
+                return self.type_error("{describe(v)} is not iterable")
             xs := iterate(v)?
             for i in 0..items.len()
                 if item := items[i]
                     x := if i < xs.len() then xs[i] else Undef
-                    bind_pattern(item, x, env, mode)?
+                    self.bind_pattern(item, x, env, mode)?
             if r := rest
                 tail := if items.len() < xs.len() then xs[items.len()..] else List[Value]()
-                bind_pattern(r, array(tail), env, mode)?
+                self.bind_pattern(r, array(tail), env, mode)?
         PatObj(props, rest, _) =>
             if is_nullish(v)
-                return type_error("Cannot destructure '{describe(v)}' as it is {describe(v)}.")
+                return self.type_error("Cannot destructure '{describe(v)}' as it is {describe(v)}.")
             mut used := List[str]()
             for prop in props
-                key := prop_key(prop.key, env)?
+                key := self.prop_key(prop.key, env)?
                 used.push(key)
-                bind_pattern(prop.value, get(v, key)?, env, mode)?
+                self.bind_pattern(prop.value, get(v, key)?, env, mode)?
             if r := rest
                 copy := plain()
-                src := to_object(v)?
+                src := self.to_object(v)?
                 for k in enum_keys(src)
                     if not used.contains(k)
                         copy.props[k] = data(get(v, k)?)
-                bind_pattern(r, Obj(copy), env, mode)?
+                self.bind_pattern(r, Obj(copy), env, mode)?
 
 ## Assign to an assignment target expression: a name or a property.
 fn Vm.assign_to(mut self, target syntax.Expr, v Value, env ref Env) ! Thrown
     match target
-        Ident(name, _) => assign_name(name, v, env)?
-        Paren(inner, _) => assign_to(inner, v, env)?
+        Ident(name, _) => self.assign_name(name, v, env)?
+        Paren(inner, _) => self.assign_to(inner, v, env)?
         Member(object, prop, computed, _, _) =>
-            base := member_base(object, env)?
-            key := member_key(prop, computed, env)?
+            base := self.member_base(object, env)?
+            key := self.member_key(prop, computed, env)?
             put(base, key, v)?
         Num | Str | Big | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
-            return syntax_error("Invalid left-hand side in assignment")
+            return self.syntax_error("Invalid left-hand side in assignment")
 
 pub fn Vm.syntax_error(mut self, msg str) Thrown
-    throw_error("SyntaxError", msg)
+    self.throw_error("SyntaxError", msg)
 
 ## A property name: `a`, `"a"`, `1`, `[expr]` or `#a`.
 fn Vm.prop_key(mut self, k syntax.Key, env ref Env) str ! Thrown
@@ -963,7 +963,7 @@ fn Vm.prop_key(mut self, k syntax.Key, env ref Env) str ! Thrown
         KeyName(name, _) => name
         KeyStr(value, _) => value
         KeyNum(value, _) => syntax.number_to_string(value)
-        Computed(e, _) => to_key(eval(e, env)?)?
+        Computed(e, _) => self.to_key(self.eval(e, env)?)?
         KeyPriv(name, _) => "{PRIVATE}{name}"
 
 # ----------------------------------------------------------- expressions
@@ -971,7 +971,7 @@ fn Vm.prop_key(mut self, k syntax.Key, env ref Env) str ! Thrown
 ## An expression that names an anonymous function after its target
 ## (§8.4.5 NamedEvaluation): `var f = function () {}` makes `f.name` "f".
 fn Vm.eval_named(mut self, e syntax.Expr, name str, env ref Env) Value ! Thrown
-    v := eval(e, env)?
+    v := self.eval(e, env)?
     if name != "" and is_anonymous_fn(e)
         set_fn_name(v, name)
     v
@@ -1006,25 +1006,25 @@ pub fn Vm.eval(mut self, e syntax.Expr, env ref Env) Value ! Thrown
         Str(value, _) => Value.Str(value)
         Big(digits, _) =>
             b := bigint.parse(digits) else err
-                return syntax_error("Invalid BigInt literal")
+                return self.syntax_error("Invalid BigInt literal")
             Value.Big(b)
         Bool(value, _) => Value.Bool(value)
         Null => Value.Null
         Ident(name, _) =>
             if name == "undefined"
                 return Undef
-            lookup(name, env)
-        This => this_value(env)
+            self.lookup(name, env)
+        This => self.this_value(env)
         Template(quasis, exprs, _) =>
             mut out := quasis[0].cooked else ""
             for i in 0..exprs.len()
-                part := to_string(eval(exprs[i], env)?)?
+                part := self.to_string(self.eval(exprs[i], env)?)?
                 rest := quasis[i + 1].cooked else ""
                 out = "{out}{part}{rest}"
             Value.Str(out)
         Tagged(tag, quasis, exprs, _) =>
-            target := callee_of(tag, env)?
-            if chain_shorted
+            target := self.callee_of(tag, env)?
+            if self.chain_shorted
                 return Undef
             mut cooked := List[Value]()
             mut raws := List[Value]()
@@ -1036,120 +1036,120 @@ pub fn Vm.eval(mut self, e syntax.Expr, env ref Env) Value ! Thrown
                 so.props["raw"] = hidden(array(raws))
             mut args := [strings]
             for x in exprs
-                args.push(eval(x, env)?)
-            call_named(target.f, target.this_val, args, tag)
-        Regex(pattern, flags, _) => make_regexp(pattern, flags)
+                args.push(self.eval(x, env)?)
+            self.call_named(target.f, target.this_val, args, tag)
+        Regex(pattern, flags, _) => self.make_regexp(pattern, flags)
         Array(items, _, _) =>
             mut out := List[Value]()
             for item in items
                 if x := item
                     if operand := spread_of(x)
-                        out.extend(iterate(eval(operand, env)?)?)
+                        out.extend(iterate(self.eval(operand, env)?)?)
                     else
-                        out.push(eval(x, env)?)
+                        out.push(self.eval(x, env)?)
                 else
                     out.push(Undef)
             array(out)
-        Object(props, _) => object_literal(props, env)
+        Object(props, _) => self.object_literal(props, env)
         Function(f) =>
             if name := f.name
                 # A named function expression sees its own name (§15.2.5).
                 inner := new_env(env, false)
-                fv := make_function(f, inner, Undef, "normal")
+                fv := self.make_function(f, inner, Undef, "normal")
                 init_binding(inner, name, fv, false)
                 return fv
-            make_function(f, env, Undef, "normal")
-        Arrow(f) => make_function(f, env, Undef, "arrow")
-        ClassExpr(c) => make_class(c, env)
-        Unary(op, operand, _) => unary(op, operand, env)
+            self.make_function(f, env, Undef, "normal")
+        Arrow(f) => self.make_function(f, env, Undef, "arrow")
+        ClassExpr(c) => self.make_class(c, env)
+        Unary(op, operand, _) => self.unary(op, operand, env)
         Update(op, prefix, operand, _) =>
-            cur := eval(operand, env)?
+            cur := self.eval(operand, env)?
             if is_big_val(cur)
                 stepped := big_step(cur, op)
-                assign_to(operand, stepped, env)?
+                self.assign_to(operand, stepped, env)?
                 return if prefix then stepped else cur
-            old := to_number(cur)?
+            old := self.to_number(cur)?
             v := if op == "++" then old + 1.0 else old - 1.0
-            assign_to(operand, Num(v), env)?
+            self.assign_to(operand, Num(v), env)?
             Value.Num(if prefix then v else old)
         Binary(op, left, right, _) =>
-            a := eval(left, env)?
-            b := eval(right, env)?
-            binary(op, a, b)
+            a := self.eval(left, env)?
+            b := self.eval(right, env)?
+            self.binary(op, a, b)
         Logical(op, left, right, _) =>
-            a := eval(left, env)?
+            a := self.eval(left, env)?
             if op == "&&"
-                return if truthy(a) then eval(right, env)? else a
+                return if truthy(a) then self.eval(right, env)? else a
             if op == "||"
-                return if truthy(a) then a else eval(right, env)?
-            if is_nullish(a) then eval(right, env)? else a
-        Assign(op, target, value, _) => assignment(op, target, value, env)
+                return if truthy(a) then a else self.eval(right, env)?
+            if is_nullish(a) then self.eval(right, env)? else a
+        Assign(op, target, value, _) => self.assignment(op, target, value, env)
         Cond(test, yes, no, _) =>
-            if truthy(eval(test, env)?)
-                return eval(yes, env)
-            eval(no, env)
+            if truthy(self.eval(test, env)?)
+                return self.eval(yes, env)
+            self.eval(no, env)
         Call(callee, args, optional, _) =>
             if syntax.expr_kind(callee) == "Super"
-                return super_call(args, env)
-            target := callee_of(callee, env)?
-            if chain_shorted
+                return self.super_call(args, env)
+            target := self.callee_of(callee, env)?
+            if self.chain_shorted
                 return Undef
             if optional and is_nullish(target.f)
-                chain_shorted = true
+                self.chain_shorted = true
                 return Undef
-            xs := eval_args(args, env)?
+            xs := self.eval_args(args, env)?
             if is_direct_eval(callee, target.f)
                 return direct_eval(arg_at(xs, 0), env)
-            call_named(target.f, target.this_val, xs, callee)
+            self.call_named(target.f, target.this_val, xs, callee)
         New(callee, args, _) =>
-            f := eval(callee, env)?
-            xs := eval_args(args, env)?
-            if not is_constructor(f)
-                return type_error("{expr_text(callee)} is not a constructor")
-            construct(f, xs, f)
+            f := self.eval(callee, env)?
+            xs := self.eval_args(args, env)?
+            if not self.is_constructor(f)
+                return self.type_error("{expr_text(callee)} is not a constructor")
+            self.construct(f, xs, f)
         Member(object, prop, computed, optional, _) =>
-            base := member_base(object, env)?
-            if chain_shorted
+            base := self.member_base(object, env)?
+            if self.chain_shorted
                 return Undef
             if optional and is_nullish(base)
-                chain_shorted = true
+                self.chain_shorted = true
                 return Undef
-            key := member_key(prop, computed, env)?
+            key := self.member_key(prop, computed, env)?
             if syntax.expr_kind(object) == "Super"
-                return get_super(key, env)
+                return self.get_super(key, env)
             get(base, key)
         Seq(items, _) =>
             mut last := Value.Undef
             for x in items
-                last = eval(x, env)?
+                last = self.eval(x, env)?
             last
         Chain(inner, _) =>
-            v := eval(inner, env)?
-            chain_shorted = false
+            v := self.eval(inner, env)?
+            self.chain_shorted = false
             v
-        Paren(inner, _) => eval(inner, env)
+        Paren(inner, _) => self.eval(inner, env)
         NewTarget => this_scope(env).new_target
-        Super => return syntax_error("'super' keyword unexpected here")
-        Spread => return syntax_error("Unexpected token '...'")
+        Super => return self.syntax_error("'super' keyword unexpected here")
+        Spread => return self.syntax_error("Unexpected token '...'")
         PrivName(name, _) => Value.Str("{PRIVATE}{name}")
-        Yield | Await => return syntax_error("yield and await run only in compiled code")
+        Yield | Await => return self.syntax_error("yield and await run only in compiled code")
         Import(arg, opts, _) => import_expr(arg, opts, env)
 
 ## The object a member expression reads from; `super.x` reads from the
 ## home object's prototype (§13.3.7.1).
 fn Vm.member_base(mut self, object syntax.Expr, env ref Env) Value ! Thrown
     if syntax.expr_kind(object) == "Super"
-        return this_value(env)
-    eval(object, env)
+        return self.this_value(env)
+    self.eval(object, env)
 
 fn Vm.member_key(mut self, prop syntax.Expr, computed bool, env ref Env) str ! Thrown
     if computed
-        return to_key(eval(prop, env)?)
+        return self.to_key(self.eval(prop, env)?)
     match prop
         Ident(name, _) => name
         PrivName(name, _) => "{PRIVATE}{name}"
         Num | Str | Big | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | Paren | Yield | Await =>
-            to_key(eval(prop, env)?)
+            self.to_key(self.eval(prop, env)?)
 
 ## `super[key]` with the current `this` as the receiver.
 fn Vm.get_super(mut self, key str, env ref Env) Value ! Thrown
@@ -1157,37 +1157,37 @@ fn Vm.get_super(mut self, key str, env ref Env) Value ! Thrown
     match home
         Obj(h) =>
             match h.proto
-                Obj(p) => get_from(p, key, this_value(env)?)
+                Obj(p) => get_from(p, key, self.this_value(env)?)
                 Undef | Null | Bool | Num | Str | Big | Sym => Undef
-        Undef | Null | Bool | Num | Str | Big | Sym => return syntax_error("'super' keyword unexpected here")
+        Undef | Null | Bool | Num | Str | Big | Sym => return self.syntax_error("'super' keyword unexpected here")
 
 ## `this` (§9.4.4 ResolveThisBinding).
 fn Vm.this_value(mut self, env ref Env) Value ! Thrown
     scope := this_scope(env)
     if not scope.this_ready
-        return reference_error("Must call super constructor in derived class before accessing 'this' or returning from derived constructor")
+        return self.reference_error("Must call super constructor in derived class before accessing 'this' or returning from derived constructor")
     scope.this_val
 
 ## The function a call calls, and its `this`: `a.b()` calls with `a`.
 fn Vm.callee_of(mut self, callee syntax.Expr, env ref Env) Callee ! Thrown
     match callee
         Member(object, prop, computed, optional, _) =>
-            base := member_base(object, env)?
-            if chain_shorted
+            base := self.member_base(object, env)?
+            if self.chain_shorted
                 return Callee(f: Undef, this_val: Undef)
             if optional and is_nullish(base)
-                chain_shorted = true
+                self.chain_shorted = true
                 return Callee(f: Undef, this_val: Undef)
-            key := member_key(prop, computed, env)?
+            key := self.member_key(prop, computed, env)?
             if syntax.expr_kind(object) == "Super"
-                return Callee(f: get_super(key, env)?, this_val: base)
+                return Callee(f: self.get_super(key, env)?, this_val: base)
             Callee(f: get(base, key)?, this_val: base)
         Paren(inner, _) =>
             if syntax.expr_kind(inner) == "Member"
-                return callee_of(inner, env)
-            Callee(f: eval(inner, env)?, this_val: Undef)
+                return self.callee_of(inner, env)
+            Callee(f: self.eval(inner, env)?, this_val: Undef)
         Num | Str | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
-            Callee(f: eval(callee, env)?, this_val: Undef)
+            Callee(f: self.eval(callee, env)?, this_val: Undef)
 
 ## Call, naming the callee in the error when it isn't a function.
 fn Vm.call_named(
@@ -1198,17 +1198,17 @@ fn Vm.call_named(
     callee syntax.Expr,
 ) Value ! Thrown
     if not is_callable(f)
-        return type_error("{expr_text(callee)} is not a function")
-    call(f, this_val, args)
+        return self.type_error("{expr_text(callee)} is not a function")
+    self.call(f, this_val, args)
 
 ## Arguments, with spreads expanded.
 fn Vm.eval_args(mut self, args List[syntax.Expr], env ref Env) List[Value] ! Thrown
     mut out := List[Value]()
     for a in args
         if operand := spread_of(a)
-            out.extend(iterate(eval(operand, env)?)?)
+            out.extend(iterate(self.eval(operand, env)?)?)
         else
-            out.push(eval(a, env)?)
+            out.push(self.eval(a, env)?)
     out
 
 ## Source-like text of an expression for error messages, as V8 writes it.
@@ -1235,21 +1235,21 @@ pub fn expr_text(e syntax.Expr) str
 fn Vm.unary(mut self, op str, operand syntax.Expr, env ref Env) Value ! Thrown
     if op == "typeof"
         if name := ident_name(operand)
-            if not is_declared(name, env)
+            if not self.is_declared(name, env)
                 return Value.Str("undefined")
-        return Value.Str(type_of(eval(operand, env)?))
+        return Value.Str(type_of(self.eval(operand, env)?))
     if op == "delete"
-        return Value.Bool(delete_expr(operand, env)?)
-    v := eval(operand, env)?
+        return Value.Bool(self.delete_expr(operand, env)?)
+    v := self.eval(operand, env)?
     if is_big_val(v) and (op == "-" or op == "~" or op == "+")
         return big_unary(op, v)
     match op
         "!" => Value.Bool(not truthy(v))
-        "-" => Value.Num(-to_number(v)?)
-        "+" => Value.Num(to_number(v)?)
-        "~" => Value.Num(to_int32(to_number(v)?).bit_not().to_float())
+        "-" => Value.Num(-self.to_number(v)?)
+        "+" => Value.Num(self.to_number(v)?)
+        "~" => Value.Num(to_int32(self.to_number(v)?).bit_not().to_float())
         "void" => Undef
-        _ => return syntax_error("Unknown operator {op}")
+        _ => return self.syntax_error("Unknown operator {op}")
 
 fn ident_name(e syntax.Expr) str?
     match e
@@ -1262,21 +1262,21 @@ fn ident_name(e syntax.Expr) str?
 fn Vm.delete_expr(mut self, operand syntax.Expr, env ref Env) bool ! Thrown
     match operand
         Member(object, prop, computed, _, _) =>
-            base := eval(object, env)?
-            key := member_key(prop, computed, env)?
-            o := to_object(base)?
+            base := self.eval(object, env)?
+            key := self.member_key(prop, computed, env)?
+            o := self.to_object(base)?
             ok := if o.class == "Proxy" then proxy_delete(o, key)? else delete(o, key)
             if not ok and env.strict
-                return type_error("Cannot delete property '{key}' of {describe(base)}")
+                return self.type_error("Cannot delete property '{key}' of {describe(base)}")
             ok
-        Paren(inner, _) => delete_expr(inner, env)
+        Paren(inner, _) => self.delete_expr(inner, env)
         Chain(inner, _) =>
-            r := delete_expr(inner, env)?
-            chain_shorted = false
+            r := self.delete_expr(inner, env)?
+            self.chain_shorted = false
             r
         Ident => false
         Num | Str | Big | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | PrivName | Yield | Await =>
-            eval(operand, env)?
+            self.eval(operand, env)?
             true
 
 ## Binary operators (§13.6-§13.12).
@@ -1305,82 +1305,82 @@ pub fn Vm.binary(mut self, op str, a Value, b Value) Value ! Thrown
                                 and y.floor() == y
                                 return Value.Num((x.to_int() % y.to_int()).to_float())
                             return Value.Num(fmod(x, y))
-                        _ => return binary_slow(op, a, b)
-                Undef | Null | Bool | Str | Big | Sym | Obj => return binary_slow(op, a, b)
-        Undef | Null | Bool | Str | Big | Sym | Obj => return binary_slow(op, a, b)
+                        _ => return self.binary_slow(op, a, b)
+                Undef | Null | Bool | Str | Big | Sym | Obj => return self.binary_slow(op, a, b)
+        Undef | Null | Bool | Str | Big | Sym | Obj => return self.binary_slow(op, a, b)
 
 fn Vm.binary_slow(mut self, op str, a Value, b Value) Value ! Thrown
     if (is_big_val(a) or is_big_val(b)) and big_op(op)
         return big_binary(op, a, b)
     match op
         "+" =>
-            pa := to_primitive(a, "default")?
-            pb := to_primitive(b, "default")?
+            pa := self.to_primitive(a, "default")?
+            pb := self.to_primitive(b, "default")?
             if type_of(pa) == "string" or type_of(pb) == "string"
-                return Value.Str("{to_string(pa)?}{to_string(pb)?}")
-            Value.Num(to_number(pa)? + to_number(pb)?)
-        "-" => Value.Num(to_number(a)? - to_number(b)?)
-        "*" => Value.Num(to_number(a)? * to_number(b)?)
-        "/" => Value.Num(to_number(a)? / to_number(b)?)
-        "%" => Value.Num(fmod(to_number(a)?, to_number(b)?))
-        "**" => Value.Num(pow(to_number(a)?, to_number(b)?))
-        "==" => Value.Bool(loose_eq(a, b)?)
-        "!=" => Value.Bool(not loose_eq(a, b)?)
+                return Value.Str("{self.to_string(pa)?}{self.to_string(pb)?}")
+            Value.Num(self.to_number(pa)? + self.to_number(pb)?)
+        "-" => Value.Num(self.to_number(a)? - self.to_number(b)?)
+        "*" => Value.Num(self.to_number(a)? * self.to_number(b)?)
+        "/" => Value.Num(self.to_number(a)? / self.to_number(b)?)
+        "%" => Value.Num(fmod(self.to_number(a)?, self.to_number(b)?))
+        "**" => Value.Num(pow(self.to_number(a)?, self.to_number(b)?))
+        "==" => Value.Bool(self.loose_eq(a, b)?)
+        "!=" => Value.Bool(not self.loose_eq(a, b)?)
         "===" => Value.Bool(a == b)
         "!==" => Value.Bool(a != b)
-        "<" => Value.Bool(less_than(a, b, true)? else false)
-        ">" => Value.Bool(less_than(b, a, false)? else false)
+        "<" => Value.Bool(self.less_than(a, b, true)? else false)
+        ">" => Value.Bool(self.less_than(b, a, false)? else false)
         "<=" =>
-            r := less_than(b, a, false)?
+            r := self.less_than(b, a, false)?
             Value.Bool(r == false)
         ">=" =>
-            r := less_than(a, b, true)?
+            r := self.less_than(a, b, true)?
             Value.Bool(r == false)
-        "&" => Value.Num(to_int32(to_number(a)?).bit_and(to_int32(to_number(b)?)).to_float())
-        "|" => Value.Num(to_int32(to_number(a)?).bit_or(to_int32(to_number(b)?)).to_float())
-        "^" => Value.Num(to_int32(to_number(a)?).bit_xor(to_int32(to_number(b)?)).to_float())
+        "&" => Value.Num(to_int32(self.to_number(a)?).bit_and(to_int32(self.to_number(b)?)).to_float())
+        "|" => Value.Num(to_int32(self.to_number(a)?).bit_or(to_int32(self.to_number(b)?)).to_float())
+        "^" => Value.Num(to_int32(self.to_number(a)?).bit_xor(to_int32(self.to_number(b)?)).to_float())
         "<<" =>
-            x := to_int32(to_number(a)?)
-            k := to_uint32(to_number(b)?).bit_and(31)
+            x := to_int32(self.to_number(a)?)
+            k := to_uint32(self.to_number(b)?).bit_and(31)
             Value.Num(to_int32(x.shl(k).bit_and(0xFFFFFFFF).to_float()).to_float())
         ">>" =>
-            x := to_int32(to_number(a)?)
-            k := to_uint32(to_number(b)?).bit_and(31)
+            x := to_int32(self.to_number(a)?)
+            k := to_uint32(self.to_number(b)?).bit_and(31)
             Value.Num(x.shr(k).to_float())
         ">>>" =>
-            x := to_uint32(to_number(a)?)
-            k := to_uint32(to_number(b)?).bit_and(31)
+            x := to_uint32(self.to_number(a)?)
+            k := to_uint32(self.to_number(b)?).bit_and(31)
             Value.Num(x.shr(k).to_float())
-        "instanceof" => Value.Bool(instance_of(a, b)?)
+        "instanceof" => Value.Bool(self.instance_of(a, b)?)
         "in" =>
             match b
                 Obj(o) =>
-                    key := to_key(a)?
+                    key := self.to_key(a)?
                     if o.class == "Proxy"
                         return Value.Bool(proxy_has(o, key)?)
                     Value.Bool(has_property(o, key))
                 Undef | Null | Bool | Num | Str | Big | Sym =>
-                    return type_error("Cannot use 'in' operator to search for '{to_string(a)?}' in {to_string(b)?}")
-        _ => return syntax_error("Unknown operator {op}")
+                    return self.type_error("Cannot use 'in' operator to search for '{self.to_string(a)?}' in {self.to_string(b)?}")
+        _ => return self.syntax_error("Unknown operator {op}")
 
 ## InstanceofOperator (§13.10.2).
 pub fn Vm.instance_of(mut self, v Value, target Value) bool ! Thrown
     if not is_obj(target)
-        return type_error("Right-hand side of 'instanceof' is not an object")
+        return self.type_error("Right-hand side of 'instanceof' is not an object")
     if not is_callable(target)
-        return type_error("Right-hand side of 'instanceof' is not callable")
+        return self.type_error("Right-hand side of 'instanceof' is not callable")
     t := match target
         Obj(o) => o
         Undef | Null | Bool | Num | Str | Big | Sym => return false
     if c := t.call
         if inner := bound_target(c)
-            return instance_of(v, inner)
+            return self.instance_of(v, inner)
     o := match v
         Obj(x) => x
         Undef | Null | Bool | Num | Str | Big | Sym => return false
     proto := get(target, "prototype")?
     if not is_obj(proto)
-        return type_error("Function has non-object prototype '{describe(proto)}' in instanceof check")
+        return self.type_error("Function has non-object prototype '{describe(proto)}' in instanceof check")
     mut p := o.proto
     while is_obj(p)
         if p == proto
@@ -1394,25 +1394,25 @@ pub fn Vm.instance_of(mut self, v Value, target Value) bool ! Thrown
 fn Vm.assignment(mut self, op str, target syntax.Pat, value syntax.Expr, env ref Env) Value ! Thrown
     if op == "="
         # A property's object and key come before the value (§13.15.2).
-        if r := member_target(target, env)?
-            v := eval(value, env)?
+        if r := self.member_target(target, env)?
+            v := self.eval(value, env)?
             put(r.f, r.key, v)?
             return v
-        v := eval_named(value, single_name(target), env)?
-        bind_pattern(target, v, env, "assign")?
+        v := self.eval_named(value, single_name(target), env)?
+        self.bind_pattern(target, v, env, "assign")?
         return v
     # Compound: the target is a name or a property, read once.
     t := match target
         PatId(name, p) => syntax.Expr.Ident(name: name, pos: p)
         PatTarget(e) => e
-        PatObj | PatArr | PatDefault => return syntax_error("Invalid left-hand side in assignment")
+        PatObj | PatArr | PatDefault => return self.syntax_error("Invalid left-hand side in assignment")
     mut base := Value.Undef
     mut key := ""
     is_member := syntax.expr_kind(t) == "Member"
-    if r := member_ref(t, env)?
+    if r := self.member_ref(t, env)?
         base = r.f
         key = r.key
-    old := if is_member then get(base, key)? else eval(t, env)?
+    old := if is_member then get(base, key)? else self.eval(t, env)?
     mut result := old
     if op == "&&=" or op == "||=" or op == "??="
         keep := match op
@@ -1421,13 +1421,13 @@ fn Vm.assignment(mut self, op str, target syntax.Pat, value syntax.Expr, env ref
             _ => not is_nullish(old)
         if keep
             return old
-        result = eval_named(value, single_name(target), env)?
+        result = self.eval_named(value, single_name(target), env)?
     else
-        result = binary(op.slice(0, op.chars().len() - 1), old, eval(value, env)?)?
+        result = self.binary(op.slice(0, op.chars().len() - 1), old, self.eval(value, env)?)?
     if is_member
         put(base, key, result)?
     else
-        assign_to(t, result, env)?
+        self.assign_to(t, result, env)?
     result
 
 ## The object and key of an assignment to a property, or none.
@@ -1435,7 +1435,7 @@ fn Vm.member_target(mut self, target syntax.Pat, env ref Env) MemberRef? ! Throw
     match target
         PatTarget(e) =>
             if syntax.expr_kind(e) == "Member"
-                return member_ref(e, env)
+                return self.member_ref(e, env)
             none
         PatId | PatObj | PatArr | PatDefault => none
 
@@ -1443,24 +1443,24 @@ fn Vm.member_target(mut self, target syntax.Pat, env ref Env) MemberRef? ! Throw
 fn Vm.object_literal(mut self, props List[syntax.Prop], env ref Env) Value ! Thrown
     o := plain()
     for p in props
-        literal_prop(o, p, env)?
+        self.literal_prop(o, p, env)?
     Obj(o)
 
 ## Add one property of an object literal to `o`.
 pub fn Vm.literal_prop(mut self, o ref JsObject, p syntax.Prop, env ref Env) ! Thrown
     match p
         Init(key, value, _, _) =>
-            k := prop_key(key, env)?
+            k := self.prop_key(key, env)?
             if k == "__proto__" and not is_computed(key)
-                v := eval(value, env)?
+                v := self.eval(value, env)?
                 if is_obj(v) or v == Null
                     o.proto = v
                 return
-            v := eval_named(value, k, env)?
+            v := self.eval_named(value, k, env)?
             define(o, k, data(v))?
         Method(key, kind, f, _) =>
-            k := prop_key(key, env)?
-            fv := make_function(f, env, Obj(o), "method")
+            k := self.prop_key(key, env)?
+            fv := self.make_function(f, env, Obj(o), "method")
             if kind == "get" or kind == "set"
                 set_fn_name(fv, "{kind} {k}")
                 mut acc := o.props.get(k) else Prop(
@@ -1491,12 +1491,12 @@ pub fn Vm.literal_prop(mut self, o ref JsObject, p syntax.Prop, env ref Env) ! T
                 set_fn_name(fv, k)
                 define(o, k, data(fv))?
         PropSpread(operand, _) =>
-            v := eval(operand, env)?
+            v := self.eval(operand, env)?
             if not is_nullish(v)
-                src := to_object(v)?
+                src := self.to_object(v)?
                 for k in enum_keys(src)
                     define(o, k, data(get(v, k)?))?
-        CoverInit(_, _, _) => return syntax_error("Invalid shorthand property initializer")
+        CoverInit(_, _, _) => return self.syntax_error("Invalid shorthand property initializer")
 
 fn is_computed(k syntax.Key) bool
     match k
@@ -1574,7 +1574,7 @@ pub fn Vm.is_constructor(self, v Value) bool
                 return match c
                     Closure(_, _, _, is_ctor, _) => is_ctor
                     Native(name) => native_is_ctor(name)
-                    Bound(target, _, _) => is_constructor(target)
+                    Bound(target, _, _) => self.is_constructor(target)
             false
         Undef | Null | Bool | Num | Str | Big | Sym => false
 
@@ -1582,22 +1582,22 @@ pub fn Vm.is_constructor(self, v Value) bool
 pub fn Vm.call(mut self, f Value, this_val Value, args List[Value]) Value ! Thrown
     o := match f
         Obj(x) => x
-        Undef | Null | Bool | Num | Str | Big | Sym => return type_error("{describe(f)} is not a function")
-    c := o.call else return type_error("{describe(f)} is not a function")
+        Undef | Null | Bool | Num | Str | Big | Sym => return self.type_error("{describe(f)} is not a function")
+    c := o.call else return self.type_error("{describe(f)} is not a function")
     match c
         Native(name) => native(name, o, this_val, args, Undef)
         Bound(target, bound_this, bound_args) =>
             mut all := bound_args
             all.extend(args)
-            call(target, bound_this, all)
+            self.call(target, bound_this, all)
         Closure(fun, scope, home, _, info) =>
             if info != none
                 name := fun.name else "anonymous"
-                return type_error("Class constructor {name} cannot be invoked without 'new'")
-            env := function_env(o, fun, scope, home, this_val, Undef)
+                return self.type_error("Class constructor {name} cannot be invoked without 'new'")
+            env := self.function_env(o, fun, scope, home, this_val, Undef)
             if fun.is_gen or fun.is_async
                 return start_resumable(o, fun, env, args)
-            run_body(fun, env, args)
+            self.run_body(fun, env, args)
 
 ## A function's scope for one call (§10.2.1.1 PrepareForOrdinaryCall,
 ## §10.2.1.2 OrdinaryCallBindThis).
@@ -1627,29 +1627,29 @@ fn Vm.function_env(
 
 ## Bind the parameters and run the body (§10.2.11 FunctionDeclarationInstantiation).
 fn Vm.run_body(mut self, fun syntax.Func, env ref Env, args List[Value]) Value ! Thrown
-    saved := call_depth
-    if call_depth >= MAX_DEPTH
-        return range_error("Maximum call stack size exceeded")
-    call_depth += 1
-    if v := run_params_and_body(fun, env, args)
-        call_depth = saved
+    saved := self.call_depth
+    if self.call_depth >= MAX_DEPTH
+        return self.range_error("Maximum call stack size exceeded")
+    self.call_depth += 1
+    if v := self.run_params_and_body(fun, env, args)
+        self.call_depth = saved
         return v
     else err
-        call_depth = saved
+        self.call_depth = saved
         return err
 
 fn Vm.run_params_and_body(mut self, fun syntax.Func, env ref Env, args List[Value]) Value ! Thrown
     env.args = args
     for i in 0..fun.params.len()
         v := if i < args.len() then args[i] else Undef
-        bind_pattern(fun.params[i], v, env, "param")?
+        self.bind_pattern(fun.params[i], v, env, "param")?
     if r := fun.rest
         tail := if fun.params.len() < args.len() then args[fun.params.len()..] else List[Value]()
-        bind_pattern(r, array(tail), env, "param")?
+        self.bind_pattern(r, array(tail), env, "param")?
     if body := fun.expr
-        return eval(body, env)
-    hoist_vars(fun.body, env, true)
-    f := exec_block(fun.body, env)?
+        return self.eval(body, env)
+    self.hoist_vars(fun.body, env, true)
+    f := self.exec_block(fun.body, env)?
     match f
         Ret(v) => v
         Normal | Brk | Cont => Undef
@@ -1658,18 +1658,18 @@ fn Vm.run_params_and_body(mut self, fun syntax.Func, env ref Env, args List[Valu
 pub fn Vm.construct(mut self, f Value, args List[Value], new_target Value) Value ! Thrown
     o := match f
         Obj(x) => x
-        Undef | Null | Bool | Num | Str | Big | Sym => return type_error("{describe(f)} is not a constructor")
-    c := o.call else return type_error("{describe(f)} is not a constructor")
+        Undef | Null | Bool | Num | Str | Big | Sym => return self.type_error("{describe(f)} is not a constructor")
+    c := o.call else return self.type_error("{describe(f)} is not a constructor")
     match c
         Native(name) => native(name, o, Undef, args, new_target)
         Bound(target, _, bound_args) =>
             mut all := bound_args
             all.extend(args)
             nt := if new_target == f then target else new_target
-            construct(target, all, nt)
+            self.construct(target, all, nt)
         Closure(fun, scope, home, is_ctor, info) =>
             if not is_ctor
-                return type_error("{fun.name else "anonymous"} is not a constructor")
+                return self.type_error("{fun.name else "anonymous"} is not a constructor")
             derived := if i := info then i.derived else false
             mut this_obj := Value.Undef
             if not derived
@@ -1677,20 +1677,20 @@ pub fn Vm.construct(mut self, f Value, args List[Value], new_target Value) Value
                 obj := object("Object", if is_obj(proto) then proto else proto_of("Object"))
                 this_obj = Value.Obj(obj)
                 if i := info
-                    init_fields(this_obj, i)?
-            env := function_env(o, fun, scope, home, this_obj, new_target)
+                    self.init_fields(this_obj, i)?
+            env := self.function_env(o, fun, scope, home, this_obj, new_target)
             env.this_ready = not derived
             mut result := Value.Undef
             if derived and info_implicit(info)
-                result = super_construct(env, args)?
+                result = self.super_construct(env, args)?
             else
-                result = run_body(fun, env, args)?
+                result = self.run_body(fun, env, args)?
             if is_obj(result)
                 return result
             if derived and result != Value.Undef
-                return type_error("Derived constructors may only return object or undefined")
+                return self.type_error("Derived constructors may only return object or undefined")
             if not env.this_ready
-                return reference_error("Must call super constructor in derived class before accessing 'this' or returning from derived constructor")
+                return self.reference_error("Must call super constructor in derived class before accessing 'this' or returning from derived constructor")
             env.this_val
 
 fn info_implicit(info ClassInfo?) bool
@@ -1700,24 +1700,24 @@ fn info_implicit(info ClassInfo?) bool
 
 ## `super(...args)` in a derived constructor (§13.3.7.1).
 fn Vm.super_call(mut self, args List[syntax.Expr], env ref Env) Value ! Thrown
-    xs := eval_args(args, env)?
-    super_construct(this_scope(env), xs)
+    xs := self.eval_args(args, env)?
+    self.super_construct(this_scope(env), xs)
 
 fn Vm.super_construct(mut self, fenv ref Env, args List[Value]) Value ! Thrown
     f := match fenv.func
         Obj(x) => x
-        Undef | Null | Bool | Num | Str | Big | Sym => return syntax_error("'super' keyword unexpected here")
+        Undef | Null | Bool | Num | Str | Big | Sym => return self.syntax_error("'super' keyword unexpected here")
     parent := f.proto
-    if not is_constructor(parent)
-        return type_error("Super constructor {describe(parent)} of anonymous class is not a constructor")
-    result := construct(parent, args, fenv.new_target)?
+    if not self.is_constructor(parent)
+        return self.type_error("Super constructor {describe(parent)} of anonymous class is not a constructor")
+    result := self.construct(parent, args, fenv.new_target)?
     if fenv.this_ready
-        return reference_error("Super constructor may only be called once")
+        return self.reference_error("Super constructor may only be called once")
     fenv.this_val = result
     fenv.this_ready = true
     if c := f.call
         if i := class_info_of(c)
-            init_fields(result, i)?
+            self.init_fields(result, i)?
     result
 
 ## Run a class's instance field initialisers on a new object (§7.3.34).
@@ -1735,7 +1735,7 @@ fn Vm.init_fields(mut self, obj Value, info ClassInfo) ! Thrown
         key := info.field_keys[i]
         mut v := Value.Undef
         if value := m.value
-            v = eval_named(value, key, env)?
+            v = self.eval_named(value, key, env)?
         define(o, key, if key.starts_with(PRIVATE) then hidden(v) else data(v))?
 
 # --------------------------------------------------------------- classes
@@ -1751,16 +1751,16 @@ fn Vm.make_class(mut self, c syntax.Class, env ref Env) Value ! Thrown
     mut ctor_parent := proto_of("Function")
     derived := c.superclass != none
     if sup := c.superclass
-        sv := eval(sup, class_env)?
+        sv := self.eval(sup, class_env)?
         if sv == Null
             proto_parent = Null
-        elif is_constructor(sv)
+        elif self.is_constructor(sv)
             ctor_parent = sv
             proto_parent = get(sv, "prototype")?
             if not is_obj(proto_parent) and proto_parent != Null
-                return type_error("Class extends value does not have valid prototype property {describe(proto_parent)}")
+                return self.type_error("Class extends value does not have valid prototype property {describe(proto_parent)}")
         else
-            return type_error("Class extends value {describe(sv)} is not a constructor or null")
+            return self.type_error("Class extends value {describe(sv)} is not a constructor or null")
     proto := object("Object", proto_parent)
     mut ctor_fn := syntax.Func(
         name: c.name,
@@ -1789,7 +1789,7 @@ fn Vm.make_class(mut self, c syntax.Class, env ref Env) Value ! Thrown
     for m in c.members
         if m.kind == "field" and not m.is_static
             fields.push(m)
-            field_keys.push(if k := m.key then prop_key(k, class_env)? else "")
+            field_keys.push(if k := m.key then self.prop_key(k, class_env)? else "")
     ctor := object("Function", ctor_parent)
     ctor.call = Closure(
         f: ctor_fn,
@@ -1836,9 +1836,9 @@ fn Vm.make_class(mut self, c syntax.Class, env ref Env) Value ! Thrown
     for m in c.members
         if m.kind == "method" or m.kind == "get" or m.kind == "set"
             target := if m.is_static then ctor else proto
-            key := if k := m.key then prop_key(k, class_env)? else ""
+            key := if k := m.key then self.prop_key(k, class_env)? else ""
             f := m.f else continue
-            fv := make_function(f, class_env, Obj(target), "method")
+            fv := self.make_function(f, class_env, Obj(target), "method")
             if m.kind == "method"
                 set_fn_name(fv, key)
                 target.props[key] = hidden(fv)
@@ -1878,16 +1878,16 @@ fn Vm.make_class(mut self, c syntax.Class, env ref Env) Value ! Thrown
     static_env.strict = true
     for m in c.members
         if m.is_static and m.kind == "field"
-            key := if k := m.key then prop_key(k, static_env)? else ""
+            key := if k := m.key then self.prop_key(k, static_env)? else ""
             mut v := Value.Undef
             if value := m.value
-                v = eval_named(value, key, static_env)?
+                v = self.eval_named(value, key, static_env)?
             define(ctor, key, data(v))?
         elif m.kind == "static-block"
             if f := m.f
                 block_env := new_env(static_env, true)
-                hoist_vars(f.body, block_env, true)
-                exec_block(f.body, block_env)?
+                self.hoist_vars(f.body, block_env, true)
+                self.exec_block(f.body, block_env)?
     Obj(ctor)
 
 ## A regular expression literal: an object with `source` and `flags` until
@@ -1954,7 +1954,7 @@ struct MemberRef
 fn Vm.member_ref(mut self, t syntax.Expr, env ref Env) MemberRef? ! Thrown
     match t
         Member(object, prop, computed, _, _) =>
-            base := member_base(object, env)?
-            MemberRef(f: base, key: member_key(prop, computed, env)?)
+            base := self.member_base(object, env)?
+            MemberRef(f: base, key: self.member_key(prop, computed, env)?)
         Paren | Num | Str | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
             none

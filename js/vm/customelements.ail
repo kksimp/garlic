@@ -33,9 +33,9 @@ fn Vm.custom_native(mut self, m str, this_val Value, args List[Value]) Value ! T
         return p.value
     if m == "customElements.upgrade"
         if root := node_id(a0)
-            ce_upgrade(root)
+            self.ce_upgrade(root)
             for e in elements_under(root)
-                ce_upgrade(e)
+                self.ce_upgrade(e)
         return Undef
     if not valid_element_name(name)
         return dom_exception("SyntaxError", "\"{name}\" is not a valid custom element name")
@@ -62,7 +62,7 @@ fn Vm.custom_native(mut self, m str, this_val Value, args List[Value]) Value ! T
                 resolve_promise(p, ctor)
         for e in elements_under(0)
             if dom[e].tag == name
-                ce_upgrade(e)
+                self.ce_upgrade(e)
         return Undef
     type_error("{m} is not supported yet")
 
@@ -83,13 +83,13 @@ fn Vm.ce_registry(self) ref JsObject?
 
 ## The constructor defined for element name `name`.
 pub fn Vm.ce_definition(self, name str) Value?
-    reg := ce_registry() else return none
+    reg := self.ce_registry() else return none
     p := reg.props.get("{CE_DEF}{name}") else return none
     p.value
 
 ## The element name `ctor` was defined for.
 fn Vm.ce_name_of(self, ctor Value) str?
-    reg := ce_registry() else return none
+    reg := self.ce_registry() else return none
     for k in reg.props.keys()
         if name := k.strip_prefix(CE_DEF)
             if reg.props[k].value == ctor
@@ -100,7 +100,7 @@ fn Vm.ce_name_of(self, ctor Value) str?
 ## derived constructor, or `new`): the element being upgraded, else a new
 ## element of the class's defined name (§4.13.5 HTML element constructors).
 pub fn Vm.ce_construct(mut self, new_target Value) Value ! Thrown
-    defined := ce_name_of(new_target)
+    defined := self.ce_name_of(new_target)
     mut id := -1
     if ce_upgrading.len() > 0
         top := ce_upgrading[ce_upgrading.len() - 1]
@@ -122,7 +122,7 @@ pub fn Vm.ce_construct(mut self, new_target Value) Value ! Thrown
 pub fn Vm.ce_upgrade(mut self, id int)
     if ce_upgraded.contains(id) or dom[id].kind != 1
         return
-    ctor := ce_definition(dom[id].tag) else return
+    ctor := self.ce_definition(dom[id].tag) else return
     ce_upgrading.push(id)
     if v := construct(ctor, [], ctor)
         v
@@ -132,17 +132,21 @@ pub fn Vm.ce_upgrade(mut self, id int)
         ce_upgrading.remove_at(ce_upgrading.len() - 1)
     if not ce_upgraded.contains(id)
         return
-    if r := ce_after_upgrade(id, ctor)
+    if r := self.ce_after_upgrade(id, ctor)
         r
     else err
         report_error(err)
     if connected(id)
-        ce_call(id, "connectedCallback", [])
+        self.ce_call(id, "connectedCallback", [])
 
 fn Vm.ce_after_upgrade(mut self, id int, ctor Value) Value ! Thrown
-    for name in ce_observed(ctor)?
+    for name in self.ce_observed(ctor)?
         if v := attr_of(id, name)
-            ce_call(id, "attributeChangedCallback", [Value.Str(name), Value.Null, Value.Str(v)])
+            self.ce_call(id, "attributeChangedCallback", [
+                Value.Str(name),
+                Value.Null,
+                Value.Str(v),
+            ])
     Undef
 
 ## The class's `observedAttributes`, lower-cased.
@@ -160,7 +164,7 @@ fn Vm.ce_observed(mut self, ctor Value) List[str] ! Thrown
 fn Vm.ce_call(mut self, id int, method str, args List[Value])
     if not ce_upgraded.contains(id)
         return
-    if r := ce_invoke(node_value(id), method, args)
+    if r := self.ce_invoke(node_value(id), method, args)
         r
     else err
         report_error(err)
@@ -178,9 +182,9 @@ pub fn Vm.ce_connected(mut self, id int)
     ids.extend(elements_under(id))
     for e in ids
         if ce_upgraded.contains(e)
-            ce_call(e, "connectedCallback", [])
+            self.ce_call(e, "connectedCallback", [])
         else
-            ce_upgrade(e)
+            self.ce_upgrade(e)
 
 ## `id` and its descendants left the document.
 pub fn Vm.ce_disconnected(mut self, id int)
@@ -188,21 +192,21 @@ pub fn Vm.ce_disconnected(mut self, id int)
     ids.extend(elements_under(id))
     for e in ids
         if ce_upgraded.contains(e)
-            ce_call(e, "disconnectedCallback", [])
+            self.ce_call(e, "disconnectedCallback", [])
 
 ## An attribute of upgraded element `id` changed from `old` to `fresh`
 ## (none for absent).
 pub fn Vm.ce_attr_changed(mut self, id int, name str, old str?, fresh str?)
     if not ce_upgraded.contains(id)
         return
-    ctor := ce_definition(dom[id].tag) else return
-    if r := ce_attr_reaction(id, ctor, name, old, fresh)
+    ctor := self.ce_definition(dom[id].tag) else return
+    if r := self.ce_attr_reaction(id, ctor, name, old, fresh)
         r
     else err
         report_error(err)
 
 fn Vm.ce_attr_reaction(mut self, id int, ctor Value, name str, old str?, fresh str?) Value ! Thrown
-    if not ce_observed(ctor)?.contains(name)
+    if not self.ce_observed(ctor)?.contains(name)
         return Undef
     mut before := Value.Null
     if o := old
@@ -210,5 +214,5 @@ fn Vm.ce_attr_reaction(mut self, id int, ctor Value, name str, old str?, fresh s
     mut after := Value.Null
     if f := fresh
         after = Value.Str(f)
-    ce_call(id, "attributeChangedCallback", [Value.Str(name), before, after])
+    self.ce_call(id, "attributeChangedCallback", [Value.Str(name), before, after])
     Undef

@@ -30,8 +30,8 @@ fn Vm.encoding_new(mut self, name str, args List[Value], new_target Value) Value
             return range_error("The encoding label provided ('{label}') is invalid.")
         opts := arg_at(args, 1)
         o.props[ENC_NAME] = hidden(Value.Str(enc))
-        o.props[ENC_FATAL] = hidden(Value.Bool(opt_flag(opts, "fatal")?))
-        o.props[ENC_BOM] = hidden(Value.Bool(opt_flag(opts, "ignoreBOM")?))
+        o.props[ENC_FATAL] = hidden(Value.Bool(self.opt_flag(opts, "fatal")?))
+        o.props[ENC_BOM] = hidden(Value.Bool(self.opt_flag(opts, "ignoreBOM")?))
     Value.Obj(o)
 
 fn hidden_flag(o ref JsObject, key str) bool
@@ -112,7 +112,7 @@ fn Vm.encoding_native(mut self, m str, this_val Value, args List[Value]) Value !
         if a0 == Undef
             return Value.Str("")
         bs := bytes_of(a0)?
-        return decode_bytes(enc, bs, hidden_flag(d, ENC_FATAL), hidden_flag(d, ENC_BOM))
+        return self.decode_bytes(enc, bs, hidden_flag(d, ENC_FATAL), hidden_flag(d, ENC_BOM))
     type_error("{m} is not supported yet")
 
 fn Vm.encoding_setup(mut self)

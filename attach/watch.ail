@@ -17,9 +17,9 @@ pub struct Watch
 
 ## What a look at page text `text` notes for this watch.
 fn Watch.state(self, text str) str
-    if contains == ""
+    if self.contains == ""
         return text
-    if text.to_lower().contains(contains.to_lower()) then "present" else "absent"
+    if text.to_lower().contains(self.contains.to_lower()) then "present" else "absent"
 
 pub fn Watch.start(id int, url str, contains str, every int, now int, text str) Watch
     w := Watch(id, url, contains, every: every.max(1), due: now, last: "")
@@ -28,20 +28,20 @@ pub fn Watch.start(id int, url str, contains str, every int, now int, text str) 
 ## Looks at `text` at second `now`; the change it sees, or "". A look before
 ## the watch is due sees nothing.
 pub fn Watch.look(mut self, text str, now int) str
-    if now < due
+    if now < self.due
         return ""
-    due = now + every
-    seen := state(text)
-    if seen == last
+    self.due = now + self.every
+    seen := self.state(text)
+    if seen == self.last
         return ""
-    last = seen
-    if contains == ""
-        return "watch {id}: the page changed"
+    self.last = seen
+    if self.contains == ""
+        return "watch {self.id}: the page changed"
     if seen == "present"
-        return "watch {id}: `{contains}` appeared"
-    "watch {id}: `{contains}` disappeared"
+        return "watch {self.id}: `{self.contains}` appeared"
+    "watch {self.id}: `{self.contains}` disappeared"
 
 pub fn Watch.line(self) str
-    what := if contains == "" then "any change" else "`{contains}`"
-    where := if url == "" then "the live tab" else url
-    "{id}: {what} on {where} every {every}s"
+    what := if self.contains == "" then "any change" else "`{self.contains}`"
+    where := if self.url == "" then "the live tab" else self.url
+    "{self.id}: {what} on {where} every {self.every}s"

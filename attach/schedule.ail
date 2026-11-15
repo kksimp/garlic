@@ -11,11 +11,11 @@ pub struct Job
     pub args str
 
 pub fn Job.line(self, now int) str
-    "{id}: {tool} {args} in {(due - now).max(0)}s"
+    "{self.id}: {self.tool} {self.args} in {(self.due - now).max(0)}s"
 
 ## The JSON-RPC request that runs the job.
 pub fn Job.request(self) str
-    "\{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"tools/call\",\"params\":\{\"name\":{quote(tool)},\"arguments\":{args}}}"
+    "\{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"tools/call\",\"params\":\{\"name\":{quote(self.tool)},\"arguments\":{self.args}}}"
 
 fn quote(s str) str
     "\"{s.replace("\\", "\\\\").replace("\"", "\\\"")}\""

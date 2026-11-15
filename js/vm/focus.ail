@@ -52,19 +52,19 @@ pub fn Vm.host_focus(mut self, id int)
 pub fn Vm.host_type(mut self, id int, text str)
     if stopped
         return
-    host_focus(id)
+    self.host_focus(id)
     mut value := ""
     field_values[id] = ""
     dom_log("set_value", id, -1, -1, "value", "")
     for c in text.chars()
         key := "{c}"
-        if not fire_event(id, key_event("keydown", key))
+        if not self.fire_event(id, self.key_event("keydown", key))
             continue
         value = "{value}{key}"
         field_values[id] = value
         dom_log("set_value", id, -1, -1, "value", value)
         fire(id, "input", true)
-        fire_event(id, key_event("keyup", key))
+        self.fire_event(id, self.key_event("keyup", key))
     fire(id, "change", true)
 
 ## The user pressed `key` (Enter, Escape, ...) with focus in `id`. False
@@ -72,7 +72,7 @@ pub fn Vm.host_type(mut self, id int, text str)
 pub fn Vm.host_key(mut self, id int, key str) bool
     if stopped
         return true
-    host_focus(id)
-    ok := fire_event(id, key_event("keydown", key))
-    fire_event(id, key_event("keyup", key))
+    self.host_focus(id)
+    ok := self.fire_event(id, self.key_event("keydown", key))
+    self.fire_event(id, self.key_event("keyup", key))
     ok

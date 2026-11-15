@@ -208,75 +208,75 @@ struct Lexer
 
 ## The character `k` places ahead, or U+0000 past the end.
 fn Lexer.at(self, k int) char
-    if i + k < cs.len() then cs[i + k] else '\u{0}'
+    if self.i + k < self.cs.len() then self.cs[self.i + k] else '\u{0}'
 
 ## Whether the input continues with `word`, ignoring ASCII case.
 fn Lexer.looking_at(self, word str) bool
     mut k := 0
     for w in word.chars()
-        if i + k >= cs.len() or lower(cs[i + k]) != w
+        if self.i + k >= self.cs.len() or lower(self.cs[self.i + k]) != w
             return false
         k += 1
     true
 
 ## Emits the pending text as one `Chars` token.
 fn Lexer.flush(mut self)
-    if text.len() > 0
-        out.push(Chars(text.join("")))
-        text.clear()
+    if self.text.len() > 0
+        self.out.push(Chars(self.text.join("")))
+        self.text.clear()
 
 ## Reads up to and past `end`, returning what came before it (all the rest
 ## when `end` never comes).
 fn Lexer.until(mut self, end str) str
     mut buf := List[char]()
-    while i < cs.len()
-        if looking_at(end)
-            i += end.chars().len()
+    while self.i < self.cs.len()
+        if self.looking_at(end)
+            self.i += end.chars().len()
             return buf.join("")
-        buf.push(cs[i])
-        i += 1
+        buf.push(self.cs[self.i])
+        self.i += 1
     buf.join("")
 
 ## Decodes the character reference at `&` (13.2.5.72-80), or gives "&"
 ## when there is none. In an attribute, a legacy name without `;` followed
 ## by `=` or a letter or digit stays literal.
 fn Lexer.char_ref(mut self, in_attr bool) str
-    if at(1) == '#'
+    if self.at(1) == '#'
         mut k := 2
-        hex := at(2) == 'x' or at(2) == 'X'
+        hex := self.at(2) == 'x' or self.at(2) == 'X'
         base := if hex then 16 else 10
         if hex
             k = 3
         mut n := 0
         mut digits := 0
         while true
-            c := at(k)
+            c := self.at(k)
             d := c.to_digit(base) else break
             if n < 0x110000
                 n = n * base + d
             digits += 1
             k += 1
         if digits == 0
-            i += 1
+            self.i += 1
             return "&"
-        if at(k) == ';'
+        if self.at(k) == ';'
             k += 1
-        i += k
+        self.i += k
         return "{numeric_char(n)}"
     mut k := 1
     mut name := List[char]()
-    while is_alnum(at(k)) and k < 33
-        name.push(at(k))
+    while is_alnum(self.at(k)) and k < 33
+        name.push(self.at(k))
         k += 1
     word := name.join("")
-    if at(k) == ';'
+    if self.at(k) == ';'
         if v := NAMED.get(word)
-            i += k + 1
+            self.i += k + 1
             return v
-    elif LEGACY.contains(word) and not (in_attr and (at(k) == '=' or is_alnum(at(k))))
-        i += k
+    elif LEGACY.contains(word) and not (in_attr and (self.at(k) == '=' or is_alnum(self.at(k))))
+        self.i += k
         return NAMED[word]
-    i += 1
+    self.i += 1
     "&"
 
 ## The character a numeric reference names, with the replacements of
@@ -328,68 +328,68 @@ pub fn windows_1252(n int) char
 ## an attribute after its first character), lowered.
 fn Lexer.name(mut self, attr bool) str
     mut buf := List[char]()
-    while i < cs.len()
-        c := cs[i]
+    while self.i < self.cs.len()
+        c := self.cs[self.i]
         if is_space(c) or c == '/' or c == '>' or (attr and c == '=' and buf.len() > 0)
             break
         buf.push(lower(c))
-        i += 1
+        self.i += 1
     buf.join("")
 
 fn Lexer.skip_space(mut self)
-    while i < cs.len() and is_space(cs[i])
-        i += 1
+    while self.i < self.cs.len() and is_space(self.cs[self.i])
+        self.i += 1
 
 ## An attribute value: quoted or unquoted, references decoded (13.2.5.36-38).
 fn Lexer.value(mut self) str
-    q := at(0)
+    q := self.at(0)
     mut buf := List[char]()
     if q == '"' or q == '\''
-        i += 1
-        while i < cs.len() and cs[i] != q
-            if cs[i] == '&'
-                buf.extend(char_ref(true).chars())
+        self.i += 1
+        while self.i < self.cs.len() and self.cs[self.i] != q
+            if self.cs[self.i] == '&'
+                buf.extend(self.char_ref(true).chars())
             else
-                buf.push(cs[i])
-                i += 1
-        i += 1
+                buf.push(self.cs[self.i])
+                self.i += 1
+        self.i += 1
         return buf.join("")
-    while i < cs.len() and not is_space(cs[i]) and cs[i] != '>'
-        if cs[i] == '&'
-            buf.extend(char_ref(true).chars())
+    while self.i < self.cs.len() and not is_space(self.cs[self.i]) and self.cs[self.i] != '>'
+        if self.cs[self.i] == '&'
+            buf.extend(self.char_ref(true).chars())
         else
-            buf.push(cs[i])
-            i += 1
+            buf.push(self.cs[self.i])
+            self.i += 1
     buf.join("")
 
 ## A start tag from `<` plus a letter (13.2.5.6-40). Gives none at the end
 ## of input inside the tag, which drops it.
 fn Lexer.start_tag(mut self) Token?
-    i += 1
-    tag := name(false)
+    self.i += 1
+    tag := self.name(false)
     mut attrs := List[Attr]()
     mut seen := Set[str]()
     while true
-        skip_space()
-        if i >= cs.len()
+        self.skip_space()
+        if self.i >= self.cs.len()
             return none
-        c := cs[i]
+        c := self.cs[self.i]
         if c == '>'
-            i += 1
+            self.i += 1
             return Start(name: tag, attrs, self_closing: false)
         if c == '/'
-            i += 1
-            if at(0) == '>'
-                i += 1
+            self.i += 1
+            if self.at(0) == '>'
+                self.i += 1
                 return Start(name: tag, attrs, self_closing: true)
             continue
-        attr := name(true)
-        skip_space()
+        attr := self.name(true)
+        self.skip_space()
         mut v := ""
-        if at(0) == '='
-            i += 1
-            skip_space()
-            v = value()
+        if self.at(0) == '='
+            self.i += 1
+            self.skip_space()
+            v = self.value()
         if seen.add(attr)
             attrs.push(Attr(name: attr, value: v))
     none
@@ -398,19 +398,19 @@ fn Lexer.start_tag(mut self) Token?
 ## to its end tag (13.2.5.2-3, 13.2.5.9-23); references decoded in RCDATA.
 fn Lexer.raw(mut self, tag str, refs bool)
     mut buf := List[char]()
-    while i < cs.len()
-        if cs[i] == '<' and at(1) == '/' and raw_end(cs, i + 2, tag)
+    while self.i < self.cs.len()
+        if self.cs[self.i] == '<' and self.at(1) == '/' and raw_end(self.cs, self.i + 2, tag)
             break
-        if refs and cs[i] == '&'
-            buf.extend(char_ref(false).chars())
+        if refs and self.cs[self.i] == '&'
+            buf.extend(self.char_ref(false).chars())
         else
-            buf.push(cs[i])
-            i += 1
+            buf.push(self.cs[self.i])
+            self.i += 1
     if buf.len() > 0
-        out.push(Chars(buf.join("")))
-    if i < cs.len()
-        until(">")
-    out.push(End(tag))
+        self.out.push(Chars(buf.join("")))
+    if self.i < self.cs.len()
+        self.until(">")
+    self.out.push(End(tag))
 
 ## Whether `cs[at..]` is `tag` (any case) followed by whitespace, `/` or `>`.
 fn raw_end(cs List[char], at int, tag str) bool
@@ -422,64 +422,64 @@ fn raw_end(cs List[char], at int, tag str) bool
     k >= cs.len() or is_space(cs[k]) or cs[k] == '/' or cs[k] == '>'
 
 fn Lexer.run(mut self)
-    while i < cs.len()
-        c := cs[i]
+    while self.i < self.cs.len()
+        c := self.cs[self.i]
         if c == '&'
-            text.extend(char_ref(false).chars())
+            self.text.extend(self.char_ref(false).chars())
             continue
         if c != '<'
-            text.push(c)
-            i += 1
+            self.text.push(c)
+            self.i += 1
             continue
-        d := at(1)
+        d := self.at(1)
         if is_letter(d)
-            flush()
-            tok := start_tag() else
-                i = cs.len()
+            self.flush()
+            tok := self.start_tag() else
+                self.i = self.cs.len()
                 continue
-            out.push(tok)
+            self.out.push(tok)
             match tok
                 Start(tag, _, _) =>
-                    if RAW_TEXT.contains(tag) or (scripting and tag == "noscript")
-                        raw(tag, false)
+                    if RAW_TEXT.contains(tag) or (self.scripting and tag == "noscript")
+                        self.raw(tag, false)
                     elif RCDATA.contains(tag)
-                        raw(tag, true)
+                        self.raw(tag, true)
                 End(_) | Chars(_) | Note(_) | Doctype(_) => continue
             continue
-        if d == '/' and is_letter(at(2))
-            flush()
-            i += 2
-            tag := name(false)
-            until(">")
-            out.push(End(tag))
+        if d == '/' and is_letter(self.at(2))
+            self.flush()
+            self.i += 2
+            tag := self.name(false)
+            self.until(">")
+            self.out.push(End(tag))
             continue
-        if d == '/' and at(2) == '>'
-            i += 3
+        if d == '/' and self.at(2) == '>'
+            self.i += 3
             continue
         if d == '!' or d == '?' or d == '/'
-            flush()
-            if looking_at("<!--")
-                i += 4
-                if at(0) == '>'
-                    i += 1
-                    out.push(Note(""))
-                elif at(0) == '-' and at(1) == '>'
-                    i += 2
-                    out.push(Note(""))
+            self.flush()
+            if self.looking_at("<!--")
+                self.i += 4
+                if self.at(0) == '>'
+                    self.i += 1
+                    self.out.push(Note(""))
+                elif self.at(0) == '-' and self.at(1) == '>'
+                    self.i += 2
+                    self.out.push(Note(""))
                 else
-                    out.push(Note(until("-->")))
-            elif looking_at("<!doctype")
-                i += 9
-                skip_space()
-                out.push(Doctype(name(false)))
-                until(">")
+                    self.out.push(Note(self.until("-->")))
+            elif self.looking_at("<!doctype")
+                self.i += 9
+                self.skip_space()
+                self.out.push(Doctype(self.name(false)))
+                self.until(">")
             else
-                i += 2
-                out.push(Note(until(">")))
+                self.i += 2
+                self.out.push(Note(self.until(">")))
             continue
-        text.push(c)
-        i += 1
-    flush()
+        self.text.push(c)
+        self.i += 1
+    self.flush()
 
 ## Splits `src` into tokens (13.2.5).
 pub fn tokenize(src str) List[Token]
@@ -501,48 +501,48 @@ struct Builder
     skip_newline bool
 
 fn Builder.top(self) int
-    stack[stack.len() - 1]
+    self.stack[self.stack.len() - 1]
 
 fn Builder.add(mut self, parent int, node TreeNode) int
-    id := nodes.len()
-    nodes.push(node)
-    nodes[parent].children.push(id)
+    id := self.nodes.len()
+    self.nodes.push(node)
+    self.nodes[parent].children.push(id)
     id
 
 fn Builder.element(mut self, parent int, tag str, attrs List[Attr]) int
-    add(parent, TreeNode(kind: Element, tag, attrs, text: "", parent, children: []))
+    self.add(parent, TreeNode(kind: Element, tag, attrs, text: "", parent, children: []))
 
 ## Opens `html` if it isn't yet.
 fn Builder.ensure_html(mut self)
-    if html < 0
-        html = element(0, "html", [])
-        stack = [0, html]
+    if self.html < 0
+        self.html = self.element(0, "html", [])
+        self.stack = [0, self.html]
 
 ## Opens `head` if neither `head` nor `body` is open yet.
 fn Builder.ensure_head(mut self)
-    ensure_html()
-    if head < 0 and body < 0
-        head = element(html, "head", [])
-        stack.push(head)
+    self.ensure_html()
+    if self.head < 0 and self.body < 0
+        self.head = self.element(self.html, "head", [])
+        self.stack.push(self.head)
 
 ## Closes `head` and opens `body` if it isn't yet: "after head" (13.2.6.4.6).
 fn Builder.ensure_body(mut self)
-    ensure_html()
-    if body >= 0
+    self.ensure_html()
+    if self.body >= 0
         return
-    if head < 0
-        head = element(html, "head", [])
-    while stack.len() > 2
-        stack.pop()
-    body = element(html, "body", [])
-    stack.push(body)
+    if self.head < 0
+        self.head = self.element(self.html, "head", [])
+    while self.stack.len() > 2
+        self.stack.pop()
+    self.body = self.element(self.html, "body", [])
+    self.stack.push(self.body)
 
 ## Where `tag` is open, searching down from the current node and stopping
 ## at a scope boundary (13.2.4.2), or none.
 fn Builder.open_in_scope(self, tags Set[str], bounds Set[str]) int?
-    mut k := stack.len() - 1
+    mut k := self.stack.len() - 1
     while k > 0
-        t := nodes[stack[k]].tag
+        t := self.nodes[self.stack[k]].tag
         if tags.contains(t)
             return k
         if bounds.contains(t)
@@ -552,110 +552,110 @@ fn Builder.open_in_scope(self, tags Set[str], bounds Set[str]) int?
 
 ## Pops the stack down to and including position `k`.
 fn Builder.close_to(mut self, k int)
-    while stack.len() > k
-        stack.pop()
+    while self.stack.len() > k
+        self.stack.pop()
 
 ## The implied end tags of 13.2.6.4.7 for a start tag `tag`.
 fn Builder.close_implied(mut self, tag str)
     if CLOSES_P.contains(tag)
-        if k := open_in_scope({"p"}, SCOPE)
-            close_to(k)
-    if HEADINGS.contains(tag) and HEADINGS.contains(nodes[top()].tag)
-        stack.pop()
+        if k := self.open_in_scope({"p"}, SCOPE)
+            self.close_to(k)
+    if HEADINGS.contains(tag) and HEADINGS.contains(self.nodes[self.top()].tag)
+        self.stack.pop()
     if tag == "li"
-        if k := open_in_scope({"li"}, SCOPE.union({"ul", "ol"}))
-            close_to(k)
+        if k := self.open_in_scope({"li"}, SCOPE.union({"ul", "ol"}))
+            self.close_to(k)
     elif tag == "dt" or tag == "dd"
-        if k := open_in_scope({"dt", "dd"}, SCOPE.union({"dl"}))
-            close_to(k)
+        if k := self.open_in_scope({"dt", "dd"}, SCOPE.union({"dl"}))
+            self.close_to(k)
     elif tag == "option" or tag == "optgroup"
-        if nodes[top()].tag == "option"
-            stack.pop()
+        if self.nodes[self.top()].tag == "option"
+            self.stack.pop()
     elif tag == "tr"
-        if k := open_in_scope({"tr"}, {"table"})
-            close_to(k)
+        if k := self.open_in_scope({"tr"}, {"table"})
+            self.close_to(k)
     elif tag == "td" or tag == "th"
-        if k := open_in_scope({"td", "th"}, {"table", "tr"})
-            close_to(k)
+        if k := self.open_in_scope({"td", "th"}, {"table", "tr"})
+            self.close_to(k)
     elif tag == "tbody" or tag == "thead" or tag == "tfoot"
-        if k := open_in_scope({"tbody", "thead", "tfoot", "tr", "td", "th"}, {"table"})
-            close_to(k)
+        if k := self.open_in_scope({"tbody", "thead", "tfoot", "tr", "td", "th"}, {"table"})
+            self.close_to(k)
     elif tag == "a"
-        if k := open_in_scope({"a"}, SCOPE)
-            close_to(k)
+        if k := self.open_in_scope({"a"}, SCOPE)
+            self.close_to(k)
 
 ## Whether the current node is inside `svg` or `math`, where `/>` closes.
 fn Builder.foreign(self) bool
-    for k in stack
-        t := nodes[k].tag
+    for k in self.stack
+        t := self.nodes[k].tag
         if t == "svg" or t == "math"
             return true
     false
 
 fn Builder.start(mut self, tag str, attrs List[Attr], self_closing bool)
     if tag == "html"
-        ensure_html()
+        self.ensure_html()
         for a in attrs
-            if not nodes[html].attrs.contains(a)
-                nodes[html].attrs.push(a)
+            if not self.nodes[self.html].attrs.contains(a)
+                self.nodes[self.html].attrs.push(a)
         return
     if tag == "head"
-        ensure_head()
+        self.ensure_head()
         return
     if tag == "body"
-        ensure_body()
+        self.ensure_body()
         for a in attrs
-            nodes[body].attrs.push(a)
+            self.nodes[self.body].attrs.push(a)
         return
     mut parent := 0
-    if body < 0 and HEAD_TAGS.contains(tag)
-        ensure_head()
-        parent = top()
+    if self.body < 0 and HEAD_TAGS.contains(tag)
+        self.ensure_head()
+        parent = self.top()
     else
-        ensure_body()
-        close_implied(tag)
-        parent = top()
-    id := element(parent, tag, attrs)
-    if not VOID.contains(tag) and not (self_closing and foreign())
-        stack.push(id)
-    skip_newline = tag == "pre" or tag == "textarea" or tag == "listing"
+        self.ensure_body()
+        self.close_implied(tag)
+        parent = self.top()
+    id := self.element(parent, tag, attrs)
+    if not VOID.contains(tag) and not (self_closing and self.foreign())
+        self.stack.push(id)
+    self.skip_newline = tag == "pre" or tag == "textarea" or tag == "listing"
 
 fn Builder.end(mut self, tag str)
     if tag == "br"
-        start("br", [], false)
+        self.start("br", [], false)
         return
     if tag == "html" or tag == "body" or tag == "head"
-        if tag == "head" and body < 0 and head >= 0 and top() == head
-            stack.pop()
+        if tag == "head" and self.body < 0 and self.head >= 0 and self.top() == self.head
+            self.stack.pop()
         return
-    mut k := stack.len() - 1
+    mut k := self.stack.len() - 1
     while k > 1
-        if nodes[stack[k]].tag == tag
-            close_to(k)
+        if self.nodes[self.stack[k]].tag == tag
+            self.close_to(k)
             return
         k -= 1
 
 fn Builder.chars(mut self, s str)
     mut text := s
-    if skip_newline
-        skip_newline = false
+    if self.skip_newline
+        self.skip_newline = false
         text = text.strip_prefix("\n") else text
         if text == ""
             return
     blank := all_space(text)
-    at := if stack.len() > 0 then top() else 0
-    if at == 0 or at == html or (at == head and body < 0)
+    at := if self.stack.len() > 0 then self.top() else 0
+    if at == 0 or at == self.html or (at == self.head and self.body < 0)
         if blank
             return
-        ensure_body()
-    parent := top()
-    kids := nodes[parent].children
+        self.ensure_body()
+    parent := self.top()
+    kids := self.nodes[parent].children
     if kids.len() > 0
         last := kids[kids.len() - 1]
-        if nodes[last].kind == Text
-            nodes[last].text = "{nodes[last].text}{text}"
+        if self.nodes[last].kind == Text
+            self.nodes[last].text = "{self.nodes[last].text}{text}"
             return
-    add(parent, TreeNode(kind: Text, tag: "", attrs: [], text, parent, children: []))
+    self.add(parent, TreeNode(kind: Text, tag: "", attrs: [], text, parent, children: []))
 
 fn all_space(s str) bool
     for c in s.chars()
@@ -714,44 +714,44 @@ pub fn parse_scripting(src str) Doc
 
 ## The value of attribute `name` of node `id`, or none.
 pub fn Doc.attr(self, id int, name str) str?
-    for a in nodes[id].attrs
+    for a in self.nodes[id].attrs
         if a.name == name
             return a.value
     none
 
 ## Every element named `tag`, in document order.
 pub fn Doc.all(self, tag str) List[int]
-    [i for i in 0..nodes.len() if nodes[i].kind == Element and nodes[i].tag == tag]
+    [i for i in 0..self.nodes.len() if self.nodes[i].kind == Element and self.nodes[i].tag == tag]
 
 ## The first element named `tag`, or none.
 pub fn Doc.first(self, tag str) int?
-    for i in 0..nodes.len()
-        if nodes[i].kind == Element and nodes[i].tag == tag
+    for i in 0..self.nodes.len()
+        if self.nodes[i].kind == Element and self.nodes[i].tag == tag
             return i
     none
 
 ## Sets attribute `name` of node `id` to `value`, adding it if absent.
 pub fn Doc.set_attr(mut self, id int, name str, value str)
-    mark(id)
-    for k in 0..nodes[id].attrs.len()
-        if nodes[id].attrs[k].name == name
-            nodes[id].attrs[k].value = value
+    self.mark(id)
+    for k in 0..self.nodes[id].attrs.len()
+        if self.nodes[id].attrs[k].name == name
+            self.nodes[id].attrs[k].value = value
             return
-    nodes[id].attrs.push(Attr(name, value))
+    self.nodes[id].attrs.push(Attr(name, value))
 
 ## Removes attribute `name` from node `id`, if it has it.
 pub fn Doc.remove_attr(mut self, id int, name str)
-    nodes[id].attrs = [a for a in nodes[id].attrs if a.name != name]
-    mark(id)
+    self.nodes[id].attrs = [a for a in self.nodes[id].attrs if a.name != name]
+    self.mark(id)
 
 ## Records that node `id` changed.
 pub fn Doc.mark(mut self, id int)
-    if not changed.contains(id)
-        changed.push(id)
+    if not self.changed.contains(id)
+        self.changed.push(id)
 
 ## A new element named `tag`, not yet in the tree (parent -1).
 pub fn Doc.create(mut self, tag str) int
-    nodes.push(TreeNode(
+    self.nodes.push(TreeNode(
         kind: Element,
         tag: tag.to_lower(),
         attrs: [],
@@ -759,62 +759,62 @@ pub fn Doc.create(mut self, tag str) int
         parent: -1,
         children: [],
     ))
-    nodes.len() - 1
+    self.nodes.len() - 1
 
 ## A new text node, not yet in the tree.
 pub fn Doc.create_text(mut self, s str) int
-    nodes.push(TreeNode(kind: Text, tag: "", attrs: [], text: s, parent: -1, children: []))
-    nodes.len() - 1
+    self.nodes.push(TreeNode(kind: Text, tag: "", attrs: [], text: s, parent: -1, children: []))
+    self.nodes.len() - 1
 
 ## A new comment node, not yet in the tree.
 pub fn Doc.create_comment(mut self, s str) int
-    nodes.push(TreeNode(kind: Comment, tag: "", attrs: [], text: s, parent: -1, children: []))
-    nodes.len() - 1
+    self.nodes.push(TreeNode(kind: Comment, tag: "", attrs: [], text: s, parent: -1, children: []))
+    self.nodes.len() - 1
 
 ## Moves node `id` to the end of `parent`'s children; gives `id`.
 pub fn Doc.append(mut self, parent int, id int) int
-    requires not within(parent, id)
-    detach(id)
-    nodes[parent].children.push(id)
-    nodes[id].parent = parent
-    mark(parent)
-    mark(id)
+    requires not self.within(parent, id)
+    self.detach(id)
+    self.nodes[parent].children.push(id)
+    self.nodes[id].parent = parent
+    self.mark(parent)
+    self.mark(id)
     id
 
 ## Moves node `id` into `parent` just before child `before` (at the end
 ## when `before` isn't a child); gives `id`.
 pub fn Doc.insert_before(mut self, parent int, id int, before int) int
-    requires not within(parent, id)
-    detach(id)
-    at := nodes[parent].children.index_of(before) else nodes[parent].children.len()
-    nodes[parent].children.insert(at, id)
-    nodes[id].parent = parent
-    mark(parent)
-    mark(id)
+    requires not self.within(parent, id)
+    self.detach(id)
+    at := self.nodes[parent].children.index_of(before) else self.nodes[parent].children.len()
+    self.nodes[parent].children.insert(at, id)
+    self.nodes[id].parent = parent
+    self.mark(parent)
+    self.mark(id)
     id
 
 ## Takes node `id` out of the tree (it keeps its own children).
 pub fn Doc.detach(mut self, id int)
-    p := nodes[id].parent
+    p := self.nodes[id].parent
     if p < 0
         return
-    nodes[p].children = [c for c in nodes[p].children if c != id]
-    nodes[id].parent = -1
-    mark(p)
+    self.nodes[p].children = [c for c in self.nodes[p].children if c != id]
+    self.nodes[id].parent = -1
+    self.mark(p)
 
 ## Replaces the content of node `id` with `s`: a text node's text, or an
 ## element's children with one text node.
 pub fn Doc.set_text(mut self, id int, s str)
-    if nodes[id].kind == Text
-        nodes[id].text = s
-        mark(id)
+    if self.nodes[id].kind == Text
+        self.nodes[id].text = s
+        self.mark(id)
         return
-    for c in nodes[id].children
-        nodes[c].parent = -1
-    nodes[id].children = []
+    for c in self.nodes[id].children
+        self.nodes[c].parent = -1
+    self.nodes[id].children = []
     if s != ""
-        append(id, create_text(s))
-    mark(id)
+        self.append(id, self.create_text(s))
+    self.mark(id)
 
 ## Whether node `id` is `ancestor` or inside it.
 pub fn Doc.within(self, id int, ancestor int) bool
@@ -822,16 +822,16 @@ pub fn Doc.within(self, id int, ancestor int) bool
     while p >= 0
         if p == ancestor
             return true
-        p = nodes[p].parent
+        p = self.nodes[p].parent
     false
 
 ## The nearest element named `tag` around node `id` (or `id` itself), or none.
 pub fn Doc.enclosing(self, id int, tag str) int?
     mut p := id
     while p >= 0
-        if nodes[p].kind == Element and nodes[p].tag == tag
+        if self.nodes[p].kind == Element and self.nodes[p].tag == tag
             return p
-        p = nodes[p].parent
+        p = self.nodes[p].parent
     none
 
 ## Elements whose text is never shown: scripts, styles and templates.
@@ -868,8 +868,8 @@ fn collect_text(d Doc, id int, mut out List[str])
 
 ## The document's title, whitespace collapsed; "" when it has none.
 pub fn Doc.title(self) str
-    t := first("title") else return ""
-    collapse(text(t))
+    t := self.first("title") else return ""
+    collapse(self.text(t))
 
 ## `s` with each run of whitespace made one space, trimmed.
 pub fn collapse(s str) str
@@ -889,9 +889,9 @@ pub fn collapse(s str) str
 ## spaces per depth, attributes sorted under their element.
 pub fn Doc.dump(self) str
     mut out := List[str]()
-    if doctype != ""
-        out.push("| <!DOCTYPE {doctype}>")
-    for c in nodes[0].children
+    if self.doctype != ""
+        out.push("| <!DOCTYPE {self.doctype}>")
+    for c in self.nodes[0].children
         dump_node(self, c, 1, mut out)
     out.join("\n")
 

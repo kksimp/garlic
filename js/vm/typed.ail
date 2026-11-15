@@ -89,7 +89,7 @@ pub fn Vm.view_set(mut self, o ref JsObject, key str, v Value) ! Thrown
 fn Vm.store_values(mut self, o ref JsObject, items List[Value]) ! Thrown
     n := items.len().min(view_len(o))
     for i in 0..n
-        view_set(o, "{i}", items[i])?
+        self.view_set(o, "{i}", items[i])?
 
 fn Vm.to_index(mut self, v Value) int ! Thrown
     if v == Undef
@@ -124,16 +124,16 @@ fn Vm.make_view(mut self, class str, buf ref JsObject, off int, len int, proto V
 
 ## A new Uint8Array holding `bs`.
 pub fn Vm.new_bytes_array(mut self, bs List[int]) Value ! Thrown
-    buf := new_buffer(bs.len(), proto_of("ArrayBuffer"))?
+    buf := self.new_buffer(bs.len(), proto_of("ArrayBuffer"))?
     for i in 0..bs.len()
         buf.elems[i] = Value.Num(bs[i].to_float())
-    Value.Obj(make_view("Uint8Array", buf, 0, bs.len(), proto_of("Uint8Array")))
+    Value.Obj(self.make_view("Uint8Array", buf, 0, bs.len(), proto_of("Uint8Array")))
 
 fn Vm.view_from_values(mut self, class str, proto Value, items List[Value]) Value ! Thrown
     e := elem_of(class)
-    buf := new_buffer(items.len() * e.size, proto_of("ArrayBuffer"))?
-    v := make_view(class, buf, 0, items.len(), proto)
-    store_values(v, items)?
+    buf := self.new_buffer(items.len() * e.size, proto_of("ArrayBuffer"))?
+    v := self.make_view(class, buf, 0, items.len(), proto)
+    self.store_values(v, items)?
     Value.Obj(v)
 
 fn Vm.this_view(mut self, v Value) ref JsObject ! Thrown
@@ -214,11 +214,11 @@ fn sorted_default(o ref JsObject) List[Value]
 ## `new Int8Array(...)` and the other element types (§23.2.5.1).
 fn Vm.view_new(mut self, class str, args List[Value], new_target Value) Value ! Thrown
     e := elem_of(class)
-    proto := proto_from(new_target, class)?
+    proto := self.proto_from(new_target, class)?
     a0 := arg_at(args, 0)
     if src := obj_of(a0)
         if src.class == "ArrayBuffer"
-            off := to_index(arg_at(args, 1))?
+            off := self.to_index(arg_at(args, 1))?
             if off % e.size != 0
                 return range_error("start offset of {class} should be a multiple of {e.size}")
             blen := src.elems.len()
@@ -230,19 +230,19 @@ fn Vm.view_new(mut self, class str, args List[Value], new_target Value) Value ! 
                     return range_error("Start offset {off} is outside the bounds of the buffer")
                 len = (blen - off) / e.size
             else
-                len = to_index(arg_at(args, 2))?
+                len = self.to_index(arg_at(args, 2))?
                 if off + len * e.size > blen
                     return range_error("Invalid typed array length: {len}")
-            return Value.Obj(make_view(class, src, off, len, proto))
+            return Value.Obj(self.make_view(class, src, off, len, proto))
         mut items := List[Value]()
         if is_view(src)
             items = view_values(src)
         elif get(a0, ITERATOR)? != Undef or get(a0, "length")? != Undef
             items = iterate(a0)?
-        return view_from_values(class, proto, items)
-    n := to_index(a0)?
-    buf := new_buffer(n * e.size, proto_of("ArrayBuffer"))?
-    Value.Obj(make_view(class, buf, 0, n, proto))
+        return self.view_from_values(class, proto, items)
+    n := self.to_index(a0)?
+    buf := self.new_buffer(n * e.size, proto_of("ArrayBuffer"))?
+    Value.Obj(self.make_view(class, buf, 0, n, proto))
 
 fn Vm.bin_new(mut self, name str, args List[Value], new_target Value) Value ! Thrown
     if name == "BigInt"
@@ -250,27 +250,27 @@ fn Vm.bin_new(mut self, name str, args List[Value], new_target Value) Value ! Th
     if new_target == Undef
         return type_error("Constructor {name} requires 'new'")
     if elem_of(name).size > 0
-        return view_new(name, args, new_target)
+        return self.view_new(name, args, new_target)
     match name
         "ArrayBuffer" =>
-            n := to_index(arg_at(args, 0))?
-            Value.Obj(new_buffer(n, proto_from(new_target, name)?)?)
+            n := self.to_index(arg_at(args, 0))?
+            Value.Obj(self.new_buffer(n, self.proto_from(new_target, name)?)?)
         "DataView" =>
             buf := obj_of(
                 arg_at(args, 0),
             ) else return type_error("First argument to DataView constructor must be an ArrayBuffer")
             if buf.class != "ArrayBuffer"
                 return type_error("First argument to DataView constructor must be an ArrayBuffer")
-            off := to_index(arg_at(args, 1))?
+            off := self.to_index(arg_at(args, 1))?
             blen := buf.elems.len()
             if off > blen
                 return range_error("Start offset {off} is outside the bounds of the buffer")
             mut len := blen - off
             if arg_at(args, 2) != Undef
-                len = to_index(arg_at(args, 2))?
+                len = self.to_index(arg_at(args, 2))?
                 if off + len > blen
                     return range_error("Invalid DataView length {len}")
-            Value.Obj(make_view("DataView", buf, off, len, proto_from(new_target, name)?))
+            Value.Obj(self.make_view("DataView", buf, off, len, self.proto_from(new_target, name)?))
         "TextEncoder" | "TextDecoder" => encoding_new(name, args, new_target)
         _ => type_error("Illegal constructor")
 
@@ -283,17 +283,17 @@ pub fn Vm.bin_native(
     new_target Value,
 ) Value ! Thrown
     if t := m.strip_prefix("new.")
-        return bin_new(t, args, new_target)
+        return self.bin_new(t, args, new_target)
     if t := m.strip_prefix("BigInt.")
         return big_native(t, this_val, args)
     if t := m.strip_prefix("TypedArray.prototype.")
-        return typed_method(t, this_val, args)
+        return self.typed_method(t, this_val, args)
     if t := m.strip_prefix("TypedArray.get.")
-        return typed_getter(t, this_val)
+        return self.typed_getter(t, this_val)
     if t := m.strip_prefix("DataView.")
-        return dataview_native(t, this_val, args)
+        return self.dataview_native(t, this_val, args)
     if t := m.strip_prefix("ArrayBuffer.")
-        return buffer_native(t, this_val, args)
+        return self.buffer_native(t, this_val, args)
     if m.starts_with("TextEncoder.") or m.starts_with("TextDecoder.")
         return encoding_native(m, this_val, args)
     if m.starts_with("customElements.")
@@ -327,7 +327,7 @@ pub fn Vm.bin_native(
                 for i in 0..items.len()
                     mapped.push(call(f, arg_at(args, 2), [items[i], Value.Num(i.to_float())])?)
                 items = mapped
-        return view_from_values(cname, proto_of(cname), items)
+        return self.view_from_values(cname, proto_of(cname), items)
     type_error("bin.{m} is not supported yet")
 
 fn Vm.buffer_native(mut self, t str, this_val Value, args List[Value]) Value ! Thrown
@@ -335,7 +335,7 @@ fn Vm.buffer_native(mut self, t str, this_val Value, args List[Value]) Value ! T
         if o := obj_of(arg_at(args, 0))
             return Value.Bool(is_view(o) or o.class == "DataView")
         return Value.Bool(false)
-    o := this_kind(this_val, "ArrayBuffer")?
+    o := self.this_kind(this_val, "ArrayBuffer")?
     match t
         "get.byteLength" | "get.maxByteLength" => Value.Num(o.elems.len().to_float())
         "get.resizable" => Value.Bool(false)
@@ -344,7 +344,7 @@ fn Vm.buffer_native(mut self, t str, this_val Value, args List[Value]) Value ! T
             start := relative(arg_at(args, 0), len, 0)?
             end := relative(arg_at(args, 1), len, len)?
             n := if end > start then end - start else 0
-            out := new_buffer(n, proto_of("ArrayBuffer"))?
+            out := self.new_buffer(n, proto_of("ArrayBuffer"))?
             for i in 0..n
                 out.elems[i] = o.elems[start + i]
             Value.Obj(out)
@@ -356,7 +356,7 @@ fn Vm.typed_getter(mut self, t str, this_val Value) Value ! Thrown
             if is_view(o)
                 return Value.Str(o.class)
         return Undef
-    o := this_view(this_val)?
+    o := self.this_view(this_val)?
     match t
         "buffer" => o.prim
         "length" => Value.Num(view_len(o).to_float())
@@ -365,7 +365,7 @@ fn Vm.typed_getter(mut self, t str, this_val Value) Value ! Thrown
         _ => Undef
 
 fn Vm.typed_method(mut self, t str, this_val Value, args List[Value]) Value ! Thrown
-    o := this_view(this_val)?
+    o := self.this_view(this_val)?
     a0 := arg_at(args, 0)
     a1 := arg_at(args, 1)
     match t
@@ -376,16 +376,16 @@ fn Vm.typed_method(mut self, t str, this_val Value, args List[Value]) Value ! Th
             arr := obj_of(
                 array_method(t, this_val, args)?,
             ) else return type_error("Invalid typed array result")
-            view_from_values(o.class, o.proto, arr.elems)
+            self.view_from_values(o.class, o.proto, arr.elems)
         "toSorted" =>
             if a0 != Undef and not is_callable(a0)
                 return type_error("The comparison function must be either a function or undefined")
             if a0 == Undef
-                return view_from_values(o.class, o.proto, sorted_default(o))
+                return self.view_from_values(o.class, o.proto, sorted_default(o))
             arr := obj_of(
                 array_method(t, this_val, args)?,
             ) else return type_error("Invalid typed array result")
-            view_from_values(o.class, o.proto, arr.elems)
+            self.view_from_values(o.class, o.proto, arr.elems)
         "fill" | "reverse" | "copyWithin" =>
             tmp := obj_of(array(view_values(o))) else return Undef
             mut args2 := List[Value]()
@@ -399,25 +399,25 @@ fn Vm.typed_method(mut self, t str, this_val Value, args List[Value]) Value ! Th
             else
                 args2 = args
             array_method(t, Value.Obj(tmp), args2)?
-            store_values(o, tmp.elems)?
+            self.store_values(o, tmp.elems)?
             this_val
         "sort" =>
             if a0 != Undef and not is_callable(a0)
                 return type_error("The comparison function must be either a function or undefined")
             if a0 == Undef
-                store_values(o, sorted_default(o))?
+                self.store_values(o, sorted_default(o))?
                 return this_val
             tmp := obj_of(array(view_values(o))) else return Undef
             array_method("sort", Value.Obj(tmp), args)?
-            store_values(o, tmp.elems)?
+            self.store_values(o, tmp.elems)?
             this_val
         "set" =>
-            off := to_index(a1)?
-            items := set_source(a0)?
+            off := self.to_index(a1)?
+            items := self.set_source(a0)?
             if off + items.len() > view_len(o)
                 return range_error("offset is out of bounds")
             for i in 0..items.len()
-                view_set(o, "{off + i}", items[i])?
+                self.view_set(o, "{off + i}", items[i])?
             Undef
         "subarray" =>
             len := view_len(o)
@@ -425,7 +425,7 @@ fn Vm.typed_method(mut self, t str, this_val Value, args List[Value]) Value ! Th
             end := relative(a1, len, len)?
             n := if end > start then end - start else 0
             buf := obj_of(o.prim) else return Undef
-            Value.Obj(make_view(
+            Value.Obj(self.make_view(
                 o.class,
                 buf,
                 view_off(o) + start * elem_of(o.class).size,
@@ -441,7 +441,7 @@ fn Vm.set_source(mut self, v Value) List[Value] ! Thrown
     elements_of(v)
 
 fn Vm.dataview_native(mut self, t str, this_val Value, args List[Value]) Value ! Thrown
-    o := this_kind(this_val, "DataView")?
+    o := self.this_kind(this_val, "DataView")?
     if t == "get.buffer"
         return o.prim
     if t == "get.byteLength"
@@ -453,7 +453,7 @@ fn Vm.dataview_native(mut self, t str, this_val Value, args List[Value]) Value !
     e := elem_of("{typ}Array")
     if e.size == 0
         return type_error("DataView.prototype.{name} is not supported yet")
-    idx := to_index(arg_at(args, 0))?
+    idx := self.to_index(arg_at(args, 0))?
     if idx + e.size > view_len(o)
         return range_error("Offset is outside the bounds of the DataView")
     buf := obj_of(o.prim) else return Undef
@@ -501,16 +501,16 @@ fn Vm.bin_tag(mut self, p ref JsObject, name str)
     )
 
 pub fn Vm.bin_setup(mut self)
-    ab := bin_ctor("ArrayBuffer", 1)
+    ab := self.bin_ctor("ArrayBuffer", 1)
     ab_proto := obj_of(proto_of("ArrayBuffer")) else return
     methods(ab, "bin.ArrayBuffer", "isView:1")
     methods(ab_proto, "bin.ArrayBuffer.prototype", "slice:2")
     getter(ab_proto, "byteLength", "bin.ArrayBuffer.get.byteLength")
     getter(ab_proto, "maxByteLength", "bin.ArrayBuffer.get.maxByteLength")
     getter(ab_proto, "resizable", "bin.ArrayBuffer.get.resizable")
-    bin_tag(ab_proto, "ArrayBuffer")
+    self.bin_tag(ab_proto, "ArrayBuffer")
 
-    ta := bin_ctor("TypedArray", 0)
+    ta := self.bin_ctor("TypedArray", 0)
     global_obj.props.remove("TypedArray")
     ta_proto := obj_of(proto_of("TypedArray")) else return
     methods(ta, "bin.TypedArray", "from:1 of:0")
@@ -524,7 +524,7 @@ pub fn Vm.bin_setup(mut self)
     getter(ta_proto, well_known("toStringTag"), "bin.TypedArray.get.tag")
     ta_proto.props[ITERATOR] = hidden(native_fn("bin.TypedArray.prototype.values", "values", 0))
     for name in typed_names()
-        c := bin_ctor(name, 3)
+        c := self.bin_ctor(name, 3)
         p := obj_of(proto_of(name)) else continue
         p.proto = Value.Obj(ta_proto)
         c.proto = Value.Obj(ta)
@@ -532,7 +532,7 @@ pub fn Vm.bin_setup(mut self)
         constant(c, "BYTES_PER_ELEMENT", size)
         constant(p, "BYTES_PER_ELEMENT", size)
 
-    bin_ctor("DataView", 1)
+    self.bin_ctor("DataView", 1)
     dv_proto := obj_of(proto_of("DataView")) else return
     methods(
         dv_proto,
@@ -541,7 +541,7 @@ pub fn Vm.bin_setup(mut self)
     )
     for name in ["buffer", "byteLength", "byteOffset"]
         getter(dv_proto, name, "bin.DataView.get.{name}")
-    bin_tag(dv_proto, "DataView")
+    self.bin_tag(dv_proto, "DataView")
     encoding_setup()
     crypto_setup()
     custom_setup()

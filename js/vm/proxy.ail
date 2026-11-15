@@ -32,33 +32,33 @@ fn Vm.proxy_trap(mut self, o ref JsObject, name str) Value ! Thrown
     trap
 
 pub fn Vm.proxy_get(mut self, o ref JsObject, key str, receiver Value) Value ! Thrown
-    trap := proxy_trap(o, "get")?
-    target := proxy_target(o)
+    trap := self.proxy_trap(o, "get")?
+    target := self.proxy_target(o)
     if trap == Value.Undef
         return get_from(obj_of(target) else o, key, receiver)
     call(trap, o.props["{PRIVATE}handler"].value, [target, Value.Str(key), receiver])
 
 pub fn Vm.proxy_set(mut self, o ref JsObject, key str, v Value, receiver Value) ! Thrown
-    trap := proxy_trap(o, "set")?
-    target := proxy_target(o)
+    trap := self.proxy_trap(o, "set")?
+    target := self.proxy_target(o)
     if trap == Value.Undef
         put_obj(obj_of(target) else o, key, v, receiver)?
         return
     call(trap, o.props["{PRIVATE}handler"].value, [target, Value.Str(key), v, receiver])?
 
 pub fn Vm.proxy_has(mut self, o ref JsObject, key str) bool ! Thrown
-    trap := proxy_trap(o, "has")?
-    target := proxy_target(o)
+    trap := self.proxy_trap(o, "has")?
+    target := self.proxy_target(o)
     if trap == Value.Undef
         t := obj_of(target) else return false
         if t.class == "Proxy"
-            return proxy_has(t, key)
+            return self.proxy_has(t, key)
         return has_property(t, key)
     truthy(call(trap, o.props["{PRIVATE}handler"].value, [target, Value.Str(key)])?)
 
 pub fn Vm.proxy_delete(mut self, o ref JsObject, key str) bool ! Thrown
-    trap := proxy_trap(o, "deleteProperty")?
-    target := proxy_target(o)
+    trap := self.proxy_trap(o, "deleteProperty")?
+    target := self.proxy_target(o)
     if trap == Value.Undef
         t := obj_of(target) else return false
         return delete(t, key)
@@ -72,15 +72,15 @@ fn Vm.proxy_call(
     args List[Value],
     new_target Value,
 ) Value ! Thrown
-    target := proxy_target(o)
+    target := self.proxy_target(o)
     handler := o.props["{PRIVATE}handler"].value
     list := array(args)
     if new_target == Value.Undef
-        trap := proxy_trap(o, "apply")?
+        trap := self.proxy_trap(o, "apply")?
         if trap == Value.Undef
             return call(target, this_val, args)
         return call(trap, handler, [target, this_val, list])
-    trap := proxy_trap(o, "construct")?
+    trap := self.proxy_trap(o, "construct")?
     if trap == Value.Undef
         return construct(target, args, if new_target == Value.Obj(o) then target else new_target)
     r := call(trap, handler, [target, list, new_target])?
@@ -127,7 +127,7 @@ fn Vm.reflect_function(mut self, m str, args List[Value]) Value ! Thrown
         "deleteProperty" =>
             key := to_key(a1)?
             if o.class == "Proxy"
-                return Value.Bool(proxy_delete(o, key)?)
+                return Value.Bool(self.proxy_delete(o, key)?)
             Value.Bool(delete(o, key))
         "get" => get_from(o, to_key(a1)?, if args.len() > 2 then a2 else a0)
         "set" =>
@@ -136,12 +136,12 @@ fn Vm.reflect_function(mut self, m str, args List[Value]) Value ! Thrown
         "has" =>
             key := to_key(a1)?
             if o.class == "Proxy"
-                return Value.Bool(proxy_has(o, key)?)
+                return Value.Bool(self.proxy_has(o, key)?)
             Value.Bool(has_property(o, key))
         "ownKeys" =>
             names := object_function("getOwnPropertyNames", [a0])?
             mut out := iterate(names)?
-            for s in own_symbols(obj_of(proxy_unwrap(a0)) else o)
+            for s in own_symbols(obj_of(self.proxy_unwrap(a0)) else o)
                 out.push(Value.Sym(s))
             array(out)
         "getPrototypeOf" => object_function("getPrototypeOf", [a0])?

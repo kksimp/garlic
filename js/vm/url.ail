@@ -84,7 +84,7 @@ fn Vm.url_method(mut self, m str, this_val Value) Value ! Thrown
         if p == "searchParams"
             if q := o.props.get("{PRIVATE}params")
                 return q.value
-            sp := params_from(url_part(href, "search"))
+            sp := self.params_from(url_part(href, "search"))
             o.props["{PRIVATE}params"] = hidden(sp)
             return sp
         return Value.Str(url_part(href, p))
@@ -134,14 +134,14 @@ pub fn form_decode(s str) str
 fn Vm.make_params(mut self, args List[Value]) Value ! Thrown
     init := arg_at(args, 0)
     if init == Undef or init == Null
-        return params_from("")
-    io := obj_of(init) else return params_from(to_string(init)?)
+        return self.params_from("")
+    io := obj_of(init) else return self.params_from(to_string(init)?)
     if io.class == "URLSearchParams"
-        mut copy := params_from("")
+        mut copy := self.params_from("")
         if c := obj_of(copy)
             c.elems = io.elems
         return copy
-    out := params_from("")
+    out := self.params_from("")
     oo := obj_of(out) else return out
     if io.class == "Array"
         for pair in io.elems

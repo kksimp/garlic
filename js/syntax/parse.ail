@@ -203,152 +203,152 @@ fn parse_goal(source str, module bool) Program ! JsError
 # ---- Tokens ----
 
 fn Parser.next(mut self) ! JsError
-    last_end = tok.end
-    if ahead.len() > 0
-        tok = ahead.remove_at(0)
+    self.last_end = self.tok.end
+    if self.ahead.len() > 0
+        self.tok = self.ahead.remove_at(0)
     else
-        tok = lx.next(false)?
+        self.tok = self.lx.next(false)?
 
 ## The token after the current one.
 fn Parser.peek(mut self) Token ! JsError
-    if ahead.len() == 0
-        ahead.push(lx.next(false)?)
-    ahead[0]
+    if self.ahead.len() == 0
+        self.ahead.push(self.lx.next(false)?)
+    self.ahead[0]
 
 ## The source from `p` to the last token consumed.
 fn Parser.source_since(self, p Pos) str
-    lx.src[p.offset..last_end].join("")
+    self.lx.src[p.offset..self.last_end].join("")
 
 fn Parser.pos(self) Pos
-    Pos(line: tok.line, col: tok.col, offset: tok.start)
+    Pos(line: self.tok.line, col: self.tok.col, offset: self.tok.start)
 
 fn Parser.is_p(self, s str) bool
-    tok.kind == Punct and tok.text == s
+    self.tok.kind == Punct and self.tok.text == s
 
 ## The current token is the keyword or contextual keyword `w`, unescaped.
 fn Parser.is_kw(self, w str) bool
-    tok.kind == Name and tok.text == w and not tok.escaped
+    self.tok.kind == Name and self.tok.text == w and not self.tok.escaped
 
 fn Parser.eat(mut self, s str) bool ! JsError
-    if is_p(s)
-        next()?
+    if self.is_p(s)
+        self.next()?
         return true
     false
 
 fn Parser.expect(mut self, s str) ! JsError
-    if not eat(s)?
-        return unexpected()
+    if not self.eat(s)?
+        return self.unexpected()
 
 fn Parser.fail_at(self, msg str, p Pos) JsError
     JsError(msg: msg, line: p.line, col: p.col)
 
 fn Parser.fail(self, msg str) JsError
-    fail_at(msg, pos())
+    self.fail_at(msg, self.pos())
 
 ## "Unexpected ..." for the current token, worded as V8 words it.
 fn Parser.unexpected(self) JsError
-    msg := match tok.kind
+    msg := match self.tok.kind
         Eof => "Unexpected end of input"
         Num => "Unexpected number"
         Str => "Unexpected string"
         Template => "Unexpected template string"
         Name =>
-            if RESERVED.contains(tok.text)
-                "Unexpected token '{tok.text}'"
-            elif strict and STRICT_RESERVED.contains(tok.text)
+            if RESERVED.contains(self.tok.text)
+                "Unexpected token '{self.tok.text}'"
+            elif self.strict and STRICT_RESERVED.contains(self.tok.text)
                 "Unexpected strict mode reserved word"
             else
-                "Unexpected identifier '{tok.text}'"
-        Priv => "Unexpected identifier '#{tok.text}'"
-        Punct | Regex => "Unexpected token '{tok.text}'"
-    fail(msg)
+                "Unexpected identifier '{self.tok.text}'"
+        Priv => "Unexpected identifier '#{self.tok.text}'"
+        Punct | Regex => "Unexpected token '{self.tok.text}'"
+    self.fail(msg)
 
 ## Automatic semicolon insertion (§12.10.1): a `;`, or a `}`, the end, or a
 ## line break before the current token.
 fn Parser.semicolon(mut self) ! JsError
-    if eat(";")?
+    if self.eat(";")?
         return
-    if is_p("}") or tok.kind == Eof or tok.nl_before
+    if self.is_p("}") or self.tok.kind == Eof or self.tok.nl_before
         return
-    return unexpected()
+    return self.unexpected()
 
 ## A name may be bound here (§13.1.1, §8.6.1).
 fn Parser.check_binding(self, name str, p Pos) ! JsError
-    if in_gen and name == "yield"
-        return fail_at("Unexpected identifier 'yield'", p)
-    if in_async and name == "await"
-        return fail_at("Unexpected reserved word", p)
+    if self.in_gen and name == "yield"
+        return self.fail_at("Unexpected identifier 'yield'", p)
+    if self.in_async and name == "await"
+        return self.fail_at("Unexpected reserved word", p)
     if RESERVED.contains(name)
-        return fail_at("Unexpected token '{name}'", p)
-    if strict and STRICT_RESERVED.contains(name)
-        return fail_at("Unexpected strict mode reserved word", p)
-    if strict and (name == "eval" or name == "arguments")
-        return fail_at("Unexpected eval or arguments in strict mode", p)
+        return self.fail_at("Unexpected token '{name}'", p)
+    if self.strict and STRICT_RESERVED.contains(name)
+        return self.fail_at("Unexpected strict mode reserved word", p)
+    if self.strict and (name == "eval" or name == "arguments")
+        return self.fail_at("Unexpected eval or arguments in strict mode", p)
 
 ## The current token as an identifier reference or binding name.
 fn Parser.ident_name(mut self, binding bool) str ! JsError
-    if tok.kind != Name
-        return unexpected()
-    if tok.escaped
-        and (RESERVED.contains(tok.text) or strict and STRICT_RESERVED.contains(tok.text))
-        return fail("Keyword must not contain escaped characters")
-    name := tok.text
-    if in_gen and name == "yield"
-        return fail("Unexpected identifier 'yield'")
-    if in_async and name == "await"
-        return fail("Unexpected reserved word")
+    if self.tok.kind != Name
+        return self.unexpected()
+    if self.tok.escaped
+        and (RESERVED.contains(self.tok.text) or self.strict and STRICT_RESERVED.contains(self.tok.text))
+        return self.fail("Keyword must not contain escaped characters")
+    name := self.tok.text
+    if self.in_gen and name == "yield"
+        return self.fail("Unexpected identifier 'yield'")
+    if self.in_async and name == "await"
+        return self.fail("Unexpected reserved word")
     if binding
-        check_binding(name, pos())?
-    elif RESERVED.contains(name) or strict and STRICT_RESERVED.contains(name)
-        return unexpected()
-    next()?
+        self.check_binding(name, self.pos())?
+    elif RESERVED.contains(name) or self.strict and STRICT_RESERVED.contains(name)
+        return self.unexpected()
+    self.next()?
     name
 
 fn Parser.save(self) Ctx
     Ctx(
-        in_function: in_function,
-        labels: labels,
-        loop_depth: loop_depth,
-        switch_depth: switch_depth,
-        super_call: super_call,
-        super_prop: super_prop,
-        new_target: new_target,
-        strict: strict,
-        in_gen: in_gen,
-        in_async: in_async,
-        in_params: in_params,
+        in_function: self.in_function,
+        labels: self.labels,
+        loop_depth: self.loop_depth,
+        switch_depth: self.switch_depth,
+        super_call: self.super_call,
+        super_prop: self.super_prop,
+        new_target: self.new_target,
+        strict: self.strict,
+        in_gen: self.in_gen,
+        in_async: self.in_async,
+        in_params: self.in_params,
     )
 
 fn Parser.restore(mut self, c Ctx)
-    in_function = c.in_function
-    labels = c.labels
-    loop_depth = c.loop_depth
-    switch_depth = c.switch_depth
-    super_call = c.super_call
-    super_prop = c.super_prop
-    new_target = c.new_target
-    strict = c.strict
-    in_gen = c.in_gen
-    in_async = c.in_async
-    in_params = c.in_params
+    self.in_function = c.in_function
+    self.labels = c.labels
+    self.loop_depth = c.loop_depth
+    self.switch_depth = c.switch_depth
+    self.super_call = c.super_call
+    self.super_prop = c.super_prop
+    self.new_target = c.new_target
+    self.strict = c.strict
+    self.in_gen = c.in_gen
+    self.in_async = c.in_async
+    self.in_params = c.in_params
 
 ## Enter a function body: no labels or loops reach into it.
 fn Parser.enter(mut self, super_call_ok bool, super_prop_ok bool)
-    in_function = true
-    labels = []
-    loop_depth = 0
-    switch_depth = 0
-    super_call = super_call_ok
-    super_prop = super_prop_ok
-    new_target = true
-    in_gen = false
-    in_async = false
-    in_params = false
+    self.in_function = true
+    self.labels = []
+    self.loop_depth = 0
+    self.switch_depth = 0
+    self.super_call = super_call_ok
+    self.super_prop = super_prop_ok
+    self.new_target = true
+    self.in_gen = false
+    self.in_async = false
+    self.in_params = false
 
 # ---- Scopes ----
 
 fn Parser.enter_scope(mut self, is_function bool)
-    scopes.push(Scope(
+    self.scopes.push(Scope(
         vars: Set[str](),
         lexical: Set[str](),
         functions: Set[str](),
@@ -357,46 +357,46 @@ fn Parser.enter_scope(mut self, is_function bool)
     ))
 
 fn Parser.leave_scope(mut self)
-    scopes.pop()
+    self.scopes.pop()
 
 ## Declare `name` as `kind`: "var", "lexical", "function" (a sloppy-mode
 ## function declaration) or "catch" (§14.2.1, §14.3.1.1, §15.2.1, Annex B.3.2-B.3.4).
 fn Parser.declare(mut self, name str, kind str, p Pos) ! JsError
-    top := scopes.len() - 1
-    s := scopes[top]
+    top := self.scopes.len() - 1
+    s := self.scopes[top]
     mut clash := false
     if kind == "lexical"
         clash = s.lexical.contains(name) or s.functions.contains(name) or s.vars.contains(name)
-        scopes[top].lexical.add(name)
+        self.scopes[top].lexical.add(name)
     elif kind == "catch"
-        scopes[top].lexical.add(name)
-        scopes[top].catch_param = name
+        self.scopes[top].lexical.add(name)
+        self.scopes[top].catch_param = name
     elif kind == "function"
         clash = s.lexical.contains(name) or not s.is_function and s.vars.contains(name)
-        scopes[top].functions.add(name)
+        self.scopes[top].functions.add(name)
     else
         mut k := top
         while k >= 0
-            sc := scopes[k]
+            sc := self.scopes[k]
             if sc.lexical.contains(name) and sc.catch_param != name
                 or not sc.is_function and sc.functions.contains(name)
                 clash = true
-            scopes[k].vars.add(name)
+            self.scopes[k].vars.add(name)
             if sc.is_function
                 break
             k -= 1
     if clash
-        return fail_at("Identifier '{name}' has already been declared", p)
+        return self.fail_at("Identifier '{name}' has already been declared", p)
 
 ## `for (var e of ...)` may not redeclare a `catch (e)` around it (Annex B.3.4).
 fn Parser.catch_clash(self, target Pat) ! JsError
     mut names := List[str]()
     collect_names(target, mut names)
-    mut k := scopes.len() - 1
-    while k >= 0 and not scopes[k].is_function
+    mut k := self.scopes.len() - 1
+    while k >= 0 and not self.scopes[k].is_function
         for n in names
-            if scopes[k].catch_param == n
-                return fail_at("Identifier '{n}' has already been declared", pat_pos(target))
+            if self.scopes[k].catch_param == n
+                return self.fail_at("Identifier '{n}' has already been declared", pat_pos(target))
         k -= 1
 
 ## Declare every name a pattern binds.
@@ -404,100 +404,100 @@ fn Parser.declare_pat(mut self, target Pat, kind str) ! JsError
     mut names := List[str]()
     collect_names(target, mut names)
     for n in names
-        declare(n, kind, pat_pos(target))?
+        self.declare(n, kind, pat_pos(target))?
 
 ## How a function declaration's name is bound where it stands (§15.2.1, Annex B.3.2).
 fn Parser.function_kind(self) str
-    if not strict
+    if not self.strict
         return "function"
-    if scopes[scopes.len() - 1].is_function then "var" else "lexical"
+    if self.scopes[self.scopes.len() - 1].is_function then "var" else "lexical"
 
 # ---- Modules (§16.2) ----
 
 ## An `await` at a module's top level (not inside a function).
 fn Parser.note_await(mut self)
-    if module and not in_function
-        tla = true
+    if self.module and not self.in_function
+        self.tla = true
 
 ## `import` here starts `import(...)` or `import.meta`, not a declaration.
 fn Parser.import_is_expr(mut self) bool ! JsError
-    n := peek()?
+    n := self.peek()?
     n.kind == Punct and (n.text == "(" or n.text == ".")
 
 ## `import(arg, options)` (§13.3.10) and `import.meta` (§13.3.12.2).
 fn Parser.import_expr(mut self) Expr ! JsError
-    p := pos()
-    next()?
-    if eat(".")?
-        if not is_kw("meta")
-            return unexpected()
-        if not module
-            return fail_at("Cannot use 'import.meta' outside a module", p)
-        next()?
+    p := self.pos()
+    self.next()?
+    if self.eat(".")?
+        if not self.is_kw("meta")
+            return self.unexpected()
+        if not self.module
+            return self.fail_at("Cannot use 'import.meta' outside a module", p)
+        self.next()?
         return Import(arg: none, opts: none, pos: p)
-    if not is_p("(")
-        return fail_at("Cannot use import statement outside a module", p)
-    next()?
-    arg := assign(false)?
+    if not self.is_p("(")
+        return self.fail_at("Cannot use import statement outside a module", p)
+    self.next()?
+    arg := self.assign(false)?
     mut opts := none
-    if eat(",")?
-        if not is_p(")")
-            opts = assign(false)?
-            eat(",")?
-    expect(")")?
+    if self.eat(",")?
+        if not self.is_p(")")
+            opts = self.assign(false)?
+            self.eat(",")?
+    self.expect(")")?
     Import(arg, opts, p)
 
 ## A string or identifier name in an import or export list (§16.2.2).
 fn Parser.module_name(mut self) str ! JsError
-    if tok.kind != Name and tok.kind != Str
-        return unexpected()
-    name := tok.text
-    next()?
+    if self.tok.kind != Name and self.tok.kind != Str
+        return self.unexpected()
+    name := self.tok.text
+    self.next()?
     name
 
 fn Parser.add_export(mut self, name str, p Pos) ! JsError
-    if not exported.add(name)
-        return fail_at("Duplicate export of '{name}'", p)
+    if not self.exported.add(name)
+        return self.fail_at("Duplicate export of '{name}'", p)
 
 ## `with {type: "json"}` after a module specifier (ES2025 import attributes).
 fn Parser.import_attrs(mut self) List[ImportAttr] ! JsError
     mut out := List[ImportAttr]()
-    if not is_kw("with")
+    if not self.is_kw("with")
         return out
-    next()?
-    expect("\{")?
-    while not is_p("}")
-        key := module_name()?
-        expect(":")?
-        if tok.kind != Str
-            return unexpected()
-        out.push(ImportAttr(key: key, value: tok.text))
-        next()?
-        if not is_p("}")
-            expect(",")?
-    next()?
+    self.next()?
+    self.expect("\{")?
+    while not self.is_p("}")
+        key := self.module_name()?
+        self.expect(":")?
+        if self.tok.kind != Str
+            return self.unexpected()
+        out.push(ImportAttr(key: key, value: self.tok.text))
+        self.next()?
+        if not self.is_p("}")
+            self.expect(",")?
+    self.next()?
     out
 
 ## An `import` or `export` declaration at the top of a module.
 fn Parser.module_item(mut self, p Pos) Stmt ! JsError
-    if is_kw("import")
-        return import_decl(p)
-    export_decl(p)
+    if self.is_kw("import")
+        return self.import_decl(p)
+    self.export_decl(p)
 
 fn Parser.import_decl(mut self, p Pos) Stmt ! JsError
-    next()?
+    self.next()?
     mut specs := List[ImportSpec]()
-    if tok.kind == Str
-        source := tok.text
-        next()?
-        attrs := import_attrs()?
-        semicolon()?
+    if self.tok.kind == Str
+        source := self.tok.text
+        self.next()?
+        attrs := self.import_attrs()?
+        self.semicolon()?
         return Module(ImportDecl(specs, source, attrs), p)
     mut more := true
-    if tok.kind == Name
-        sp := pos()
-        local := ident_name(true)?
-        declare(local, "lexical", sp)?
+    if self.tok.kind == Name
+        sp := self.pos()
+        local := self.ident_name(true)?
+        self.declare(local, "lexical", sp)?
         specs.push(ImportSpec(
             kind: "default",
             imported: "default",
@@ -505,17 +505,17 @@ fn Parser.import_decl(mut self, p Pos) Stmt ! JsError
             local: local,
             pos: sp,
         ))
-        more = eat(",")?
+        more = self.eat(",")?
     if more
-        if is_p("*")
-            sp := pos()
-            next()?
-            if not is_kw("as")
-                return unexpected()
-            next()?
-            lp := pos()
-            local := ident_name(true)?
-            declare(local, "lexical", lp)?
+        if self.is_p("*")
+            sp := self.pos()
+            self.next()?
+            if not self.is_kw("as")
+                return self.unexpected()
+            self.next()?
+            lp := self.pos()
+            local := self.ident_name(true)?
+            self.declare(local, "lexical", lp)?
             specs.push(ImportSpec(
                 kind: "namespace",
                 imported: "*",
@@ -523,21 +523,21 @@ fn Parser.import_decl(mut self, p Pos) Stmt ! JsError
                 local: local,
                 pos: sp,
             ))
-        elif is_p("\{")
-            next()?
-            while not is_p("}")
-                sp := pos()
-                was_str := tok.kind == Str
-                imported := module_name()?
+        elif self.is_p("\{")
+            self.next()?
+            while not self.is_p("}")
+                sp := self.pos()
+                was_str := self.tok.kind == Str
+                imported := self.module_name()?
                 mut local := imported
-                if is_kw("as")
-                    next()?
-                    local = ident_name(true)?
+                if self.is_kw("as")
+                    self.next()?
+                    local = self.ident_name(true)?
                 elif was_str
-                    return unexpected()
+                    return self.unexpected()
                 else
-                    check_binding(imported, sp)?
-                declare(local, "lexical", sp)?
+                    self.check_binding(imported, sp)?
+                self.declare(local, "lexical", sp)?
                 specs.push(ImportSpec(
                     kind: "named",
                     imported: imported,
@@ -545,51 +545,51 @@ fn Parser.import_decl(mut self, p Pos) Stmt ! JsError
                     local: local,
                     pos: sp,
                 ))
-                if not is_p("}")
-                    expect(",")?
-            next()?
+                if not self.is_p("}")
+                    self.expect(",")?
+            self.next()?
         else
-            return unexpected()
-    source := string_after_from()?
-    attrs := import_attrs()?
-    semicolon()?
+            return self.unexpected()
+    source := self.string_after_from()?
+    attrs := self.import_attrs()?
+    self.semicolon()?
     Module(ImportDecl(specs, source, attrs), p)
 
 ## `from "src"`: the source string.
 fn Parser.string_after_from(mut self) str ! JsError
-    if not is_kw("from")
-        return unexpected()
-    next()?
-    if tok.kind != Str
-        return unexpected()
-    source := tok.text
-    next()?
+    if not self.is_kw("from")
+        return self.unexpected()
+    self.next()?
+    if self.tok.kind != Str
+        return self.unexpected()
+    source := self.tok.text
+    self.next()?
     source
 
 fn Parser.export_decl(mut self, p Pos) Stmt ! JsError
-    next()?
-    if eat("*")?
+    self.next()?
+    if self.eat("*")?
         mut exported_as := none
         mut as_str := false
-        if is_kw("as")
-            next()?
-            ep := pos()
-            as_str = tok.kind == Str
-            name := module_name()?
-            add_export(name, ep)?
+        if self.is_kw("as")
+            self.next()?
+            ep := self.pos()
+            as_str = self.tok.kind == Str
+            name := self.module_name()?
+            self.add_export(name, ep)?
             exported_as = name
-        source := string_after_from()?
-        attrs := import_attrs()?
-        semicolon()?
+        source := self.string_after_from()?
+        attrs := self.import_attrs()?
+        self.semicolon()?
         return Module(ExportAll(exported_as, as_str, source, attrs), p)
-    if is_kw("default")
-        return export_default(p)
-    if is_p("\{")
-        return export_list(p)
-    dp := pos()
-    if not (tok.kind == Name and ["var", "let", "const", "function", "class", "async"].contains(tok.text))
-        return unexpected()
-    s := statement(true)?
+    if self.is_kw("default")
+        return self.export_default(p)
+    if self.is_p("\{")
+        return self.export_list(p)
+    dp := self.pos()
+    if not (self.tok.kind == Name and ["var", "let", "const", "function", "class", "async"].contains(self.tok.text))
+        return self.unexpected()
+    s := self.statement(true)?
     mut names := List[str]()
     match s
         Var(d) =>
@@ -602,27 +602,27 @@ fn Parser.export_decl(mut self, p Pos) Stmt ! JsError
             if n := c.name
                 names.push(n)
         Exp | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger | Module =>
-            return fail_at("Unexpected token", dp)
+            return self.fail_at("Unexpected token", dp)
     for n in names
-        add_export(n, dp)?
+        self.add_export(n, dp)?
     Module(ExportNamed(s, [], none, []), p)
 
 ## `export {a, b as c}` with an optional `from "src"` (§16.2.3).
 fn Parser.export_list(mut self, p Pos) Stmt ! JsError
-    next()?
+    self.next()?
     mut specs := List[ExportSpec]()
     mut quoted := List[Pos]()
-    while not is_p("}")
-        sp := pos()
-        local_str := tok.kind == Str
-        local := module_name()?
+    while not self.is_p("}")
+        sp := self.pos()
+        local_str := self.tok.kind == Str
+        local := self.module_name()?
         mut out_name := local
         mut out_str := local_str
-        if is_kw("as")
-            next()?
-            out_str = tok.kind == Str
-            out_name = module_name()?
-        add_export(out_name, sp)?
+        if self.is_kw("as")
+            self.next()?
+            out_str = self.tok.kind == Str
+            out_name = self.module_name()?
+        self.add_export(out_name, sp)?
         if local_str
             quoted.push(sp)
         specs.push(ExportSpec(
@@ -632,45 +632,47 @@ fn Parser.export_list(mut self, p Pos) Stmt ! JsError
             exported_str: out_str,
             pos: sp,
         ))
-        if not is_p("}")
-            expect(",")?
-    next()?
-    if is_kw("from")
-        source := string_after_from()?
-        attrs := import_attrs()?
-        semicolon()?
+        if not self.is_p("}")
+            self.expect(",")?
+    self.next()?
+    if self.is_kw("from")
+        source := self.string_after_from()?
+        attrs := self.import_attrs()?
+        self.semicolon()?
         return Module(ExportNamed(none, specs, source, attrs), p)
     if quoted.len() > 0
-        return fail_at("Unexpected string", quoted[0])
+        return self.fail_at("Unexpected string", quoted[0])
     for x in specs
         if RESERVED.contains(x.local)
-            return fail_at("Unexpected token '{x.local}'", x.pos)
-        export_refs.push(ExportRef(name: x.local, pos: x.pos))
-    semicolon()?
+            return self.fail_at("Unexpected token '{x.local}'", x.pos)
+        self.export_refs.push(ExportRef(name: x.local, pos: x.pos))
+    self.semicolon()?
     Module(ExportNamed(none, specs, none, []), p)
 
 ## `export default` a function, a class, or an expression (§16.2.3).
 fn Parser.export_default(mut self, p Pos) Stmt ! JsError
-    dp := pos()
-    next()?
-    add_export("default", dp)?
-    is_async := is_kw("async") and not peek()?.nl_before and peek()?.text == "function"
-    if is_kw("function") or is_async
+    dp := self.pos()
+    self.next()?
+    self.add_export("default", dp)?
+    is_async := self.is_kw("async")
+        and not self.peek()?.nl_before
+        and self.peek()?.text == "function"
+    if self.is_kw("function") or is_async
         if is_async
-            next()?
-        f := function(false, is_async)?
+            self.next()?
+        f := self.function(false, is_async)?
         if n := f.name
-            declare(n, function_kind(), dp)?
+            self.declare(n, self.function_kind(), dp)?
             return Module(ExportDefault(FuncDecl(f), none), p)
         return Module(ExportDefault(none, Function(f)), p)
-    if is_kw("class")
-        c := class(false)?
+    if self.is_kw("class")
+        c := self.class(false)?
         if n := c.name
-            declare(n, "lexical", c.pos)?
+            self.declare(n, "lexical", c.pos)?
             return Module(ExportDefault(ClassDecl(c), none), p)
         return Module(ExportDefault(none, ClassExpr(c)), p)
-    e := assign(false)?
-    semicolon()?
+    e := self.assign(false)?
+    self.semicolon()?
     Module(ExportDefault(none, e), p)
 
 # ---- Statements ----
@@ -681,27 +683,27 @@ fn Parser.statements_until_end(mut self, close str) Body ! JsError
     mut out := List[Stmt]()
     mut prologue := true
     mut octal_directive := List[Pos]()
-    while not (close == "" and tok.kind == Eof or close != "" and is_p(close))
-        if tok.kind == Eof
-            return unexpected()
-        first := tok
-        s := statement(true)?
+    while not (close == "" and self.tok.kind == Eof or close != "" and self.is_p(close))
+        if self.tok.kind == Eof
+            return self.unexpected()
+        first := self.tok
+        s := self.statement(true)?
         if prologue
             prologue = false
             if first.kind == Str and is_string_statement(s)
                 prologue = true
-                raw := lx.src[first.start + 1..first.end - 1].join("")
+                raw := self.lx.src[first.start + 1..first.end - 1].join("")
                 if raw == "use strict"
-                    strict = true
+                    self.strict = true
                     if octal_directive.len() > 0
-                        return fail_at(
+                        return self.fail_at(
                             "Octal escape sequences are not allowed in strict mode.",
                             octal_directive[0],
                         )
                 elif first.octal
                     octal_directive.push(Pos(line: first.line, col: first.col, offset: first.start))
         out.push(s)
-    Body(stmts: out, strict: strict)
+    Body(stmts: out, strict: self.strict)
 
 ## A statement of one string literal: a directive (§11.2.1).
 fn is_string_statement(s Stmt) bool
@@ -712,108 +714,108 @@ fn is_string_statement(s Stmt) bool
 
 ## A statement; with `decl`, also a declaration (§14 StatementListItem).
 fn Parser.statement(mut self, decl bool) Stmt ! JsError
-    mut p := pos()
-    if is_p("\{")
-        return Block(block()?, p)
-    if eat(";")?
+    mut p := self.pos()
+    if self.is_p("\{")
+        return Block(self.block()?, p)
+    if self.eat(";")?
         return Empty(p)
-    if tok.kind == Name and not tok.escaped
-        match tok.text
+    if self.tok.kind == Name and not self.tok.escaped
+        match self.tok.text
             "var" =>
-                d := var_decl("var", false, false)?
-                semicolon()?
+                d := self.var_decl("var", false, false)?
+                self.semicolon()?
                 return Var(d)
-            "const" => return lexical(decl)
+            "const" => return self.lexical(decl)
             "let" =>
-                if let_starts_declaration()?
-                    return lexical(decl)
-                if not decl and peek()?.kind == Punct and peek()?.text == "["
-                    return fail("Lexical declaration cannot appear in a single-statement context")
+                if self.let_starts_declaration()?
+                    return self.lexical(decl)
+                if not decl and self.peek()?.kind == Punct and self.peek()?.text == "["
+                    return self.fail("Lexical declaration cannot appear in a single-statement context")
             "function" =>
                 if not decl
-                    return fail(misplaced_function(strict))
-                return FuncDecl(function(true, false)?)
+                    return self.fail(misplaced_function(self.strict))
+                return FuncDecl(self.function(true, false)?)
             "async" =>
-                n := peek()?
+                n := self.peek()?
                 if n.kind == Name and n.text == "function" and not n.nl_before
                     if not decl
-                        return fail(misplaced_function(strict))
-                    next()?
-                    return FuncDecl(function(true, true)?)
+                        return self.fail(misplaced_function(self.strict))
+                    self.next()?
+                    return FuncDecl(self.function(true, true)?)
             "class" =>
                 if not decl
-                    return unexpected()
-                c := class(true)?
+                    return self.unexpected()
+                c := self.class(true)?
                 if n := c.name
-                    declare(n, "lexical", c.pos)?
+                    self.declare(n, "lexical", c.pos)?
                 return ClassDecl(c)
-            "if" => return if_statement()
-            "for" => return for_statement()
+            "if" => return self.if_statement()
+            "for" => return self.for_statement()
             "while" =>
-                next()?
-                test := paren_expr()?
-                return While(test, loop_body(false)?, p)
+                self.next()?
+                test := self.paren_expr()?
+                return While(test, self.loop_body(false)?, p)
             "do" =>
-                next()?
-                body := loop_body(false)?
-                if not is_kw("while")
-                    return unexpected()
-                next()?
-                test := paren_expr()?
+                self.next()?
+                body := self.loop_body(false)?
+                if not self.is_kw("while")
+                    return self.unexpected()
+                self.next()?
+                test := self.paren_expr()?
                 # §12.10.1: a `;` after do-while may always be left out.
-                eat(";")?
+                self.eat(";")?
                 return DoWhile(body, test, p)
             "return" =>
-                if not in_function
-                    return fail("Illegal return statement")
-                next()?
+                if not self.in_function
+                    return self.fail("Illegal return statement")
+                self.next()?
                 mut value := none
-                if not (is_p(";") or is_p("}") or tok.kind == Eof or tok.nl_before)
-                    value = expression(false)?
-                semicolon()?
+                if not (self.is_p(";") or self.is_p("}") or self.tok.kind == Eof or self.tok.nl_before)
+                    value = self.expression(false)?
+                self.semicolon()?
                 return Return(value, p)
-            "break" | "continue" => return jump()
+            "break" | "continue" => return self.jump()
             "throw" =>
-                next()?
-                if tok.nl_before
-                    return fail("Illegal newline after throw")
-                value := expression(false)?
-                semicolon()?
+                self.next()?
+                if self.tok.nl_before
+                    return self.fail("Illegal newline after throw")
+                value := self.expression(false)?
+                self.semicolon()?
                 return Throw(value, p)
-            "try" => return try_statement()
-            "switch" => return switch_statement()
+            "try" => return self.try_statement()
+            "switch" => return self.switch_statement()
             "with" =>
-                if strict
-                    return fail("Strict mode code may not include a with statement")
-                next()?
-                obj := paren_expr()?
-                return With(obj, statement(false)?, p)
+                if self.strict
+                    return self.fail("Strict mode code may not include a with statement")
+                self.next()?
+                obj := self.paren_expr()?
+                return With(obj, self.statement(false)?, p)
             "debugger" =>
-                next()?
-                semicolon()?
+                self.next()?
+                self.semicolon()?
                 return Debugger(p)
             "import" | "export" =>
-                if tok.text == "export" or not import_is_expr()?
-                    if not module
-                        if tok.text == "import"
-                            return fail("Cannot use import statement outside a module")
-                        return unexpected()
-                    if not decl or scopes.len() != 1
-                        return unexpected()
-                    return module_item(p)
-            _ => p = pos()
-    if tok.kind == Name
-        and peek()?.kind == Punct
-        and peek()?.text == ":"
-        and not (RESERVED.contains(tok.text) and not tok.escaped)
-        return labeled(decl)
-    e := expression(false)?
-    semicolon()?
+                if self.tok.text == "export" or not self.import_is_expr()?
+                    if not self.module
+                        if self.tok.text == "import"
+                            return self.fail("Cannot use import statement outside a module")
+                        return self.unexpected()
+                    if not decl or self.scopes.len() != 1
+                        return self.unexpected()
+                    return self.module_item(p)
+            _ => p = self.pos()
+    if self.tok.kind == Name
+        and self.peek()?.kind == Punct
+        and self.peek()?.text == ":"
+        and not (RESERVED.contains(self.tok.text) and not self.tok.escaped)
+        return self.labeled(decl)
+    e := self.expression(false)?
+    self.semicolon()?
     Exp(e, p)
 
 ## `let` here starts a declaration: `let x`, `let [`, `let {` (§14.3.1).
 fn Parser.let_starts_declaration(mut self) bool ! JsError
-    n := peek()?
+    n := self.peek()?
     if n.kind == Name
         return not (n.text == "in" or n.text == "instanceof" or n.text == "of" and not n.nl_before)
             or n.text == "let"
@@ -822,92 +824,92 @@ fn Parser.let_starts_declaration(mut self) bool ! JsError
 ## `let` or `const` declarations (§14.3.1).
 fn Parser.lexical(mut self, decl bool) Stmt ! JsError
     if not decl
-        return fail("Lexical declaration cannot appear in a single-statement context")
-    d := var_decl(tok.text, false, false)?
-    semicolon()?
+        return self.fail("Lexical declaration cannot appear in a single-statement context")
+    d := self.var_decl(self.tok.text, false, false)?
+    self.semicolon()?
     Var(d)
 
 ## `{ statements }`.
 fn Parser.block(mut self) List[Stmt] ! JsError
-    enter_scope(false)
-    b := block_in_scope()?
-    leave_scope()
+    self.enter_scope(false)
+    b := self.block_in_scope()?
+    self.leave_scope()
     b
 
 ## A block whose names go in the current scope (a `catch` body, §14.15.1).
 fn Parser.block_in_scope(mut self) List[Stmt] ! JsError
-    expect("\{")?
+    self.expect("\{")?
     mut out := List[Stmt]()
-    while not is_p("}")
-        if tok.kind == Eof
-            return unexpected()
-        out.push(statement(true)?)
-    next()?
+    while not self.is_p("}")
+        if self.tok.kind == Eof
+            return self.unexpected()
+        out.push(self.statement(true)?)
+    self.next()?
     out
 
 fn Parser.paren_expr(mut self) Expr ! JsError
-    expect("(")?
-    e := expression(false)?
-    expect(")")?
+    self.expect("(")?
+    e := self.expression(false)?
+    self.expect(")")?
     e
 
 ## A loop's body, where `break` and `continue` are allowed.
 fn Parser.loop_body(mut self, decl bool) Stmt ! JsError
-    loop_depth += 1
-    s := statement(decl)?
-    loop_depth -= 1
+    self.loop_depth += 1
+    s := self.statement(decl)?
+    self.loop_depth -= 1
     s
 
 ## The declarators after `var`, `let` or `const` (§14.3). In a `for` head
 ## (`in_for`), a missing initialiser is checked by the caller.
 fn Parser.var_decl(mut self, kind str, no_in bool, in_for bool) VarDecl ! JsError
-    p := pos()
-    next()?
+    p := self.pos()
+    self.next()?
     mut decls := List[Declarator]()
     while true
-        tp := pos()
-        if kind != "var" and is_kw("let")
-            return fail("let is disallowed as a lexically bound name")
-        target := binding_target()?
-        declare_pat(target, if kind == "var" then "var" else "lexical")?
+        tp := self.pos()
+        if kind != "var" and self.is_kw("let")
+            return self.fail("let is disallowed as a lexically bound name")
+        target := self.binding_target()?
+        self.declare_pat(target, if kind == "var" then "var" else "lexical")?
         mut init := none
-        if eat("=")?
-            init = assign(no_in)?
+        if self.eat("=")?
+            init = self.assign(no_in)?
         elif not in_for
             if kind == "const"
-                return fail_at("Missing initializer in const declaration", tp)
+                return self.fail_at("Missing initializer in const declaration", tp)
             if pat_kind(target) != "PatId"
-                return fail_at("Missing initializer in destructuring declaration", tp)
+                return self.fail_at("Missing initializer in destructuring declaration", tp)
         decls.push(Declarator(target: target, init: init))
-        if not eat(",")?
+        if not self.eat(",")?
             break
     VarDecl(kind: kind, decls: decls, pos: p)
 
 fn Parser.if_statement(mut self) Stmt ! JsError
-    p := pos()
-    next()?
-    test := paren_expr()?
-    yes := if_body()?
+    p := self.pos()
+    self.next()?
+    test := self.paren_expr()?
+    yes := self.if_body()?
     mut no := none
-    if is_kw("else")
-        next()?
-        no = if_body()?
+    if self.is_kw("else")
+        self.next()?
+        no = self.if_body()?
     If(test, yes, no, p)
 
 ## A branch of `if`: in sloppy code it may be a function declaration, as
 ## if in a block of its own (Annex B.3.3).
 fn Parser.if_body(mut self) Stmt ! JsError
-    if is_kw("function") and not strict
-        enter_scope(false)
-        f := function(true, false)?
-        leave_scope()
+    if self.is_kw("function") and not self.strict
+        self.enter_scope(false)
+        f := self.function(true, false)?
+        self.leave_scope()
         if f.is_gen
-            return fail_at(
+            return self.fail_at(
                 "Generators can only be declared at the top level or inside a block.",
                 f.pos,
             )
         return FuncDecl(f)
-    statement(false)
+    self.statement(false)
 
 ## Where a function declaration may not stand (§14, Annex B.3.3).
 fn misplaced_function(strict bool) str
@@ -917,46 +919,48 @@ fn misplaced_function(strict bool) str
 
 ## `for (;;)`, `for (x in o)`, `for (x of xs)` (§14.7.4, §14.7.5).
 fn Parser.for_statement(mut self) Stmt ! JsError
-    enter_scope(false)
-    s := for_in_scope()?
-    leave_scope()
+    self.enter_scope(false)
+    s := self.for_in_scope()?
+    self.leave_scope()
     s
 
 fn Parser.for_in_scope(mut self) Stmt ! JsError
-    mut p := pos()
-    next()?
+    mut p := self.pos()
+    self.next()?
     mut is_await := false
-    if is_kw("await") and in_async
+    if self.is_kw("await") and self.in_async
         is_await = true
-        note_await()
-        next()?
-    expect("(")?
+        self.note_await()
+        self.next()?
+    self.expect("(")?
     mut init := none
-    if is_p(";")
-        p = pos()
-    elif is_kw("var") or is_kw("const") or is_kw("let") and let_starts_declaration()?
-        kind := tok.text
-        d := var_decl(kind, true, true)?
-        if (is_kw("of") or is_kw("in")) and d.decls.len() == 1
-            of := is_kw("of")
+    if self.is_p(";")
+        p = self.pos()
+    elif self.is_kw("var")
+        or self.is_kw("const")
+        or self.is_kw("let") and self.let_starts_declaration()?
+        kind := self.tok.text
+        d := self.var_decl(kind, true, true)?
+        if (self.is_kw("of") or self.is_kw("in")) and d.decls.len() == 1
+            of := self.is_kw("of")
             # Annex B.3.5: sloppy `for (var x = 1 in o)` keeps its initialiser.
             legacy := not of
-                and not strict
+                and not self.strict
                 and kind == "var"
                 and pat_kind(d.decls[0].target) == "PatId"
             if d.decls[0].init != none and not legacy
-                return fail("for-{if of then "of" else "in"} loop variable declaration may not have an initializer.")
+                return self.fail("for-{if of then "of" else "in"} loop variable declaration may not have an initializer.")
             if of and kind == "var"
-                catch_clash(d.decls[0].target)?
-            next()?
-            right := if of then assign(false)? else expression(false)?
-            expect(")")?
+                self.catch_clash(d.decls[0].target)?
+            self.next()?
+            right := if of then self.assign(false)? else self.expression(false)?
+            self.expect(")")?
             if is_await and not of
-                return fail("Unexpected token 'in'")
+                return self.fail("Unexpected token 'in'")
             return ForIn(
                 left: LeftDecl(d),
                 right: right,
-                body: loop_body(false)?,
+                body: self.loop_body(false)?,
                 of: of,
                 is_await: is_await,
                 pos: p,
@@ -964,74 +968,77 @@ fn Parser.for_in_scope(mut self) Stmt ! JsError
         for dc in d.decls
             if dc.init == none
                 if kind == "const"
-                    return fail("Missing initializer in const declaration")
+                    return self.fail("Missing initializer in const declaration")
                 if pat_kind(dc.target) != "PatId"
-                    return fail("Missing initializer in destructuring declaration")
+                    return self.fail("Missing initializer in destructuring declaration")
         init = ForInit.InitDecl(d)
     else
-        before := covers.len()
-        starts_let := is_kw("let")
-        maybe_pattern = true
-        e := expression(true)?
-        if is_kw("of") and not starts_let or is_kw("in")
-            of := is_kw("of")
-            target := assign_target(e)?
-            drop_covers(before)
-            next()?
-            right := if of then assign(false)? else expression(false)?
-            expect(")")?
+        before := self.covers.len()
+        starts_let := self.is_kw("let")
+        self.maybe_pattern = true
+        e := self.expression(true)?
+        if self.is_kw("of") and not starts_let or self.is_kw("in")
+            of := self.is_kw("of")
+            target := self.assign_target(e)?
+            self.drop_covers(before)
+            self.next()?
+            right := if of then self.assign(false)? else self.expression(false)?
+            self.expect(")")?
             if is_await and not of
-                return fail("Unexpected token 'in'")
+                return self.fail("Unexpected token 'in'")
             return ForIn(
                 left: LeftPat(target),
                 right: right,
-                body: loop_body(false)?,
+                body: self.loop_body(false)?,
                 of: of,
                 is_await: is_await,
                 pos: p,
             )
-        check_covers(before)?
+        self.check_covers(before)?
         init = ForInit.InitExpr(e)
     if is_await
-        return fail("Unexpected token ';'")
-    expect(";")?
-    test := if is_p(";") then none else expression(false)?
-    expect(";")?
-    update := if is_p(")") then none else expression(false)?
-    expect(")")?
-    For(init: init, test: test, update: update, body: loop_body(false)?, pos: p)
+        return self.fail("Unexpected token ';'")
+    self.expect(";")?
+    test := if self.is_p(";") then none else self.expression(false)?
+    self.expect(";")?
+    update := if self.is_p(")") then none else self.expression(false)?
+    self.expect(")")?
+    For(init: init, test: test, update: update, body: self.loop_body(false)?, pos: p)
 
 ## `break` or `continue`, with an optional label (§14.8, §14.9).
 fn Parser.jump(mut self) Stmt ! JsError
-    p := pos()
-    is_break := tok.text == "break"
-    next()?
+    p := self.pos()
+    is_break := self.tok.text == "break"
+    self.next()?
     mut label := none
-    if tok.kind == Name and not tok.nl_before and not RESERVED.contains(tok.text)
-        name := tok.text
+    if self.tok.kind == Name and not self.tok.nl_before and not RESERVED.contains(self.tok.text)
+        name := self.tok.text
         mut found := false
-        for l in labels
+        for l in self.labels
             if l.name == name and (is_break or l.is_loop)
                 found = true
         if not found
             if is_break
-                return fail("Undefined label '{name}'")
-            return fail("Illegal continue statement: '{name}' does not denote an iteration statement")
+                return self.fail("Undefined label '{name}'")
+            return self.fail("Illegal continue statement: '{name}' does not denote an iteration statement")
         label = name
-        next()?
-    elif is_break and loop_depth == 0 and switch_depth == 0
-        return fail_at("Illegal break statement", p)
-    elif not is_break and loop_depth == 0
-        return fail_at("Illegal continue statement: no surrounding iteration statement", p)
-    semicolon()?
+        self.next()?
+    elif is_break and self.loop_depth == 0 and self.switch_depth == 0
+        return self.fail_at("Illegal break statement", p)
+    elif not is_break and self.loop_depth == 0
+        return self.fail_at("Illegal continue statement: no surrounding iteration statement", p)
+    self.semicolon()?
     if is_break then Break(label, p) else Continue(label, p)
 
 fn Parser.labeled_function(mut self, decl bool) Stmt ! JsError
-    if strict or not decl
-        return fail(misplaced_function(strict))
-    f := function(true, false)?
+    if self.strict or not decl
+        return self.fail(misplaced_function(self.strict))
+    f := self.function(true, false)?
     if f.is_gen
-        return fail_at("Generators can only be declared at the top level or inside a block.", f.pos)
+        return self.fail_at(
+            "Generators can only be declared at the top level or inside a block.",
+            f.pos,
+        )
     FuncDecl(f)
 
 ## `name: statement` (§14.13). Labels in a row all label the statement
@@ -1039,159 +1046,159 @@ fn Parser.labeled_function(mut self, decl bool) Stmt ! JsError
 fn Parser.labeled(mut self, decl bool) Stmt ! JsError
     mut names := List[str]()
     mut starts := List[Pos]()
-    while tok.kind == Name and peek()?.kind == Punct and peek()?.text == ":"
-        p := pos()
-        name := ident_name(false)?
-        for l in labels
+    while self.tok.kind == Name and self.peek()?.kind == Punct and self.peek()?.text == ":"
+        p := self.pos()
+        name := self.ident_name(false)?
+        for l in self.labels
             if l.name == name
-                return fail_at("Label '{name}' has already been declared", p)
+                return self.fail_at("Label '{name}' has already been declared", p)
         if names.contains(name)
-            return fail_at("Label '{name}' has already been declared", p)
-        next()?
+            return self.fail_at("Label '{name}' has already been declared", p)
+        self.next()?
         names.push(name)
         starts.push(p)
-    is_loop := is_kw("for") or is_kw("while") or is_kw("do")
+    is_loop := self.is_kw("for") or self.is_kw("while") or self.is_kw("do")
     for n in names
-        labels.push(Label(name: n, is_loop: is_loop))
+        self.labels.push(Label(name: n, is_loop: is_loop))
     # Annex B.3.2: a labelled function declaration, where a declaration may stand.
-    mut body := if is_kw("function") then labeled_function(decl)? else statement(false)?
+    mut body := if self.is_kw("function") then self.labeled_function(decl)? else self.statement(false)?
     mut k := names.len() - 1
     while k >= 0
-        labels.pop()
+        self.labels.pop()
         body = Labeled(names[k], body, starts[k])
         k -= 1
     body
 
 fn Parser.try_statement(mut self) Stmt ! JsError
-    p := pos()
-    next()?
-    body := block()?
+    p := self.pos()
+    self.next()?
+    body := self.block()?
     mut param := none
     mut handler := none
     mut finalizer := none
-    if is_kw("catch")
-        next()?
-        enter_scope(false)
-        if eat("(")?
-            target := binding_target()?
+    if self.is_kw("catch")
+        self.next()?
+        self.enter_scope(false)
+        if self.eat("(")?
+            target := self.binding_target()?
             if pat_kind(target) == "PatId"
-                declare_pat(target, "catch")?
+                self.declare_pat(target, "catch")?
             else
-                declare_pat(target, "lexical")?
+                self.declare_pat(target, "lexical")?
             param = target
-            expect(")")?
-        handler = block_in_scope()?
-        leave_scope()
-    if is_kw("finally")
-        next()?
-        finalizer = block()?
+            self.expect(")")?
+        handler = self.block_in_scope()?
+        self.leave_scope()
+    if self.is_kw("finally")
+        self.next()?
+        finalizer = self.block()?
     if handler == none and finalizer == none
-        return fail("Missing catch or finally after try")
+        return self.fail("Missing catch or finally after try")
     Try(block: body, param: param, handler: handler, finalizer: finalizer, pos: p)
 
 fn Parser.switch_statement(mut self) Stmt ! JsError
-    p := pos()
-    next()?
-    disc := paren_expr()?
-    expect("\{")?
+    p := self.pos()
+    self.next()?
+    disc := self.paren_expr()?
+    self.expect("\{")?
     mut cases := List[Case]()
     mut has_default := false
-    switch_depth += 1
-    enter_scope(false)
-    while not is_p("}")
-        cp := pos()
+    self.switch_depth += 1
+    self.enter_scope(false)
+    while not self.is_p("}")
+        cp := self.pos()
         mut test := none
-        if is_kw("case")
-            next()?
-            test = expression(false)?
-        elif is_kw("default")
+        if self.is_kw("case")
+            self.next()?
+            test = self.expression(false)?
+        elif self.is_kw("default")
             if has_default
-                return fail("More than one default clause in switch statement")
+                return self.fail("More than one default clause in switch statement")
             has_default = true
-            next()?
+            self.next()?
         else
-            return unexpected()
-        expect(":")?
+            return self.unexpected()
+        self.expect(":")?
         mut body := List[Stmt]()
-        while not (is_p("}") or is_kw("case") or is_kw("default"))
-            if tok.kind == Eof
-                return unexpected()
-            body.push(statement(true)?)
+        while not (self.is_p("}") or self.is_kw("case") or self.is_kw("default"))
+            if self.tok.kind == Eof
+                return self.unexpected()
+            body.push(self.statement(true)?)
         cases.push(Case(test: test, body: body, pos: cp))
-    switch_depth -= 1
-    leave_scope()
-    next()?
+    self.switch_depth -= 1
+    self.leave_scope()
+    self.next()?
     Switch(disc, cases, p)
 
 # ---- Patterns ----
 
 ## A binding identifier or pattern (§14.3.3 BindingPattern).
 fn Parser.binding_target(mut self) Pat ! JsError
-    p := pos()
-    if is_p("[")
-        return array_binding()
-    if is_p("\{")
-        return object_binding()
-    PatId(ident_name(true)?, p)
+    p := self.pos()
+    if self.is_p("[")
+        return self.array_binding()
+    if self.is_p("\{")
+        return self.object_binding()
+    PatId(self.ident_name(true)?, p)
 
 ## A binding target with an optional `= default`.
 fn Parser.binding_element(mut self) Pat ! JsError
-    p := pos()
-    target := binding_target()?
-    if eat("=")?
-        return PatDefault(target, assign(false)?, p)
+    p := self.pos()
+    target := self.binding_target()?
+    if self.eat("=")?
+        return PatDefault(target, self.assign(false)?, p)
     target
 
 fn Parser.array_binding(mut self) Pat ! JsError
-    p := pos()
-    next()?
+    p := self.pos()
+    self.next()?
     mut items := List[Pat?]()
     mut rest := none
-    while not is_p("]")
-        if eat(",")?
+    while not self.is_p("]")
+        if self.eat(",")?
             items.push(none)
             continue
-        if eat("...")?
-            rest = binding_target()?
-            if not is_p("]")
-                return fail("Rest element must be last element")
+        if self.eat("...")?
+            rest = self.binding_target()?
+            if not self.is_p("]")
+                return self.fail("Rest element must be last element")
             break
-        items.push(binding_element()?)
-        if not is_p("]")
-            expect(",")?
-    next()?
+        items.push(self.binding_element()?)
+        if not self.is_p("]")
+            self.expect(",")?
+    self.next()?
     PatArr(items, rest, p)
 
 fn Parser.object_binding(mut self) Pat ! JsError
-    p := pos()
-    next()?
+    p := self.pos()
+    self.next()?
     mut props := List[PatProp]()
     mut rest := none
-    while not is_p("}")
-        if eat("...")?
-            rp := pos()
-            rest = Pat.PatId(ident_name(true)?, rp)
-            if not is_p("}")
-                return fail("Rest element must be last element")
+    while not self.is_p("}")
+        if self.eat("...")?
+            rp := self.pos()
+            rest = Pat.PatId(self.ident_name(true)?, rp)
+            if not self.is_p("}")
+                return self.fail("Rest element must be last element")
             break
-        kp := pos()
-        key_tok := tok
-        key := prop_key(false)?
-        if eat(":")?
-            props.push(PatProp(key: key, value: binding_element()?, shorthand: false))
+        kp := self.pos()
+        key_tok := self.tok
+        key := self.prop_key(false)?
+        if self.eat(":")?
+            props.push(PatProp(key: key, value: self.binding_element()?, shorthand: false))
         else
             if key_tok.kind != Name
-                return unexpected()
+                return self.unexpected()
             if key_tok.escaped and RESERVED.contains(key_tok.text)
-                return fail_at("Keyword must not contain escaped characters", kp)
-            check_binding(key_tok.text, kp)?
+                return self.fail_at("Keyword must not contain escaped characters", kp)
+            self.check_binding(key_tok.text, kp)?
             mut target := Pat.PatId(key_tok.text, kp)
-            if eat("=")?
-                target = Pat.PatDefault(target, assign(false)?, kp)
+            if self.eat("=")?
+                target = Pat.PatDefault(target, self.assign(false)?, kp)
             props.push(PatProp(key: key, value: target, shorthand: true))
-        if not is_p("}")
-            expect(",")?
-    next()?
+        if not self.is_p("}")
+            self.expect(",")?
+    self.next()?
     PatObj(props, rest, p)
 
 ## The target of `=`: a pattern from an object or array literal, or a
@@ -1199,32 +1206,32 @@ fn Parser.object_binding(mut self) Pat ! JsError
 fn Parser.assign_target(mut self, e Expr) Pat ! JsError
     k := expr_kind(e)
     if k == "Object" or k == "Array"
-        return to_pat(e, false)
-    simple_target(e, "Invalid left-hand side in assignment")
+        return self.to_pat(e, false)
+    self.simple_target(e, "Invalid left-hand side in assignment")
 
 ## An identifier or member expression, maybe parenthesised (§13.15.1
 ## AssignmentTargetType simple).
 fn Parser.simple_target(self, e Expr, msg str) Pat ! JsError
     match e
         Ident(name, p) =>
-            if strict and (name == "eval" or name == "arguments")
-                return fail_at("Unexpected eval or arguments in strict mode", p)
+            if self.strict and (name == "eval" or name == "arguments")
+                return self.fail_at("Unexpected eval or arguments in strict mode", p)
             PatId(name, p)
         Member(_, _, _, _, _) => PatTarget(e)
         Paren(inner, _) =>
             k := expr_kind(inner)
             if k == "Ident" or k == "Member" or k == "Paren"
-                return simple_target(inner, msg)
-            fail_at(msg, expr_pos(e))
-        Num | Str | Big | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import => fail_at(
+                return self.simple_target(inner, msg)
+            self.fail_at(msg, expr_pos(e))
+        Num | Str | Big | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import => self.fail_at(
             msg,
             expr_pos(e),
         )
-        Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign => fail_at(
+        Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign => self.fail_at(
             msg,
             expr_pos(e),
         )
-        Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await => fail_at(
+        Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await => self.fail_at(
             msg,
             expr_pos(e),
         )
@@ -1236,17 +1243,17 @@ fn Parser.to_pat(self, e Expr, binding bool) Pat ! JsError
     match e
         Ident(name, p) =>
             if binding
-                check_binding(name, p)?
+                self.check_binding(name, p)?
                 return PatId(name, p)
-            simple_target(e, bad)
+            self.simple_target(e, bad)
         Member(_, _, _, _, p) =>
             if binding
-                return fail_at(bad, p)
-            simple_target(e, bad)
+                return self.fail_at(bad, p)
+            self.simple_target(e, bad)
         Paren(_, p) =>
             if binding
-                return fail_at(bad, p)
-            simple_target(e, bad)
+                return self.fail_at(bad, p)
+            self.simple_target(e, bad)
         Array(items, comma_after_spread, p) =>
             mut out := List[Pat?]()
             mut rest := none
@@ -1256,12 +1263,12 @@ fn Parser.to_pat(self, e Expr, binding bool) Pat ! JsError
                         sp := expr_pos(item)
                         arg := spread_arg(item)
                         if i != items.len() - 1 or comma_after_spread
-                            return fail_at("Rest element must be last element", sp)
+                            return self.fail_at("Rest element must be last element", sp)
                         if expr_kind(arg) == "Assign"
-                            return fail_at(bad, expr_pos(arg))
-                        rest = to_pat(arg, binding)?
+                            return self.fail_at(bad, expr_pos(arg))
+                        rest = self.to_pat(arg, binding)?
                     else
-                        out.push(to_pat(item, binding)?)
+                        out.push(self.to_pat(item, binding)?)
                 else
                     out.push(none)
             PatArr(out, rest, p)
@@ -1273,143 +1280,144 @@ fn Parser.to_pat(self, e Expr, binding bool) Pat ! JsError
                     Init(key, value, shorthand, _) =>
                         out.push(PatProp(
                             key: key,
-                            value: to_pat(value, binding)?,
+                            value: self.to_pat(value, binding)?,
                             shorthand: shorthand,
                         ))
                     CoverInit(name, value, cp) =>
-                        check_binding(name, cp)?
+                        self.check_binding(name, cp)?
                         target := Pat.PatDefault(Pat.PatId(name, cp), value, cp)
                         out.push(PatProp(key: KeyName(name, cp), value: target, shorthand: true))
                     PropSpread(arg, sp) =>
                         if i != props.len() - 1
-                            return fail_at("Rest element must be last element", sp)
+                            return self.fail_at("Rest element must be last element", sp)
                         k := expr_kind(arg)
                         if k == "Ident"
-                            rest = to_pat(arg, binding)?
+                            rest = self.to_pat(arg, binding)?
                         elif (k == "Member" or k == "Paren") and not binding
-                            rest = simple_target(arg, bad)?
+                            rest = self.simple_target(arg, bad)?
                         else
-                            return fail_at(bad, sp)
-                    Method(_, _, _, mp) => return fail_at(
+                            return self.fail_at(bad, sp)
+                    Method(_, _, _, mp) => return self.fail_at(
                         "Invalid destructuring assignment target",
                         mp,
                     )
             PatObj(out, rest, p)
         Assign(op, target, value, p) =>
             if op != "="
-                return fail_at(bad, p)
+                return self.fail_at(bad, p)
             if binding
-                check_binding_pat(target)?
+                self.check_binding_pat(target)?
             PatDefault(target, value, p)
-        Num | Str | Big | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import => fail_at(
+        Num | Str | Big | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import => self.fail_at(
             bad,
             expr_pos(e),
         )
-        Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Cond | Call | New => fail_at(
+        Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Cond | Call | New => self.fail_at(
             bad,
             expr_pos(e),
         )
-        Seq | Spread | Chain | PrivName | Yield | Await => fail_at(bad, expr_pos(e))
+        Seq | Spread | Chain | PrivName | Yield | Await => self.fail_at(bad, expr_pos(e))
 
 ## A pattern converted from an assignment holds only bindable names.
 fn Parser.check_binding_pat(self, p Pat) ! JsError
     match p
-        PatId(name, at) => check_binding(name, at)?
-        PatTarget(e) => return fail_at("Invalid destructuring assignment target", expr_pos(e))
+        PatId(name, at) => self.check_binding(name, at)?
+        PatTarget(e) => return self.fail_at("Invalid destructuring assignment target", expr_pos(e))
         PatObj(props, rest, _) =>
             for pp in props
-                check_binding_pat(pp.value)?
+                self.check_binding_pat(pp.value)?
             if r := rest
-                check_binding_pat(r)?
+                self.check_binding_pat(r)?
         PatArr(items, rest, _) =>
             for it in items
                 if x := it
-                    check_binding_pat(x)?
+                    self.check_binding_pat(x)?
             if r := rest
-                check_binding_pat(r)?
-        PatDefault(target, _, _) => check_binding_pat(target)?
+                self.check_binding_pat(r)?
+        PatDefault(target, _, _) => self.check_binding_pat(target)?
 
 fn Parser.drop_covers(mut self, before int)
-    while covers.len() > before
-        covers.pop()
+    while self.covers.len() > before
+        self.covers.pop()
 
 ## A `{a = 1}` shorthand that did not become a pattern is an error.
 fn Parser.check_covers(self, before int) ! JsError
-    if covers.len() > before
-        return fail_at("Invalid shorthand property initializer", covers[before])
+    if self.covers.len() > before
+        return self.fail_at("Invalid shorthand property initializer", self.covers[before])
 
 # ---- Expressions ----
 
 ## Expression (§13.16): assignments separated by commas.
 fn Parser.expression(mut self, no_in bool) Expr ! JsError
-    p := pos()
-    first := assign(no_in)?
-    if not is_p(",")
+    p := self.pos()
+    first := self.assign(no_in)?
+    if not self.is_p(",")
         return first
     mut items := [first]
-    while eat(",")?
-        items.push(assign(no_in)?)
+    while self.eat(",")?
+        items.push(self.assign(no_in)?)
     Expr.Seq(items, p)
 
 ## AssignmentExpression (§13.15). `no_in`: `in` is not an operator here
 ## (a `for` head, §14.7.4).
 fn Parser.assign(mut self, no_in bool) Expr ! JsError
-    nested := maybe_pattern
-    maybe_pattern = false
-    before := covers.len()
-    p := pos()
-    if tok.kind == Name and not RESERVED.contains(tok.text)
-        n := peek()?
+    nested := self.maybe_pattern
+    self.maybe_pattern = false
+    before := self.covers.len()
+    p := self.pos()
+    if self.tok.kind == Name and not RESERVED.contains(self.tok.text)
+        n := self.peek()?
         if n.kind == Punct and n.text == "=>" and not n.nl_before
-            if in_async and tok.text == "await" or in_gen and tok.text == "yield"
-                return unexpected()
-            param := Pat.PatId(ident_name(true)?, p)
-            return arrow([param], none, p, no_in, false)
-    if is_kw("async")
-        n := peek()?
+            if self.in_async and self.tok.text == "await"
+                or self.in_gen and self.tok.text == "yield"
+                return self.unexpected()
+            param := Pat.PatId(self.ident_name(true)?, p)
+            return self.arrow([param], none, p, no_in, false)
+    if self.is_kw("async")
+        n := self.peek()?
         if n.kind == Name and not n.nl_before and n.text != "function"
             # `async x => ...`
-            next()?
-            param := Pat.PatId(ident_name(true)?, pos())
-            if not is_p("=>") or tok.nl_before
-                return unexpected()
-            return arrow([param], none, p, no_in, true)
-    if in_gen and is_kw("yield")
-        return yield_expr(no_in)
-    lhs := conditional(no_in)?
-    if tok.kind == Punct and ASSIGN_OPS.contains(tok.text)
-        op := tok.text
-        target := if op == "=" then assign_target(lhs)? else simple_target(
+            self.next()?
+            param := Pat.PatId(self.ident_name(true)?, self.pos())
+            if not self.is_p("=>") or self.tok.nl_before
+                return self.unexpected()
+            return self.arrow([param], none, p, no_in, true)
+    if self.in_gen and self.is_kw("yield")
+        return self.yield_expr(no_in)
+    lhs := self.conditional(no_in)?
+    if self.tok.kind == Punct and ASSIGN_OPS.contains(self.tok.text)
+        op := self.tok.text
+        target := if op == "=" then self.assign_target(lhs)? else self.simple_target(
             lhs,
             "Invalid left-hand side in assignment",
         )?
-        drop_covers(before)
-        next()?
-        value := assign(no_in)?
+        self.drop_covers(before)
+        self.next()?
+        value := self.assign(no_in)?
         return Assign(op, target, value, p)
-    if covers.len() > before
+    if self.covers.len() > before
         literal := expr_kind(lhs) == "Object" or expr_kind(lhs) == "Array"
         if not (nested and literal)
-            check_covers(before)?
+            self.check_covers(before)?
     lhs
 
 ## `yield`, `yield x`, `yield* x` (§15.5.1): the operand is optional, and
 ## starts on the same line.
 fn Parser.yield_expr(mut self, no_in bool) Expr ! JsError
-    p := pos()
-    if in_params
-        return fail("Yield expression not allowed in formal parameter")
-    next()?
-    if is_p("*") and not tok.nl_before
-        next()?
-        return Yield(assign(no_in)?, true, p)
-    ends := tok.nl_before
-        or tok.kind == Eof
-        or tok.kind == Punct and (is_p(")") or is_p("]") or is_p("}") or is_p(",") or is_p(";") or is_p(":") or is_p("?"))
-        or is_kw("in") and no_in
+    p := self.pos()
+    if self.in_params
+        return self.fail("Yield expression not allowed in formal parameter")
+    self.next()?
+    if self.is_p("*") and not self.tok.nl_before
+        self.next()?
+        return Yield(self.assign(no_in)?, true, p)
+    ends := self.tok.nl_before
+        or self.tok.kind == Eof
+        or self.tok.kind == Punct and (self.is_p(")") or self.is_p("]") or self.is_p("}") or self.is_p(",") or self.is_p(";") or self.is_p(":") or self.is_p("?"))
+        or self.is_kw("in") and no_in
     if ends
         return Yield(none, false, p)
-    Yield(assign(no_in)?, false, p)
+    Yield(self.assign(no_in)?, false, p)
 
 ## An arrow function, after its parameters (§15.3).
 fn Parser.arrow(
@@ -1422,30 +1430,30 @@ fn Parser.arrow(
 ) Expr ! JsError
     for prm in params
         if pat_suspends(prm)
-            return fail_at(
-                if in_gen then "Yield expression not allowed in formal parameter" else "Illegal await-expression in formal parameters of async function",
+            return self.fail_at(
+                if self.in_gen then "Yield expression not allowed in formal parameter" else "Illegal await-expression in formal parameters of async function",
                 p,
             )
-    next()?
-    saved := save()
-    old_labels := labels
-    enter(super_call, super_prop)
-    new_target = saved.new_target
-    in_async = is_async
-    enter_scope(true)
+    self.next()?
+    saved := self.save()
+    old_labels := self.labels
+    self.enter(self.super_call, self.super_prop)
+    self.new_target = saved.new_target
+    self.in_async = is_async
+    self.enter_scope(true)
     for prm in params
-        declare_pat(prm, "var")?
+        self.declare_pat(prm, "var")?
     if r := rest
-        declare_pat(r, "var")?
+        self.declare_pat(r, "var")?
     mut body := List[Stmt]()
     mut value := none
-    if is_p("\{")
-        next()?
-        b := statements_until_end("}")?
-        next()?
+    if self.is_p("\{")
+        self.next()?
+        b := self.statements_until_end("}")?
+        self.next()?
         body = b.stmts
     else
-        value = assign(no_in)?
+        value = self.assign(no_in)?
     f := Func(
         name: none,
         params: params,
@@ -1455,14 +1463,14 @@ fn Parser.arrow(
         is_arrow: true,
         is_async: is_async,
         is_gen: false,
-        strict: strict,
+        strict: self.strict,
         pos: p,
-        text: source_since(p),
+        text: self.source_since(p),
     )
-    check_params(f, true)?
-    leave_scope()
-    restore(saved)
-    labels = old_labels
+    self.check_params(f, true)?
+    self.leave_scope()
+    self.restore(saved)
+    self.labels = old_labels
     Arrow(f)
 
 ## Parameter rules (§15.1.1, §15.2.1): no duplicates in strict code, arrows
@@ -1477,7 +1485,7 @@ fn Parser.check_params(self, f Func, distinct bool) ! JsError
     if r := f.rest
         collect_names(r, mut names)
     if f.strict and not simple and has_use_strict(f)
-        return fail_at(
+        return self.fail_at(
             "Illegal 'use strict' directive in function with non-simple parameter list",
             f.pos,
         )
@@ -1485,11 +1493,11 @@ fn Parser.check_params(self, f Func, distinct bool) ! JsError
     for n in names
         if f.strict
             if n == "eval" or n == "arguments"
-                return fail_at("Unexpected eval or arguments in strict mode", f.pos)
+                return self.fail_at("Unexpected eval or arguments in strict mode", f.pos)
             if STRICT_RESERVED.contains(n)
-                return fail_at("Unexpected strict mode reserved word", f.pos)
+                return self.fail_at("Unexpected strict mode reserved word", f.pos)
         if not seen.add(n) and (distinct or f.strict or not simple)
-            return fail_at("Duplicate parameter name not allowed in this context", f.pos)
+            return self.fail_at("Duplicate parameter name not allowed in this context", f.pos)
 
 ## The function's own body starts with a "use strict" directive.
 fn has_use_strict(f Func) bool
@@ -1531,30 +1539,30 @@ fn collect_names(p Pat, mut out List[str])
 ## An arrow function, unparenthesised, can't be an operand (§15.3).
 fn Parser.no_bare_arrow(self, e Expr) ! JsError
     if expr_kind(e) == "Arrow"
-        return unexpected()
+        return self.unexpected()
 
 ## ConditionalExpression (§13.14).
 fn Parser.conditional(mut self, no_in bool) Expr ! JsError
-    p := pos()
-    test := binary(1, no_in)?
-    if not is_p("?")
+    p := self.pos()
+    test := self.binary(1, no_in)?
+    if not self.is_p("?")
         return test
-    no_bare_arrow(test)?
-    next()?
-    yes := assign(false)?
-    expect(":")?
-    no := assign(no_in)?
+    self.no_bare_arrow(test)?
+    self.next()?
+    yes := self.assign(false)?
+    self.expect(":")?
+    no := self.assign(no_in)?
     Cond(test: test, yes: yes, no: no, pos: p)
 
 ## A binary operator's precedence, 0 if the token is none.
 fn Parser.precedence(self, no_in bool) int
-    if tok.kind == Name and not tok.escaped
-        if tok.text == "instanceof" or tok.text == "in" and not no_in
+    if self.tok.kind == Name and not self.tok.escaped
+        if self.tok.text == "instanceof" or self.tok.text == "in" and not no_in
             return 7
         return 0
-    if tok.kind != Punct
+    if self.tok.kind != Punct
         return 0
-    match tok.text
+    match self.tok.text
         "??" | "||" => 1
         "&&" => 2
         "|" => 3
@@ -1571,22 +1579,22 @@ fn Parser.precedence(self, no_in bool) int
 ## Binary operators by precedence climbing (§13.6-13.13); `**` is right
 ## associative, and `??` doesn't mix with `&&` or `||` unparenthesised.
 fn Parser.binary(mut self, min int, no_in bool) Expr ! JsError
-    p := pos()
-    mut left := if tok.kind == Priv then private_in()? else unary()?
+    p := self.pos()
+    mut left := if self.tok.kind == Priv then self.private_in()? else self.unary()?
     while true
-        prec := precedence(no_in)
+        prec := self.precedence(no_in)
         if prec == 0 or prec < min
             break
-        no_bare_arrow(left)?
-        op := tok.text
+        self.no_bare_arrow(left)?
+        op := self.tok.text
         if op == "**" and expr_kind(left) == "Unary"
-            return fail("Unary operator used immediately before exponentiation expression. Parenthesis must be used to disambiguate operator precedence")
-        next()?
-        right := if op == "**" then binary(prec, no_in)? else binary(prec + 1, no_in)?
-        no_bare_arrow(right)?
+            return self.fail("Unary operator used immediately before exponentiation expression. Parenthesis must be used to disambiguate operator precedence")
+        self.next()?
+        right := if op == "**" then self.binary(prec, no_in)? else self.binary(prec + 1, no_in)?
+        self.no_bare_arrow(right)?
         if op == "??" or op == "||" or op == "&&"
             if mixes_nullish(op, left) or mixes_nullish(op, right)
-                return fail_at("Unexpected token '{op}'", p)
+                return self.fail_at("Unexpected token '{op}'", p)
             left = Logical(op: op, left: left, right: right, pos: p)
         else
             left = Binary(op: op, left: left, right: right, pos: p)
@@ -1594,11 +1602,11 @@ fn Parser.binary(mut self, min int, no_in bool) Expr ! JsError
 
 ## `#x in obj` (§13.10.1): a private name only before `in`.
 fn Parser.private_in(mut self) Expr ! JsError
-    p := pos()
-    name := tok.text
-    next()?
-    if not is_kw("in")
-        return unexpected()
+    p := self.pos()
+    name := self.tok.text
+    self.next()?
+    if not self.is_kw("in")
+        return self.unexpected()
     PrivName(name, p)
 
 fn mixes_nullish(op str, e Expr) bool
@@ -1610,38 +1618,39 @@ fn mixes_nullish(op str, e Expr) bool
 
 ## UnaryExpression and prefix updates (§13.4, §13.5).
 fn Parser.unary(mut self) Expr ! JsError
-    p := pos()
-    is_op := tok.kind == Punct and (is_p("!") or is_p("~") or is_p("+") or is_p("-"))
-        or tok.kind == Name and not tok.escaped and (tok.text == "typeof" or tok.text == "void" or tok.text == "delete")
+    p := self.pos()
+    is_op := self.tok.kind == Punct
+        and (self.is_p("!") or self.is_p("~") or self.is_p("+") or self.is_p("-"))
+        or self.tok.kind == Name and not self.tok.escaped and (self.tok.text == "typeof" or self.tok.text == "void" or self.tok.text == "delete")
     if is_op
-        op := tok.text
-        next()?
-        arg := unary()?
-        no_bare_arrow(arg)?
+        op := self.tok.text
+        self.next()?
+        arg := self.unary()?
+        self.no_bare_arrow(arg)?
         if op == "delete"
-            if strict and expr_kind(unparen(arg)) == "Ident"
-                return fail_at("Delete of an unqualified identifier in strict mode.", p)
+            if self.strict and expr_kind(unparen(arg)) == "Ident"
+                return self.fail_at("Delete of an unqualified identifier in strict mode.", p)
             if private_member(arg)
-                return fail_at("Private fields can not be deleted", p)
+                return self.fail_at("Private fields can not be deleted", p)
         return Unary(op, arg, p)
-    if is_p("++") or is_p("--")
-        op := tok.text
-        next()?
-        arg := unary()?
-        target := simple_target(arg, "Invalid left-hand side expression in prefix operation")?
+    if self.is_p("++") or self.is_p("--")
+        op := self.tok.text
+        self.next()?
+        arg := self.unary()?
+        target := self.simple_target(arg, "Invalid left-hand side expression in prefix operation")?
         return Update(op, true, expr_of(target), p)
-    if in_async and is_kw("await")
-        if in_params
-            return fail("Illegal await-expression in formal parameters of async function")
-        note_await()
-        next()?
-        return Await(unary()?, p)
-    e := call_expr()?
-    if (is_p("++") or is_p("--")) and not tok.nl_before
-        no_bare_arrow(e)?
-        simple_target(e, "Invalid left-hand side expression in postfix operation")?
-        op := tok.text
-        next()?
+    if self.in_async and self.is_kw("await")
+        if self.in_params
+            return self.fail("Illegal await-expression in formal parameters of async function")
+        self.note_await()
+        self.next()?
+        return Await(self.unary()?, p)
+    e := self.call_expr()?
+    if (self.is_p("++") or self.is_p("--")) and not self.tok.nl_before
+        self.no_bare_arrow(e)?
+        self.simple_target(e, "Invalid left-hand side expression in postfix operation")?
+        op := self.tok.text
+        self.next()?
         return Update(op, false, e, p)
     e
 
@@ -1678,24 +1687,24 @@ fn expr_of(t Pat) Expr
 
 ## Member access, calls, `new` and tagged templates (§13.3).
 fn Parser.call_expr(mut self) Expr ! JsError
-    p := pos()
-    before := covers.len()
-    async_start := is_kw("async")
-    e := if is_kw("new") then new_expr()? else primary()?
+    p := self.pos()
+    before := self.covers.len()
+    async_start := self.is_kw("async")
+    e := if self.is_kw("new") then self.new_expr()? else self.primary()?
     if expr_kind(e) == "Arrow"
         return e
-    r := subscripts(e, p, false)?
-    if async_start and is_p("=>") and not tok.nl_before and called_async(r)
+    r := self.subscripts(e, p, false)?
+    if async_start and self.is_p("=>") and not self.tok.nl_before and called_async(r)
         # `async (a, b) => ...`: the arguments were the parameters.
         mut params := List[Pat]()
         mut rest := none
         for a in call_args(r)
             if inner := spread_of(a)
-                rest = to_pat(inner, true)?
+                rest = self.to_pat(inner, true)?
             else
-                params.push(to_pat(a, true)?)
-        drop_covers(before)
-        return arrow(params, rest, p, false, true)
+                params.push(self.to_pat(a, true)?)
+        self.drop_covers(before)
+        return self.arrow(params, rest, p, false, true)
     r
 
 fn call_args(e Expr) List[Expr]
@@ -1727,27 +1736,27 @@ fn called_async(e Expr) bool
 
 ## `new C(args)`, `new C`, `new.target` (§13.3.5, §13.3.12).
 fn Parser.new_expr(mut self) Expr ! JsError
-    p := pos()
-    next()?
-    if eat(".")?
-        if not is_kw("target")
-            return unexpected()
-        if not new_target
-            return fail_at("new.target expression is not allowed here", p)
-        next()?
+    p := self.pos()
+    self.next()?
+    if self.eat(".")?
+        if not self.is_kw("target")
+            return self.unexpected()
+        if not self.new_target
+            return self.fail_at("new.target expression is not allowed here", p)
+        self.next()?
         return NewTarget(p)
-    cp := pos()
-    if is_kw("super")
-        n := peek()?
+    cp := self.pos()
+    if self.is_kw("super")
+        n := self.peek()?
         if not (n.kind == Punct and (n.text == "." or n.text == "["))
-            return fail_at("'super' keyword unexpected here", cp)
-    callee := if is_kw("new") then new_expr()? else primary()?
+            return self.fail_at("'super' keyword unexpected here", cp)
+    callee := if self.is_kw("new") then self.new_expr()? else self.primary()?
     if expr_kind(callee) == "Import"
-        return fail_at("Cannot use new with import", cp)
-    target := subscripts(callee, cp, true)?
+        return self.fail_at("Cannot use new with import", cp)
+    target := self.subscripts(callee, cp, true)?
     mut args := List[Expr]()
-    if is_p("(")
-        args = arguments()?
+    if self.is_p("(")
+        args = self.arguments()?
     New(target, args, p)
 
 ## `.name`, `?.`, `[expr]`, `(args)` and templates after `e`. With
@@ -1756,283 +1765,295 @@ fn Parser.subscripts(mut self, start Expr, p Pos, no_call bool) Expr ! JsError
     mut e := start
     mut chained := false
     while true
-        if is_p(".")
-            next()?
-            e = Member(object: e, prop: member_name()?, computed: false, optional: false, pos: p)
-        elif is_p("?.")
+        if self.is_p(".")
+            self.next()?
+            e = Member(
+                object: e,
+                prop: self.member_name()?,
+                computed: false,
+                optional: false,
+                pos: p,
+            )
+        elif self.is_p("?.")
             if no_call
-                return fail("Invalid optional chain from new expression")
+                return self.fail("Invalid optional chain from new expression")
             chained = true
-            next()?
-            if is_p("(")
-                e = Call(e, arguments()?, true, p)
-            elif eat("[")?
-                prop := expression(false)?
-                expect("]")?
+            self.next()?
+            if self.is_p("(")
+                e = Call(e, self.arguments()?, true, p)
+            elif self.eat("[")?
+                prop := self.expression(false)?
+                self.expect("]")?
                 e = Member(object: e, prop: prop, computed: true, optional: true, pos: p)
-            elif tok.kind == Template
-                return fail("Invalid tagged template on optional chain")
+            elif self.tok.kind == Template
+                return self.fail("Invalid tagged template on optional chain")
             else
-                e = Member(object: e, prop: member_name()?, computed: false, optional: true, pos: p)
-        elif eat("[")?
-            prop := expression(false)?
-            expect("]")?
+                e = Member(
+                    object: e,
+                    prop: self.member_name()?,
+                    computed: false,
+                    optional: true,
+                    pos: p,
+                )
+        elif self.eat("[")?
+            prop := self.expression(false)?
+            self.expect("]")?
             e = Member(object: e, prop: prop, computed: true, optional: false, pos: p)
-        elif tok.kind == Template
+        elif self.tok.kind == Template
             if chained
-                return fail("Invalid tagged template on optional chain")
-            t := template(true)?
+                return self.fail("Invalid tagged template on optional chain")
+            t := self.template(true)?
             e = Tagged(e, t.quasis, t.exprs, p)
-        elif is_p("(") and not no_call
-            e = Call(e, arguments()?, false, p)
+        elif self.is_p("(") and not no_call
+            e = Call(e, self.arguments()?, false, p)
         else
             break
     if chained then Chain(e, p) else e
 
 ## The name after `.`: any IdentifierName, or a private name (§13.3.1).
 fn Parser.member_name(mut self) Expr ! JsError
-    p := pos()
-    if tok.kind == Priv
-        name := tok.text
-        next()?
+    p := self.pos()
+    if self.tok.kind == Priv
+        name := self.tok.text
+        self.next()?
         return PrivName(name, p)
-    if tok.kind != Name
-        return unexpected()
-    name := tok.text
-    next()?
+    if self.tok.kind != Name
+        return self.unexpected()
+    name := self.tok.text
+    self.next()?
     Ident(name, p)
 
 ## `(a, ...b)` (§13.3.8 Arguments).
 fn Parser.arguments(mut self) List[Expr] ! JsError
-    before := covers.len()
-    expect("(")?
+    before := self.covers.len()
+    self.expect("(")?
     mut out := List[Expr]()
-    while not is_p(")")
+    while not self.is_p(")")
         # After `async`, the list may be an async arrow's parameters.
-        maybe_pattern = true
-        if is_p("...")
-            sp := pos()
-            next()?
-            out.push(Spread(assign(false)?, sp))
+        self.maybe_pattern = true
+        if self.is_p("...")
+            sp := self.pos()
+            self.next()?
+            out.push(Spread(self.assign(false)?, sp))
         else
-            out.push(assign(false)?)
-        if not is_p(")")
-            expect(",")?
-    maybe_pattern = false
-    next()?
-    if is_p("=>")
+            out.push(self.assign(false)?)
+        if not self.is_p(")")
+            self.expect(",")?
+    self.maybe_pattern = false
+    self.next()?
+    if self.is_p("=>")
         # Perhaps an async arrow's parameters: the caller checks.
         return out
-    check_covers(before)?
+    self.check_covers(before)?
     out
 
 ## PrimaryExpression (§13.2).
 fn Parser.primary(mut self) Expr ! JsError
-    mut p := pos()
-    match tok.kind
+    mut p := self.pos()
+    match self.tok.kind
         Num =>
-            if strict and tok.octal
-                return fail("Octal literals are not allowed in strict mode.")
-            if tok.big
-                digits := tok.text
-                next()?
+            if self.strict and self.tok.octal
+                return self.fail("Octal literals are not allowed in strict mode.")
+            if self.tok.big
+                digits := self.tok.text
+                self.next()?
                 return Big(digits, p)
-            v := tok.num
-            next()?
+            v := self.tok.num
+            self.next()?
             return Num(v, p)
         Str =>
-            if strict and tok.octal
-                return fail("Octal escape sequences are not allowed in strict mode.")
-            v := tok.text
-            next()?
+            if self.strict and self.tok.octal
+                return self.fail("Octal escape sequences are not allowed in strict mode.")
+            v := self.tok.text
+            self.next()?
             return Str(v, p)
         Template =>
-            t := template(false)?
+            t := self.template(false)?
             return Template(t.quasis, t.exprs, p)
         Punct =>
-            match tok.text
+            match self.tok.text
                 "/" | "/=" =>
-                    ahead.clear()
-                    tok = lx.regex_at(tok)?
-                    pattern := tok.text
-                    flags := tok.raw
-                    next()?
+                    self.ahead.clear()
+                    self.tok = self.lx.regex_at(self.tok)?
+                    pattern := self.tok.text
+                    flags := self.tok.raw
+                    self.next()?
                     return Regex(pattern: pattern, flags: flags, pos: p)
-                "(" => return paren_or_arrow()
-                "[" => return array_literal()
-                "\{" => return object_literal()
-                _ => return unexpected()
-        Name => p = pos()
-        Priv | Regex | Eof => return unexpected()
-    if tok.escaped
-        return Ident(ident_name(false)?, p)
-    match tok.text
+                "(" => return self.paren_or_arrow()
+                "[" => return self.array_literal()
+                "\{" => return self.object_literal()
+                _ => return self.unexpected()
+        Name => p = self.pos()
+        Priv | Regex | Eof => return self.unexpected()
+    if self.tok.escaped
+        return Ident(self.ident_name(false)?, p)
+    match self.tok.text
         "this" =>
-            next()?
+            self.next()?
             This(p)
         "null" =>
-            next()?
+            self.next()?
             Null(p)
         "true" | "false" =>
-            v := tok.text == "true"
-            next()?
+            v := self.tok.text == "true"
+            self.next()?
             Bool(v, p)
-        "function" => Function(function(false, false)?)
+        "function" => Function(self.function(false, false)?)
         "async" =>
-            n := peek()?
+            n := self.peek()?
             if n.kind == Name and n.text == "function" and not n.nl_before
-                next()?
-                return Function(function(false, true)?)
-            Ident(ident_name(false)?, p)
-        "class" => ClassExpr(class(false)?)
-        "super" => super_expr()
-        "import" => import_expr()
-        _ => Ident(ident_name(false)?, p)
+                self.next()?
+                return Function(self.function(false, true)?)
+            Ident(self.ident_name(false)?, p)
+        "class" => ClassExpr(self.class(false)?)
+        "super" => self.super_expr()
+        "import" => self.import_expr()
+        _ => Ident(self.ident_name(false)?, p)
 
 ## `super(...)`, `super.x`, `super[x]` (§13.3.7).
 fn Parser.super_expr(mut self) Expr ! JsError
-    p := pos()
-    next()?
-    if is_p("(")
-        if not super_call
-            return fail_at("'super' keyword unexpected here", p)
-    elif is_p(".") or is_p("[")
-        if not super_prop
-            return fail_at("'super' keyword unexpected here", p)
+    p := self.pos()
+    self.next()?
+    if self.is_p("(")
+        if not self.super_call
+            return self.fail_at("'super' keyword unexpected here", p)
+    elif self.is_p(".") or self.is_p("[")
+        if not self.super_prop
+            return self.fail_at("'super' keyword unexpected here", p)
     else
-        return fail_at("'super' keyword unexpected here", p)
+        return self.fail_at("'super' keyword unexpected here", p)
     Super(p)
 
 ## A parenthesised expression, or an arrow function's parameters
 ## (§13.2.1 CoverParenthesizedExpressionAndArrowParameterList).
 fn Parser.paren_or_arrow(mut self) Expr ! JsError
-    p := pos()
-    next()?
-    before := covers.len()
+    p := self.pos()
+    self.next()?
+    before := self.covers.len()
     mut items := List[Expr]()
     mut rest := none
     mut trailing := false
-    while not is_p(")")
-        if is_p("...")
-            next()?
-            rest = binding_target()?
-            if not is_p(")")
-                return fail("Rest parameter must be last formal parameter")
+    while not self.is_p(")")
+        if self.is_p("...")
+            self.next()?
+            rest = self.binding_target()?
+            if not self.is_p(")")
+                return self.fail("Rest parameter must be last formal parameter")
             break
-        maybe_pattern = true
-        items.push(assign(false)?)
-        if is_p(")")
+        self.maybe_pattern = true
+        items.push(self.assign(false)?)
+        if self.is_p(")")
             break
-        expect(",")?
-        if is_p(")")
+        self.expect(",")?
+        if self.is_p(")")
             trailing = true
-    close := tok
-    next()?
-    if is_p("=>") and not tok.nl_before
+    close := self.tok
+    self.next()?
+    if self.is_p("=>") and not self.tok.nl_before
         mut params := List[Pat]()
         for it in items
-            params.push(to_pat(it, true)?)
-        drop_covers(before)
-        return arrow(params, rest, p, false, false)
+            params.push(self.to_pat(it, true)?)
+        self.drop_covers(before)
+        return self.arrow(params, rest, p, false, false)
     if items.len() == 0 or rest != none or trailing
-        tok = close
-        return unexpected()
-    check_covers(before)?
+        self.tok = close
+        return self.unexpected()
+    self.check_covers(before)?
     inner := if items.len() == 1 then items[0] else Expr.Seq(items, expr_pos(items[0]))
     Paren(inner, p)
 
 ## `[a, , ...b]` (§13.2.4).
 fn Parser.array_literal(mut self) Expr ! JsError
-    p := pos()
-    next()?
+    p := self.pos()
+    self.next()?
     mut items := List[Expr?]()
     mut comma_after_spread := false
-    while not is_p("]")
-        if eat(",")?
+    while not self.is_p("]")
+        if self.eat(",")?
             items.push(none)
             continue
-        if is_p("...")
-            sp := pos()
-            next()?
-            maybe_pattern = true
-            items.push(Spread(assign(false)?, sp))
-            if is_p(",")
+        if self.is_p("...")
+            sp := self.pos()
+            self.next()?
+            self.maybe_pattern = true
+            items.push(Spread(self.assign(false)?, sp))
+            if self.is_p(",")
                 comma_after_spread = true
         else
-            maybe_pattern = true
-            items.push(assign(false)?)
-        if not is_p("]")
-            expect(",")?
-    next()?
+            self.maybe_pattern = true
+            items.push(self.assign(false)?)
+        if not self.is_p("]")
+            self.expect(",")?
+    self.next()?
     Array(items, comma_after_spread, p)
 
 ## The next token is one that follows a property name, so `get`, `set` or
 ## `static` before it is the name itself.
 fn Parser.name_ends_here(mut self) bool ! JsError
-    n := peek()?
+    n := self.peek()?
     n.kind == Punct
         and (n.text == "," or n.text == ":" or n.text == "(" or n.text == "}" or n.text == "=" or n.text == ";")
         or n.kind == Eof
 
 ## `{a: 1, b, c() {}, get d() {}, ...e}` (§13.2.5).
 fn Parser.object_literal(mut self) Expr ! JsError
-    p := pos()
-    next()?
+    p := self.pos()
+    self.next()?
     mut props := List[Prop]()
     mut has_proto := false
-    while not is_p("}")
-        pp := pos()
-        if is_p("...")
-            next()?
-            props.push(PropSpread(assign(false)?, pp))
+    while not self.is_p("}")
+        pp := self.pos()
+        if self.is_p("...")
+            self.next()?
+            props.push(PropSpread(self.assign(false)?, pp))
         else
             mut kind := "init"
-            if (is_kw("get") or is_kw("set")) and not name_ends_here()?
-                kind = tok.text
-                next()?
-            elif is_kw("async") and not name_ends_here()? and not peek()?.nl_before
+            if (self.is_kw("get") or self.is_kw("set")) and not self.name_ends_here()?
+                kind = self.tok.text
+                self.next()?
+            elif self.is_kw("async") and not self.name_ends_here()? and not self.peek()?.nl_before
                 kind = "async"
-                next()?
-            if eat("*")?
+                self.next()?
+            if self.eat("*")?
                 kind = if kind == "async" then "async*" else "*"
-            key_tok := tok
-            key := prop_key(false)?
+            key_tok := self.tok
+            key := self.prop_key(false)?
             if kind == "get" or kind == "set"
-                props.push(Method(key, kind, method(kind, false, pp)?, pp))
-            elif kind != "init" or is_p("(")
-                if not is_p("(")
-                    return unexpected()
-                props.push(Method(key, "init", method(kind, false, pp)?, pp))
-            elif eat(":")?
+                props.push(Method(key, kind, self.method(kind, false, pp)?, pp))
+            elif kind != "init" or self.is_p("(")
+                if not self.is_p("(")
+                    return self.unexpected()
+                props.push(Method(key, "init", self.method(kind, false, pp)?, pp))
+            elif self.eat(":")?
                 if is_proto(key)
                     if has_proto
-                        return fail_at(
+                        return self.fail_at(
                             "Duplicate __proto__ fields are not allowed in object literals",
                             pp,
                         )
                     has_proto = true
-                maybe_pattern = true
-                props.push(Init(key, assign(false)?, false, pp))
+                self.maybe_pattern = true
+                props.push(Init(key, self.assign(false)?, false, pp))
             else
                 if key_tok.kind != Name
-                    tok = key_tok
-                    return unexpected()
+                    self.tok = key_tok
+                    return self.unexpected()
                 if key_tok.escaped and RESERVED.contains(key_tok.text)
-                    return fail_at("Keyword must not contain escaped characters", pp)
+                    return self.fail_at("Keyword must not contain escaped characters", pp)
                 if RESERVED.contains(key_tok.text)
-                    or strict and STRICT_RESERVED.contains(key_tok.text)
-                    tok = key_tok
-                    return unexpected()
+                    or self.strict and STRICT_RESERVED.contains(key_tok.text)
+                    self.tok = key_tok
+                    return self.unexpected()
                 name := key_tok.text
-                if is_p("=")
-                    covers.push(pp)
-                    next()?
-                    props.push(CoverInit(name, assign(false)?, pp))
+                if self.is_p("=")
+                    self.covers.push(pp)
+                    self.next()?
+                    props.push(CoverInit(name, self.assign(false)?, pp))
                 else
                     props.push(Init(key, Ident(name, pp), true, pp))
-        if not is_p("}")
-            expect(",")?
-    next()?
+        if not self.is_p("}")
+            self.expect(",")?
+    self.next()?
     Object(props, p)
 
 fn is_proto(k Key) bool
@@ -2043,45 +2064,45 @@ fn is_proto(k Key) bool
 
 ## PropertyName (§13.2.5), or with `private` a class's `#name` too.
 fn Parser.prop_key(mut self, private bool) Key ! JsError
-    p := pos()
-    match tok.kind
+    p := self.pos()
+    match self.tok.kind
         Name =>
-            n := tok.text
-            next()?
+            n := self.tok.text
+            self.next()?
             KeyName(n, p)
         Str =>
-            if strict and tok.octal
-                return fail("Octal escape sequences are not allowed in strict mode.")
-            v := tok.text
-            next()?
+            if self.strict and self.tok.octal
+                return self.fail("Octal escape sequences are not allowed in strict mode.")
+            v := self.tok.text
+            self.next()?
             KeyStr(v, p)
         Num =>
-            if strict and tok.octal
-                return fail("Octal literals are not allowed in strict mode.")
+            if self.strict and self.tok.octal
+                return self.fail("Octal literals are not allowed in strict mode.")
             # A BigInt key `1n` is the string "1" (§13.2.5.5).
-            if tok.big
-                digits := tok.text
-                next()?
+            if self.tok.big
+                digits := self.tok.text
+                self.next()?
                 return KeyStr(digits, p)
-            v := tok.num
-            next()?
+            v := self.tok.num
+            self.next()?
             KeyNum(v, p)
         Priv =>
             if not private
-                return unexpected()
-            if tok.text == "constructor"
-                return fail("Classes may not have a private field named '#constructor'")
-            n := tok.text
-            next()?
+                return self.unexpected()
+            if self.tok.text == "constructor"
+                return self.fail("Classes may not have a private field named '#constructor'")
+            n := self.tok.text
+            self.next()?
             KeyPriv(n, p)
         Punct =>
-            if not is_p("[")
-                return unexpected()
-            next()?
-            e := assign(false)?
-            expect("]")?
+            if not self.is_p("[")
+                return self.unexpected()
+            self.next()?
+            e := self.assign(false)?
+            self.expect("]")?
             Computed(e, p)
-        Template | Regex | Eof => unexpected()
+        Template | Regex | Eof => self.unexpected()
 
 ## A template literal (§13.2.8); `tagged` allows invalid escapes.
 struct TemplateParts
@@ -2092,88 +2113,88 @@ fn Parser.template(mut self, tagged bool) TemplateParts ! JsError
     mut quasis := List[Quasi]()
     mut exprs := List[Expr]()
     while true
-        t := tok
+        t := self.tok
         if t.bad_escape and not tagged
-            return fail("Invalid escape sequence in template literal")
+            return self.fail("Invalid escape sequence in template literal")
         cooked := if t.bad_escape then none else t.text
         quasis.push(Quasi(cooked: cooked, raw: t.raw))
-        next()?
+        self.next()?
         if t.tail
             break
-        exprs.push(expression(false)?)
-        if not is_p("}")
-            return unexpected()
-        ahead.clear()
-        tok = lx.template_continue(tok)?
+        exprs.push(self.expression(false)?)
+        if not self.is_p("}")
+            return self.unexpected()
+        self.ahead.clear()
+        self.tok = self.lx.template_continue(self.tok)?
     TemplateParts(quasis: quasis, exprs: exprs)
 
 # ---- Functions and classes ----
 
 ## `function name(params) { body }` (§15.2). A declaration needs the name.
 fn Parser.function(mut self, is_stmt bool, is_async bool) Func ! JsError
-    p := pos()
-    next()?
-    is_gen := eat("*")?
+    p := self.pos()
+    self.next()?
+    is_gen := self.eat("*")?
     mut name := none
-    if tok.kind == Name
-        np := pos()
+    if self.tok.kind == Name
+        np := self.pos()
         # A function expression's name is in its own scope (§15.2.5): a plain
         # function in a generator may be called `yield`, a generator never.
-        outer_gen := in_gen
-        outer_async := in_async
+        outer_gen := self.in_gen
+        outer_async := self.in_async
         if not is_stmt
-            in_gen = is_gen
-            in_async = is_async
-        n := ident_name(true)?
-        in_gen = outer_gen
-        in_async = outer_async
+            self.in_gen = is_gen
+            self.in_async = is_async
+        n := self.ident_name(true)?
+        self.in_gen = outer_gen
+        self.in_async = outer_async
         if is_stmt
-            mut kind := function_kind()
+            mut kind := self.function_kind()
             # Annex B.3.3's duplicates are for plain functions only.
             if (is_gen or is_async)
                 and kind == "function"
-                and not scopes[scopes.len() - 1].is_function
+                and not self.scopes[self.scopes.len() - 1].is_function
                 kind = "lexical"
-            declare(n, kind, np)?
+            self.declare(n, kind, np)?
         name = n
     elif is_stmt
-        return fail("Function statements require a function name")
-    saved := save()
-    enter(false, false)
-    in_gen = is_gen
-    in_async = is_async
-    mut f := function_rest(name, p)?
+        return self.fail("Function statements require a function name")
+    saved := self.save()
+    self.enter(false, false)
+    self.in_gen = is_gen
+    self.in_async = is_async
+    mut f := self.function_rest(name, p)?
     f.is_gen = is_gen
     f.is_async = is_async
-    restore(saved)
+    self.restore(saved)
     f
 
 ## Parameters and body, in the function's context.
 fn Parser.function_rest(mut self, name str?, p Pos) Func ! JsError
-    enter_scope(true)
-    expect("(")?
+    self.enter_scope(true)
+    self.expect("(")?
     mut params := List[Pat]()
     mut rest := none
-    outer_params := in_params
-    in_params = true
-    while not is_p(")")
-        if eat("...")?
-            rest = binding_target()?
-            if not is_p(")")
-                return fail("Rest parameter must be last formal parameter")
+    outer_params := self.in_params
+    self.in_params = true
+    while not self.is_p(")")
+        if self.eat("...")?
+            rest = self.binding_target()?
+            if not self.is_p(")")
+                return self.fail("Rest parameter must be last formal parameter")
             break
-        params.push(binding_element()?)
-        if not is_p(")")
-            expect(",")?
-    in_params = outer_params
-    next()?
+        params.push(self.binding_element()?)
+        if not self.is_p(")")
+            self.expect(",")?
+    self.in_params = outer_params
+    self.next()?
     for prm in params
-        declare_pat(prm, "var")?
+        self.declare_pat(prm, "var")?
     if r := rest
-        declare_pat(r, "var")?
-    expect("\{")?
-    b := statements_until_end("}")?
-    next()?
+        self.declare_pat(r, "var")?
+    self.expect("\{")?
+    b := self.statements_until_end("}")?
+    self.next()?
     f := Func(
         name: name,
         params: params,
@@ -2185,74 +2206,74 @@ fn Parser.function_rest(mut self, name str?, p Pos) Func ! JsError
         is_gen: false,
         strict: b.strict,
         pos: p,
-        text: source_since(p),
+        text: self.source_since(p),
     )
     if b.strict
         if n := name
             if n == "eval" or n == "arguments"
-                return fail_at("Unexpected eval or arguments in strict mode", p)
+                return self.fail_at("Unexpected eval or arguments in strict mode", p)
             if STRICT_RESERVED.contains(n)
-                return fail_at("Unexpected strict mode reserved word", p)
-    check_params(f, false)?
-    leave_scope()
+                return self.fail_at("Unexpected strict mode reserved word", p)
+    self.check_params(f, false)?
+    self.leave_scope()
     f
 
 ## A method, getter or setter of an object or class (§15.4).
 fn Parser.method(mut self, kind str, ctor bool, p Pos) Func ! JsError
-    saved := save()
-    enter(ctor, true)
-    in_gen = kind == "*" or kind == "async*"
-    in_async = kind == "async" or kind == "async*"
-    mut f := function_rest(none, p)?
-    f.is_gen = in_gen
-    f.is_async = in_async
-    restore(saved)
+    saved := self.save()
+    self.enter(ctor, true)
+    self.in_gen = kind == "*" or kind == "async*"
+    self.in_async = kind == "async" or kind == "async*"
+    mut f := self.function_rest(none, p)?
+    f.is_gen = self.in_gen
+    f.is_async = self.in_async
+    self.restore(saved)
     if kind == "get" and (f.params.len() > 0 or f.rest != none)
-        return fail_at("Getter must not have any formal parameters.", p)
+        return self.fail_at("Getter must not have any formal parameters.", p)
     if kind == "set"
         if f.rest != none
-            return fail_at("Setter function argument must not be a rest parameter", p)
+            return self.fail_at("Setter function argument must not be a rest parameter", p)
         if f.params.len() != 1
-            return fail_at("Setter must have exactly one formal parameter.", p)
-    check_params(f, true)?
+            return self.fail_at("Setter must have exactly one formal parameter.", p)
+    self.check_params(f, true)?
     f
 
 ## `class Name extends Base { members }` (§15.7). Class code is strict.
 fn Parser.class(mut self, is_stmt bool) Class ! JsError
-    p := pos()
-    next()?
-    old_strict := strict
-    strict = true
+    p := self.pos()
+    self.next()?
+    old_strict := self.strict
+    self.strict = true
     mut name := none
-    if tok.kind == Name and not is_kw("extends")
-        name = ident_name(true)?
+    if self.tok.kind == Name and not self.is_kw("extends")
+        name = self.ident_name(true)?
     elif is_stmt
-        return unexpected()
+        return self.unexpected()
     mut superclass := none
-    if is_kw("extends")
-        next()?
-        sp := pos()
-        base := if is_kw("new") then new_expr()? else primary()?
-        superclass = subscripts(base, sp, false)?
-    expect("\{")?
+    if self.is_kw("extends")
+        self.next()?
+        sp := self.pos()
+        base := if self.is_kw("new") then self.new_expr()? else self.primary()?
+        superclass = self.subscripts(base, sp, false)?
+    self.expect("\{")?
     mut members := List[ClassMember]()
     mut has_ctor := false
-    while not is_p("}")
-        if eat(";")?
+    while not self.is_p("}")
+        if self.eat(";")?
             continue
-        mp := pos()
+        mp := self.pos()
         mut is_static := false
-        if is_kw("static") and not name_ends_here()?
+        if self.is_kw("static") and not self.name_ends_here()?
             is_static = true
-            next()?
-            if is_p("\{")
-                saved := save()
-                enter(false, true)
-                in_function = false
-                enter_scope(true)
-                body := block_in_scope()?
-                leave_scope()
-                restore(saved)
+            self.next()?
+            if self.is_p("\{")
+                saved := self.save()
+                self.enter(false, true)
+                self.in_function = false
+                self.enter_scope(true)
+                body := self.block_in_scope()?
+                self.leave_scope()
+                self.restore(saved)
                 f := Func(
                     name: none,
                     params: [],
@@ -2276,35 +2297,35 @@ fn Parser.class(mut self, is_stmt bool) Class ! JsError
                 ))
                 continue
         mut kind := "method"
-        if (is_kw("get") or is_kw("set")) and not name_ends_here()?
-            kind = tok.text
-            next()?
-        elif is_kw("async") and not name_ends_here()? and not peek()?.nl_before
+        if (self.is_kw("get") or self.is_kw("set")) and not self.name_ends_here()?
+            kind = self.tok.text
+            self.next()?
+        elif self.is_kw("async") and not self.name_ends_here()? and not self.peek()?.nl_before
             kind = "async"
-            next()?
-        if eat("*")?
+            self.next()?
+        if self.eat("*")?
             kind = if kind == "async" then "async*" else "*"
-        key := prop_key(true)?
+        key := self.prop_key(true)?
         key_name := match key
             KeyName(n, _) => n
             KeyStr(n, _) => n
             KeyNum(_, _) | Computed(_, _) | KeyPriv(_, _) => ""
         if is_static and key_name == "prototype"
-            return fail_at("Classes may not have a static property named 'prototype'", mp)
-        if is_p("(")
+            return self.fail_at("Classes may not have a static property named 'prototype'", mp)
+        if self.is_p("(")
             is_ctor := not is_static and key_name == "constructor"
             if is_ctor
                 if kind == "*" or kind == "async*"
-                    return fail_at("Class constructor may not be a generator", mp)
+                    return self.fail_at("Class constructor may not be a generator", mp)
                 if kind == "async"
-                    return fail_at("Class constructor may not be an async method", mp)
+                    return self.fail_at("Class constructor may not be an async method", mp)
                 if kind != "method"
-                    return fail_at("Class constructor may not be an accessor", mp)
+                    return self.fail_at("Class constructor may not be an accessor", mp)
                 if has_ctor
-                    return fail_at("A class may only have one constructor", mp)
+                    return self.fail_at("A class may only have one constructor", mp)
                 has_ctor = true
                 kind = "constructor"
-            f := method(kind, is_ctor and superclass != none, mp)?
+            f := self.method(kind, is_ctor and superclass != none, mp)?
             members.push(ClassMember(
                 kind: if kind == "get"
                     or kind == "set"
@@ -2317,17 +2338,17 @@ fn Parser.class(mut self, is_stmt bool) Class ! JsError
             ))
         else
             if kind != "method"
-                return unexpected()
+                return self.unexpected()
             if key_name == "constructor"
-                return fail_at("Classes may not have a field named 'constructor'", mp)
+                return self.fail_at("Classes may not have a field named 'constructor'", mp)
             mut value := none
-            if eat("=")?
-                saved := save()
-                enter(false, true)
-                in_function = false
-                value = assign(false)?
-                restore(saved)
-            semicolon()?
+            if self.eat("=")?
+                saved := self.save()
+                self.enter(false, true)
+                self.in_function = false
+                value = self.assign(false)?
+                self.restore(saved)
+            self.semicolon()?
             members.push(ClassMember(
                 kind: "field",
                 key: key,
@@ -2336,6 +2357,6 @@ fn Parser.class(mut self, is_stmt bool) Class ! JsError
                 value: value,
                 pos: mp,
             ))
-    next()?
-    strict = old_strict
-    Class(name: name, superclass: superclass, members: members, pos: p, text: source_since(p))
+    self.next()?
+    self.strict = old_strict
+    Class(name: name, superclass: superclass, members: members, pos: p, text: self.source_since(p))

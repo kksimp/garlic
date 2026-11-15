@@ -234,31 +234,31 @@ struct Flow
 
 ## Whether the current row has text beyond its indentation.
 fn Flow.dirty(self) bool
-    for r in cur
+    for r in self.cur
         if not r.style.quiet
             return true
     false
 
 ## Ends the current row if it has anything on it.
 fn Flow.break_row(mut self)
-    if cur.len() > 0
-        rows.push(cur)
-        cur = []
-        col = 0
-    space = false
+    if self.cur.len() > 0
+        self.rows.push(self.cur)
+        self.cur = []
+        self.col = 0
+    self.space = false
 
 ## Ends the row, then leaves one empty row unless one is already there or
 ## nothing has been drawn yet (margins collapse).
 fn Flow.gap(mut self)
-    break_row()
-    if rows.len() > 0 and not blank
-        rows.push([])
-        blank = true
+    self.break_row()
+    if self.rows.len() > 0 and not self.blank
+        self.rows.push([])
+        self.blank = true
 
 ## Starts a row: draws the indentation.
 fn Flow.start_row(mut self)
     mut parts := List[str]()
-    for mut ind in indents
+    for mut ind in self.indents
         if ind.used
             parts.push(ind.rest)
         else
@@ -276,125 +276,125 @@ fn Flow.start_row(mut self)
             target: 0,
             upper: false,
         )
-        cur.push(Run(col: 0, text, style: q))
-    col = text.chars().len()
+        self.cur.push(Run(col: 0, text, style: q))
+    self.col = text.chars().len()
 
 ## Puts `text` (no newlines) on the current row in the current style, and
 ## widens the open boxes to cover it.
 fn Flow.put(mut self, text str)
-    place(text, true)
+    self.place(text, true)
 
 ## Puts a separator, which no open box covers.
 fn Flow.put_sep(mut self, text str)
-    place(text, false)
+    self.place(text, false)
 
 fn Flow.place(mut self, text str, mark bool)
-    if cur.len() == 0
-        start_row()
+    if self.cur.len() == 0
+        self.start_row()
     n := text.chars().len()
-    last := cur.len() - 1
+    last := self.cur.len() - 1
     if last >= 0
-        and cur[last].style == style
-        and cur[last].col + cur[last].text.chars().len() == col
-        cur[last].text = "{cur[last].text}{text}"
+        and self.cur[last].style == self.style
+        and self.cur[last].col + self.cur[last].text.chars().len() == self.col
+        self.cur[last].text = "{self.cur[last].text}{text}"
     else
-        cur.push(Run(col, text, style))
-    row := rows.len()
-    for b in open
+        self.cur.push(Run(col: self.col, text, style: self.style))
+    row := self.rows.len()
+    for b in self.open
         if not mark
             break
-        if boxes[b].row < 0
-            boxes[b].row = row
-            boxes[b].col = col
-        boxes[b].end_row = row + 1
-        boxes[b].end_col = col + n
-    col += n
-    blank = false
+        if self.boxes[b].row < 0
+            self.boxes[b].row = row
+            self.boxes[b].col = self.col
+        self.boxes[b].end_row = row + 1
+        self.boxes[b].end_col = self.col + n
+    self.col += n
+    self.blank = false
 
 ## Flows one word, wrapping before it when it doesn't fit, and breaking a
 ## word longer than the width.
 fn Flow.word(mut self, w str)
     mut cs := w.chars()
     while true
-        if cur.len() == 0
-            start_row()
-        sep := if space and dirty() then 1 else 0
-        left := width - col - sep
-        if cs.len() > left and dirty()
-            break_row()
+        if self.cur.len() == 0
+            self.start_row()
+        sep := if self.space and self.dirty() then 1 else 0
+        left := self.width - self.col - sep
+        if cs.len() > left and self.dirty()
+            self.break_row()
             continue
-        if space and dirty()
-            put_sep(" ")
-        space = false
-        if cs.len() <= width - col or width - col <= 0
-            put(cs.join(""))
+        if self.space and self.dirty()
+            self.put_sep(" ")
+        self.space = false
+        if cs.len() <= self.width - self.col or self.width - self.col <= 0
+            self.put(cs.join(""))
             return
-        k := width - col
-        put(cs[..k].join(""))
+        k := self.width - self.col
+        self.put(cs[..k].join(""))
         cs = cs[k..]
-        break_row()
+        self.break_row()
 
 ## Flows text: words wrapped with whitespace collapsed, or kept as is
 ## inside `pre`.
 fn Flow.text(mut self, raw str)
-    s := if style.upper then raw.to_upper() else raw
-    if pre > 0
+    s := if self.style.upper then raw.to_upper() else raw
+    if self.pre > 0
         lines := s.split("\n")
         for k in 0..lines.len()
             if k > 0
-                if cur.len() == 0
-                    start_row()
-                rows.push(cur)
-                cur = []
-                col = 0
+                if self.cur.len() == 0
+                    self.start_row()
+                self.rows.push(self.cur)
+                self.cur = []
+                self.col = 0
             if lines[k] != ""
-                put(lines[k].replace("\t", "    "))
+                self.put(lines[k].replace("\t", "    "))
         return
     mut buf := List[char]()
     for c in s.chars()
         if html.is_space(c) or c == '\u{a0}'
             if buf.len() > 0
-                word(buf.join(""))
+                self.word(buf.join(""))
                 buf.clear()
-            space = true
+            self.space = true
         else
             buf.push(c)
     if buf.len() > 0
-        word(buf.join(""))
+        self.word(buf.join(""))
 
 ## Opens a box for element `id` if it has a role.
 fn Flow.open_box(mut self, id int, tag str) int?
-    n := d.nodes[id]
-    mut role := d.attr(id, "role") else (ROLES.get(tag) else return none)
-    if tag == "a" and d.attr(id, "href") == none
+    n := self.d.nodes[id]
+    mut role := self.d.attr(id, "role") else (ROLES.get(tag) else return none)
+    if tag == "a" and self.d.attr(id, "href") == none
         return none
-    kind := input_type(d, id)
+    kind := input_type(self.d, id)
     if tag == "input"
         if kind == "hidden"
             return none
         role = INPUT_ROLES.get(kind) else "textbox"
     mut href := ""
-    if h := d.attr(id, "href")
-        href = resolve(base, h)
+    if h := self.d.attr(id, "href")
+        href = resolve(self.base, h)
     level := if HEADINGS_LEVEL.contains(tag) then HEADINGS_LEVEL[tag] else 0
-    mut name := d.attr(id, "aria-label") else (d.attr(id, "alt") else "")
+    mut name := self.d.attr(id, "aria-label") else (self.d.attr(id, "alt") else "")
     if name == "" and (tag == "input" or tag == "select" or tag == "textarea")
-        name = label_of(d, id)
+        name = label_of(self.d, id)
     if name == "" and tag == "input" and role == "button"
-        name = d.attr(id, "value") else (if kind == "reset" then "Reset" else "Submit")
+        name = self.d.attr(id, "value") else (if kind == "reset" then "Reset" else "Submit")
     if name == "" and not CONTAINERS.contains(role) and tag != "select" and tag != "textarea"
-        name = html.collapse(d.visible_text(id))
+        name = html.collapse(self.d.visible_text(id))
     if name == "" and tag != "img"
-        name = d.attr(
+        name = self.d.attr(
             id,
             "title",
-        ) else (d.attr(id, "placeholder") else (d.attr(id, "name") else ""))
+        ) else (self.d.attr(id, "placeholder") else (self.d.attr(id, "name") else ""))
     if not FULL_NAMES.contains(role) and name.chars().len() > NAME_CUT
         name = "{name.slice(0, NAME_CUT)}..."
-    link := if n.tag == "a" then links.len() + 1 else 0
-    value := control_value(d, id)
-    checked := d.attr(id, "checked") != none
-    boxes.push(Box(
+    link := if n.tag == "a" then self.links.len() + 1 else 0
+    value := control_value(self.d, id)
+    checked := self.d.attr(id, "checked") != none
+    self.boxes.push(Box(
         id,
         role,
         name,
@@ -408,13 +408,13 @@ fn Flow.open_box(mut self, id int, tag str) int?
         end_row: -1,
         end_col: -1,
     ))
-    b := boxes.len() - 1
-    open.push(b)
+    b := self.boxes.len() - 1
+    self.open.push(b)
     if n.tag == "a"
-        links.push(b)
+        self.links.push(b)
     if ACTIONS.contains(role)
-        targets.push(b)
-        style.target = targets.len()
+        self.targets.push(b)
+        self.style.target = self.targets.len()
     b
 
 ## The `type` of an `input`, lowercase; "text" when absent.
@@ -461,21 +461,21 @@ HEADINGS_LEVEL := {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
 
 ## Whether element `id` is hidden by its tag or `hidden`.
 fn Flow.hidden(self, id int, tag str) bool
-    HIDDEN.contains(tag) or d.attr(id, "hidden") != none
+    HIDDEN.contains(tag) or self.d.attr(id, "hidden") != none
 
 ## Display values that start a block; `none` and the inline ones don't.
 BLOCK_DISPLAY := {"block", "flex", "grid", "list-item", "table", "table-row", "flow-root"}
 
 fn Flow.node(mut self, id int)
-    n := d.nodes[id]
+    n := self.d.nodes[id]
     match n.kind
-        Text => text(n.text)
+        Text => self.text(n.text)
         Comment => return
-        Document | Element => element(id)
+        Document | Element => self.element(id)
 
 fn Flow.children(mut self, id int)
-    for c in d.nodes[id].children
-        node(c)
+    for c in self.d.nodes[id].children
+        self.node(c)
 
 ## Whether `font-style: v` is italic: `italic` and `oblique` (with or without an angle); `inherit` and `unset`
 ## keep `cur`, the parent's value; anything else is upright.
@@ -525,161 +525,165 @@ pub fn font_shorthand(v str, italic bool, bold bool)(bool, bool)
     (i, b)
 
 fn Flow.element(mut self, id int)
-    tag := d.nodes[id].tag
-    if tag != "#document" and hidden(id, tag)
+    tag := self.d.nodes[id].tag
+    if tag != "#document" and self.hidden(id, tag)
         return
-    cs := if tag == "#document" then Map[str, str]() else css.cascade(d, id, sheet)
+    cs := if tag == "#document" then Map[str, str]() else css.cascade(self.d, id, self.sheet)
     display := cs.get("display") else ""
     if display == "none" or cs.get("visibility") == "hidden"
         return
     block := if display == "" then BLOCKS.contains(tag) else BLOCK_DISPLAY.contains(display)
     inline_block := display.starts_with("inline-") or (display == "" and CONTROLS.contains(tag))
-    gappy := not block and (flex or inline_block or spaced_x(cs))
-    outer_flex := flex
-    flex = FLEX.contains(display)
+    gappy := not block and (self.flex or inline_block or spaced_x(cs))
+    outer_flex := self.flex
+    self.flex = FLEX.contains(display)
     if gappy
-        space = true
-    nested := (tag == "ul" or tag == "ol") and nested_list(id)
+        self.space = true
+    nested := (tag == "ul" or tag == "ol") and self.nested_list(id)
     spaced := SPACED.contains(tag) and not nested and block
     if spaced
-        gap()
+        self.gap()
     elif block
-        break_row()
-    saved := style
+        self.break_row()
+    saved := self.style
     if level := HEADINGS_LEVEL.get(tag)
-        style.heading = level
-        style.bold = true
-        put("{"#".repeat(level)} ")
-    b := open_box(id, tag)
+        self.style.heading = level
+        self.style.bold = true
+        self.put("{"#".repeat(level)} ")
+    b := self.open_box(id, tag)
     mut indented := false
     if tag == "li"
-        marker := list_marker(id)
-        indents.push(Indent(first: marker, rest: " ".repeat(marker.chars().len()), used: false))
+        marker := self.list_marker(id)
+        self.indents.push(Indent(
+            first: marker,
+            rest: " ".repeat(marker.chars().len()),
+            used: false,
+        ))
         indented = true
     elif tag == "blockquote"
-        indents.push(Indent(first: "> ", rest: "> ", used: false))
+        self.indents.push(Indent(first: "> ", rest: "> ", used: false))
         indented = true
     elif tag == "dd" or nested
-        indents.push(Indent(first: "  ", rest: "  ", used: false))
+        self.indents.push(Indent(first: "  ", rest: "  ", used: false))
         indented = true
     elif tag == "pre"
-        indents.push(Indent(first: "    ", rest: "    ", used: false))
+        self.indents.push(Indent(first: "    ", rest: "    ", used: false))
         indented = true
-    outer_grid := grid
-    outer_left := grid_left
-    outer_cell := cell
+    outer_grid := self.grid
+    outer_left := self.grid_left
+    outer_cell := self.cell
     if tag == "table"
         mut used := 0
-        for ind in indents
+        for ind in self.indents
             used += ind.rest.chars().len()
-        grid = table_grid(d, id, width - used)
-        cell = 0
+        self.grid = table_grid(self.d, id, self.width - used)
+        self.cell = 0
     elif tag == "tr"
-        cell = 0
+        self.cell = 0
     match tag
-        "b" | "strong" | "th" => style.bold = true
-        "i" | "em" | "cite" | "var" => style.italic = true
-        "code" | "kbd" | "samp" | "tt" => style.code = true
-        "pre" => pre += 1
-        _ => style.bold = style.bold
+        "b" | "strong" | "th" => self.style.bold = true
+        "i" | "em" | "cite" | "var" => self.style.italic = true
+        "code" | "kbd" | "samp" | "tt" => self.style.code = true
+        "pre" => self.pre += 1
+        _ => self.style.bold = self.style.bold
     if f := cs.get("font")
-        shorthand := font_shorthand(f, style.italic, style.bold)
-        style.italic = shorthand.0
-        style.bold = shorthand.1
+        shorthand := font_shorthand(f, self.style.italic, self.style.bold)
+        self.style.italic = shorthand.0
+        self.style.bold = shorthand.1
     if w := cs.get("font-weight")
-        style.bold = font_bold(w, style.bold)
+        self.style.bold = font_bold(w, self.style.bold)
     if fs := cs.get("font-style")
-        style.italic = font_italic(fs, style.italic)
+        self.style.italic = font_italic(fs, self.style.italic)
     if tt := cs.get("text-transform")
-        style.upper = tt == "uppercase"
+        self.style.upper = tt == "uppercase"
     ws := cs.get("white-space") else ""
     styled_pre := tag != "pre" and (ws == "pre" or ws == "pre-wrap")
     if styled_pre
-        pre += 1
+        self.pre += 1
     match tag
         "a" =>
             if bi := b
-                style.link = boxes[bi].link
-        _ => style.bold = style.bold
+                self.style.link = self.boxes[bi].link
+        _ => self.style.bold = self.style.bold
     match tag
         "br" =>
-            if cur.len() == 0
-                start_row()
-            rows.push(cur)
-            cur = []
-            col = 0
+            if self.cur.len() == 0
+                self.start_row()
+            self.rows.push(self.cur)
+            self.cur = []
+            self.col = 0
         "hr" =>
-            put("-".repeat((width - col).max(1)))
+            self.put("-".repeat((self.width - self.col).max(1)))
         "img" =>
-            alt := d.attr(id, "alt") else ""
+            alt := self.d.attr(id, "alt") else ""
             if alt != ""
-                word("[{alt}]")
+                self.word("[{alt}]")
         "input" =>
-            kind := input_type(d, id)
-            checked := d.attr(id, "checked") != none
+            kind := input_type(self.d, id)
+            checked := self.d.attr(id, "checked") != none
             if kind == "checkbox"
-                word(if checked then "[x]" else "[ ]")
+                self.word(if checked then "[x]" else "[ ]")
             elif kind == "radio"
-                word(if checked then "(*)" else "( )")
+                self.word(if checked then "(*)" else "( )")
             elif kind == "submit" or kind == "button" or kind == "reset" or kind == "image"
                 fallback := if kind == "reset" then "Reset" else "Submit"
-                word("[{d.attr(id, "value") else (d.attr(id, "alt") else fallback)}]")
+                self.word("[{self.d.attr(id, "value") else (self.d.attr(id, "alt") else fallback)}]")
             elif kind != "hidden"
-                v := d.attr(id, "value") else ""
+                v := self.d.attr(id, "value") else ""
                 shown := if kind == "password" then "*".repeat(v.chars().len()) else v
-                ph := d.attr(id, "placeholder") else ""
+                ph := self.d.attr(id, "placeholder") else ""
                 hint := if v == "" then ph else ""
-                size := (d.attr(id, "size") else "20").to_int() else 20
-                word(field("{shown}{hint}", size))
+                size := (self.d.attr(id, "size") else "20").to_int() else 20
+                self.word(field("{shown}{hint}", size))
         "textarea" =>
-            cols := (d.attr(id, "cols") else "20").to_int() else 20
-            word(field(control_value(d, id).replace("\n", " "), cols))
-        "select" => word("[{control_value(d, id)} v]")
+            cols := (self.d.attr(id, "cols") else "20").to_int() else 20
+            self.word(field(control_value(self.d, id).replace("\n", " "), cols))
+        "select" => self.word("[{control_value(self.d, id)} v]")
         "button" =>
-            word("[")
-            space = false
-            children(id)
-            space = false
-            put("]")
+            self.word("[")
+            self.space = false
+            self.children(id)
+            self.space = false
+            self.put("]")
         "td" | "th" =>
-            if grid.len() > 0 and cell < grid.len()
-                if cur.len() == 0
-                    start_row()
-                if cell == 0
-                    grid_left = col
+            if self.grid.len() > 0 and self.cell < self.grid.len()
+                if self.cur.len() == 0
+                    self.start_row()
+                if self.cell == 0
+                    self.grid_left = self.col
                 else
-                    col = col.max(grid_left + grid[cell] - CELL_SEP.chars().len())
-                    put_sep(CELL_SEP)
-                cell += 1
-            elif col > 0 and dirty()
-                put_sep(CELL_SEP)
-            space = false
-            children(id)
-        _ => children(id)
+                    self.col = self.col.max(self.grid_left + self.grid[self.cell] - CELL_SEP.chars().len())
+                    self.put_sep(CELL_SEP)
+                self.cell += 1
+            elif self.col > 0 and self.dirty()
+                self.put_sep(CELL_SEP)
+            self.space = false
+            self.children(id)
+        _ => self.children(id)
     if tag == "a"
         if bi := b
-            if boxes[bi].row < 0 and boxes[bi].name != ""
-                word(boxes[bi].name)
-            style = saved
-            put("[{boxes[bi].link}]")
-    style = saved
+            if self.boxes[bi].row < 0 and self.boxes[bi].name != ""
+                self.word(self.boxes[bi].name)
+            self.style = saved
+            self.put("[{self.boxes[bi].link}]")
+    self.style = saved
     if tag == "table"
-        grid = outer_grid
-        grid_left = outer_left
-        cell = outer_cell
+        self.grid = outer_grid
+        self.grid_left = outer_left
+        self.cell = outer_cell
     if tag == "pre" or styled_pre
-        pre -= 1
-    flex = outer_flex
+        self.pre -= 1
+    self.flex = outer_flex
     if gappy
-        space = true
+        self.space = true
     if indented
-        indents.pop()
+        self.indents.pop()
     if b != none
-        open.pop()
+        self.open.pop()
     if spaced
-        gap()
+        self.gap()
     elif block or tag == "tr"
-        break_row()
+        self.break_row()
 
 ## What sets table cells apart on a row.
 CELL_SEP := " | "
@@ -805,23 +809,23 @@ FLEX := {"flex", "inline-flex", "grid", "inline-grid"}
 
 ## Whether list `id` sits inside a list item, so it indents further.
 fn Flow.nested_list(self, id int) bool
-    mut p := d.nodes[id].parent
+    mut p := self.d.nodes[id].parent
     while p > 0
-        if d.nodes[p].tag == "li"
+        if self.d.nodes[p].tag == "li"
             return true
-        p = d.nodes[p].parent
+        p = self.d.nodes[p].parent
     false
 
 ## "* " in an unordered list; "N. " in an ordered one, counting from `start`.
 fn Flow.list_marker(self, id int) str
-    parent := d.nodes[id].parent
-    if parent < 0 or d.nodes[parent].tag != "ol"
+    parent := self.d.nodes[id].parent
+    if parent < 0 or self.d.nodes[parent].tag != "ol"
         return "* "
-    mut n := (d.attr(parent, "start") else "1").to_int() else 1
-    for c in d.nodes[parent].children
+    mut n := (self.d.attr(parent, "start") else "1").to_int() else 1
+    for c in self.d.nodes[parent].children
         if c == id
             break
-        if d.nodes[c].kind == html.Kind.Element and d.nodes[c].tag == "li"
+        if self.d.nodes[c].kind == html.Kind.Element and self.d.nodes[c].tag == "li"
             n += 1
     "{n}. "
 
@@ -913,7 +917,7 @@ pub fn layout_with(d html.Doc, url str, width int, sheet css.Sheet) Page
 pub fn Page.row_text(self, r int) str
     mut out := List[str]()
     mut at := 0
-    for run in rows[r]
+    for run in self.rows[r]
         if run.col > at
             out.push(" ".repeat(run.col - at))
         out.push(run.text)
@@ -922,14 +926,14 @@ pub fn Page.row_text(self, r int) str
 
 ## The whole page as plain text, one row per line.
 pub fn Page.text(self) str
-    [row_text(r) for r in 0..rows.len()].join("\n")
+    [self.row_text(r) for r in 0..self.rows.len()].join("\n")
 
 ## The first row at or after `from` whose text contains `needle`, ignoring
 ## case, or none.
 pub fn Page.find(self, needle str, from int) int?
     want := needle.to_lower()
-    for r in from..rows.len()
-        if row_text(r).to_lower().contains(want)
+    for r in from..self.rows.len()
+        if self.row_text(r).to_lower().contains(want)
             return r
     none
 
@@ -937,13 +941,13 @@ pub fn Page.find(self, needle str, from int) int?
 ## from row `scroll`, and every box with whether it shows in the viewport;
 ## only the boxes in the viewport when `viewport_only`, to save tokens.
 pub fn Page.to_json(self, scroll int, height int, viewport_only bool) str
-    nodes := node_objects(scroll, height)
+    nodes := self.node_objects(scroll, height)
     mut out := List[str]()
-    for b in boxes
+    for b in self.boxes
         if text := nodes.get(b.id)
             if not viewport_only or is_visible(b, scroll, height)
                 out.push(text)
-    "\{{head_json(scroll, height)},\"nodes\":[{out.join(",")}]}"
+    "\{{self.head_json(scroll, height)},\"nodes\":[{out.join(",")}]}"
 
 ## Whether any of box `b` is in the viewport.
 fn is_visible(b Box, scroll int, height int) bool
@@ -951,15 +955,15 @@ fn is_visible(b Box, scroll int, height int) bool
 
 ## The model's members before `nodes`: where the page is and what changed.
 pub fn Page.head_json(self, scroll int, height int) str
-    mut head := "\"api\":1,\"url\":{quote(url)},\"title\":{quote(title)},\"width\":{width},\"height\":{height},\"scroll\":{scroll},\"rows\":{rows.len()}"
-    if changed.len() > 0
-        head = "{head},\"changed\":[{changed.join(",")}]"
+    mut head := "\"api\":1,\"url\":{quote(self.url)},\"title\":{quote(self.title)},\"width\":{self.width},\"height\":{height},\"scroll\":{scroll},\"rows\":{self.rows.len()}"
+    if self.changed.len() > 0
+        head = "{head},\"changed\":[{self.changed.join(",")}]"
     head
 
 ## Each drawn box as its JSON object, by node id, in document order.
 pub fn Page.node_objects(self, scroll int, height int) Map[int, str]
     mut out := Map[int, str]()
-    for b in boxes
+    for b in self.boxes
         if b.row < 0
             continue
         mut parts := ["\"id\":{b.id}", "\"role\":{quote(b.role)}", "\"name\":{quote(b.name)}"]
@@ -987,11 +991,11 @@ pub fn Page.node_objects(self, scroll int, height int) Map[int, str]
 ## first, then headings, links and form controls, then the rest, each in
 ## document order; `"omitted"` counts the nodes left out.
 pub fn Page.to_json_budget(self, scroll int, height int, max_chars int) str
-    nodes := node_objects(scroll, height)
+    nodes := self.node_objects(scroll, height)
     mut keep := Set[int]()
-    mut size := head_json(scroll, height).chars().len() + 40
+    mut size := self.head_json(scroll, height).chars().len() + 40
     for pass in 0..3
-        for b in boxes
+        for b in self.boxes
             text := nodes.get(b.id) else continue
             vis := is_visible(b, scroll, height)
             key := b.role == "heading" or ACTIONS.contains(b.role)
@@ -1003,28 +1007,28 @@ pub fn Page.to_json_budget(self, scroll int, height int, max_chars int) str
                 continue
             keep.add(b.id)
             size += n
-    out := [nodes[b.id] for b in boxes if keep.contains(b.id)]
+    out := [nodes[b.id] for b in self.boxes if keep.contains(b.id)]
     omitted := nodes.len() - out.len()
-    "\{{head_json(scroll, height)},\"omitted\":{omitted},\"nodes\":[{out.join(",")}]}"
+    "\{{self.head_json(scroll, height)},\"omitted\":{omitted},\"nodes\":[{out.join(",")}]}"
 
 ## The drawn box at column `x`, row `y` as its JSON object, or `null` (also
 ## where the row has no text): the
 ## innermost one, which is the box starting last and then the shortest. A box
 ## covers from (row, col) up to (end_row - 1, end_col), as in `ail api` spans.
 pub fn Page.at_json(self, x int, y int) str
-    if y < 0 or y >= rows.len()
+    if y < 0 or y >= self.rows.len()
         return "null"
     mut drawn := 0
-    for r in rows[y]
+    for r in self.rows[y]
         drawn = drawn.max(r.col + r.text.chars().len())
     if x < 0 or x >= drawn
         return "null"
-    nodes := node_objects(0, rows.len())
+    nodes := self.node_objects(0, self.rows.len())
     mut best := -1
     mut best_start := -1
     mut best_len := 0
-    for k in 0..boxes.len()
-        b := boxes[k]
+    for k in 0..self.boxes.len()
+        b := self.boxes[k]
         if b.row < 0
             continue
         at := y * 100000 + x
@@ -1039,15 +1043,15 @@ pub fn Page.at_json(self, x int, y int) str
             best_len = len
     if best < 0
         return "null"
-    nodes.get(boxes[best].id) else "null"
+    nodes.get(self.boxes[best].id) else "null"
 
 ## The boxes whose role is `q` or whose name contains it (ignoring case), as
 ## `{"matches":[...]}`, in document order.
 pub fn Page.where_json(self, q str) str
-    nodes := node_objects(0, rows.len())
+    nodes := self.node_objects(0, self.rows.len())
     want := q.to_lower()
     mut out := List[str]()
-    for b in boxes
+    for b in self.boxes
         if b.row < 0
             continue
         if b.role.to_lower() == want or (b.name != "" and b.name.to_lower().contains(want))
