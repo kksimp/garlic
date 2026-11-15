@@ -68,31 +68,31 @@ pub fn no_pool() Pool
 ## Takes a free thread for worker `id` and hands it the job: the thread
 ## number, or -1 when all are busy.
 pub fn Pool.start(self, id int, name str, url str, base str, source str) int
-    f := free
+    f := self.free
     mut at := -1
     with f as mut avail
         if avail.len() > 0
             at = avail.remove_at(0)
     if at < 0
         return -1
-    slots[at].jobs.send("{id}\n{name}\n{url}\n{base}\n{source}")
+    self.slots[at].jobs.send("{id}\n{name}\n{url}\n{base}\n{source}")
     at
 
 ## Writes a message into a thread's inbox and wakes the thread if it sleeps.
 pub fn Slot.post(self, id int, kind str, payload str)
-    q := inbox
+    q := self.inbox
     with q as mut items
         items.push("{id}\t{kind}\t{payload}")
-    if sleeping.cas(true, false)
-        wake.send(1)
+    if self.sleeping.cas(true, false)
+        self.wake.send(1)
 
 ## What the worker on this thread sent since the last call.
 pub fn Slot.take(self) List[str]
-    outbox.swap(List[str]())
+    self.outbox.swap(List[str]())
 
 ## Stops every worker and ends the threads, at the end of the program.
 pub fn Pool.shutdown(self)
-    for s in slots
+    for s in self.slots
         s.post(-1, "stop", "")
         s.jobs.close()
 

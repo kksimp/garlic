@@ -91,15 +91,15 @@ fn Vm.str_option(mut self, options Value, key str) str ! Thrown
 ## no field.
 pub fn Vm.date_format_options(mut self, m str, options Value) DateFmt ! Thrown
     mut f := empty_fmt()
-    f.weekday = str_option(options, "weekday")?
-    f.year = str_option(options, "year")?
-    f.month = str_option(options, "month")?
-    f.day = str_option(options, "day")?
-    f.hour = str_option(options, "hour")?
-    f.minute = str_option(options, "minute")?
-    f.second = str_option(options, "second")?
-    f.time_zone_name = str_option(options, "timeZoneName")?
-    f.zone = str_option(options, "timeZone")?
+    f.weekday = self.str_option(options, "weekday")?
+    f.year = self.str_option(options, "year")?
+    f.month = self.str_option(options, "month")?
+    f.day = self.str_option(options, "day")?
+    f.hour = self.str_option(options, "hour")?
+    f.minute = self.str_option(options, "minute")?
+    f.second = self.str_option(options, "second")?
+    f.time_zone_name = self.str_option(options, "timeZoneName")?
+    f.zone = self.str_option(options, "timeZone")?
     if f.zone != ""
         if f.zone.to_upper() == "UTC"
             or f.zone.to_upper() == "GMT"
@@ -107,13 +107,13 @@ pub fn Vm.date_format_options(mut self, m str, options Value) DateFmt ! Thrown
             f.zone = "UTC"
         elif tz.offset(f.zone, 0) == none
             return range_error("Invalid time zone specified: {f.zone}")
-    f.date_style = str_option(options, "dateStyle")?
-    f.time_style = str_option(options, "timeStyle")?
+    f.date_style = self.str_option(options, "dateStyle")?
+    f.time_style = self.str_option(options, "timeStyle")?
     if is_obj(options)
         h12 := get(options, "hour12")?
         if h12 != Undef
             f.hour12 = truthy(h12)
-        cycle := str_option(options, "hourCycle")?
+        cycle := self.str_option(options, "hourCycle")?
         if cycle == "h23" or cycle == "h24"
             f.hour12 = false
     want_date := m != "toLocaleTimeString"
@@ -263,10 +263,10 @@ fn Vm.int_option(mut self, options Value, key str, fallback int) int ! Thrown
     n.to_int()
 
 fn Vm.num_format_options(mut self, options Value) NumFmt ! Thrown
-    mut style := str_option(options, "style")?
+    mut style := self.str_option(options, "style")?
     if style == ""
         style = "decimal"
-    currency := str_option(options, "currency")?.to_upper()
+    currency := self.str_option(options, "currency")?.to_upper()
     if style == "currency" and currency == ""
         return type_error("Currency code is required with currency style.")
     default_min := if style == "currency" then 2 else 0
@@ -275,8 +275,8 @@ fn Vm.num_format_options(mut self, options Value) NumFmt ! Thrown
         default_max = 2
     elif style == "percent"
         default_max = 0
-    min_frac := int_option(options, "minimumFractionDigits", default_min)?
-    mut max_frac := int_option(options, "maximumFractionDigits", default_max.max(min_frac))?
+    min_frac := self.int_option(options, "minimumFractionDigits", default_min)?
+    mut max_frac := self.int_option(options, "maximumFractionDigits", default_max.max(min_frac))?
     if max_frac < min_frac
         return range_error("maximumFractionDigits value is out of range.")
     mut grouping := true
@@ -396,11 +396,11 @@ fn Vm.intl_new(mut self, kind str, args List[Value]) Value ! Thrown
     o := object("Intl.{kind}", proto_of("Intl.{kind}"))
     options := arg_at(args, 1)
     resolved := plain()
-    locale := locale_of(arg_at(args, 0))?
+    locale := self.locale_of(arg_at(args, 0))?
     resolved.props["locale"] = data(Value.Str(if locale.to_lower().starts_with("en") then locale else LOCALE))
     match kind
         "DateTimeFormat" =>
-            f := date_format_options("format", options)?
+            f := self.date_format_options("format", options)?
             resolved.props["calendar"] = data(Value.Str("gregory"))
             resolved.props["numberingSystem"] = data(Value.Str("latn"))
             resolved.props["timeZone"] = data(Value.Str(if f.zone != "" then f.zone else (if zone == "" then "UTC" else zone)))
@@ -422,7 +422,7 @@ fn Vm.intl_new(mut self, kind str, args List[Value]) Value ! Thrown
                 resolved.props["hourCycle"] = data(Value.Str(if f.hour12 then "h12" else "h23"))
                 resolved.props["hour12"] = data(Value.Bool(f.hour12))
         "NumberFormat" =>
-            f := num_format_options(options)?
+            f := self.num_format_options(options)?
             resolved.props["numberingSystem"] = data(Value.Str("latn"))
             resolved.props["style"] = data(Value.Str(f.style))
             if f.style == "currency"
@@ -440,9 +440,12 @@ fn Vm.intl_new(mut self, kind str, args List[Value]) Value ! Thrown
             resolved.props["roundingPriority"] = data(Value.Str("auto"))
             resolved.props["trailingZeroDisplay"] = data(Value.Str("auto"))
         "Collator" =>
-            resolved.props["usage"] = data(Value.Str(str_or(str_option(options, "usage")?, "sort")))
+            resolved.props["usage"] = data(Value.Str(str_or(
+                self.str_option(options, "usage")?,
+                "sort",
+            )))
             resolved.props["sensitivity"] = data(Value.Str(str_or(
-                str_option(options, "sensitivity")?,
+                self.str_option(options, "sensitivity")?,
                 "variant",
             )))
             resolved.props["ignorePunctuation"] = data(Value.Bool(false))
@@ -454,7 +457,7 @@ fn Vm.intl_new(mut self, kind str, args List[Value]) Value ! Thrown
             resolved.props["caseFirst"] = data(Value.Str("false"))
         "PluralRules" =>
             resolved.props["type"] = data(Value.Str(str_or(
-                str_option(options, "type")?,
+                self.str_option(options, "type")?,
                 "cardinal",
             )))
             resolved.props["minimumIntegerDigits"] = data(Value.Num(1.0))
@@ -463,26 +466,35 @@ fn Vm.intl_new(mut self, kind str, args List[Value]) Value ! Thrown
             resolved.props["pluralCategories"] = data(array([Value.Str("one"), Value.Str("other")]))
             resolved.props["roundingMode"] = data(Value.Str("halfExpand"))
         "RelativeTimeFormat" =>
-            resolved.props["style"] = data(Value.Str(str_or(str_option(options, "style")?, "long")))
+            resolved.props["style"] = data(Value.Str(str_or(
+                self.str_option(options, "style")?,
+                "long",
+            )))
             resolved.props["numeric"] = data(Value.Str(str_or(
-                str_option(options, "numeric")?,
+                self.str_option(options, "numeric")?,
                 "always",
             )))
             resolved.props["numberingSystem"] = data(Value.Str("latn"))
         "ListFormat" =>
             resolved.props["type"] = data(Value.Str(str_or(
-                str_option(options, "type")?,
+                self.str_option(options, "type")?,
                 "conjunction",
             )))
-            resolved.props["style"] = data(Value.Str(str_or(str_option(options, "style")?, "long")))
+            resolved.props["style"] = data(Value.Str(str_or(
+                self.str_option(options, "style")?,
+                "long",
+            )))
         _ =>
-            kind_opt := str_option(options, "type")?
+            kind_opt := self.str_option(options, "type")?
             if kind_opt == ""
                 return type_error("Required option 'type' is missing")
             resolved.props["type"] = data(Value.Str(kind_opt))
-            resolved.props["style"] = data(Value.Str(str_or(str_option(options, "style")?, "long")))
+            resolved.props["style"] = data(Value.Str(str_or(
+                self.str_option(options, "style")?,
+                "long",
+            )))
             resolved.props["fallback"] = data(Value.Str(str_or(
-                str_option(options, "fallback")?,
+                self.str_option(options, "fallback")?,
                 "code",
             )))
     o.props["{PRIVATE}resolved"] = hidden(Value.Obj(resolved))
@@ -568,12 +580,12 @@ fn Vm.parts_of_text(mut self, text str) Value
     for c in text.chars()
         d := c.is_digit()
         if run != "" and d != digits
-            out.push(part(if digits then "integer" else "literal", run))
+            out.push(self.part(if digits then "integer" else "literal", run))
             run = ""
         digits = d
         run = "{run}{c}"
     if run != ""
-        out.push(part(if digits then "integer" else "literal", run))
+        out.push(self.part(if digits then "integer" else "literal", run))
     array(out)
 
 fn plural_of(n float, ordinal bool) str
@@ -654,7 +666,7 @@ pub fn Vm.intl_native(
     new_target Value,
 ) Value ! Thrown
     if made := m.strip_prefix("new.")
-        return intl_new(made, args)
+        return self.intl_new(made, args)
     a0 := arg_at(args, 0)
     if m == "static.supportedLocalesOf" or m == "Intl.getCanonicalLocales"
         if is_nullish(a0)
@@ -697,7 +709,7 @@ pub fn Vm.intl_native(
     dot := m.find(".") else return type_error("Intl.{m} is not supported yet")
     kind := m.slice(0, dot)
     method := m.slice(dot + 1, m.chars().len())
-    r := intl_this(this_val, kind, method)?
+    r := self.intl_this(this_val, kind, method)?
     if method == "resolvedOptions"
         copy := plain()
         for k in r.props.keys()
@@ -707,15 +719,15 @@ pub fn Vm.intl_native(
         "DateTimeFormat" =>
             f := date_fmt_of(r)
             if method == "formatRange"
-                return Value.Str("{format_date(date_arg(a0)?, f)} – {format_date(date_arg(arg_at(args, 1))?, f)}")
-            text := format_date(date_arg(a0)?, f)
-            if method == "formatToParts" then parts_of_text(text) else Value.Str(text)
+                return Value.Str("{self.format_date(self.date_arg(a0)?, f)} – {self.format_date(self.date_arg(arg_at(args, 1))?, f)}")
+            text := self.format_date(self.date_arg(a0)?, f)
+            if method == "formatToParts" then self.parts_of_text(text) else Value.Str(text)
         "NumberFormat" =>
             f := num_fmt_of(r)
             if method == "formatRange"
                 return Value.Str("{format_number(to_number(a0)?, f)}–{format_number(to_number(arg_at(args, 1))?, f)}")
             text := format_number(to_number(a0)?, f)
-            if method == "formatToParts" then parts_of_text(text) else Value.Str(text)
+            if method == "formatToParts" then self.parts_of_text(text) else Value.Str(text)
         "Collator" =>
             a := to_string(a0)?
             b := to_string(arg_at(args, 1))?
@@ -750,14 +762,14 @@ pub fn Vm.intl_native(
                 resolved_str(r, "style"),
                 auto,
             ) else return range_error("Invalid unit argument for format() '{unit}'")
-            if method == "formatToParts" then parts_of_text(text) else Value.Str(text)
+            if method == "formatToParts" then self.parts_of_text(text) else Value.Str(text)
         "ListFormat" =>
             mut items := List[str]()
             if not is_nullish(a0)
                 for x in iterate(a0)?
                     items.push(to_string(x)?)
             text := list_text(items, resolved_str(r, "type"), resolved_str(r, "style"))
-            if method == "formatToParts" then parts_of_text(text) else Value.Str(text)
+            if method == "formatToParts" then self.parts_of_text(text) else Value.Str(text)
         _ =>
             # DisplayNames.of: the code itself, as the "code" fallback writes it.
             code := to_string(a0)?

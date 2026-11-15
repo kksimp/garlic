@@ -30,145 +30,148 @@ fn bool_text(b bool) str
 
 fn Dump.node(self, kind str, p Pos, fields List[str]) str
     mut parts := ["\"type\":\"{kind}\""]
-    if loc
+    if self.loc
         parts.push("\"loc\":\"{p.line}:{p.col}\"")
     parts.extend(fields)
     "\{{parts.join(",")}}"
 
 fn Dump.stmts(self, xs List[Stmt]) str
-    "[{[stmt(s) for s in xs].join(",")}]"
+    "[{[self.stmt(s) for s in xs].join(",")}]"
 
 fn Dump.exprs(self, xs List[Expr]) str
-    "[{[expr(e) for e in xs].join(",")}]"
+    "[{[self.expr(e) for e in xs].join(",")}]"
 
 fn Dump.opt_expr(self, e Expr?) str
-    if x := e then expr(x) else "null"
+    if x := e then self.expr(x) else "null"
 
 fn Dump.opt_name(self, name str?, p Pos) str
-    if n := name then ident(n, p) else "null"
+    if n := name then self.ident(n, p) else "null"
 
 fn Dump.ident(self, name str, p Pos) str
-    node("Identifier", p, [field("name", quote(name))])
+    self.node("Identifier", p, [field("name", quote(name))])
 
 fn Dump.block(self, body List[Stmt], p Pos) str
-    node("BlockStatement", p, [field("body", stmts(body))])
+    self.node("BlockStatement", p, [field("body", self.stmts(body))])
 
 fn Dump.stmt(self, s Stmt) str
     match s
-        Exp(e, p) => node("ExpressionStatement", p, [field("expression", expr(e))])
-        Var(d) => var_decl(d)
-        FuncDecl(f) => function("FunctionDeclaration", f)
-        ClassDecl(c) => class("ClassDeclaration", c)
-        Return(v, p) => node("ReturnStatement", p, [field("argument", opt_expr(v))])
+        Exp(e, p) => self.node("ExpressionStatement", p, [field("expression", self.expr(e))])
+        Var(d) => self.var_decl(d)
+        FuncDecl(f) => self.function("FunctionDeclaration", f)
+        ClassDecl(c) => self.class("ClassDeclaration", c)
+        Return(v, p) => self.node("ReturnStatement", p, [field("argument", self.opt_expr(v))])
         If(test, yes, no, p) =>
-            alt := if n := no then stmt(n) else "null"
-            node("IfStatement", p, [
-                field("test", expr(test)),
-                field("consequent", stmt(yes)),
+            alt := if n := no then self.stmt(n) else "null"
+            self.node("IfStatement", p, [
+                field("test", self.expr(test)),
+                field("consequent", self.stmt(yes)),
                 field("alternate", alt),
             ])
-        Block(body, p) => block(body, p)
-        Empty(p) => node("EmptyStatement", p, [])
+        Block(body, p) => self.block(body, p)
+        Empty(p) => self.node("EmptyStatement", p, [])
         For(init, test, update, body, p) =>
-            init_text := if i := init then for_init(i) else "null"
+            init_text := if i := init then self.for_init(i) else "null"
             fields := [
                 field("init", init_text),
-                field("test", opt_expr(test)),
-                field("update", opt_expr(update)),
-                field("body", stmt(body)),
+                field("test", self.opt_expr(test)),
+                field("update", self.opt_expr(update)),
+                field("body", self.stmt(body)),
             ]
-            node("ForStatement", p, fields)
+            self.node("ForStatement", p, fields)
         ForIn(left, right, body, of, is_await, p) =>
             left_text := match left
-                LeftDecl(d) => var_decl(d)
-                LeftPat(t) => pat(t)
+                LeftDecl(d) => self.var_decl(d)
+                LeftPat(t) => self.pat(t)
             mut fields := [
                 field("left", left_text),
-                field("right", expr(right)),
-                field("body", stmt(body)),
+                field("right", self.expr(right)),
+                field("body", self.stmt(body)),
             ]
             if of
                 fields.push(field("await", if is_await then "true" else "false"))
-                return node("ForOfStatement", p, fields)
-            node("ForInStatement", p, fields)
-        While(test, body, p) => node("WhileStatement", p, [
-            field("test", expr(test)),
-            field("body", stmt(body)),
+                return self.node("ForOfStatement", p, fields)
+            self.node("ForInStatement", p, fields)
+        While(test, body, p) => self.node("WhileStatement", p, [
+            field("test", self.expr(test)),
+            field("body", self.stmt(body)),
         ])
-        DoWhile(body, test, p) => node("DoWhileStatement", p, [
-            field("body", stmt(body)),
-            field("test", expr(test)),
+        DoWhile(body, test, p) => self.node("DoWhileStatement", p, [
+            field("body", self.stmt(body)),
+            field("test", self.expr(test)),
         ])
-        Break(label, p) => node("BreakStatement", p, [field("label", opt_name(label, p))])
-        Continue(label, p) => node("ContinueStatement", p, [field("label", opt_name(label, p))])
-        Throw(v, p) => node("ThrowStatement", p, [field("argument", expr(v))])
+        Break(label, p) => self.node("BreakStatement", p, [field("label", self.opt_name(label, p))])
+        Continue(label, p) => self.node("ContinueStatement", p, [field(
+            "label",
+            self.opt_name(label, p),
+        )])
+        Throw(v, p) => self.node("ThrowStatement", p, [field("argument", self.expr(v))])
         Try(body, param, handler, finalizer, p) =>
-            handler_text := if h := handler then catch_clause(param, h, p) else "null"
-            fin := if f := finalizer then block(f, p) else "null"
-            node("TryStatement", p, [
-                field("block", block(body, p)),
+            handler_text := if h := handler then self.catch_clause(param, h, p) else "null"
+            fin := if f := finalizer then self.block(f, p) else "null"
+            self.node("TryStatement", p, [
+                field("block", self.block(body, p)),
                 field("handler", handler_text),
                 field("finalizer", fin),
             ])
         Switch(disc, cases, p) =>
             cs := [
-                node("SwitchCase", c.pos, [
-                    field("test", opt_expr(c.test)),
-                    field("consequent", stmts(c.body)),
+                self.node("SwitchCase", c.pos, [
+                    field("test", self.opt_expr(c.test)),
+                    field("consequent", self.stmts(c.body)),
                 ])
                 for c in cases
             ]
-            node("SwitchStatement", p, [
-                field("discriminant", expr(disc)),
+            self.node("SwitchStatement", p, [
+                field("discriminant", self.expr(disc)),
                 field("cases", "[{cs.join(",")}]"),
             ])
-        Labeled(label, body, p) => node("LabeledStatement", p, [
-            field("label", ident(label, p)),
-            field("body", stmt(body)),
+        Labeled(label, body, p) => self.node("LabeledStatement", p, [
+            field("label", self.ident(label, p)),
+            field("body", self.stmt(body)),
         ])
-        With(obj, body, p) => node("WithStatement", p, [
-            field("object", expr(obj)),
-            field("body", stmt(body)),
+        With(obj, body, p) => self.node("WithStatement", p, [
+            field("object", self.expr(obj)),
+            field("body", self.stmt(body)),
         ])
-        Debugger(p) => node("DebuggerStatement", p, [])
-        Module(item, p) => module_item(item, p)
+        Debugger(p) => self.node("DebuggerStatement", p, [])
+        Module(item, p) => self.module_item(item, p)
 
 fn Dump.module_item(self, item ModItem, p Pos) str
     match item
         ImportDecl(specs, source, attrs) =>
-            texts := [import_spec(x) for x in specs]
-            node("ImportDeclaration", p, [
+            texts := [self.import_spec(x) for x in specs]
+            self.node("ImportDeclaration", p, [
                 field("specifiers", "[{texts.join(",")}]"),
-                field("source", literal(quote(source), p)),
-                field("attributes", import_attrs(attrs, p)),
+                field("source", self.literal(quote(source), p)),
+                field("attributes", self.import_attrs(attrs, p)),
             ])
         ExportNamed(decl, specs, source, attrs) =>
             texts := [
-                node("ExportSpecifier", x.pos, [
-                    field("local", name_node(x.local, x.local_str, x.pos)),
-                    field("exported", name_node(x.exported, x.exported_str, x.pos)),
+                self.node("ExportSpecifier", x.pos, [
+                    field("local", self.name_node(x.local, x.local_str, x.pos)),
+                    field("exported", self.name_node(x.exported, x.exported_str, x.pos)),
                 ])
                 for x in specs
             ]
-            from := if src := source then literal(quote(src), p) else "null"
-            decl_text := if d := decl then stmt(d) else "null"
+            from := if src := source then self.literal(quote(src), p) else "null"
+            decl_text := if d := decl then self.stmt(d) else "null"
             mut fields := [
                 field("declaration", decl_text),
                 field("specifiers", "[{texts.join(",")}]"),
                 field("source", from),
             ]
             if source != none
-                fields.push(field("attributes", import_attrs(attrs, p)))
-            node("ExportNamedDeclaration", p, fields)
+                fields.push(field("attributes", self.import_attrs(attrs, p)))
+            self.node("ExportNamedDeclaration", p, fields)
         ExportDefault(decl, value) =>
-            inner := if d := decl then stmt(d) else default_value(value)
-            node("ExportDefaultDeclaration", p, [field("declaration", inner)])
+            inner := if d := decl then self.stmt(d) else self.default_value(value)
+            self.node("ExportDefaultDeclaration", p, [field("declaration", inner)])
         ExportAll(exported, exported_str, source, attrs) =>
-            exported_text := if n := exported then name_node(n, exported_str, p) else "null"
-            node("ExportAllDeclaration", p, [
+            exported_text := if n := exported then self.name_node(n, exported_str, p) else "null"
+            self.node("ExportAllDeclaration", p, [
                 field("exported", exported_text),
-                field("source", literal(quote(source), p)),
-                field("attributes", import_attrs(attrs, p)),
+                field("source", self.literal(quote(source), p)),
+                field("attributes", self.import_attrs(attrs, p)),
             ])
 
 ## The operand of `export default`: an unparenthesized anonymous function
@@ -176,103 +179,106 @@ fn Dump.module_item(self, item ModItem, p Pos) str
 @allow("expr.match.3") fn Dump.default_value(self, value Expr?) str
     if v := value
         match v
-            Function(f) => return function("FunctionDeclaration", f)
-            ClassExpr(c) => return class("ClassDeclaration", c)
-            _ => return expr(v)
+            Function(f) => return self.function("FunctionDeclaration", f)
+            ClassExpr(c) => return self.class("ClassDeclaration", c)
+            _ => return self.expr(v)
     "null"
 
 ## A module export name: an identifier, or a string literal.
 fn Dump.name_node(self, name str, is_str bool, p Pos) str
     if is_str
-        return literal(quote(name), p)
-    ident(name, p)
+        return self.literal(quote(name), p)
+    self.ident(name, p)
 
 fn Dump.import_spec(self, x ImportSpec) str
     match x.kind
-        "default" => node("ImportDefaultSpecifier", x.pos, [field("local", ident(x.local, x.pos))])
-        "namespace" => node("ImportNamespaceSpecifier", x.pos, [field("local", ident(
-            x.local,
-            x.pos,
-        ))])
-        _ => node("ImportSpecifier", x.pos, [
-            field("imported", name_node(x.imported, x.imported_str, x.pos)),
-            field("local", ident(x.local, x.pos)),
+        "default" => self.node("ImportDefaultSpecifier", x.pos, [field(
+            "local",
+            self.ident(x.local, x.pos),
+        )])
+        "namespace" => self.node("ImportNamespaceSpecifier", x.pos, [field(
+            "local",
+            self.ident(x.local, x.pos),
+        )])
+        _ => self.node("ImportSpecifier", x.pos, [
+            field("imported", self.name_node(x.imported, x.imported_str, x.pos)),
+            field("local", self.ident(x.local, x.pos)),
         ])
 
 fn Dump.import_attrs(self, attrs List[ImportAttr], p Pos) str
     texts := [
-        node("ImportAttribute", p, [
-            field("key", ident(a.key, p)),
-            field("value", literal(quote(a.value), p)),
+        self.node("ImportAttribute", p, [
+            field("key", self.ident(a.key, p)),
+            field("value", self.literal(quote(a.value), p)),
         ])
         for a in attrs
     ]
     "[{texts.join(",")}]"
 
 fn Dump.catch_clause(self, param Pat?, body List[Stmt], p Pos) str
-    param_text := if x := param then pat(x) else "null"
-    node("CatchClause", p, [field("param", param_text), field("body", block(body, p))])
+    param_text := if x := param then self.pat(x) else "null"
+    self.node("CatchClause", p, [field("param", param_text), field("body", self.block(body, p))])
 
 fn Dump.for_init(self, i ForInit) str
     match i
-        InitDecl(d) => var_decl(d)
-        InitExpr(e) => expr(e)
+        InitDecl(d) => self.var_decl(d)
+        InitExpr(e) => self.expr(e)
 
 fn Dump.var_decl(self, d VarDecl) str
     decls := [
-        node("VariableDeclarator", pat_pos(x.target), [
-            field("id", pat(x.target)),
-            field("init", opt_expr(x.init)),
+        self.node("VariableDeclarator", pat_pos(x.target), [
+            field("id", self.pat(x.target)),
+            field("init", self.opt_expr(x.init)),
         ])
         for x in d.decls
     ]
-    node("VariableDeclaration", d.pos, [
+    self.node("VariableDeclaration", d.pos, [
         field("kind", quote(d.kind)),
         field("declarations", "[{decls.join(",")}]"),
     ])
 
 fn Dump.function(self, kind str, f Func) str
-    mut params := [pat(x) for x in f.params]
+    mut params := [self.pat(x) for x in f.params]
     if r := f.rest
-        params.push(node("RestElement", pat_pos(r), [field("argument", pat(r))]))
+        params.push(self.node("RestElement", pat_pos(r), [field("argument", self.pat(r))]))
     mut fields := List[str]()
     if not f.is_arrow
-        fields.push(field("id", opt_name(f.name, f.pos)))
+        fields.push(field("id", self.opt_name(f.name, f.pos)))
     fields.push(field("params", "[{params.join(",")}]"))
     if e := f.expr
-        fields.push(field("body", expr(e)))
+        fields.push(field("body", self.expr(e)))
     else
-        fields.push(field("body", block(f.body, f.pos)))
+        fields.push(field("body", self.block(f.body, f.pos)))
     if f.is_arrow
         fields.push(field("expression", bool_text(f.expr != none)))
     fields.push(field("generator", bool_text(f.is_gen)))
     fields.push(field("async", bool_text(f.is_async)))
-    node(kind, f.pos, fields)
+    self.node(kind, f.pos, fields)
 
 fn Dump.class(self, kind str, c Class) str
-    members := [member(m) for m in c.members]
-    body := node("ClassBody", c.pos, [field("body", "[{members.join(",")}]")])
-    node(kind, c.pos, [
-        field("id", opt_name(c.name, c.pos)),
-        field("superClass", opt_expr(c.superclass)),
+    members := [self.member(m) for m in c.members]
+    body := self.node("ClassBody", c.pos, [field("body", "[{members.join(",")}]")])
+    self.node(kind, c.pos, [
+        field("id", self.opt_name(c.name, c.pos)),
+        field("superClass", self.opt_expr(c.superclass)),
         field("body", body),
     ])
 
 fn Dump.member(self, m ClassMember) str
     if m.kind == "static-block"
         body := if f := m.f then f.body else List[Stmt]()
-        return node("StaticBlock", m.pos, [field("body", stmts(body))])
-    key_text := if k := m.key then key(k) else "null"
+        return self.node("StaticBlock", m.pos, [field("body", self.stmts(body))])
+    key_text := if k := m.key then self.key(k) else "null"
     computed := if k := m.key then is_computed(k) else false
     if m.kind == "field"
         fields := [
             field("key", key_text),
-            field("value", opt_expr(m.value)),
+            field("value", self.opt_expr(m.value)),
             field("computed", bool_text(computed)),
             field("static", bool_text(m.is_static)),
         ]
-        return node("PropertyDefinition", m.pos, fields)
-    value := if f := m.f then function("FunctionExpression", f) else "null"
+        return self.node("PropertyDefinition", m.pos, fields)
+    value := if f := m.f then self.function("FunctionExpression", f) else "null"
     fields := [
         field("key", key_text),
         field("value", value),
@@ -280,7 +286,7 @@ fn Dump.member(self, m ClassMember) str
         field("computed", bool_text(computed)),
         field("static", bool_text(m.is_static)),
     ]
-    node("MethodDefinition", m.pos, fields)
+    self.node("MethodDefinition", m.pos, fields)
 
 fn is_computed(k Key) bool
     match k
@@ -307,17 +313,17 @@ fn seq_items(e Expr) List[Expr]
 
 fn Dump.key(self, k Key) str
     match k
-        KeyName(n, p) => if canon then canon_key(n, p) else ident(n, p)
-        KeyStr(v, p) => if canon then canon_key(v, p) else literal(quote(v), p)
-        KeyNum(v, p) => if canon then canon_key(
+        KeyName(n, p) => if self.canon then self.canon_key(n, p) else self.ident(n, p)
+        KeyStr(v, p) => if self.canon then self.canon_key(v, p) else self.literal(quote(v), p)
+        KeyNum(v, p) => if self.canon then self.canon_key(
             number_to_string(v),
             p,
-        ) else literal(number_json(v), p)
-        Computed(e, _) => expr(e)
-        KeyPriv(n, p) => node("PrivateIdentifier", p, [field("name", quote(n))])
+        ) else self.literal(number_json(v), p)
+        Computed(e, _) => self.expr(e)
+        KeyPriv(n, p) => self.node("PrivateIdentifier", p, [field("name", quote(n))])
 
 fn Dump.canon_key(self, name str, p Pos) str
-    node("Key", p, [field("name", quote(name))])
+    self.node("Key", p, [field("name", quote(name))])
 
 ## A number as JSON, where infinity has no spelling: `null`, as
 ## JSON.stringify writes it.
@@ -325,7 +331,7 @@ fn number_json(v float) str
     if v > 1.7976931348623157e308 then "null" else number_to_string(v)
 
 fn Dump.literal(self, value str, p Pos) str
-    node("Literal", p, [field("value", value)])
+    self.node("Literal", p, [field("value", value)])
 
 fn Dump.template(self, quasis List[Quasi], exprs List[Expr], p Pos) str
     mut qs := List[str]()
@@ -333,172 +339,172 @@ fn Dump.template(self, quasis List[Quasi], exprs List[Expr], p Pos) str
         q := quasis[i]
         cooked := if c := q.cooked then quote(c) else "null"
         value := "\{\"raw\":{quote(q.raw)},\"cooked\":{cooked}}"
-        qs.push(node("TemplateElement", p, [field("value", value), field(
+        qs.push(self.node("TemplateElement", p, [field("value", value), field(
             "tail",
             bool_text(i == quasis.len() - 1),
         )]))
-    node("TemplateLiteral", p, [
+    self.node("TemplateLiteral", p, [
         field("quasis", "[{qs.join(",")}]"),
-        field("expressions", exprs(exprs)),
+        field("expressions", self.exprs(exprs)),
     ])
 
 fn Dump.expr(self, e Expr) str
     match e
-        Num(v, p) => literal(number_json(v), p)
-        Str(v, p) => literal(quote(v), p)
+        Num(v, p) => self.literal(number_json(v), p)
+        Str(v, p) => self.literal(quote(v), p)
         # A BigInt literal, as acorn writes it: no number, plus its digits.
-        Big(v, p) => node("Literal", p, [field("value", "null"), field("bigint", quote(v))])
-        Template(quasis, es, p) => template(quasis, es, p)
-        Tagged(tag, quasis, es, p) => node("TaggedTemplateExpression", p, [
-            field("tag", expr(tag)),
-            field("quasi", template(quasis, es, p)),
+        Big(v, p) => self.node("Literal", p, [field("value", "null"), field("bigint", quote(v))])
+        Template(quasis, es, p) => self.template(quasis, es, p)
+        Tagged(tag, quasis, es, p) => self.node("TaggedTemplateExpression", p, [
+            field("tag", self.expr(tag)),
+            field("quasi", self.template(quasis, es, p)),
         ])
         Regex(pattern, flags, p) =>
             re := "\{\"pattern\":{quote(pattern)},\"flags\":{quote(flags)}}"
-            node("Literal", p, [field("value", "null"), field("regex", re)])
-        Bool(v, p) => literal(bool_text(v), p)
-        Null(p) => literal("null", p)
-        Ident(n, p) => ident(n, p)
-        This(p) => node("ThisExpression", p, [])
-        Super(p) => node("Super", p, [])
-        NewTarget(p) => node("MetaProperty", p, [
-            field("meta", ident("new", p)),
-            field("property", ident("target", p)),
+            self.node("Literal", p, [field("value", "null"), field("regex", re)])
+        Bool(v, p) => self.literal(bool_text(v), p)
+        Null(p) => self.literal("null", p)
+        Ident(n, p) => self.ident(n, p)
+        This(p) => self.node("ThisExpression", p, [])
+        Super(p) => self.node("Super", p, [])
+        NewTarget(p) => self.node("MetaProperty", p, [
+            field("meta", self.ident("new", p)),
+            field("property", self.ident("target", p)),
         ])
         Array(items, _, p) =>
-            texts := [if x := it then expr(x) else "null" for it in items]
-            node("ArrayExpression", p, [field("elements", "[{texts.join(",")}]")])
+            texts := [if x := it then self.expr(x) else "null" for it in items]
+            self.node("ArrayExpression", p, [field("elements", "[{texts.join(",")}]")])
         Object(props, p) =>
-            texts := [prop(x) for x in props]
-            node("ObjectExpression", p, [field("properties", "[{texts.join(",")}]")])
-        Function(f) => function("FunctionExpression", f)
-        Arrow(f) => function("ArrowFunctionExpression", f)
-        ClassExpr(c) => class("ClassExpression", c)
-        Unary(op, arg, p) => node("UnaryExpression", p, [
+            texts := [self.prop(x) for x in props]
+            self.node("ObjectExpression", p, [field("properties", "[{texts.join(",")}]")])
+        Function(f) => self.function("FunctionExpression", f)
+        Arrow(f) => self.function("ArrowFunctionExpression", f)
+        ClassExpr(c) => self.class("ClassExpression", c)
+        Unary(op, arg, p) => self.node("UnaryExpression", p, [
             field("operator", quote(op)),
             field("prefix", "true"),
-            field("argument", expr(arg)),
+            field("argument", self.expr(arg)),
         ])
         Update(op, prefix, arg, p) =>
-            node("UpdateExpression", p, [
+            self.node("UpdateExpression", p, [
                 field("operator", quote(op)),
                 field("prefix", bool_text(prefix)),
-                field("argument", expr(arg)),
+                field("argument", self.expr(arg)),
             ])
-        Binary(op, l, r, p) => node("BinaryExpression", p, [
-            field("left", expr(l)),
+        Binary(op, l, r, p) => self.node("BinaryExpression", p, [
+            field("left", self.expr(l)),
             field("operator", quote(op)),
-            field("right", expr(r)),
+            field("right", self.expr(r)),
         ])
-        Logical(op, l, r, p) => node("LogicalExpression", p, [
-            field("left", expr(l)),
+        Logical(op, l, r, p) => self.node("LogicalExpression", p, [
+            field("left", self.expr(l)),
             field("operator", quote(op)),
-            field("right", expr(r)),
+            field("right", self.expr(r)),
         ])
-        Assign(op, t, v, p) => node("AssignmentExpression", p, [
+        Assign(op, t, v, p) => self.node("AssignmentExpression", p, [
             field("operator", quote(op)),
-            field("left", pat(t)),
-            field("right", expr(v)),
+            field("left", self.pat(t)),
+            field("right", self.expr(v)),
         ])
-        Cond(t, y, n, p) => node("ConditionalExpression", p, [
-            field("test", expr(t)),
-            field("consequent", expr(y)),
-            field("alternate", expr(n)),
+        Cond(t, y, n, p) => self.node("ConditionalExpression", p, [
+            field("test", self.expr(t)),
+            field("consequent", self.expr(y)),
+            field("alternate", self.expr(n)),
         ])
         Call(callee, args, optional, p) =>
-            node("CallExpression", p, [
-                field("callee", expr(callee)),
-                field("arguments", exprs(args)),
+            self.node("CallExpression", p, [
+                field("callee", self.expr(callee)),
+                field("arguments", self.exprs(args)),
                 field("optional", bool_text(optional)),
             ])
-        New(callee, args, p) => node("NewExpression", p, [
-            field("callee", expr(callee)),
-            field("arguments", exprs(args)),
+        New(callee, args, p) => self.node("NewExpression", p, [
+            field("callee", self.expr(callee)),
+            field("arguments", self.exprs(args)),
         ])
         Member(obj, prop, computed, optional, p) =>
             fields := [
-                field("object", expr(obj)),
-                field("property", expr(prop)),
+                field("object", self.expr(obj)),
+                field("property", self.expr(prop)),
                 field("computed", bool_text(computed)),
                 field("optional", bool_text(optional)),
             ]
-            node("MemberExpression", p, fields)
+            self.node("MemberExpression", p, fields)
         Seq(items, p) =>
-            flat := if canon then flatten(items) else items
-            node("SequenceExpression", p, [field("expressions", exprs(flat))])
-        Spread(arg, p) => node("SpreadElement", p, [field("argument", expr(arg))])
-        Chain(inner, p) => node("ChainExpression", p, [field("expression", expr(inner))])
-        PrivName(n, p) => node("PrivateIdentifier", p, [field("name", quote(n))])
-        Paren(inner, _) => expr(inner)
-        Yield(arg, delegate, p) => node("YieldExpression", p, [
-            field("argument", if a := arg then expr(a) else "null"),
+            flat := if self.canon then flatten(items) else items
+            self.node("SequenceExpression", p, [field("expressions", self.exprs(flat))])
+        Spread(arg, p) => self.node("SpreadElement", p, [field("argument", self.expr(arg))])
+        Chain(inner, p) => self.node("ChainExpression", p, [field("expression", self.expr(inner))])
+        PrivName(n, p) => self.node("PrivateIdentifier", p, [field("name", quote(n))])
+        Paren(inner, _) => self.expr(inner)
+        Yield(arg, delegate, p) => self.node("YieldExpression", p, [
+            field("argument", if a := arg then self.expr(a) else "null"),
             field("delegate", bool_text(delegate)),
         ])
-        Await(arg, p) => node("AwaitExpression", p, [field("argument", expr(arg))])
+        Await(arg, p) => self.node("AwaitExpression", p, [field("argument", self.expr(arg))])
         Import(arg, opts, p) =>
             if a := arg
-                return node("ImportExpression", p, [
-                    field("source", expr(a)),
-                    field("options", opt_expr(opts)),
+                return self.node("ImportExpression", p, [
+                    field("source", self.expr(a)),
+                    field("options", self.opt_expr(opts)),
                 ])
-            node("MetaProperty", p, [
-                field("meta", ident("import", p)),
-                field("property", ident("meta", p)),
+            self.node("MetaProperty", p, [
+                field("meta", self.ident("import", p)),
+                field("property", self.ident("meta", p)),
             ])
 
 fn Dump.prop(self, x Prop) str
     match x
         Init(k, v, shorthand, p) =>
             fields := [
-                field("key", key(k)),
-                field("value", expr(v)),
+                field("key", self.key(k)),
+                field("value", self.expr(v)),
                 field("kind", "\"init\""),
                 field("method", "false"),
                 field("shorthand", bool_text(shorthand)),
                 field("computed", bool_text(is_computed(k))),
             ]
-            node("Property", p, fields)
+            self.node("Property", p, fields)
         Method(k, kind, f, p) =>
             fields := [
-                field("key", key(k)),
-                field("value", function("FunctionExpression", f)),
+                field("key", self.key(k)),
+                field("value", self.function("FunctionExpression", f)),
                 field("kind", quote(kind)),
                 field("method", bool_text(kind == "init")),
                 field("shorthand", "false"),
                 field("computed", bool_text(is_computed(k))),
             ]
-            node("Property", p, fields)
-        PropSpread(arg, p) => node("SpreadElement", p, [field("argument", expr(arg))])
-        CoverInit(n, v, p) => node("Property", p, [
-            field("key", ident(n, p)),
-            field("value", expr(v)),
+            self.node("Property", p, fields)
+        PropSpread(arg, p) => self.node("SpreadElement", p, [field("argument", self.expr(arg))])
+        CoverInit(n, v, p) => self.node("Property", p, [
+            field("key", self.ident(n, p)),
+            field("value", self.expr(v)),
         ])
 
 fn Dump.pat(self, x Pat) str
     match x
-        PatId(n, p) => ident(n, p)
-        PatTarget(e) => expr(e)
+        PatId(n, p) => self.ident(n, p)
+        PatTarget(e) => self.expr(e)
         PatObj(props, rest, p) =>
             mut texts := List[str]()
             for pp in props
                 fields := [
-                    field("key", key(pp.key)),
-                    field("value", pat(pp.value)),
+                    field("key", self.key(pp.key)),
+                    field("value", self.pat(pp.value)),
                     field("kind", "\"init\""),
                     field("method", "false"),
                     field("shorthand", bool_text(pp.shorthand)),
                     field("computed", bool_text(is_computed(pp.key))),
                 ]
-                texts.push(node("Property", pat_pos(pp.value), fields))
+                texts.push(self.node("Property", pat_pos(pp.value), fields))
             if r := rest
-                texts.push(node("RestElement", pat_pos(r), [field("argument", pat(r))]))
-            node("ObjectPattern", p, [field("properties", "[{texts.join(",")}]")])
+                texts.push(self.node("RestElement", pat_pos(r), [field("argument", self.pat(r))]))
+            self.node("ObjectPattern", p, [field("properties", "[{texts.join(",")}]")])
         PatArr(items, rest, p) =>
-            mut texts := [if it := i then pat(it) else "null" for i in items]
+            mut texts := [if it := i then self.pat(it) else "null" for i in items]
             if r := rest
-                texts.push(node("RestElement", pat_pos(r), [field("argument", pat(r))]))
-            node("ArrayPattern", p, [field("elements", "[{texts.join(",")}]")])
-        PatDefault(t, v, p) => node("AssignmentPattern", p, [
-            field("left", pat(t)),
-            field("right", expr(v)),
+                texts.push(self.node("RestElement", pat_pos(r), [field("argument", self.pat(r))]))
+            self.node("ArrayPattern", p, [field("elements", "[{texts.join(",")}]")])
+        PatDefault(t, v, p) => self.node("AssignmentPattern", p, [
+            field("left", self.pat(t)),
+            field("right", self.expr(v)),
         ])

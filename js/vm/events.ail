@@ -58,7 +58,7 @@ EVENT_MEMBERS := {
 fn Vm.event_interfaces(mut self)
     base := obj_of(proto_of("Event")) else return
     for name in ["Event"]
-        event_constants(base)
+        self.event_constants(base)
     # Parents before children: the table is in that order.
     mut names := List[str]()
     for k in EVENT_PARENTS.keys()
@@ -138,7 +138,7 @@ fn Vm.event_defaults(self, iface str) List[str]
 pub fn Vm.make_event_as(mut self, iface str, type_name str, init Value) Value ! Thrown
     o := object("Event", proto_of(iface))
     o.props["type"] = data(Str(type_name))
-    for item in event_defaults(iface)
+    for item in self.event_defaults(iface)
         parts := item.split(":")
         v := match parts[1]
             "s" => Value.Str("")
@@ -183,7 +183,7 @@ fn Vm.report_error(mut self, err Thrown)
     init.props["filename"] = data(Str(location_href))
     init.props["error"] = data(err.value)
     mut quiet := false
-    if ev := make_event_as("ErrorEvent", "error", Value.Obj(init))
+    if ev := self.make_event_as("ErrorEvent", "error", Value.Obj(init))
         if ok := dispatch(-1, ev)
             quiet = not ok
         else e2
@@ -206,11 +206,11 @@ fn Vm.report_rejection(mut self, p ref JsObject)
     init.props["promise"] = data(Value.Obj(p))
     init.props["reason"] = data(reason)
     mut quiet := false
-    if ev := make_event_as("PromiseRejectionEvent", "unhandledrejection", Value.Obj(init))
+    if ev := self.make_event_as("PromiseRejectionEvent", "unhandledrejection", Value.Obj(init))
         if ok := dispatch(-1, ev)
             quiet = not ok
         else err
-            report_error(err)
+            self.report_error(err)
     else e3
         report(uncaught_text(e3))
     if not quiet

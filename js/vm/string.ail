@@ -61,22 +61,22 @@ fn Vm.string_method(mut self, m str, this_val Value, args List[Value]) Value ! T
             if o.class == "String"
                 return o.prim
         return type_error("String.prototype.{m} requires that 'this' be a String")
-    s := this_string(this_val, m)?
+    s := self.this_string(this_val, m)?
     us := units(s)
     n := us.len()
     match m
         "charAt" =>
-            i := integer_arg(a0, 0)?
+            i := self.integer_arg(a0, 0)?
             if i < 0 or i >= n
                 return Value.Str("")
             Value.Str(from_units([us[i]]))
         "charCodeAt" =>
-            i := integer_arg(a0, 0)?
+            i := self.integer_arg(a0, 0)?
             if i < 0 or i >= n
                 return Value.Num(nan())
             Value.Num(us[i].to_float())
         "codePointAt" =>
-            i := integer_arg(a0, 0)?
+            i := self.integer_arg(a0, 0)?
             if i < 0 or i >= n
                 return Undef
             c := us[i]
@@ -88,14 +88,14 @@ fn Vm.string_method(mut self, m str, this_val Value, args List[Value]) Value ! T
                 return Value.Num((0x10000 + (c - 0xD800) * 0x400 + (us[i + 1] - 0xDC00)).to_float())
             Value.Num(c.to_float())
         "at" =>
-            k := integer_arg(a0, 0)?
+            k := self.integer_arg(a0, 0)?
             i := if k < 0 then n + k else k
             if i < 0 or i >= n
                 return Undef
             Value.Str(from_units([us[i]]))
         "indexOf" =>
             needle := units(to_string(a0)?)
-            from := clamp(integer_arg(a1, 0)?, 0, n)
+            from := clamp(self.integer_arg(a1, 0)?, 0, n)
             Value.Num((find_units(us, needle, from) else -1).to_float())
         "lastIndexOf" =>
             needle := units(to_string(a0)?)
@@ -106,18 +106,18 @@ fn Vm.string_method(mut self, m str, this_val Value, args List[Value]) Value ! T
             if is_regexp(a0)
                 return type_error("First argument to String.prototype.includes must not be a regular expression")
             needle := units(to_string(a0)?)
-            from := clamp(integer_arg(a1, 0)?, 0, n)
+            from := clamp(self.integer_arg(a1, 0)?, 0, n)
             Value.Bool(find_units(us, needle, from) != none)
         "startsWith" | "endsWith" =>
             if is_regexp(a0)
                 return type_error("First argument to String.prototype.{m} must not be a regular expression")
             needle := units(to_string(a0)?)
             if m == "startsWith"
-                start := clamp(integer_arg(a1, 0)?, 0, n)
+                start := clamp(self.integer_arg(a1, 0)?, 0, n)
                 if start + needle.len() > n
                     return Value.Bool(false)
                 return Value.Bool(us[start..start + needle.len()] == needle)
-            end := clamp(integer_arg(a1, n)?, 0, n)
+            end := clamp(self.integer_arg(a1, n)?, 0, n)
             if needle.len() > end
                 return Value.Bool(false)
             Value.Bool(us[end - needle.len()..end] == needle)
@@ -128,12 +128,12 @@ fn Vm.string_method(mut self, m str, this_val Value, args List[Value]) Value ! T
                 return Value.Str("")
             Value.Str(from_units(us[start..end]))
         "substring" =>
-            a := clamp(integer_arg(a0, 0)?, 0, n)
-            b := clamp(integer_arg(a1, n)?, 0, n)
+            a := clamp(self.integer_arg(a0, 0)?, 0, n)
+            b := clamp(self.integer_arg(a1, n)?, 0, n)
             Value.Str(from_units(us[a.min(b)..a.max(b)]))
         "substr" =>
             start := relative(a0, n, 0)?
-            len := clamp(integer_arg(a1, n)?, 0, n - start)
+            len := clamp(self.integer_arg(a1, n)?, 0, n - start)
             Value.Str(from_units(us[start..start + len]))
         "toUpperCase" | "toLocaleUpperCase" => Value.Str(s.to_upper())
         "toLowerCase" | "toLocaleLowerCase" => Value.Str(s.to_lower())
@@ -150,7 +150,7 @@ fn Vm.string_method(mut self, m str, this_val Value, args List[Value]) Value ! T
                     b -= 1
             Value.Str(cs[a..b].join(""))
         "padStart" | "padEnd" =>
-            target := integer_arg(a0, 0)?
+            target := self.integer_arg(a0, 0)?
             fill := if a1 == Undef then " " else to_string(a1)?
             if target <= n or fill == ""
                 return Value.Str(s)
@@ -290,24 +290,24 @@ fn Vm.this_number(mut self, v Value, m str) float ! Thrown
         Undef | Null | Bool | Str | Big | Sym => return type_error("Number.prototype.{m} requires that 'this' be a Number")
 
 fn Vm.number_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
-    x := this_number(this_val, m)?
+    x := self.this_number(this_val, m)?
     a0 := arg_at(args, 0)
     match m
         "valueOf" => Value.Num(x)
         "toString" =>
-            radix := if a0 == Undef then 10 else integer_arg(a0, 10)?
+            radix := if a0 == Undef then 10 else self.integer_arg(a0, 10)?
             if radix < 2 or radix > 36
                 return range_error("toString() radix argument must be between 2 and 36")
             if radix == 10
                 return Value.Str(syntax.number_to_string(x))
             Value.Str(to_radix(x, radix))
         "toFixed" =>
-            f := integer_arg(a0, 0)?
+            f := self.integer_arg(a0, 0)?
             if f < 0 or f > 100
                 return range_error("toFixed() digits argument must be between 0 and 100")
             Value.Str(to_fixed(x, f))
         "toExponential" =>
-            f := integer_arg(a0, 0)?
+            f := self.integer_arg(a0, 0)?
             if not is_finite(x)
                 return Value.Str(syntax.number_to_string(x))
             if f < 0 or f > 100
@@ -316,7 +316,7 @@ fn Vm.number_method(mut self, m str, this_val Value, args List[Value]) Value ! T
         "toPrecision" =>
             if a0 == Undef
                 return Value.Str(syntax.number_to_string(x))
-            p := integer_arg(a0, 0)?
+            p := self.integer_arg(a0, 0)?
             if not is_finite(x)
                 return Value.Str(syntax.number_to_string(x))
             if p < 1 or p > 100

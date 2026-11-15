@@ -19,18 +19,18 @@ fn Vm.offset_ms(self, t float) float
 
 ## The parts of `t` in the local zone.
 pub fn Vm.local_parts(self, t float) DateParts
-    parts_of(t + offset_ms(t))
+    parts_of(t + self.offset_ms(t))
 
 ## UTC(t) (§21.4.1.27): the instant whose local clock reads `local`.
 fn Vm.from_local(self, local float) float
     if not is_finite(local)
         return local
-    guess := local - offset_ms(local)
-    local - offset_ms(guess)
+    guess := local - self.offset_ms(local)
+    local - self.offset_ms(guess)
 
 ## "GMT-0500 (America/New_York)": the offset and zone of Date's toString.
 fn Vm.zone_text(self, t float) str
-    off := (offset_ms(t) / 60000.0).to_int()
+    off := (self.offset_ms(t) / 60000.0).to_int()
     a := off.abs()
     sign := if off < 0 then "-" else "+"
     name := if zone == "UTC" or zone == "" then "Coordinated Universal Time" else zone
@@ -136,8 +136,8 @@ MONTHS := ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
 fn Vm.date_text(self, t float) str
     if not is_finite(t)
         return "Invalid Date"
-    p := local_parts(t)
-    "{DAYS[p.weekday]} {MONTHS[p.month]} {pad2(p.date)} {"{p.year}".pad_left(4, '0')} {pad2(p.hours)}:{pad2(p.minutes)}:{pad2(p.seconds)} {zone_text(t)}"
+    p := self.local_parts(t)
+    "{DAYS[p.weekday]} {MONTHS[p.month]} {pad2(p.date)} {"{p.year}".pad_left(4, '0')} {pad2(p.hours)}:{pad2(p.minutes)}:{pad2(p.seconds)} {self.zone_text(t)}"
 
 fn utc_text(t float) str
     if not is_finite(t)
@@ -149,7 +149,7 @@ fn utc_text(t float) str
 ## toUTCString forms; NaN otherwise. A date-time with no offset is local.
 pub fn Vm.parse_date(self, text str) float
     r := parse_date_raw(text)
-    if r.1 then from_local(r.0) else r.0
+    if r.1 then self.from_local(r.0) else r.0
 
 ## The time value as if its zone were UTC, and whether the text named no
 ## zone (so the value is local wall time).
@@ -306,11 +306,11 @@ fn Vm.date_components(mut self, args List[Value]) float ! Thrown
     make_time(year, nums[1], nums[2], nums[3], nums[4], nums[5], nums[6])
 
 fn Vm.date_utc(mut self, args List[Value]) Value ! Thrown
-    Value.Num(date_components(args)?)
+    Value.Num(self.date_components(args)?)
 
 fn Vm.date_constructor(mut self, args List[Value], new_target Value) Value ! Thrown
     if new_target == Undef
-        return Value.Str(date_text(clock_ms))
+        return Value.Str(self.date_text(clock_ms))
     mut t := clock_ms
     if args.len() == 1
         a := args[0]
@@ -319,13 +319,13 @@ fn Vm.date_constructor(mut self, args List[Value], new_target Value) Value ! Thr
                 t = num_of(o.prim) else nan()
             else
                 p := to_primitive(a, "default")?
-                t = if s := str_of(p) then parse_date(s) else time_clip(to_number(p)?)
+                t = if s := str_of(p) then self.parse_date(s) else time_clip(to_number(p)?)
         elif s := str_of(a)
-            t = parse_date(s)
+            t = self.parse_date(s)
         else
             t = time_clip(to_number(a)?)
     elif args.len() > 1
-        t = time_clip(from_local(date_components(args)?))
+        t = time_clip(self.from_local(self.date_components(args)?))
     proto := get(new_target, "prototype")?
     o := object("Date", if is_obj(proto) then proto else proto_of("Date"))
     o.prim = Num(t)
@@ -345,13 +345,13 @@ fn Vm.date_method(mut self, m str, this_val Value, args List[Value]) Value ! Thr
             return range_error("Invalid time value")
         return Value.Str(iso_date(t))
     if m == "toString"
-        return Value.Str(date_text(t))
+        return Value.Str(self.date_text(t))
     if m == "toUTCString"
         return Value.Str(utc_text(t))
     if m == "toDateString" or m == "toTimeString"
         if not is_finite(t)
             return Value.Str("Invalid Date")
-        full := date_text(t)
+        full := self.date_text(t)
         return Value.Str(
             if m == "toDateString" then full.slice(0, 15) else full.slice(16, full.chars().len()),
         )
@@ -363,12 +363,12 @@ fn Vm.date_method(mut self, m str, this_val Value, args List[Value]) Value ! Thr
     if m == "getTime" or m == "valueOf"
         return Value.Num(t)
     if m == "getTimezoneOffset"
-        return Value.Num(if is_finite(t) then 0.0 - offset_ms(t) / 60000.0 else nan())
+        return Value.Num(if is_finite(t) then 0.0 - self.offset_ms(t) / 60000.0 else nan())
     if m.starts_with("set")
-        return date_set(o, m.replace("UTC", ""), m.contains("UTC"), t, args)
+        return self.date_set(o, m.replace("UTC", ""), m.contains("UTC"), t, args)
     if not is_finite(t)
         return Value.Num(nan())
-    p := if m.contains("UTC") then parts_of(t) else local_parts(t)
+    p := if m.contains("UTC") then parts_of(t) else self.local_parts(t)
     n := match m.replace("UTC", "")
         "getFullYear" => p.year
         "getMonth" => p.month
@@ -397,7 +397,7 @@ fn Vm.date_set(mut self, o ref JsObject, m str, utc bool, t float, args List[Val
     first := names.index_of(m) else return type_error("Date.prototype.{m} is not a function")
     mut f := [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
     if is_finite(t)
-        p := if utc then parts_of(t) else local_parts(t)
+        p := if utc then parts_of(t) else self.local_parts(t)
         f = [x.to_float() for x in [p.year, p.month, p.date, p.hours, p.minutes, p.seconds, p.ms]]
     elif first != 0
         return Value.Num(nan())
@@ -405,7 +405,7 @@ fn Vm.date_set(mut self, o ref JsObject, m str, utc bool, t float, args List[Val
     for i in 0..n
         f[first + i] = to_number(arg_at(args, i))?
     made := make_time(f[0], f[1], f[2], f[3], f[4], f[5], f[6])
-    nt := time_clip(if utc then made else from_local(made))
+    nt := time_clip(if utc then made else self.from_local(made))
     o.prim = Num(nt)
     Value.Num(nt)
 

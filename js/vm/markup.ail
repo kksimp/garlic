@@ -117,7 +117,7 @@ pub fn Vm.parse_into(mut self, parent int, src str)
                 while j < cs.len() and not cs[j].is_space() and cs[j] != '>' and cs[j] != '/'
                     j += 1
                 tag := cs[i + 1..j].join("").to_lower()
-                tree_adjust(mut open, tag)
+                self.tree_adjust(mut open, tag)
                 current = open[open.len() - 1]
                 el := dom_create(tag, 1, "")
                 # Attributes.
@@ -241,17 +241,17 @@ pub fn Vm.outer_html(self, id int) str
                 return n.text
             escape_text(n.text, false)
         8 => "<!--{n.text}-->"
-        9 => inner_html(id)
+        9 => self.inner_html(id)
         _ =>
             mut attrs := ""
             for a in n.attrs
                 attrs = "{attrs} {a.name}=\"{escape_text(a.value, true)}\""
             if VOID_TAGS.contains(n.tag)
                 return "<{n.tag}{attrs}>"
-            "<{n.tag}{attrs}>{inner_html(id)}</{n.tag}>"
+            "<{n.tag}{attrs}>{self.inner_html(id)}</{n.tag}>"
 
 pub fn Vm.inner_html(self, id int) str
-    [outer_html(c) for c in dom[id].children].join("")
+    [self.outer_html(c) for c in dom[id].children].join("")
 
 ## Elements that end an open `<p>` when they start (HTML §13.2.6.4.7).
 P_CLOSERS := [
@@ -295,25 +295,25 @@ P_CLOSERS := [
 ## `<tbody>` and `<tr>` a table row or cell needs, as the tree builder does.
 fn Vm.tree_adjust(mut self, mut open List[int], tag str)
     if P_CLOSERS.contains(tag)
-        pop_to(mut open, ["p"], ["table", "td", "th", "caption", "template", "button"])
+        self.pop_to(mut open, ["p"], ["table", "td", "th", "caption", "template", "button"])
     match tag
-        "li" => pop_to(mut open, ["li"], ["ul", "ol", "menu", "table", "td", "th"])
-        "dd" | "dt" => pop_to(mut open, ["dd", "dt"], ["dl", "table", "td", "th"])
-        "option" => pop_to(mut open, ["option"], ["select", "datalist", "table"])
-        "optgroup" => pop_to(mut open, ["option", "optgroup"], ["select", "table"])
+        "li" => self.pop_to(mut open, ["li"], ["ul", "ol", "menu", "table", "td", "th"])
+        "dd" | "dt" => self.pop_to(mut open, ["dd", "dt"], ["dl", "table", "td", "th"])
+        "option" => self.pop_to(mut open, ["option"], ["select", "datalist", "table"])
+        "optgroup" => self.pop_to(mut open, ["option", "optgroup"], ["select", "table"])
         "tr" =>
-            pop_to(mut open, ["tr"], ["table", "tbody", "thead", "tfoot", "template"])
+            self.pop_to(mut open, ["tr"], ["table", "tbody", "thead", "tfoot", "template"])
             if dom[open[open.len() - 1]].tag == "table"
-                open_new(mut open, "tbody")
+                self.open_new(mut open, "tbody")
         "td" | "th" =>
-            pop_to(mut open, ["td", "th"], ["tr", "table", "template"])
+            self.pop_to(mut open, ["td", "th"], ["tr", "table", "template"])
             top := dom[open[open.len() - 1]].tag
             if top == "table"
-                open_new(mut open, "tbody")
+                self.open_new(mut open, "tbody")
             top2 := dom[open[open.len() - 1]].tag
             if top2 == "tbody" or top2 == "thead" or top2 == "tfoot"
-                open_new(mut open, "tr")
-        "tbody" | "thead" | "tfoot" => pop_to(
+                self.open_new(mut open, "tr")
+        "tbody" | "thead" | "tfoot" => self.pop_to(
             mut open,
             ["tbody", "thead", "tfoot", "tr", "td", "th"],
             ["table", "template"],
