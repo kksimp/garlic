@@ -770,7 +770,7 @@ fn socket_op(
         asked := op.url.replace("ws://", "http://").replace("wss://", "https://")
         cookie := cj.header_from(asked, at, false)
         opened := ws.connect(op.url, op.text, origin_of(at), cookie) else err
-            first := live.ws_event(mut d, op.id, "error", "", 0, 1000.0)
+            _ := live.ws_event(mut d, op.id, "error", "", 0, 1000.0)
             return live.ws_event(mut d, op.id, "close", "", 1006, 1000.0)
         socks[op.id] = opened
         return live.ws_event(mut d, op.id, "open", opened.protocol, 0, 1000.0)
@@ -778,7 +778,7 @@ fn socket_op(
     if op.op == "send"
         s.send_text(op.text) else err
             socks.remove(op.id)
-            first := live.ws_event(mut d, op.id, "error", "", 0, 1000.0)
+            _ := live.ws_event(mut d, op.id, "error", "", 0, 1000.0)
             return live.ws_event(mut d, op.id, "close", "", 1006, 1000.0)
         socks[op.id] = s
         return quiet()
@@ -3348,11 +3348,11 @@ impl app.App for Garlic
         icon_sent = icon_sent.union(icon_fresh)
         icon_fresh = {}
         match ev.kind
-            "start" =>
+            Start =>
                 inset_left = ev.inset_left
                 inset_top = ev.inset_top
                 note_display(ev)
-            "resize" =>
+            Resize =>
                 note_display(ev)
                 if ev.inset_left > 0.0 or ev.inset_top > 0.0
                     inset_left = ev.inset_left
@@ -3361,7 +3361,7 @@ impl app.App for Garlic
                     strip_w = ev.dx
                 elif ev.id == "page" or ev.id == ""
                     g.resize(ev.dx, ev.dy, ev.cell_w, ev.cell_h)
-            "click" =>
+            Click =>
                 if ev.id == "chrome"
                     chrome_click(ev)
                 else
@@ -3385,10 +3385,10 @@ impl app.App for Garlic
                         menu_tab = -1
                         find.editing = false
                         page_click(ev.x, ev.y)
-            "scroll" =>
+            Scroll =>
                 if ev.id != "chrome"
                     g.scroll(ev.dy)
-            "down" =>
+            Down =>
                 if ev.id != "chrome"
                     and ev.text == "left"
                     and g.pixel
@@ -3396,10 +3396,10 @@ impl app.App for Garlic
                     and (not finding or chrome.find_hit(ev.x, ev.y, g.area_w) == "")
                     and not omni.editing
                     g.press(ev.x, ev.y)
-            "up" =>
+            Up =>
                 if ev.id != "chrome"
                     g.release()
-            "move" =>
+            Move =>
                 if ev.id == "chrome"
                     hover_x = ev.x
                     hover_y = ev.y
@@ -3410,20 +3410,20 @@ impl app.App for Garlic
                     hover_href = ""
                     if h := g.scene.hit_at(ev.x, ev.y + g.top)
                         hover_href = h.href
-            "leave" =>
+            Leave =>
                 if ev.id == "chrome"
                     hover_x = -1.0
                 else
                     hover_href = ""
                     page_x = -1.0
                     page_y = -1.0
-            "paste" =>
+            Paste =>
                 if omni.editing
                     omni.insert(ev.text)
                 elif finding and find.editing
                     find.insert(ev.text)
                     g.find_step(find.text, 0)
-            "key" =>
+            Key =>
                 if omni.editing and not ev.meta and (ev.text == "down" or ev.text == "up")
                     n := suggestions().len()
                     if n > 0
@@ -3473,14 +3473,14 @@ impl app.App for Garlic
                     switch((cur + 1) % tabs.len())
                 else
                     g.key(ev.text, ev.alt, ev.shift)
-            "external" =>
+            External =>
                 if ev.id == "load"
                     do_load()
                 elif ev.id == "mcp"
                     agent_call(ev.text)
                 elif ev.id == "tick"
                     tick()
-            "press" =>
+            Press =>
                 if ev.id == "agent_allow"
                     decide(true)
                 elif ev.id == "agent_deny"
@@ -3696,7 +3696,7 @@ fn attached_main(mut a Garlic, sites str, inbox app.Inbox) !
     path := "{env.get("HOME") else "."}/.garlic-attach.json"
     where := "http://{srv.addr()}/mcp"
     fs.write_text(path, "\{\"url\":\"{where}\",\"token\":\"{token}\"}\n")?
-    mode := proc.run("chmod", ["600", path], none, none) else err
+    _ := proc.run("chmod", ["600", path], none, none) else err
         print("garlic: could not restrict {path}: {err}")
         return
     a.attached = true
@@ -4396,7 +4396,7 @@ fn show_ops(ops List[draw.Op]) List[str]
     assert_eq(g.b.pg.title, "Garlic test page")
 
 fn resized(w float, h float) app.Event
-    mut e := app.event("resize")
+    mut e := app.event(app.EventKind.Resize)
     e.id = "page"
     e.dx = w
     e.dy = h
@@ -4405,7 +4405,7 @@ fn resized(w float, h float) app.Event
     e
 
 fn clicked(x float, y float) app.Event
-    mut e := app.event("click")
+    mut e := app.event(app.EventKind.Click)
     e.id = "page"
     e.text = "left"
     e.x = x
@@ -4439,7 +4439,7 @@ fn clicked(x float, y float) app.Event
     assert(a.omni.text.ends_with("second.html"))
     assert(shown[0].contains("second.html"))
     assert_eq(a.title(), "Second page - Garlic")
-    mut back := app.event("click")
+    mut back := app.event(app.EventKind.Click)
     back.id = "chrome"
     back.x = 20.0
     back.y = 66.0
@@ -5219,7 +5219,7 @@ PIXEL_PNG := "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ
     a.g.b.stamp += 1
     a.g.refresh()
     first := [to_app(op, a.g) for op in a.g.display()]
-    a.update(app.event("noop"))
+    a.update(app.event(app.EventKind.Other))
     second := [to_app(op, a.g) for op in a.g.display()]
     assert_eq(bitmap_data_lens(first), [[37, 29, 1]])
     assert_eq(bitmap_data_lens(second)[0][2], 0)
@@ -5234,7 +5234,7 @@ PIXEL_PNG := "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ
     a.g.refresh()
     ## Off screen: nothing to send yet, and a later event must not count it as sent.
     assert_eq(bitmap_data_lens([to_app(op, a.g) for op in a.g.display()]).len(), 0)
-    a.update(app.event("noop"))
+    a.update(app.event(app.EventKind.Other))
     a.g.top = 600.0
     a.g.refresh()
     first := [to_app(op, a.g) for op in a.g.display()]
@@ -5552,17 +5552,17 @@ fn flat(s gfx.Scene) List[str]
     a.g.pixel = true
     a.update(resized(400.0, 300.0))
     mut d := clicked(0.0, 0.0)
-    d.kind = "down"
+    d.kind = app.EventKind.Down
     a.update(d)
     assert(a.g.dragging and not a.g.sel_on)
-    mut m := app.event("move")
+    mut m := app.event(app.EventKind.Move)
     m.id = "page"
     m.x = 390.0
     m.y = 290.0
     a.update(m)
     assert(a.g.sel_on)
     mut u := clicked(390.0, 290.0)
-    u.kind = "up"
+    u.kind = app.EventKind.Up
     a.update(u)
     assert(not a.g.dragging and a.g.sel_on)
     text := a.g.selection()
@@ -5952,7 +5952,7 @@ fn fwd_slashes(p str) str
     mut a := Garlic.new(b, 600.0, 300.0, 7.5, 15.0)
     a.new_tab()
     a.new_tab()
-    mut ev := app.event("click")
+    mut ev := app.event(app.EventKind.Click)
     ev.id = "chrome"
     ev.x = chrome.tab_x(1, 3, a.strip_w, 0.0) + 20.0
     ev.y = 20.0
@@ -5974,12 +5974,12 @@ fn fwd_slashes(p str) str
     b := Browser.new("{testdata()}/index.html", 60, 12)
     mut a := Garlic.new(b, 600.0, 300.0, 7.5, 15.0)
     assert(a.edge())
-    mut start := app.event("start")
+    mut start := app.event(app.EventKind.Start)
     start.inset_left = 78.0
     start.inset_top = 28.0
     a.update(start)
     assert_eq(a.inset_left, 78.0)
-    mut ev := app.event("click")
+    mut ev := app.event(app.EventKind.Click)
     ev.id = "chrome"
     ev.x = 40.0
     ev.y = 20.0
@@ -6000,7 +6000,7 @@ fn fwd_slashes(p str) str
 @test fn the_omnibox_takes_typing_and_opens_the_address()
     b := Browser.new("{testdata()}/index.html", 60, 12)
     mut a := Garlic.new(b, 600.0, 300.0, 7.5, 15.0)
-    mut ev := app.event("click")
+    mut ev := app.event(app.EventKind.Click)
     ev.id = "chrome"
     ev.x = 300.0
     ev.y = 66.0
@@ -6017,7 +6017,7 @@ fn fwd_slashes(p str) str
     assert_eq(a.g.b.pg.title, "Second page")
     assert(not a.omni.editing)
     assert_eq(a.omni.text, a.g.b.url)
-    mut menu := app.event("click")
+    mut menu := app.event(app.EventKind.Click)
     menu.id = "chrome"
     menu.x = a.strip_w - 20.0
     menu.y = 66.0
@@ -6042,14 +6042,14 @@ fn fwd_slashes(p str) str
         a.update(app.key("{c}"))
     assert_eq(a.suggestions().len(), 2)
     ## The pointer over the second row: the view lights it.
-    mut over := app.event("move")
+    mut over := app.event(app.EventKind.Move)
     over.id = "page"
     over.x = 200.0
     over.y = 50.0
     a.update(over)
     assert_eq((a.page_x, a.page_y), (200.0, 50.0))
     a.view()
-    mut ev := app.event("click")
+    mut ev := app.event(app.EventKind.Click)
     ev.id = "page"
     ev.x = 200.0
     ev.y = 50.0

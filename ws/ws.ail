@@ -36,7 +36,7 @@ pub struct Event
     pub code int
 
 fn fail(url str, message str) net.NetError
-    net.NetError(url: url, kind: "protocol", message: message)
+    net.NetError(url: url, kind: Protocol, message: message)
 
 # ---------------------------------------------------------------- SHA-1
 

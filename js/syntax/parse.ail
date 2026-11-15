@@ -1349,7 +1349,7 @@ fn Parser.expression(mut self, no_in bool) Expr ! JsError
     mut items := [first]
     while eat(",")?
         items.push(assign(no_in)?)
-    Seq(items, p)
+    Expr.Seq(items, p)
 
 ## AssignmentExpression (§13.15). `no_in`: `in` is not an operator here
 ## (a `for` head, §14.7.4).
@@ -1938,7 +1938,7 @@ fn Parser.paren_or_arrow(mut self) Expr ! JsError
         tok = close
         return unexpected()
     check_covers(before)?
-    inner := if items.len() == 1 then items[0] else Seq(items, expr_pos(items[0]))
+    inner := if items.len() == 1 then items[0] else Expr.Seq(items, expr_pos(items[0]))
     Paren(inner, p)
 
 ## `[a, , ...b]` (§13.2.4).
