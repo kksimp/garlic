@@ -42,8 +42,8 @@ Native macOS window (needs the SwiftUI host, ADR 0838): `../ail/tools/app-host/m
 ## Pixel mode: forms, tabs, find
 
 - Forms: click a field to type; Enter submits (GET/POST); clicking a select cycles its options.
-- Tabs: Cmd-T new, Cmd-W close, Ctrl-Tab next, Cmd-Shift-T reopens; each tab keeps its own page. Right-click a tab for its menu.
-- Omnibox: click or Cmd-L to edit, Enter opens a URL or a DuckDuckGo search (`b`, `y`, `g` prefixes pick Bing, Yahoo, Google), Escape restores the address.
+- Tabs: Cmd-T new, Cmd-W close, Ctrl-Tab next, Cmd-Shift-T reopens; each tab keeps its own page. Right-click a tab for its menu. Many tabs shrink to their favicons; a narrow shown tab is its close button.
+- Omnibox: click or Cmd-L to edit, Enter opens a URL or a DuckDuckGo search (`b`, `y`, `g` prefixes pick Bing, Yahoo, Google), Escape restores the address. Its caret, selection and the dimmed path sit by the host's measured text widths; long text slides to keep the caret in view. The icon is a padlock for https pages, an "i" for others and a magnifier while editing.
 - Look: Chromium-style, dark by default; `--light` for the light look (also in the toolbar menu). On macOS the tabs sit in the title bar beside the traffic lights (std.app.25); drag the empty strip to move the window, double-click it to zoom. Tabs show the site's favicon (`<link rel="icon">` or `/favicon.ico`; ICO, PNG, GIF, JPEG), fetched once per icon address.
 - Find: Cmd-F (or the menu) opens Chromium's find bar at the top right; it searches as you type, shows `k/n`, Enter or Cmd-G steps to the next match (Shift for the previous), Escape closes. The match shown is orange, the others yellow. In the text layout `/` prompts instead and `n` finds the next.
 - Omnibox dropdown: typing lists the text as a search or URL, then the pages from the history that match (kept across runs in `~/.garlic-history.txt`, or `$GARLIC_HISTORY`); Down and Up pick one, Enter opens it.

@@ -196,12 +196,15 @@ fn Vm.params_method(mut self, m str, this_val Value, args List[Value]) Value ! T
             o.elems = [o.elems[2 * pairs[k / 2] + k % 2] for k in 0..2 * n]
             Undef
         "forEach" =>
-            for i in 0..n
+            ## The callback may delete entries: the list is read live.
+            mut i := 0
+            while 2 * i + 1 < o.elems.len()
                 call(arg_at(args, 0), arg_at(args, 1), [
                     o.elems[2 * i + 1],
                     o.elems[2 * i],
                     this_val,
                 ])?
+                i += 1
             Undef
         "keys" => array([o.elems[2 * i] for i in 0..n])
         "values" => array([o.elems[2 * i + 1] for i in 0..n])
