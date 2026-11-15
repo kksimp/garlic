@@ -5802,7 +5802,7 @@ fn fwd_slashes(p str) str
     ))
     assert((a.bridge.replies.recv() else "").contains("open https://elsewhere.test/"))
 
-@test fn the_attach_token_must_match()
+@needs(proc) @test fn the_attach_token_must_match()
     tok := attach.make_token()
     assert(tok.chars().len() >= 24)
     assert(tok != attach.make_token())
@@ -5864,7 +5864,7 @@ fn fwd_slashes(p str) str
     a.update(app.external("tick", ""))
     assert(a.events[1].contains("refused"))
 
-@test fn the_user_decides_on_an_agents_site_and_send_requests()
+@needs(net) @test fn the_user_decides_on_an_agents_site_and_send_requests()
     b := Browser.new("{testdata()}/form.html", 80, 24)
     mut a := Garlic.new(b, 800.0, 600.0, 7.5, 15.0)
     a.attached = true

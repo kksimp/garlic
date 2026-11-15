@@ -2,7 +2,7 @@
 
 License: AGPL-3.0 (see `LICENSE`). Moved from kksimp/ail (`tools/garlic`) with its history.
 
-Needs the AIL toolchain: clone [kksimp/ail](https://github.com/kksimp/ail) next to this repo at the commit in `.ail-version`. Commands below use `../ail/ail`; `tools/check.sh` runs check, fmt and the tests against that pin. Builds and tests run on a dev machine, not in a container.
+Needs the AIL toolchain: clone [kksimp/ail](https://github.com/kksimp/ail) next to this repo at the v0.1.0 release (`git checkout v0.1.0`, the commit in `.ail-version`). Commands below use `../ail/ail`; `tools/check.sh` runs check, fmt and the tests against that pin. Builds and tests run on a dev machine, not in a container.
 
 `garlic.ail` is a text-mode web browser written in AIL. The
 design, scope and roadmap are in
