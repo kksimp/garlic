@@ -168,24 +168,24 @@ fn unsupported(what str) Thrown
     )
 
 fn Compiler.emit(mut self, op Op, delta int)
-    ops.push(op)
-    depth += delta
+    self.ops.push(op)
+    self.depth += delta
 
 fn Compiler.here(self) int
-    ops.len()
+    self.ops.len()
 
 ## A jump whose destination is set later with `patch`.
 fn Compiler.jump(mut self, kind str) int
-    at := ops.len()
+    at := self.ops.len()
     match kind
-        "if" => emit(JumpIf(-1), -1)
-        "ifnot" => emit(JumpIfNot(-1), -1)
-        "notnullish" => emit(JumpIfNotNullish(-1), -1)
-        _ => emit(Jump(-1), 0)
+        "if" => self.emit(JumpIf(-1), -1)
+        "ifnot" => self.emit(JumpIfNot(-1), -1)
+        "notnullish" => self.emit(JumpIfNotNullish(-1), -1)
+        _ => self.emit(Jump(-1), 0)
     at
 
 fn Compiler.patch(mut self, at int, to int)
-    ops[at] = match ops[at]
+    self.ops[at] = match self.ops[at]
         JumpIf => JumpIf(to)
         JumpIfNot => JumpIfNot(to)
         JumpIfNotNullish => JumpIfNotNullish(to)
@@ -195,33 +195,33 @@ fn Compiler.patch(mut self, at int, to int)
         CaseTest => CaseTest(to)
         Jump => Jump(to)
         Eval | Exec | Pop | Dup | Push | Yield | Await | GetIter | Binary | Unary | GetProp | GetElem | PutProp | PutElem | AssignPat | BindPat | NewList | Append | AppendSpread | Call | Construct | NewObject | ObjProp | ObjInit | ObjComputed | ObjSpread | Concat | Return | Throw | PushScope | PopScope | CopyScope | TryPush | TryPop | CatchParam | NormalCompletion | EndFinally | IterInit | IterCall | IterClose | BindLeft =>
-            ops[at]
+            self.ops[at]
 
 fn Compiler.new_target(mut self, kind str, labels List[str], unlabelled bool) int
-    targets.push(Target(
+    self.targets.push(Target(
         labels: labels,
         kind: kind,
         unlabelled: unlabelled,
         pc: -1,
-        scopes: scopes,
-        handlers: handlers,
-        depth: depth,
+        scopes: self.scopes,
+        handlers: self.handlers,
+        depth: self.depth,
     ))
-    targets.len() - 1
+    self.targets.len() - 1
 
 fn Compiler.land(mut self, t int)
-    targets[t].pc = ops.len()
+    self.targets[t].pc = self.ops.len()
 
 fn Compiler.take_labels(mut self) List[str]
-    labels := pending
-    pending = []
+    labels := self.pending
+    self.pending = []
     labels
 
 # ------------------------------------------------------------ statements
 
 fn Compiler.stmt(mut self, s syntax.Stmt) ! Thrown
     if not syntax.stmt_suspends(s)
-        labels := take_labels()
+        labels := self.take_labels()
         if labels.len() > 0
             # A labelled statement that can't suspend: the tree-walker
             # handles its labels itself.
@@ -230,88 +230,88 @@ fn Compiler.stmt(mut self, s syntax.Stmt) ! Thrown
             while i >= 0
                 wrapped = syntax.Stmt.Labeled(label: labels[i], body: wrapped, pos: stmt_pos(s))
                 i -= 1
-            ctxs.push(open)
-            emit(Exec(wrapped, ctxs.len() - 1), 0)
+            self.ctxs.push(self.open)
+            self.emit(Exec(wrapped, self.ctxs.len() - 1), 0)
             return
-        ctxs.push(open)
-        emit(Exec(s, ctxs.len() - 1), 0)
+        self.ctxs.push(self.open)
+        self.emit(Exec(s, self.ctxs.len() - 1), 0)
         return
     match s
         Exp(e, _) =>
-            take_labels()
-            expr(e)?
-            emit(Pop, -1)
+            self.take_labels()
+            self.expr(e)?
+            self.emit(Pop, -1)
         Var(d) =>
-            take_labels()
-            var_decl(d)?
+            self.take_labels()
+            self.var_decl(d)?
         Return(value, _) =>
-            take_labels()
+            self.take_labels()
             if v := value
-                expr(v)?
+                self.expr(v)?
             else
-                emit(Push(Undef), 1)
-            emit(Return, -1)
+                self.emit(Push(Undef), 1)
+            self.emit(Return, -1)
         Throw(value, _) =>
-            take_labels()
-            expr(value)?
-            emit(Throw, -1)
+            self.take_labels()
+            self.expr(value)?
+            self.emit(Throw, -1)
         If(test, yes, no, _) =>
-            labels := take_labels()
-            brk := new_target("break", labels, false)
-            open.push(brk)
-            expr(test)?
-            to_else := jump("ifnot")
-            stmt(yes)?
-            to_end := jump("")
-            patch(to_else, here())
+            labels := self.take_labels()
+            brk := self.new_target("break", labels, false)
+            self.open.push(brk)
+            self.expr(test)?
+            to_else := self.jump("ifnot")
+            self.stmt(yes)?
+            to_end := self.jump("")
+            self.patch(to_else, self.here())
             if n := no
-                stmt(n)?
-            patch(to_end, here())
-            open.pop()
-            land(brk)
+                self.stmt(n)?
+            self.patch(to_end, self.here())
+            self.open.pop()
+            self.land(brk)
         Block(body, _) =>
-            labels := take_labels()
-            brk := new_target("break", labels, false)
-            open.push(brk)
-            block(body)?
-            open.pop()
-            land(brk)
+            labels := self.take_labels()
+            brk := self.new_target("break", labels, false)
+            self.open.push(brk)
+            self.block(body)?
+            self.open.pop()
+            self.land(brk)
         Labeled(label, body, _) =>
-            pending.push(label)
-            stmt(body)?
+            self.pending.push(label)
+            self.stmt(body)?
         While(test, body, _) =>
-            labels := take_labels()
-            brk := new_target("break", labels, true)
-            cont := new_target("continue", labels, true)
-            land(cont)
-            expr(test)?
-            out := jump("ifnot")
-            open.push(brk)
-            open.push(cont)
-            stmt(body)?
-            open.pop()
-            open.pop()
-            emit(Jump(targets[cont].pc), 0)
-            patch(out, here())
-            land(brk)
+            labels := self.take_labels()
+            brk := self.new_target("break", labels, true)
+            cont := self.new_target("continue", labels, true)
+            self.land(cont)
+            self.expr(test)?
+            out := self.jump("ifnot")
+            self.open.push(brk)
+            self.open.push(cont)
+            self.stmt(body)?
+            self.open.pop()
+            self.open.pop()
+            self.emit(Jump(self.targets[cont].pc), 0)
+            self.patch(out, self.here())
+            self.land(brk)
         DoWhile(body, test, _) =>
-            labels := take_labels()
-            brk := new_target("break", labels, true)
-            cont := new_target("continue", labels, true)
-            top := here()
-            open.push(brk)
-            open.push(cont)
-            stmt(body)?
-            open.pop()
-            open.pop()
-            land(cont)
-            expr(test)?
-            emit(JumpIf(top), -1)
-            land(brk)
-        For(init, test, update, body, _) => for_loop(init, test, update, body)?
-        ForIn(left, right, body, of, is_await, _) => for_in(left, right, body, of, is_await)?
-        Try(block, param, handler, finalizer, _) => try_stmt(block, param, handler, finalizer)?
-        Switch(disc, cases, _) => switch_stmt(disc, cases)?
+            labels := self.take_labels()
+            brk := self.new_target("break", labels, true)
+            cont := self.new_target("continue", labels, true)
+            top := self.here()
+            self.open.push(brk)
+            self.open.push(cont)
+            self.stmt(body)?
+            self.open.pop()
+            self.open.pop()
+            self.land(cont)
+            self.expr(test)?
+            self.emit(JumpIf(top), -1)
+            self.land(brk)
+        For(init, test, update, body, _) => self.for_loop(init, test, update, body)?
+        ForIn(left, right, body, of, is_await, _) => self.for_in(left, right, body, of, is_await)?
+        Try(block, param, handler, finalizer, _) => self.try_stmt(block, param, handler, finalizer)?
+        Switch(disc, cases, _) => self.switch_stmt(disc, cases)?
         ClassDecl => return unsupported("A class declaration")
         With => return unsupported("A with statement")
         FuncDecl | Empty | Break | Continue | Debugger | Module => return
@@ -342,12 +342,12 @@ fn stmt_pos(s syntax.Stmt) syntax.Pos
 
 ## A block's statements in their own scope.
 fn Compiler.block(mut self, body List[syntax.Stmt]) ! Thrown
-    emit(PushScope(body), 0)
-    scopes += 1
+    self.emit(PushScope(body), 0)
+    self.scopes += 1
     for s in body
-        stmt(s)?
-    emit(PopScope, 0)
-    scopes -= 1
+        self.stmt(s)?
+    self.emit(PopScope, 0)
+    self.scopes -= 1
 
 fn Compiler.var_decl(mut self, d syntax.VarDecl) ! Thrown
     for x in d.decls
@@ -355,12 +355,12 @@ fn Compiler.var_decl(mut self, d syntax.VarDecl) ! Thrown
             if syntax.expr_suspends(init) or syntax.pat_suspends(x.target)
                 if syntax.pat_suspends(x.target)
                     return unsupported("A destructuring pattern")
-                expr(init)?
-                emit(BindPat(x.target, d.kind), -1)
+                self.expr(init)?
+                self.emit(BindPat(x.target, d.kind), -1)
                 continue
         one := syntax.Stmt.Var(syntax.VarDecl(kind: d.kind, decls: [x], pos: d.pos))
-        ctxs.push(open)
-        emit(Exec(one, ctxs.len() - 1), 0)
+        self.ctxs.push(self.open)
+        self.emit(Exec(one, self.ctxs.len() - 1), 0)
 
 fn Compiler.for_loop(
     mut self,
@@ -369,7 +369,7 @@ fn Compiler.for_loop(
     update syntax.Expr?,
     body syntax.Stmt,
 ) ! Thrown
-    labels := take_labels()
+    labels := self.take_labels()
     mut lexical := List[syntax.Stmt]()
     mut per_iteration := false
     if i := init
@@ -379,40 +379,40 @@ fn Compiler.for_loop(
                     lexical.push(syntax.Stmt.Var(d))
                     per_iteration = d.kind == "let"
             InitExpr => per_iteration = false
-    emit(PushScope(lexical), 0)
-    scopes += 1
+    self.emit(PushScope(lexical), 0)
+    self.scopes += 1
     if i := init
         match i
-            InitDecl(d) => var_decl(d)?
+            InitDecl(d) => self.var_decl(d)?
             InitExpr(e) =>
-                expr(e)?
-                emit(Pop, -1)
+                self.expr(e)?
+                self.emit(Pop, -1)
     if per_iteration
-        emit(CopyScope, 0)
-    brk := new_target("break", labels, true)
-    cont := new_target("continue", labels, true)
-    top := here()
+        self.emit(CopyScope, 0)
+    brk := self.new_target("break", labels, true)
+    cont := self.new_target("continue", labels, true)
+    top := self.here()
     mut out := -1
     if t := test
-        expr(t)?
-        out = jump("ifnot")
-    open.push(brk)
-    open.push(cont)
-    stmt(body)?
-    open.pop()
-    open.pop()
-    land(cont)
+        self.expr(t)?
+        out = self.jump("ifnot")
+    self.open.push(brk)
+    self.open.push(cont)
+    self.stmt(body)?
+    self.open.pop()
+    self.open.pop()
+    self.land(cont)
     if per_iteration
-        emit(CopyScope, 0)
+        self.emit(CopyScope, 0)
     if u := update
-        expr(u)?
-        emit(Pop, -1)
-    emit(Jump(top), 0)
+        self.expr(u)?
+        self.emit(Pop, -1)
+    self.emit(Jump(top), 0)
     if out >= 0
-        patch(out, here())
-    land(brk)
-    emit(PopScope, 0)
-    scopes -= 1
+        self.patch(out, self.here())
+    self.land(brk)
+    self.emit(PopScope, 0)
+    self.scopes -= 1
 
 fn Compiler.for_in(
     mut self,
@@ -422,7 +422,7 @@ fn Compiler.for_in(
     of bool,
     is_await bool,
 ) ! Thrown
-    labels := take_labels()
+    labels := self.take_labels()
     mut head := List[syntax.Stmt]()
     match left
         LeftDecl(d) =>
@@ -433,42 +433,42 @@ fn Compiler.for_in(
                 return unsupported("A for-in or for-of target")
     # The subject is evaluated where the head's `let` names are in their
     # dead zone (§14.7.5.6).
-    emit(PushScope(head), 0)
-    scopes += 1
-    expr(right)?
-    emit(PopScope, 0)
-    scopes -= 1
-    emit(IterInit(of: of, is_await: is_await), 0)
+    self.emit(PushScope(head), 0)
+    self.scopes += 1
+    self.expr(right)?
+    self.emit(PopScope, 0)
+    self.scopes -= 1
+    self.emit(IterInit(of: of, is_await: is_await), 0)
     # A `break` lands with the iterator still on the stack, to close it.
-    brk := new_target("break", labels, true)
-    cont := new_target("continue", labels, true)
-    land(cont)
-    next := here()
+    brk := self.new_target("break", labels, true)
+    cont := self.new_target("continue", labels, true)
+    self.land(cont)
+    next := self.here()
     mut end_at := next
     if is_await
-        emit(IterCall, 1)
-        emit(Await, 0)
-        end_at = here()
-        emit(IterResult(-1), 0)
+        self.emit(IterCall, 1)
+        self.emit(Await, 0)
+        end_at = self.here()
+        self.emit(IterResult(-1), 0)
     else
-        emit(IterNext(-1), 1)
-    emit(PushScope(head), 0)
-    scopes += 1
-    emit(BindLeft(left), -1)
-    open.push(brk)
-    open.push(cont)
-    stmt(body)?
-    open.pop()
-    open.pop()
-    emit(PopScope, 0)
-    scopes -= 1
-    emit(Jump(next), 0)
-    land(brk)
-    emit(IterClose, 0)
+        self.emit(IterNext(-1), 1)
+    self.emit(PushScope(head), 0)
+    self.scopes += 1
+    self.emit(BindLeft(left), -1)
+    self.open.push(brk)
+    self.open.push(cont)
+    self.stmt(body)?
+    self.open.pop()
+    self.open.pop()
+    self.emit(PopScope, 0)
+    self.scopes -= 1
+    self.emit(Jump(next), 0)
+    self.land(brk)
+    self.emit(IterClose, 0)
     if is_await
-        emit(Await, 0)
-    emit(Pop, -1)
-    patch(end_at, here())
+        self.emit(Await, 0)
+    self.emit(Pop, -1)
+    self.patch(end_at, self.here())
 
 fn Compiler.try_stmt(
     mut self,
@@ -477,198 +477,198 @@ fn Compiler.try_stmt(
     handler List[syntax.Stmt]?,
     finalizer List[syntax.Stmt]?,
 ) ! Thrown
-    labels := take_labels()
-    brk := new_target("break", labels, false)
-    open.push(brk)
-    push_at := here()
-    emit(TryPush(catch_pc: -1, finally_pc: -1), 0)
-    handlers += 1
+    labels := self.take_labels()
+    brk := self.new_target("break", labels, false)
+    self.open.push(brk)
+    push_at := self.here()
+    self.emit(TryPush(catch_pc: -1, finally_pc: -1), 0)
+    self.handlers += 1
     self.block(block)?
-    emit(TryPop, 0)
-    handlers -= 1
+    self.emit(TryPop, 0)
+    self.handlers -= 1
     mut to_finally := List[int]()
-    to_finally.push(jump(""))
+    to_finally.push(self.jump(""))
     mut catch_pc := -1
     if h := handler
-        catch_pc = here()
-        depth += 1
+        catch_pc = self.here()
+        self.depth += 1
         if finalizer != none
-            emit(TryPush(catch_pc: -1, finally_pc: -1), 0)
-            handlers += 1
-        emit(CatchParam(param), -1)
-        scopes += 1
+            self.emit(TryPush(catch_pc: -1, finally_pc: -1), 0)
+            self.handlers += 1
+        self.emit(CatchParam(param), -1)
+        self.scopes += 1
         for s in h
-            stmt(s)?
-        emit(PopScope, 0)
-        scopes -= 1
+            self.stmt(s)?
+        self.emit(PopScope, 0)
+        self.scopes -= 1
         if finalizer != none
-            emit(TryPop, 0)
-            handlers -= 1
-        to_finally.push(jump(""))
+            self.emit(TryPop, 0)
+            self.handlers -= 1
+        to_finally.push(self.jump(""))
     mut finally_pc := -1
     if f := finalizer
-        normal := here()
-        emit(NormalCompletion, 0)
-        finally_pc = here()
+        normal := self.here()
+        self.emit(NormalCompletion, 0)
+        finally_pc = self.here()
         self.block(f)?
-        emit(EndFinally, 0)
+        self.emit(EndFinally, 0)
         for j in to_finally
-            patch(j, normal)
+            self.patch(j, normal)
         # The handler around the `catch` block only has the `finally`.
         if handler != none
-            ops[catch_pc] = TryPush(catch_pc: -1, finally_pc: finally_pc)
+            self.ops[catch_pc] = TryPush(catch_pc: -1, finally_pc: finally_pc)
     else
         for j in to_finally
-            patch(j, here())
-    ops[push_at] = TryPush(catch_pc: catch_pc, finally_pc: finally_pc)
-    open.pop()
-    land(brk)
+            self.patch(j, self.here())
+    self.ops[push_at] = TryPush(catch_pc: catch_pc, finally_pc: finally_pc)
+    self.open.pop()
+    self.land(brk)
 
 fn Compiler.switch_stmt(mut self, disc syntax.Expr, cases List[syntax.Case]) ! Thrown
-    labels := take_labels()
-    brk := new_target("break", labels, true)
+    labels := self.take_labels()
+    brk := self.new_target("break", labels, true)
     mut all := List[syntax.Stmt]()
     for c in cases
         all.extend(c.body)
-    emit(PushScope(all), 0)
-    scopes += 1
-    targets[brk].scopes = scopes - 1
-    expr(disc)?
+    self.emit(PushScope(all), 0)
+    self.scopes += 1
+    self.targets[brk].scopes = self.scopes - 1
+    self.expr(disc)?
     mut tests := List[int]()
     for c in cases
         if t := c.test
-            emit(Dup, 1)
-            expr(t)?
-            tests.push(here())
-            emit(CaseTest(-1), -2)
+            self.emit(Dup, 1)
+            self.expr(t)?
+            tests.push(self.here())
+            self.emit(CaseTest(-1), -2)
             # CaseTest pops the test, and the discriminant too when it jumps.
-            depth += 1
+            self.depth += 1
         else
             tests.push(-1)
-    emit(Pop, -1)
-    to_default := jump("")
-    open.push(brk)
+    self.emit(Pop, -1)
+    to_default := self.jump("")
+    self.open.push(brk)
     mut default_pc := -1
     for i in 0..cases.len()
         if tests[i] >= 0
-            patch(tests[i], here())
+            self.patch(tests[i], self.here())
         else
-            default_pc = here()
+            default_pc = self.here()
         for s in cases[i].body
-            stmt(s)?
-    open.pop()
-    patch(to_default, if default_pc >= 0 then default_pc else here())
-    land(brk)
-    emit(PopScope, 0)
-    scopes -= 1
+            self.stmt(s)?
+    self.open.pop()
+    self.patch(to_default, if default_pc >= 0 then default_pc else self.here())
+    self.land(brk)
+    self.emit(PopScope, 0)
+    self.scopes -= 1
 
 # ----------------------------------------------------------- expressions
 
 fn Compiler.expr(mut self, e syntax.Expr) ! Thrown
     if not syntax.expr_suspends(e)
-        emit(Eval(e), 1)
+        self.emit(Eval(e), 1)
         return
     match e
         Yield(arg, delegate, _) =>
             if a := arg
-                expr(a)?
+                self.expr(a)?
             else
-                emit(Push(Undef), 1)
-            if delegate and async_gen
+                self.emit(Push(Undef), 1)
+            if delegate and self.async_gen
                 return unsupported("yield* in an async generator")
             if delegate
-                emit(GetIter, 0)
-                emit(Push(Undef), 1)
-                top := here()
-                emit(Delegate(-1), 0)
-                emit(Jump(top), 0)
-                patch(top, here())
-                depth -= 1
+                self.emit(GetIter, 0)
+                self.emit(Push(Undef), 1)
+                top := self.here()
+                self.emit(Delegate(-1), 0)
+                self.emit(Jump(top), 0)
+                self.patch(top, self.here())
+                self.depth -= 1
             else
-                if async_gen
-                    emit(Await, 0)
-                emit(Yield, 0)
+                if self.async_gen
+                    self.emit(Await, 0)
+                self.emit(Yield, 0)
         Await(arg, _) =>
-            expr(arg)?
-            emit(Await, 0)
-        Paren(inner, _) => expr(inner)?
+            self.expr(arg)?
+            self.emit(Await, 0)
+        Paren(inner, _) => self.expr(inner)?
         Seq(items, _) =>
             for i in 0..items.len()
-                expr(items[i])?
+                self.expr(items[i])?
                 if i + 1 < items.len()
-                    emit(Pop, -1)
+                    self.emit(Pop, -1)
         Binary(op, l, r, _) =>
-            expr(l)?
-            expr(r)?
-            emit(Binary(op), -1)
+            self.expr(l)?
+            self.expr(r)?
+            self.emit(Binary(op), -1)
         Logical(op, l, r, _) =>
-            expr(l)?
-            emit(Dup, 1)
+            self.expr(l)?
+            self.emit(Dup, 1)
             kind := match op
                 "&&" => "ifnot"
                 "||" => "if"
                 _ => "notnullish"
-            out := jump(kind)
-            emit(Pop, -1)
-            expr(r)?
-            patch(out, here())
+            out := self.jump(kind)
+            self.emit(Pop, -1)
+            self.expr(r)?
+            self.patch(out, self.here())
         Cond(test, yes, no, _) =>
-            expr(test)?
-            to_no := jump("ifnot")
-            expr(yes)?
-            to_end := jump("")
-            depth -= 1
-            patch(to_no, here())
-            expr(no)?
-            patch(to_end, here())
+            self.expr(test)?
+            to_no := self.jump("ifnot")
+            self.expr(yes)?
+            to_end := self.jump("")
+            self.depth -= 1
+            self.patch(to_no, self.here())
+            self.expr(no)?
+            self.patch(to_end, self.here())
         Unary(op, arg, _) =>
             if op == "delete"
                 return unsupported("delete")
-            expr(arg)?
-            emit(Unary(op), 0)
-        Assign(op, target, value, _) => assign(op, target, value)?
+            self.expr(arg)?
+            self.emit(Unary(op), 0)
+        Assign(op, target, value, _) => self.assign(op, target, value)?
         Call(callee, args, optional, _) =>
             if optional or syntax.expr_kind(callee) == "Super"
                 return unsupported("This call")
-            callee_and_this(callee)?
-            arguments(args)?
-            emit(Call(callee), -2)
+            self.callee_and_this(callee)?
+            self.arguments(args)?
+            self.emit(Call(callee), -2)
         New(callee, args, _) =>
-            expr(callee)?
-            arguments(args)?
-            emit(Construct(callee), -1)
+            self.expr(callee)?
+            self.arguments(args)?
+            self.emit(Construct(callee), -1)
         Member(object, prop, computed, optional, _) =>
             if optional or syntax.expr_kind(object) == "Super"
                 return unsupported("This member expression")
-            expr(object)?
+            self.expr(object)?
             if computed
-                expr(prop)?
-                emit(GetElem, -1)
+                self.expr(prop)?
+                self.emit(GetElem, -1)
             else
-                emit(GetProp(prop_name(prop)), 0)
+                self.emit(GetProp(prop_name(prop)), 0)
         Array(items, _, _) =>
-            emit(NewList, 1)
+            self.emit(NewList, 1)
             for item in items
                 if x := item
                     if inner := spread_arg(x)
-                        expr(inner)?
-                        emit(AppendSpread, -1)
+                        self.expr(inner)?
+                        self.emit(AppendSpread, -1)
                     else
-                        expr(x)?
-                        emit(Append, -1)
+                        self.expr(x)?
+                        self.emit(Append, -1)
                 else
-                    emit(Push(Undef), 1)
-                    emit(Append, -1)
+                    self.emit(Push(Undef), 1)
+                    self.emit(Append, -1)
         Object(props, _) =>
-            emit(NewObject, 1)
+            self.emit(NewObject, 1)
             for p in props
-                object_prop(p)?
+                self.object_prop(p)?
         Template(quasis, exprs, _) =>
             for x in exprs
-                expr(x)?
-            emit(Concat([q.cooked else "" for q in quasis]), 1 - exprs.len())
+                self.expr(x)?
+            self.emit(Concat([q.cooked else "" for q in quasis]), 1 - exprs.len())
         Num | Str | Big | Regex | Bool | Null | Ident | This | Super | NewTarget | PrivName | Function | Arrow =>
-            emit(Eval(e), 1)
+            self.emit(Eval(e), 1)
         Tagged | ClassExpr | Update | Spread | Chain | Import => return unsupported("This expression")
 
 fn prop_name(prop syntax.Expr) str
@@ -690,34 +690,34 @@ fn Compiler.callee_and_this(mut self, callee syntax.Expr) ! Thrown
         Member(object, prop, computed, optional, _) =>
             if optional or syntax.expr_kind(object) == "Super"
                 return unsupported("This call")
-            expr(object)?
-            emit(Dup, 1)
+            self.expr(object)?
+            self.emit(Dup, 1)
             if computed
-                expr(prop)?
-                emit(GetElem, -1)
+                self.expr(prop)?
+                self.emit(GetElem, -1)
             else
-                emit(GetProp(prop_name(prop)), 0)
-        Paren(inner, _) => callee_and_this(inner)?
+                self.emit(GetProp(prop_name(prop)), 0)
+        Paren(inner, _) => self.callee_and_this(inner)?
         Num | Str | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
-            emit(Push(Undef), 1)
-            expr(callee)?
+            self.emit(Push(Undef), 1)
+            self.expr(callee)?
 
 fn Compiler.arguments(mut self, args List[syntax.Expr]) ! Thrown
-    emit(NewList, 1)
+    self.emit(NewList, 1)
     for a in args
         if inner := spread_arg(a)
-            expr(inner)?
-            emit(AppendSpread, -1)
+            self.expr(inner)?
+            self.emit(AppendSpread, -1)
         else
-            expr(a)?
-            emit(Append, -1)
+            self.expr(a)?
+            self.emit(Append, -1)
 
 fn Compiler.assign(mut self, op str, target syntax.Pat, value syntax.Expr) ! Thrown
     if syntax.pat_suspends(target)
         return unsupported("An assignment target")
     if op == "="
-        expr(value)?
-        emit(AssignPat(target), 0)
+        self.expr(value)?
+        self.emit(AssignPat(target), 0)
         return
     if op == "&&=" or op == "||=" or op == "??="
         return unsupported("A logical assignment")
@@ -726,26 +726,26 @@ fn Compiler.assign(mut self, op str, target syntax.Pat, value syntax.Expr) ! Thr
         PatTarget(t) =>
             match t
                 Member(object, prop, computed, _, _) =>
-                    expr(object)?
+                    self.expr(object)?
                     if computed
-                        expr(prop)?
+                        self.expr(prop)?
                         return unsupported("A compound assignment to a computed member")
-                    emit(Dup, 1)
+                    self.emit(Dup, 1)
                     key := prop_name(prop)
-                    emit(GetProp(key), 0)
-                    expr(value)?
-                    emit(Binary(binop), -1)
-                    emit(PutProp(key), -1)
+                    self.emit(GetProp(key), 0)
+                    self.expr(value)?
+                    self.emit(Binary(binop), -1)
+                    self.emit(PutProp(key), -1)
                 Num | Str | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Paren | Yield | Await =>
-                    emit(Eval(t), 1)
-                    expr(value)?
-                    emit(Binary(binop), -1)
-                    emit(AssignPat(target), 0)
+                    self.emit(Eval(t), 1)
+                    self.expr(value)?
+                    self.emit(Binary(binop), -1)
+                    self.emit(AssignPat(target), 0)
         PatId(name, p) =>
-            emit(Eval(syntax.Expr.Ident(name: name, pos: p)), 1)
-            expr(value)?
-            emit(Binary(binop), -1)
-            emit(AssignPat(target), 0)
+            self.emit(Eval(syntax.Expr.Ident(name: name, pos: p)), 1)
+            self.expr(value)?
+            self.emit(Binary(binop), -1)
+            self.emit(AssignPat(target), 0)
         PatObj | PatArr | PatDefault => return unsupported("A compound assignment")
 
 fn Compiler.object_prop(mut self, p syntax.Prop) ! Thrown
@@ -755,30 +755,30 @@ fn Compiler.object_prop(mut self, p syntax.Prop) ! Thrown
                 match key
                     Computed(k, _) =>
                         if not syntax.expr_suspends(k)
-                            emit(ObjProp(p), 0)
+                            self.emit(ObjProp(p), 0)
                             return
                     KeyName | KeyStr | KeyNum | KeyPriv =>
-                        emit(ObjProp(p), 0)
+                        self.emit(ObjProp(p), 0)
                         return
             match key
                 KeyName(name, _) =>
-                    expr(value)?
-                    emit(ObjInit(name), -1)
+                    self.expr(value)?
+                    self.emit(ObjInit(name), -1)
                 KeyStr(name, _) =>
-                    expr(value)?
-                    emit(ObjInit(name), -1)
+                    self.expr(value)?
+                    self.emit(ObjInit(name), -1)
                 KeyNum(n, _) =>
-                    expr(value)?
-                    emit(ObjInit(syntax.number_to_string(n)), -1)
+                    self.expr(value)?
+                    self.emit(ObjInit(syntax.number_to_string(n)), -1)
                 Computed(k, _) =>
-                    expr(k)?
-                    expr(value)?
-                    emit(ObjComputed, -2)
+                    self.expr(k)?
+                    self.expr(value)?
+                    self.emit(ObjComputed, -2)
                 KeyPriv => return unsupported("A private name")
         PropSpread(arg, _) =>
-            expr(arg)?
-            emit(ObjSpread, -1)
-        Method | CoverInit => emit(ObjProp(p), 0)
+            self.expr(arg)?
+            self.emit(ObjSpread, -1)
+        Method | CoverInit => self.emit(ObjProp(p), 0)
 
 # ---------------------------------------------------------------- frames
 
@@ -865,7 +865,7 @@ pub fn Vm.start_resumable(
     args List[Value],
 ) Value ! Thrown
     if fun.is_gen and fun.is_async
-        f := prepare_frame(fobj, fun, env, args)?
+        f := self.prepare_frame(fobj, fun, env, args)?
         frame_seq += 1
         frames[frame_seq] = f
         agen_queues[frame_seq] = []
@@ -876,7 +876,7 @@ pub fn Vm.start_resumable(
     if fun.is_async
         promise := Value.Obj(new_promise())
         p := obj_of(promise) else return promise
-        mut f := prepare_frame(fobj, fun, env, args) else err
+        mut f := self.prepare_frame(fobj, fun, env, args) else err
             if err.limit
                 return err
             reject_promise(p, err.value)
@@ -884,9 +884,9 @@ pub fn Vm.start_resumable(
         f.promise = promise
         frame_seq += 1
         frames[frame_seq] = f
-        step_async(frame_seq, Completion(kind: "normal", value: Undef, target: -1))
+        self.step_async(frame_seq, Completion(kind: "normal", value: Undef, target: -1))
         return promise
-    f := prepare_frame(fobj, fun, env, args)?
+    f := self.prepare_frame(fobj, fun, env, args)?
     frame_seq += 1
     frames[frame_seq] = f
     proto := get(Obj(fobj), "prototype")?
@@ -911,7 +911,7 @@ fn Vm.prepare_frame(
     if fun.expr == none
         hoist_vars(fun.body, env, true)
         declare_block(fun.body, env)?
-    code := code_for(fobj, fun)?
+    code := self.code_for(fobj, fun)?
     Frame(
         code: code,
         pc: 0,
@@ -926,9 +926,9 @@ fn Vm.prepare_frame(
 
 ## Run an async function until it awaits or ends.
 fn Vm.step_async(mut self, id int, resume Completion)
-    mut f := take_frame(id) else return
+    mut f := self.take_frame(id) else return
     p := obj_of(f.promise) else return
-    r := run_frame(mut f, resume) else err
+    r := self.run_frame(mut f, resume) else err
         if err.limit
             stopped = true
             report(uncaught_text(err))
@@ -948,7 +948,7 @@ fn Vm.step_async(mut self, id int, resume Completion)
 pub fn Vm.async_native(mut self, name str, this_val Value, args List[Value]) Value ! Thrown
     id := int_of(num_of(this_val) else -1.0)
     ok := truthy(arg_at(args, 0))
-    step_async(id, Completion(
+    self.step_async(id, Completion(
         kind: if ok then "normal" else "throw",
         value: arg_at(args, 1),
         target: -1,
@@ -962,31 +962,31 @@ pub fn Vm.generator_native(mut self, m str, this_val Value, args List[Value]) Va
         return type_error("next method called on incompatible receiver {describe(this_val)}")
     id := int_of(num_of(g.prim) else -1.0)
     a0 := arg_at(args, 0)
-    mut f := take_frame(id) else
+    mut f := self.take_frame(id) else
         # Finished, or running (taken out while it runs).
         if self.running.contains(id)
             return type_error("Generator is already running")
         if m == "throw"
             return thrown(a0)
-        return iter_result(if m == "return" then a0 else Undef, true)
+        return self.iter_result(if m == "return" then a0 else Undef, true)
     if f.state == "start" and m != "next"
         # Never started: it just ends (§27.5.3.3 step 8).
         if m == "throw"
             return thrown(a0)
-        return iter_result(a0, true)
+        return self.iter_result(a0, true)
     kind := match m
         "next" => "normal"
         "return" => "return"
         _ => "throw"
     running.add(id)
-    r := run_frame(mut f, Completion(kind: kind, value: a0, target: -1)) else err
+    r := self.run_frame(mut f, Completion(kind: kind, value: a0, target: -1)) else err
         running.remove(id)
         return err
     running.remove(id)
     if r.kind == "return"
-        return iter_result(r.value, true)
+        return self.iter_result(r.value, true)
     frames[id] = f
-    iter_result(r.value, false)
+    self.iter_result(r.value, false)
 
 fn Vm.iter_result(mut self, v Value, done bool) Value
     r := plain()
@@ -1009,17 +1009,17 @@ pub fn Vm.run_frame(mut self, mut f Frame, resume Completion) Stop ! Thrown
         if resume.kind == "normal"
             f.stack.push(resume.value)
         else
-            if c := unwind(mut f, resume)
+            if c := self.unwind(mut f, resume)
                 f.state = "done"
                 if c.kind == "throw"
                     return thrown(c.value)
                 return Stop(kind: "return", value: c.value)
     code := codes[f.code]
     while true
-        stop := step(mut f, code) else err
+        stop := self.step(mut f, code) else err
             if err.limit
                 return err
-            if c := unwind(mut f, Completion(kind: "throw", value: err.value, target: -1))
+            if c := self.unwind(mut f, Completion(kind: "throw", value: err.value, target: -1))
                 f.state = "done"
                 return thrown(c.value)
             continue
@@ -1042,7 +1042,7 @@ fn Vm.unwind(mut self, mut f Frame, c Completion) Completion?
         if c.kind == "jump" and f.handlers.len() <= code.targets[c.target].handlers
             break
         h := f.handlers.pop() else break
-        restore(mut f, h.scopes, h.depth)
+        self.restore(mut f, h.scopes, h.depth)
         if c.kind == "throw" and h.catch_pc >= 0
             f.stack.push(c.value)
             f.pc = h.catch_pc
@@ -1053,7 +1053,7 @@ fn Vm.unwind(mut self, mut f Frame, c Completion) Completion?
             return none
     if c.kind == "jump"
         t := code.targets[c.target]
-        restore(mut f, t.scopes, t.depth)
+        self.restore(mut f, t.scopes, t.depth)
         f.pc = t.pc
         return none
     c
@@ -1087,7 +1087,7 @@ fn Vm.step(mut self, mut f Frame, code Code) Stop ! Thrown
             flow := exec(s, f.env)?
             match flow
                 Normal => return go()
-                Ret(v) => return leave(mut f, Completion(kind: "return", value: v, target: -1))
+                Ret(v) => return self.leave(mut f, Completion(kind: "return", value: v, target: -1))
                 Brk(label) =>
                     t := find_target(
                         code,
@@ -1095,7 +1095,7 @@ fn Vm.step(mut self, mut f Frame, code Code) Stop ! Thrown
                         "break",
                         label,
                     ) else return syntax_error("Illegal break statement")
-                    return leave(mut f, Completion(kind: "jump", value: Undef, target: t))
+                    return self.leave(mut f, Completion(kind: "jump", value: Undef, target: t))
                 Cont(label) =>
                     t := find_target(
                         code,
@@ -1103,46 +1103,46 @@ fn Vm.step(mut self, mut f Frame, code Code) Stop ! Thrown
                         "continue",
                         label,
                     ) else return syntax_error("Illegal continue statement")
-                    return leave(mut f, Completion(kind: "jump", value: Undef, target: t))
-        Pop => pop_value(mut f)
+                    return self.leave(mut f, Completion(kind: "jump", value: Undef, target: t))
+        Pop => self.pop_value(mut f)
         Dup => f.stack.push(f.stack[f.stack.len() - 1])
         Push(v) => f.stack.push(v)
-        Yield => return Stop(kind: "yield", value: pop_value(mut f))
-        Await => return Stop(kind: "await", value: pop_value(mut f))
+        Yield => return Stop(kind: "yield", value: self.pop_value(mut f))
+        Await => return Stop(kind: "await", value: self.pop_value(mut f))
         Delegate(end) =>
-            sent := pop_value(mut f)
+            sent := self.pop_value(mut f)
             it := f.stack[f.stack.len() - 1]
             r := call(get(it, "next")?, it, [sent])?
             if not is_obj(r)
                 return type_error("Iterator result {describe(r)} is not an object")
             if truthy(get(r, "done")?)
-                pop_value(mut f)
+                self.pop_value(mut f)
                 f.stack.push(get(r, "value")?)
                 f.pc = end
                 return go()
             return Stop(kind: "yield", value: get(r, "value")?)
         GetIter =>
-            v := pop_value(mut f)
+            v := self.pop_value(mut f)
             m := get(v, ITERATOR)?
             if not is_callable(m)
                 return type_error("{describe(v)} is not iterable")
             f.stack.push(call(m, v, [])?)
         Jump(to) => f.pc = to
         JumpIf(to) =>
-            if truthy(pop_value(mut f))
+            if truthy(self.pop_value(mut f))
                 f.pc = to
         JumpIfNot(to) =>
-            if not truthy(pop_value(mut f))
+            if not truthy(self.pop_value(mut f))
                 f.pc = to
         JumpIfNotNullish(to) =>
-            if not is_nullish(pop_value(mut f))
+            if not is_nullish(self.pop_value(mut f))
                 f.pc = to
         Binary(op) =>
-            b := pop_value(mut f)
-            a := pop_value(mut f)
+            b := self.pop_value(mut f)
+            a := self.pop_value(mut f)
             f.stack.push(binary(op, a, b)?)
         Unary(op) =>
-            v := pop_value(mut f)
+            v := self.pop_value(mut f)
             r := match op
                 "typeof" => Value.Str(type_of(v))
                 "!" => Value.Bool(not truthy(v))
@@ -1152,46 +1152,46 @@ fn Vm.step(mut self, mut f Frame, code Code) Stop ! Thrown
                 _ => Value.Undef
             f.stack.push(r)
         GetProp(key) =>
-            base := pop_value(mut f)
+            base := self.pop_value(mut f)
             f.stack.push(get(base, key)?)
         GetElem =>
-            key := pop_value(mut f)
-            base := pop_value(mut f)
+            key := self.pop_value(mut f)
+            base := self.pop_value(mut f)
             f.stack.push(get(base, to_key(key)?)?)
         PutProp(key) =>
-            v := pop_value(mut f)
-            base := pop_value(mut f)
+            v := self.pop_value(mut f)
+            base := self.pop_value(mut f)
             put(base, key, v)?
             f.stack.push(v)
         PutElem =>
-            v := pop_value(mut f)
-            key := pop_value(mut f)
-            base := pop_value(mut f)
+            v := self.pop_value(mut f)
+            key := self.pop_value(mut f)
+            base := self.pop_value(mut f)
             put(base, to_key(key)?, v)?
             f.stack.push(v)
         AssignPat(p) => bind_pattern(p, f.stack[f.stack.len() - 1], f.env, "assign")?
-        BindPat(p, kind) => bind_pattern(p, pop_value(mut f), f.env, kind)?
+        BindPat(p, kind) => bind_pattern(p, self.pop_value(mut f), f.env, kind)?
         NewList => f.stack.push(array([]))
         Append =>
-            v := pop_value(mut f)
+            v := self.pop_value(mut f)
             if o := obj_of(f.stack[f.stack.len() - 1])
                 o.elems.push(v)
         AppendSpread =>
-            v := pop_value(mut f)
+            v := self.pop_value(mut f)
             items := iterate(v)?
             if o := obj_of(f.stack[f.stack.len() - 1])
                 o.elems.extend(items)
         Call(callee) =>
-            list := pop_value(mut f)
-            fv := pop_value(mut f)
-            this_val := pop_value(mut f)
+            list := self.pop_value(mut f)
+            fv := self.pop_value(mut f)
+            this_val := self.pop_value(mut f)
             args := if o := obj_of(list) then o.elems else List[Value]()
             if not is_callable(fv)
                 return type_error("{expr_text(callee)} is not a function")
             f.stack.push(call(fv, this_val, args)?)
         Construct(callee) =>
-            list := pop_value(mut f)
-            fv := pop_value(mut f)
+            list := self.pop_value(mut f)
+            fv := self.pop_value(mut f)
             args := if o := obj_of(list) then o.elems else List[Value]()
             if not is_constructor(fv)
                 return type_error("{expr_text(callee)} is not a constructor")
@@ -1201,16 +1201,16 @@ fn Vm.step(mut self, mut f Frame, code Code) Stop ! Thrown
             if o := obj_of(f.stack[f.stack.len() - 1])
                 literal_prop(o, p, f.env)?
         ObjInit(key) =>
-            v := pop_value(mut f)
+            v := self.pop_value(mut f)
             if o := obj_of(f.stack[f.stack.len() - 1])
                 define(o, key, data(v))?
         ObjComputed =>
-            v := pop_value(mut f)
-            key := to_key(pop_value(mut f))?
+            v := self.pop_value(mut f)
+            key := to_key(self.pop_value(mut f))?
             if o := obj_of(f.stack[f.stack.len() - 1])
                 define(o, key, data(v))?
         ObjSpread =>
-            v := pop_value(mut f)
+            v := self.pop_value(mut f)
             if o := obj_of(f.stack[f.stack.len() - 1])
                 if not is_nullish(v)
                     src := to_object(v)?
@@ -1220,18 +1220,18 @@ fn Vm.step(mut self, mut f Frame, code Code) Stop ! Thrown
             n := quasis.len() - 1
             mut parts := List[Value]()
             for _ in 0..n
-                parts.push(pop_value(mut f))
+                parts.push(self.pop_value(mut f))
             parts.reverse()
             mut out := quasis[0]
             for i in 0..n
                 out = "{out}{to_string(parts[i])?}{quasis[i + 1]}"
             f.stack.push(Str(out))
-        Return => return leave(mut f, Completion(
+        Return => return self.leave(mut f, Completion(
             kind: "return",
-            value: pop_value(mut f),
+            value: self.pop_value(mut f),
             target: -1,
         ))
-        Throw => return thrown(pop_value(mut f))
+        Throw => return thrown(self.pop_value(mut f))
         PushScope(body) =>
             f.scopes.push(f.env)
             f.env = new_env(f.env, false)
@@ -1248,7 +1248,7 @@ fn Vm.step(mut self, mut f Frame, code Code) Stop ! Thrown
             ))
         TryPop => f.handlers.pop()
         CatchParam(param) =>
-            v := pop_value(mut f)
+            v := self.pop_value(mut f)
             f.scopes.push(f.env)
             f.env = new_env(f.env, false)
             if p := param
@@ -1259,13 +1259,13 @@ fn Vm.step(mut self, mut f Frame, code Code) Stop ! Thrown
         EndFinally =>
             c := f.completions.pop() else return go()
             if c.kind != "normal"
-                return leave(mut f, c)
+                return self.leave(mut f, c)
         IterInit(of, is_await) =>
-            subject := pop_value(mut f)
+            subject := self.pop_value(mut f)
             if is_await
-                f.stack.push(open_async_iterator(subject)?)
+                f.stack.push(self.open_async_iterator(subject)?)
             elif of
-                f.stack.push(open_iterator(subject)?)
+                f.stack.push(self.open_iterator(subject)?)
             else
                 mut keys := List[Value]()
                 if not is_nullish(subject)
@@ -1278,7 +1278,7 @@ fn Vm.step(mut self, mut f Frame, code Code) Stop ! Thrown
             if not is_obj(r)
                 return type_error("Iterator result {describe(r)} is not an object")
             if truthy(get(r, "done")?)
-                pop_value(mut f)
+                self.pop_value(mut f)
                 f.pc = end
             else
                 f.stack.push(get(r, "value")?)
@@ -1286,34 +1286,34 @@ fn Vm.step(mut self, mut f Frame, code Code) Stop ! Thrown
             it := f.stack[f.stack.len() - 1]
             f.stack.push(call(get(it, "next")?, it, [])?)
         IterResult(end) =>
-            r := pop_value(mut f)
+            r := self.pop_value(mut f)
             if not is_obj(r)
                 return type_error("Iterator result {describe(r)} is not an object")
             if truthy(get(r, "done")?)
-                pop_value(mut f)
+                self.pop_value(mut f)
                 f.pc = end
             else
                 f.stack.push(get(r, "value")?)
         IterClose =>
-            it := pop_value(mut f)
+            it := self.pop_value(mut f)
             m := get(it, "return")?
             f.stack.push(if is_nullish(m) then Value.Undef else call(m, it, [])?)
         BindLeft(left) =>
-            v := pop_value(mut f)
+            v := self.pop_value(mut f)
             match left
                 LeftDecl(d) => bind_pattern(d.decls[0].target, v, f.env, d.kind)?
                 LeftPat(p) => bind_pattern(p, v, f.env, "assign")?
         CaseTest(to) =>
-            test := pop_value(mut f)
+            test := self.pop_value(mut f)
             if f.stack[f.stack.len() - 1] == test
-                pop_value(mut f)
+                self.pop_value(mut f)
                 f.pc = to
     go()
 
 ## A return or a jump out of compiled code: through the `finally` blocks in
 ## the way. A `Stop` when it leaves the frame.
 fn Vm.leave(mut self, mut f Frame, c Completion) Stop ! Thrown
-    left := unwind(mut f, c) else return go()
+    left := self.unwind(mut f, c) else return go()
     if left.kind == "throw"
         return thrown(left.value)
     Stop(kind: "return", value: left.value)
@@ -1327,7 +1327,7 @@ fn Vm.open_async_iterator(mut self, v Value) Value ! Thrown
         return type_error("{describe(v)} is not async iterable")
     m := get(v, well_known("asyncIterator"))?
     if is_nullish(m)
-        sync := open_iterator(v)?
+        sync := self.open_iterator(v)?
         w := object("AsyncFromSyncIterator", proto_of("AsyncFromSyncIterator"))
         w.prim = sync
         return Obj(w)
@@ -1342,11 +1342,11 @@ fn Vm.open_async_iterator(mut self, v Value) Value ! Thrown
 ## which makes an iterator result from an awaited value.
 pub fn Vm.async_from_sync_native(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
     if m == "result"
-        return iter_result(arg_at(args, 0), truthy(this_val))
+        return self.iter_result(arg_at(args, 0), truthy(this_val))
     p := new_promise()
     w := obj_of(this_val) else return Obj(p)
     sync := w.prim
-    r := step_sync(sync, m, arg_at(args, 0)) else err
+    r := self.step_sync(sync, m, arg_at(args, 0)) else err
         if err.limit
             return err
         reject_promise(p, err.value)
@@ -1367,7 +1367,7 @@ pub fn Vm.async_from_sync_native(mut self, m str, this_val Value, args List[Valu
 fn Vm.step_sync(mut self, sync Value, m str, v Value) Value ! Thrown
     f := get(sync, m)?
     if is_nullish(f)
-        return iter_result(v, true)
+        return self.iter_result(v, true)
     call(f, sync, [v])
 
 ## A request waiting for an async generator: `next`, `return` or `throw`
@@ -1398,7 +1398,7 @@ pub fn Vm.async_generator_native(mut self, m str, this_val Value, args List[Valu
     q.push(AgenRequest(kind: m, value: arg_at(args, 0), promise: p))
     agen_queues[id] = q
     if not running.contains(id)
-        agen_drain(id)
+        self.agen_drain(id)
     Obj(p)
 
 fn Vm.agen_pop(mut self, id int) AgenRequest?
@@ -1427,11 +1427,11 @@ fn Vm.agen_drain(mut self, id int)
                 "return" => "return"
                 _ => "throw"
             running.add(id)
-            agen_run(id, Completion(kind: kind, value: req.value, target: -1))
+            self.agen_run(id, Completion(kind: kind, value: req.value, target: -1))
             return
-        agen_pop(id)
+        self.agen_pop(id)
         match req.kind
-            "next" => resolve_promise(req.promise, iter_result(Undef, true))
+            "next" => resolve_promise(req.promise, self.iter_result(Undef, true))
             "throw" => reject_promise(req.promise, req.value)
             _ =>
                 promise_then(
@@ -1444,18 +1444,18 @@ fn Vm.agen_drain(mut self, id int)
 ## Run an async generator from where it stopped until it yields, awaits or
 ## ends, and answer the request at the front of its queue.
 fn Vm.agen_run(mut self, id int, resume Completion)
-    mut f := take_frame(id) else
+    mut f := self.take_frame(id) else
         running.remove(id)
         return
-    r := run_frame(mut f, resume) else err
+    r := self.run_frame(mut f, resume) else err
         running.remove(id)
         if err.limit
             stopped = true
             report(uncaught_text(err))
             return
-        if req := agen_pop(id)
+        if req := self.agen_pop(id)
             reject_promise(req.promise, err.value)
-        agen_drain(id)
+        self.agen_drain(id)
         return
     match r.kind
         "await" =>
@@ -1467,25 +1467,25 @@ fn Vm.agen_run(mut self, id int, resume Completion)
         "yield" =>
             frames[id] = f
             running.remove(id)
-            if req := agen_pop(id)
-                resolve_promise(req.promise, iter_result(r.value, false))
-            agen_drain(id)
+            if req := self.agen_pop(id)
+                resolve_promise(req.promise, self.iter_result(r.value, false))
+            self.agen_drain(id)
         _ =>
             running.remove(id)
-            if req := agen_pop(id)
+            if req := self.agen_pop(id)
                 promise_then(
                     promise_resolve(r.value),
                     closure_native("AsyncFromSync.result", Bool(true), [], 1),
                     Undef,
                     Obj(req.promise),
                 )
-            agen_drain(id)
+            self.agen_drain(id)
 
 ## An awaited value came back to an async generator.
 pub fn Vm.async_gen_resume(mut self, this_val Value, args List[Value]) Value ! Thrown
     id := int_of(num_of(this_val) else -1.0)
     ok := truthy(arg_at(args, 0))
-    agen_run(id, Completion(
+    self.agen_run(id, Completion(
         kind: if ok then "normal" else "throw",
         value: arg_at(args, 1),
         target: -1,

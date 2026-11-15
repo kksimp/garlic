@@ -36,7 +36,7 @@ fn Vm.elements_of(mut self, this_val Value) List[Value] ! Thrown
     o := to_object(this_val)?
     if o.class == "Array" or o.class == "Arguments"
         return o.elems
-    n := length_of(Obj(o))?
+    n := self.length_of(Obj(o))?
     mut out := List[Value]()
     for i in 0..n
         out.push(get(Obj(o), "{i}")?)
@@ -82,34 +82,34 @@ fn Vm.array_method(mut self, m str, this_val Value, args List[Value]) Value ! Th
     a1 := arg_at(args, 1)
     match m
         "push" =>
-            o := this_array(this_val, m)?
+            o := self.this_array(this_val, m)?
             o.elems.extend(args)
             Value.Num(o.elems.len().to_float())
         "pop" =>
-            o := this_array(this_val, m)?
+            o := self.this_array(this_val, m)?
             o.elems.pop() else Undef
         "shift" =>
-            o := this_array(this_val, m)?
+            o := self.this_array(this_val, m)?
             if o.elems.len() == 0
                 return Undef
             o.elems.remove_at(0)
         "unshift" =>
-            o := this_array(this_val, m)?
+            o := self.this_array(this_val, m)?
             mut items := args
             items.extend(o.elems)
             o.elems = items
             Value.Num(o.elems.len().to_float())
         "slice" =>
-            xs := elements_of(this_val)?
-            start := relative(a0, xs.len(), 0)?
-            end := relative(a1, xs.len(), xs.len())?
+            xs := self.elements_of(this_val)?
+            start := self.relative(a0, xs.len(), 0)?
+            end := self.relative(a1, xs.len(), xs.len())?
             if start >= end
                 return array([])
             array(xs[start..end])
         "splice" =>
-            o := this_array(this_val, m)?
+            o := self.this_array(this_val, m)?
             len := o.elems.len()
-            start := relative(a0, len, 0)?
+            start := self.relative(a0, len, 0)?
             mut count := 0
             if args.len() == 1
                 count = len - start
@@ -125,10 +125,10 @@ fn Vm.array_method(mut self, m str, this_val Value, args List[Value]) Value ! Th
             o.elems = out
             array(removed)
         "concat" =>
-            mut out := elements_of(this_val)?
+            mut out := self.elements_of(this_val)?
             for a in args
                 if is_array(a)
-                    out.extend(elements_of(a)?)
+                    out.extend(self.elements_of(a)?)
                 else
                     out.push(a)
             array(out)
@@ -141,7 +141,7 @@ fn Vm.array_method(mut self, m str, this_val Value, args List[Value]) Value ! Th
                 return Value.Str("")
             busy.add(o.id)
             mut parts := List[str]()
-            for x in elements_of(this_val)?
+            for x in self.elements_of(this_val)?
                 if is_nullish(x)
                     parts.push("")
                 else
@@ -152,17 +152,21 @@ fn Vm.array_method(mut self, m str, this_val Value, args List[Value]) Value ! Th
             busy.remove(o.id)
             Value.Str(parts.join(sep))
         "reverse" =>
-            o := this_array(this_val, m)?
+            o := self.this_array(this_val, m)?
             o.elems.reverse()
             this_val
         "toReversed" =>
-            mut xs := elements_of(this_val)?
+            mut xs := self.elements_of(this_val)?
             xs.reverse()
             array(xs)
         "indexOf" | "lastIndexOf" | "includes" =>
-            xs := elements_of(this_val)?
+            xs := self.elements_of(this_val)?
             if m == "lastIndexOf"
-                mut i := if args.len() > 1 then relative(a1, xs.len(), xs.len())? else xs.len() - 1
+                mut i := if args.len() > 1 then self.relative(
+                    a1,
+                    xs.len(),
+                    xs.len(),
+                )? else xs.len() - 1
                 if i >= xs.len()
                     i = xs.len() - 1
                 while i >= 0
@@ -170,15 +174,15 @@ fn Vm.array_method(mut self, m str, this_val Value, args List[Value]) Value ! Th
                         return Value.Num(i.to_float())
                     i -= 1
                 return Value.Num(-1.0)
-            start := relative(a1, xs.len(), 0)?
+            start := self.relative(a1, xs.len(), 0)?
             for i in start..xs.len()
                 found := if m == "includes" then same_value_zero(xs[i], a0) else xs[i] == a0
                 if found
                     return if m == "includes" then Value.Bool(true) else Value.Num(i.to_float())
             if m == "includes" then Value.Bool(false) else Value.Num(-1.0)
         "find" | "findIndex" | "findLast" | "findLastIndex" =>
-            f := callback(a0)?
-            xs := elements_of(this_val)?
+            f := self.callback(a0)?
+            xs := self.elements_of(this_val)?
             backwards := m == "findLast" or m == "findLastIndex"
             for k in 0..xs.len()
                 i := if backwards then xs.len() - 1 - k else k
@@ -186,40 +190,40 @@ fn Vm.array_method(mut self, m str, this_val Value, args List[Value]) Value ! Th
                     return if m == "find" or m == "findLast" then xs[i] else Value.Num(i.to_float())
             if m == "find" or m == "findLast" then Undef else Value.Num(-1.0)
         "filter" =>
-            f := callback(a0)?
-            xs := elements_of(this_val)?
+            f := self.callback(a0)?
+            xs := self.elements_of(this_val)?
             mut out := List[Value]()
             for i in 0..xs.len()
                 if truthy(call(f, a1, [xs[i], Num(i.to_float()), this_val])?)
                     out.push(xs[i])
             array(out)
         "map" =>
-            f := callback(a0)?
-            xs := elements_of(this_val)?
+            f := self.callback(a0)?
+            xs := self.elements_of(this_val)?
             mut out := List[Value]()
             for i in 0..xs.len()
                 out.push(call(f, a1, [xs[i], Num(i.to_float()), this_val])?)
             array(out)
         "forEach" =>
-            f := callback(a0)?
+            f := self.callback(a0)?
             # The length is read once; later pushes are not visited (§23.1.3.15).
-            n := elements_of(this_val)?.len()
+            n := self.elements_of(this_val)?.len()
             for i in 0..n
-                xs := elements_of(this_val)?
+                xs := self.elements_of(this_val)?
                 if i < xs.len()
                     call(f, a1, [xs[i], Num(i.to_float()), this_val])?
             Undef
         "some" | "every" =>
-            f := callback(a0)?
-            xs := elements_of(this_val)?
+            f := self.callback(a0)?
+            xs := self.elements_of(this_val)?
             want := m == "some"
             for i in 0..xs.len()
                 if truthy(call(f, a1, [xs[i], Num(i.to_float()), this_val])?) == want
                     return Value.Bool(want)
             Value.Bool(not want)
         "reduce" | "reduceRight" =>
-            f := callback(a0)?
-            xs := elements_of(this_val)?
+            f := self.callback(a0)?
+            xs := self.elements_of(this_val)?
             n := xs.len()
             mut k := 0
             mut acc := a1
@@ -236,40 +240,40 @@ fn Vm.array_method(mut self, m str, this_val Value, args List[Value]) Value ! Th
         "sort" | "toSorted" =>
             if a0 != Undef and not is_callable(a0)
                 return type_error("The comparison function must be either a function or undefined")
-            xs := elements_of(this_val)?
-            sorted_xs := merge_sort(xs, a0)?
+            xs := self.elements_of(this_val)?
+            sorted_xs := self.merge_sort(xs, a0)?
             if m == "toSorted"
                 return array(sorted_xs)
-            o := this_array(this_val, m)?
+            o := self.this_array(this_val, m)?
             o.elems = sorted_xs
             this_val
         "fill" =>
-            o := this_array(this_val, m)?
+            o := self.this_array(this_val, m)?
             len := o.elems.len()
-            start := relative(a1, len, 0)?
-            end := relative(arg_at(args, 2), len, len)?
+            start := self.relative(a1, len, 0)?
+            end := self.relative(arg_at(args, 2), len, len)?
             for i in start..end
                 o.elems[i] = a0
             this_val
         "flat" =>
             depth := if a0 == Undef then 1 else int_of(to_number(a0)?)
-            array(flatten(elements_of(this_val)?, depth)?)
+            array(self.flatten(self.elements_of(this_val)?, depth)?)
         "flatMap" =>
-            f := callback(a0)?
-            xs := elements_of(this_val)?
+            f := self.callback(a0)?
+            xs := self.elements_of(this_val)?
             mut mapped := List[Value]()
             for i in 0..xs.len()
                 mapped.push(call(f, a1, [xs[i], Num(i.to_float()), this_val])?)
-            array(flatten(mapped, 1)?)
+            array(self.flatten(mapped, 1)?)
         "at" =>
-            xs := elements_of(this_val)?
+            xs := self.elements_of(this_val)?
             n := trunc(to_number(a0)?)
             i := if is_nan(n) then 0.0 else (if n < 0.0 then xs.len().to_float() + n else n)
             if i < 0.0 or i >= xs.len().to_float()
                 return Undef
             xs[i.to_int()]
         "with" =>
-            mut xs := elements_of(this_val)?
+            mut xs := self.elements_of(this_val)?
             n := trunc(to_number(a0)?)
             i := if n < 0.0 then xs.len().to_float() + n else n
             if i < 0.0 or i >= xs.len().to_float()
@@ -277,21 +281,21 @@ fn Vm.array_method(mut self, m str, this_val Value, args List[Value]) Value ! Th
             xs[i.to_int()] = a1
             array(xs)
         "keys" =>
-            n := elements_of(this_val)?.len()
+            n := self.elements_of(this_val)?.len()
             list_iterator([Value.Num(i.to_float()) for i in 0..n], "Array Iterator")
-        "values" => list_iterator(elements_of(this_val)?, "Array Iterator")
+        "values" => list_iterator(self.elements_of(this_val)?, "Array Iterator")
         "entries" =>
-            xs := elements_of(this_val)?
+            xs := self.elements_of(this_val)?
             mut out := List[Value]()
             for i in 0..xs.len()
                 out.push(array([Value.Num(i.to_float()), xs[i]]))
             list_iterator(out, "Array Iterator")
         "copyWithin" =>
-            o := this_array(this_val, m)?
+            o := self.this_array(this_val, m)?
             len := o.elems.len()
-            to := relative(a0, len, 0)?
-            from := relative(a1, len, 0)?
-            end := relative(arg_at(args, 2), len, len)?
+            to := self.relative(a0, len, 0)?
+            from := self.relative(a1, len, 0)?
+            end := self.relative(arg_at(args, 2), len, len)?
             copy := o.elems[from..end]
             for i in 0..copy.len()
                 if to + i < len
@@ -303,7 +307,7 @@ fn Vm.flatten(mut self, xs List[Value], depth int) List[Value] ! Thrown
     mut out := List[Value]()
     for x in xs
         if depth > 0 and is_array(x)
-            out.extend(flatten(elements_of(x)?, depth - 1)?)
+            out.extend(self.flatten(self.elements_of(x)?, depth - 1)?)
         else
             out.push(x)
     out
@@ -333,7 +337,7 @@ fn Vm.merge_sort(mut self, xs List[Value], cmp Value) List[Value] ! Thrown
             mut i := lo
             mut j := mid
             while i < mid and j < hi
-                if sort_before(defined, keys, order[j], order[i], cmp)?
+                if self.sort_before(defined, keys, order[j], order[i], cmp)?
                     merged.push(order[j])
                     j += 1
                 else

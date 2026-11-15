@@ -131,7 +131,7 @@ fn Session.collect(mut self, mut d html.Doc) Outcome
         url: "",
         method: "",
         body: "",
-        console: machine.console_out[console..],
+        console: self.machine.console_out[self.console..],
         missing: [],
         mods: [],
         changes: 0,
@@ -141,11 +141,11 @@ fn Session.collect(mut self, mut d html.Doc) Outcome
         sockets: [],
         net: [],
     )
-    console = machine.console_out.len()
-    machine.canvas_flush()
-    out.changes = replay(mut d, machine.mutations[changes..])
-    changes = machine.mutations.len()
-    for r in machine.host_requests[requests..]
+    self.console = self.machine.console_out.len()
+    self.machine.canvas_flush()
+    out.changes = replay(mut d, self.machine.mutations[self.changes..])
+    self.changes = self.machine.mutations.len()
+    for r in self.machine.host_requests[self.requests..]
         if r.kind == "navigate" and out.url == ""
             out.url = r.url
             out.method = r.method
@@ -163,12 +163,12 @@ fn Session.collect(mut self, mut d html.Doc) Outcome
         if r.kind == "clipboard"
             out.clips.push(r.text)
     mut ops := List[vm.HostRequest]()
-    for r in machine.host_requests[requests..]
+    for r in self.machine.host_requests[self.requests..]
         if r.kind == "worker"
             ops.push(r)
-    requests = machine.host_requests.len()
+    self.requests = self.machine.host_requests.len()
     for r in ops
-        worker_op(r)
+        self.worker_op(r)
     out
 
 ## One worker request of the page: start worker `r.node` (`r.text` is
@@ -179,76 +179,76 @@ fn Session.worker_op(mut self, r vm.HostRequest)
         parts := r.text.split("\n")
         if parts.len() < 4
             return
-        at := pool.start(r.node, parts[0], parts[1], parts[2], parts[3..].join("\n"))
+        at := self.pool.start(r.node, parts[0], parts[1], parts[2], parts[3..].join("\n"))
         if at < 0
-            machine.worker_event(r.node, "error", "Too many workers are running.")
+            self.machine.worker_event(r.node, "error", "Too many workers are running.")
         else
-            live[r.node] = at
+            self.live[r.node] = at
         return
-    at := live.get(r.node) else return
+    at := self.live.get(r.node) else return
     if r.method == "post"
-        pool.slots[at].post(r.node, "post", r.text)
+        self.pool.slots[at].post(r.node, "post", r.text)
     elif r.method == "net"
-        pool.slots[at].post(r.node, "net", r.text)
+        self.pool.slots[at].post(r.node, "net", r.text)
     elif r.method == "stop"
-        pool.slots[at].post(r.node, "stop", "")
-        live.remove(r.node)
+        self.pool.slots[at].post(r.node, "stop", "")
+        self.live.remove(r.node)
 
 ## Whether any of the page's workers is running.
 pub fn Session.workers_live(self) bool
-    live.len() > 0
+    self.live.len() > 0
 
 ## Stops the page's workers, as leaving the page does.
 pub fn Session.stop_workers(mut self)
-    for id in live.keys()
-        at := live.get(id) else continue
-        pool.slots[at].post(id, "stop", "")
-    live = {}
+    for id in self.live.keys()
+        at := self.live.get(id) else continue
+        self.pool.slots[at].post(id, "stop", "")
+    self.live = {}
 
 ## Hands the page what its workers sent since the last call (messages,
 ## errors, console lines, closes) and makes the `fetch` requests they asked
 ## for, then runs the timers and microtasks that became due.
 pub fn Session.workers_poll(mut self, mut d html.Doc, budget_ms float) Outcome
     mut got := 0
-    for id in live.keys()
-        at := live.get(id) else continue
-        for line in pool.slots[at].take()
+    for id in self.live.keys()
+        at := self.live.get(id) else continue
+        for line in self.pool.slots[at].take()
             head := cut(line, "\t")
             who := head.0.to_int() else continue
             rest := cut(head.1, "\t")
             got += 1
             if rest.0 == "msg"
-                machine.worker_event(who, "message", rest.1)
+                self.machine.worker_event(who, "message", rest.1)
             elif rest.0 == "error"
-                machine.worker_event(who, "error", rest.1)
+                self.machine.worker_event(who, "error", rest.1)
             elif rest.0 == "log"
-                machine.report(rest.1)
+                self.machine.report(rest.1)
             elif rest.0 == "closed"
-                machine.worker_event(who, "closed", "")
-                live.remove(who)
+                self.machine.worker_event(who, "closed", "")
+                self.live.remove(who)
             elif rest.0 == "fetch"
                 f := rest.1.split("\u{1}")
                 if f.len() >= 4
                     packed := f[3..].join("\u{1}")
-                    machine.worker_fetch(who, f[0].to_int() else 0, f[1], f[2], packed)
+                    self.machine.worker_fetch(who, f[0].to_int() else 0, f[1], f[2], packed)
     if got > 0
-        machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
-    collect(mut d)
+        self.machine.run_event_loop(self.machine.clock_ms + budget_ms, 10000)
+    self.collect(mut d)
 
 ## The browser's JSON answer to request `id` (see `Ask`): the page's
 ## callbacks run, then timers and microtasks that became due.
 pub fn Session.reply(mut self, mut d html.Doc, id int, json str, budget_ms float) Outcome
-    machine.net_deliver(id, json)
-    machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
-    collect(mut d)
+    self.machine.net_deliver(id, json)
+    self.machine.run_event_loop(self.machine.clock_ms + budget_ms, 10000)
+    self.collect(mut d)
 
 ## The browser's answer for module `url` (see `Outcome.mods`): its source
 ## `text`, or `ok` false when it could not be fetched. The imports waiting
 ## for it go on, then timers and microtasks that became due.
 pub fn Session.module(mut self, mut d html.Doc, url str, text str, ok bool, budget_ms float) Outcome
-    machine.module_arrived(url, text, ok)
-    machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
-    collect(mut d)
+    self.machine.module_arrived(url, text, ok)
+    self.machine.run_event_loop(self.machine.clock_ms + budget_ms, 10000)
+    self.collect(mut d)
 
 ## The modules a module's source imports statically, as engine addresses
 ## resolved against `base`, for the browser to fetch before the page runs.
@@ -258,19 +258,19 @@ pub fn module_deps(source str, base str) List[str]
 ## Lets the page's timers and microtasks run for `budget_ms` of its own clock
 ## (`wait:idle`), and replays what they changed.
 pub fn Session.idle(mut self, mut d html.Doc, budget_ms float) Outcome
-    until := machine.clock_ms + budget_ms
-    machine.run_event_loop(until, 10000)
+    until := self.machine.clock_ms + budget_ms
+    self.machine.run_event_loop(until, 10000)
     ## The clock only moves to timers that ran; a quiet second still passes.
-    if machine.clock_ms < until
-        machine.clock_ms = until
-    collect(mut d)
+    if self.machine.clock_ms < until
+        self.machine.clock_ms = until
+    self.collect(mut d)
 
 ## Hands the page's scripts the browser's layout: each box is a node id
 ## and its x, y, width and height in page pixels; `scroll` is how far the
 ## page is scrolled. `getBoundingClientRect` and `offsetWidth` answer from
 ## them.
 pub fn Session.measure(mut self, boxes List[List[float]], scroll float)
-    machine.measure(boxes, scroll)
+    self.machine.measure(boxes, scroll)
 
 ## Tells the page's scripts the window's page area in CSS pixels, its device
 ## pixel ratio and the page's laid-out height (`Vm.viewport`); `resize` fires
@@ -284,11 +284,11 @@ pub fn Session.viewport(
     screen_w float,
     screen_h float,
 )
-    machine.viewport(w, h, dpr, page_height, screen_w, screen_h)
+    self.machine.viewport(w, h, dpr, page_height, screen_w, screen_h)
 
 ## How many timers the page still has waiting.
 pub fn Session.pending(self) int
-    machine.timers.len()
+    self.machine.timers.len()
 
 ## A WebSocket event for socket `id` (see `Vm.ws_event`), then the timers
 ## and microtasks it made due.
@@ -301,47 +301,47 @@ pub fn Session.ws_event(
     code int,
     budget_ms float,
 ) Outcome
-    machine.ws_event(id, kind, payload, code)
-    machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
-    collect(mut d)
+    self.machine.ws_event(id, kind, payload, code)
+    self.machine.run_event_loop(self.machine.clock_ms + budget_ms, 10000)
+    self.collect(mut d)
 
 ## The user clicked node `id`: `click` is dispatched (it bubbles and can be
 ## cancelled), then its default action runs (a link, a submit button, a
 ## check box), then timers and microtasks that became due.
 pub fn Session.click(mut self, mut d html.Doc, id int, budget_ms float) Outcome
-    if id >= 0 and id < machine.dom.len()
-        prevented = not machine.host_click(id)
-    machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
-    collect(mut d)
+    if id >= 0 and id < self.machine.dom.len()
+        self.prevented = not self.machine.host_click(id)
+    self.machine.run_event_loop(self.machine.clock_ms + budget_ms, 10000)
+    self.collect(mut d)
 
 ## The user typed `text` into field `id`, replacing its value: `keydown`,
 ## `input` and `keyup` fire for each character, then `change`.
 pub fn Session.input(mut self, mut d html.Doc, id int, text str, budget_ms float) Outcome
-    if id >= 0 and id < machine.dom.len()
-        machine.host_input(id, text)
-    machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
-    collect(mut d)
+    if id >= 0 and id < self.machine.dom.len()
+        self.machine.host_input(id, text)
+    self.machine.run_event_loop(self.machine.clock_ms + budget_ms, 10000)
+    self.collect(mut d)
 
 ## Focus moved to node `id`, or to nothing for -1 (`blur`/`focus` events).
 pub fn Session.focus(mut self, mut d html.Doc, id int, budget_ms float) Outcome
-    machine.host_focus(id)
-    machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
-    collect(mut d)
+    self.machine.host_focus(id)
+    self.machine.run_event_loop(self.machine.clock_ms + budget_ms, 10000)
+    self.collect(mut d)
 
 ## The user pressed `key` with focus in node `id`; `prevented` says whether
 ## a `keydown` listener cancelled it.
 pub fn Session.key(mut self, mut d html.Doc, id int, key str, budget_ms float) Outcome
-    prevented = not machine.host_key(id, key)
-    machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
-    collect(mut d)
+    self.prevented = not self.machine.host_key(id, key)
+    self.machine.run_event_loop(self.machine.clock_ms + budget_ms, 10000)
+    self.collect(mut d)
 
 ## The user submitted the form of node `id` (a button or a field in it):
 ## `submit` fires and, unless cancelled, the form goes on to the browser.
 pub fn Session.submit(mut self, mut d html.Doc, id int, budget_ms float) Outcome
-    if id >= 0 and id < machine.dom.len()
-        machine.host_submit(id)
-    machine.run_event_loop(machine.clock_ms + budget_ms, 10000)
-    collect(mut d)
+    if id >= 0 and id < self.machine.dom.len()
+        self.machine.host_submit(id)
+    self.machine.run_event_loop(self.machine.clock_ms + budget_ms, 10000)
+    self.collect(mut d)
 
 ## The engine's copy of the tree: the same nodes with the same ids.
 fn mirror(d html.Doc) List[vm.DomNode]

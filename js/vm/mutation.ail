@@ -38,7 +38,7 @@ fn Vm.mo_index(mut self, this_val Value) int ! Thrown
     int_of(num_of(o.prim) else -1.0)
 
 fn Vm.mo_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
-    k := mo_index(this_val)?
+    k := self.mo_index(this_val)?
     match m
         "observe" =>
             node := node_id(
@@ -101,7 +101,7 @@ fn Vm.mo_note(mut self, op str, node int, parent int, name str)
     if mo_hold and op != "detach" and kind == "childList"
         mo_held.push(node)
         return
-    mo_queue(kind, target, op, [node], name)
+    self.mo_queue(kind, target, op, [node], name)
 
 ## A change to `target` is offered to every observer that wants it.
 fn Vm.mo_queue(mut self, kind str, target int, op str, nodes List[int], name str)
@@ -111,7 +111,7 @@ fn Vm.mo_queue(mut self, kind str, target int, op str, nodes List[int], name str
         for t in observers[k].targets
             if not t.subtree and t.node != target
                 continue
-            if t.subtree and not within(target, t.node)
+            if t.subtree and not self.within(target, t.node)
                 continue
             ok := match kind
                 "childList" => t.child_list
@@ -123,7 +123,7 @@ fn Vm.mo_queue(mut self, kind str, target int, op str, nodes List[int], name str
         if not hit
             continue
         if record == Value.Undef
-            record = mo_record(kind, target, op, nodes, name)
+            record = self.mo_record(kind, target, op, nodes, name)
         observers[k].records.push(record)
         if not microtasks.contains(Value.Str(MO_MARK))
             microtasks.push(Value.Str(MO_MARK))
@@ -187,4 +187,4 @@ fn Vm.mo_end(mut self, parent int)
     held := mo_held
     mo_held = []
     if held.len() > 0 and parent >= 0
-        mo_queue("childList", parent, "append", held, "")
+        self.mo_queue("childList", parent, "append", held, "")

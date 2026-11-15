@@ -96,7 +96,7 @@ pub struct Env
 
 ## A thrown JavaScript value. `limit` marks a run limit, which no `catch`
 ## can stop.
-pub error struct Thrown "Uncaught {text}"
+pub error struct Thrown "Uncaught {self.text}"
     pub value Value
     pub text str
     pub limit bool

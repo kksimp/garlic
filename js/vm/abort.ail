@@ -66,17 +66,17 @@ fn Vm.abort_method(mut self, m str, this_val Value, args List[Value]) Value ! Th
             return Value.Undef
         s.props["aborted"] = data(Bool(true))
         reason := arg_at(args, 0)
-        s.props["reason"] = data(if reason == Value.Undef then abort_error() else reason)
+        s.props["reason"] = data(if reason == Value.Undef then self.abort_error() else reason)
         ev := make_event("abort", Value.Undef)?
         if o := obj_of(ev)
             o.props["target"] = data(Value.Obj(s))
         for l in (obj_of(s.props["{PRIVATE}listeners"].value) else plain()).elems
-            call_listener_plain(l, Value.Obj(s), ev)
+            self.call_listener_plain(l, Value.Obj(s), ev)
         # `onabort` runs after the listeners, the usual order of a page that
         # adds its listeners first.
         handler := get(Value.Obj(s), "onabort")?
         if is_callable(handler)
-            call_listener_plain(handler, Value.Obj(s), ev)
+            self.call_listener_plain(handler, Value.Obj(s), ev)
         return Value.Undef
     s := this_class(this_val, "AbortSignal", m)?
     listeners_obj := obj_of(s.props["{PRIVATE}listeners"].value) else return Value.Undef
@@ -103,7 +103,7 @@ fn Vm.call_listener_plain(mut self, f Value, this_val Value, ev Value)
 ## The natives of this file: `m` is the name after "dom.abort.".
 fn Vm.abort_native(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
     if n := m.strip_prefix("new.")
-        return abort_new(n)
+        return self.abort_new(n)
     if k := m.strip_prefix("signal.")
-        return abort_method(k, this_val, args)
-    abort_method("abort", this_val, args)
+        return self.abort_method(k, this_val, args)
+    self.abort_method("abort", this_val, args)

@@ -51,12 +51,12 @@ fn Vm.crypto_native(mut self, m str, this_val Value, args List[Value]) Value ! T
             )
         buf := obj_of(o.prim) else return a0
         base := view_off(o)
-        rb := random_bytes(n)?
+        rb := self.random_bytes(n)?
         for i in 0..n
             buf.elems[base + i] = Value.Num(rb[i].to_float())
         return a0
     if m == "crypto.randomUUID"
-        mut bs := random_bytes(16)?
+        mut bs := self.random_bytes(16)?
         bs[6] = bs[6].bit_and(15) + 64
         bs[8] = bs[8].bit_and(63) + 128
         mut parts := List[str]()
@@ -71,7 +71,7 @@ fn Vm.crypto_native(mut self, m str, this_val Value, args List[Value]) Value ! T
             algo = get(a0, "name")?
         name := to_string(algo)?.to_upper()
         input := bytes_of(arg_at(args, 1)) else err
-            return rejected(
+            return self.rejected(
                 "TypeError",
                 "Failed to execute 'digest' on 'SubtleCrypto': 2nd argument is not an ArrayBuffer or ArrayBufferView",
             )
@@ -80,14 +80,14 @@ fn Vm.crypto_native(mut self, m str, this_val Value, args List[Value]) Value ! T
             "SHA-1" => digest_sha1(input)
             _ => List[int]()
         if digest.len() == 0
-            return rejected("NotSupportedError", "Unrecognized name.")
+            return self.rejected("NotSupportedError", "Unrecognized name.")
         buf := new_buffer(digest.len(), proto_of("ArrayBuffer"))?
         for i in 0..digest.len()
             buf.elems[i] = Value.Num(digest[i].to_float())
         p := promise_resolve(Value.Obj(buf))
         return Value.Obj(p)
     if m.starts_with("SubtleCrypto.prototype.")
-        return rejected("NotSupportedError", "The operation is not supported.")
+        return self.rejected("NotSupportedError", "The operation is not supported.")
     type_error("{m} is not supported yet")
 
 fn Vm.crypto_setup(mut self)

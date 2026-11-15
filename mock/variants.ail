@@ -217,16 +217,16 @@ struct Mock
 impl app.App for Mock
     fn update(mut self, ev app.Event)
         if ev.kind == "resize"
-            w = ev.dx
-            h = ev.dy
+            self.w = ev.dx
+            self.h = ev.dy
         elif ev.kind == "key" and (ev.text == "1" or ev.text == "2" or ev.text == "3")
-            look = ev.text.to_int() else 1
+            self.look = ev.text.to_int() else 1
 
     fn view(self) app.Node
-        app.canvas("mock", 0.0, 0.0, draw_look(look, w, h))
+        app.canvas("mock", 0.0, 0.0, draw_look(self.look, self.w, self.h))
 
     fn title(self) str
-        "Garlic look {look}"
+        "Garlic look {self.look}"
 
 fn main()
     args := env.args()

@@ -197,76 +197,76 @@ pub fn omni(text str) Omni
 
 ## Starts editing with everything selected, as a click on the omnibox does.
 pub fn Omni.start(mut self)
-    editing = true
-    all = true
-    cursor = text.chars().len()
+    self.editing = true
+    self.all = true
+    self.cursor = self.text.chars().len()
 
 ## Puts `s` in place of the selection or at the caret.
 pub fn Omni.insert(mut self, s str)
-    if all
-        text = ""
-        cursor = 0
-        all = false
-    text = "{text.slice(0, cursor)}{s}{text.slice(cursor, text.chars().len())}"
-    cursor += s.chars().len()
+    if self.all
+        self.text = ""
+        self.cursor = 0
+        self.all = false
+    self.text = "{self.text.slice(0, self.cursor)}{s}{self.text.slice(self.cursor, self.text.chars().len())}"
+    self.cursor += s.chars().len()
 
 ## A key while editing: `open` when Return was pressed, `cancel` for Escape,
 ## else "" (the text may have changed). `meta` is Command (Control on
 ## other systems), as `std.app` reports it.
 pub fn Omni.key(mut self, key str, meta bool, shift bool) str
-    n := text.chars().len()
+    n := self.text.chars().len()
     if key == "enter"
-        editing = false
-        all = false
+        self.editing = false
+        self.all = false
         return "open"
     if key == "escape"
-        editing = false
-        all = false
+        self.editing = false
+        self.all = false
         return "cancel"
     if meta
         if key == "a"
-            all = true
-            cursor = n
+            self.all = true
+            self.cursor = n
         elif key == "left"
-            cursor = 0
-            all = false
+            self.cursor = 0
+            self.all = false
         elif key == "right"
-            cursor = n
-            all = false
+            self.cursor = n
+            self.all = false
         return ""
     match key
         "backspace" =>
-            if all
-                text = ""
-                cursor = 0
-                all = false
-            elif cursor > 0
-                text = "{text.slice(0, cursor - 1)}{text.slice(cursor, n)}"
-                cursor -= 1
+            if self.all
+                self.text = ""
+                self.cursor = 0
+                self.all = false
+            elif self.cursor > 0
+                self.text = "{self.text.slice(0, self.cursor - 1)}{self.text.slice(self.cursor, n)}"
+                self.cursor -= 1
         "delete" =>
-            if all
-                text = ""
-                cursor = 0
-                all = false
-            elif cursor < n
-                text = "{text.slice(0, cursor)}{text.slice(cursor + 1, n)}"
+            if self.all
+                self.text = ""
+                self.cursor = 0
+                self.all = false
+            elif self.cursor < n
+                self.text = "{self.text.slice(0, self.cursor)}{self.text.slice(self.cursor + 1, n)}"
         "left" =>
-            cursor = if all then 0 else (cursor - 1).max(0)
-            all = false
+            self.cursor = if self.all then 0 else (self.cursor - 1).max(0)
+            self.all = false
         "right" =>
-            cursor = if all then n else (cursor + 1).min(n)
-            all = false
+            self.cursor = if self.all then n else (self.cursor + 1).min(n)
+            self.all = false
         "home" | "up" =>
-            cursor = 0
-            all = false
+            self.cursor = 0
+            self.all = false
         "end" | "down" =>
-            cursor = n
-            all = false
-        "space" => insert(" ")
+            self.cursor = n
+            self.all = false
+        "space" => self.insert(" ")
         "tab" => return ""
         _ =>
             if key.chars().len() == 1
-                insert(key)
+                self.insert(key)
     ""
 
 ## The address as the omnibox shows it at rest: no `https://`, and the

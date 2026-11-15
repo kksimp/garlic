@@ -36,7 +36,7 @@ pub struct Event
     pub code int
 
 fn fail(url str, message str) net.NetError
-    net.NetError(url: url, kind: "protocol", message: message)
+    net.NetError(url: url, kind: Protocol, message: message)
 
 # ---------------------------------------------------------------- SHA-1
 
@@ -209,86 +209,86 @@ fn Sock.frame(mut self, op int, payload List[int]) bool
     out.extend(mask)
     for i in 0..n
         out.push(payload[i].bit_xor(mask[i % 4]))
-    conn.write_bytes(bytes_of(out)) else return false
+    self.conn.write_bytes(bytes_of(out)) else return false
     true
 
 ## Sends `text` as one text message.
 pub fn Sock.send_text(mut self, text str) ! net.NetError
-    if not open
+    if not self.open
         return fail("", "the connection is closed")
-    if not frame(OP_TEXT, ints_of(text.to_bytes()))
-        open = false
+    if not self.frame(OP_TEXT, ints_of(text.to_bytes()))
+        self.open = false
         return fail("", "the write failed")
 
 ## Starts the closing handshake with `code` (1000 for a normal close).
 pub fn Sock.close(mut self, code int)
-    if open
-        frame(OP_CLOSE, [code.shr(8).bit_and(0xff), code.bit_and(0xff)])
-    open = false
-    conn.close()
+    if self.open
+        self.frame(OP_CLOSE, [code.shr(8).bit_and(0xff), code.bit_and(0xff)])
+    self.open = false
+    self.conn.close()
 
 ## Pulls what has arrived into `buf`; false when the connection ended.
 fn Sock.fill(mut self) bool
-    got := conn.read_bytes(65536) else return true
+    got := self.conn.read_bytes(65536) else return true
     if got.len() == 0
         return false
-    buf.extend(ints_of(got))
+    self.buf.extend(ints_of(got))
     true
 
 ## The events for the frames now complete, waiting up to `wait_ms` for data.
 pub fn Sock.poll(mut self, wait_ms int) List[Event]
     mut out := List[Event]()
-    if not open
+    if not self.open
         return out
-    conn.set_timeout(wait_ms.max(1))
-    alive := fill()
-    while buf.len() >= 2
-        op := buf[0].bit_and(0x0f)
-        fin := buf[0].bit_and(0x80) != 0
-        masked := buf[1].bit_and(0x80) != 0
-        mut n := buf[1].bit_and(0x7f)
+    self.conn.set_timeout(wait_ms.max(1))
+    alive := self.fill()
+    while self.buf.len() >= 2
+        op := self.buf[0].bit_and(0x0f)
+        fin := self.buf[0].bit_and(0x80) != 0
+        masked := self.buf[1].bit_and(0x80) != 0
+        mut n := self.buf[1].bit_and(0x7f)
         mut at := 2
         if n == 126
-            if buf.len() < 4
+            if self.buf.len() < 4
                 break
-            n = buf[2].shl(8).bit_or(buf[3])
+            n = self.buf[2].shl(8).bit_or(self.buf[3])
             at = 4
         elif n == 127
-            if buf.len() < 10
+            if self.buf.len() < 10
                 break
             n = 0
             for i in 0..8
-                n = n.shl(8).bit_or(buf[2 + i])
+                n = n.shl(8).bit_or(self.buf[2 + i])
             at = 10
         if masked
             at += 4
-        if buf.len() < at + n
+        if self.buf.len() < at + n
             break
-        mut payload := buf[at..at + n]
+        mut payload := self.buf[at..at + n]
         if masked
             for i in 0..n
-                payload[i] = payload[i].bit_xor(buf[at - 4 + i % 4])
-        buf = buf[at + n..buf.len()]
+                payload[i] = payload[i].bit_xor(self.buf[at - 4 + i % 4])
+        self.buf = self.buf[at + n..self.buf.len()]
         if op == OP_PING
-            frame(OP_PONG, payload)
+            self.frame(OP_PONG, payload)
         elif op == OP_CLOSE
             code := if payload.len() >= 2 then payload[0].shl(8).bit_or(payload[1]) else 1005
             reason := if payload.len() > 2 then bytes_of(payload[2..payload.len()]).text() else ""
-            frame(OP_CLOSE, payload[0..payload.len().min(2)])
-            open = false
-            conn.close()
+            self.frame(OP_CLOSE, payload[0..payload.len().min(2)])
+            self.open = false
+            self.conn.close()
             out.push(Event(kind: "close", text: reason, code: code))
             return out
         elif op == OP_TEXT or op == OP_BIN or op == OP_CONT
             if op != OP_CONT
-                part = []
-                part_op = op
-            part.extend(payload)
+                self.part = []
+                self.part_op = op
+            self.part.extend(payload)
             if fin
-                out.push(Event(kind: "message", text: bytes_of(part).text(), code: 0))
-                part = []
-    if not alive and open
-        open = false
+                out.push(Event(kind: "message", text: bytes_of(self.part).text(), code: 0))
+                self.part = []
+    if not alive and self.open
+        self.open = false
         out.push(Event(kind: "close", text: "", code: 1006))
     out
 

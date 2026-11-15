@@ -14,12 +14,12 @@ struct Inspector
 
 pub fn Vm.inspect(self, v Value) str
     mut st := Inspector(stack: [], circular: {}, indent: 0, current: 0)
-    show(mut st, v, 0, false)
+    self.show(mut st, v, 0, false)
 
 ## A value as it shows inside an object: strings in quotes.
 pub fn Vm.inspect_nested(self, v Value) str
     mut st := Inspector(stack: [], circular: {}, indent: 0, current: 0)
-    show(mut st, v, 0, true)
+    self.show(mut st, v, 0, true)
 
 fn ident_like(k str) bool
     cs := k.chars()
@@ -98,7 +98,7 @@ fn Vm.show(self, mut st Inspector, v Value, depth int, nested bool) str
         Str(s) => if nested then quote_js(s) else s
         Big(b) => "{b.to_text()}n"
         Sym(k) => symbol_text(k)
-        Obj(o) => show_object(mut st, o, depth)
+        Obj(o) => self.show_object(mut st, o, depth)
 
 fn Vm.fn_base(self, o ref JsObject) str
     name := if p := o.props.get("name") then (str_of(p.value) else "") else ""
@@ -121,7 +121,7 @@ fn Vm.show_object(self, mut st Inspector, o ref JsObject, depth int) str
         if st.circular.get(o.id) == none
             st.circular[o.id] = st.circular.len() + 1
         return "[Circular *{st.circular[o.id]}]"
-    ctor := constructor_name(o)
+    ctor := self.constructor_name(o)
     cname := ctor else ""
     is_fn := o.call != none
     if o.class == "Error"
@@ -160,7 +160,7 @@ fn Vm.show_object(self, mut st Inspector, o ref JsObject, depth int) str
                 break
             if num_of(x) == none
                 numbers_only = false
-            output.push(show(mut st, x, depth + 1, true))
+            output.push(self.show(mut st, x, depth + 1, true))
             shown += 1
         if o.elems.len() > 100
             more := o.elems.len() - 100
@@ -174,7 +174,7 @@ fn Vm.show_object(self, mut st Inspector, o ref JsObject, depth int) str
         for x in items
             if shown == 100
                 break
-            output.push(show(mut st, x, depth + 1, true))
+            output.push(self.show(mut st, x, depth + 1, true))
             shown += 1
         if items.len() > 100
             more := items.len() - 100
@@ -194,21 +194,21 @@ fn Vm.show_object(self, mut st Inspector, o ref JsObject, depth int) str
         open = "Map({o.elems.len() / 2}) \{"
         mut i := 0
         while i + 1 < o.elems.len()
-            k := show(mut st, o.elems[i], depth + 1, true)
-            val := show(mut st, o.elems[i + 1], depth + 1, true)
+            k := self.show(mut st, o.elems[i], depth + 1, true)
+            val := self.show(mut st, o.elems[i + 1], depth + 1, true)
             output.push("{k} => {val}")
             i += 2
     elif o.class == "Set"
         open = "Set({o.elems.len()}) \{"
         for x in o.elems
-            output.push(show(mut st, x, depth + 1, true))
+            output.push(self.show(mut st, x, depth + 1, true))
     elif is_fn
-        base = fn_base(o)
+        base = self.fn_base(o)
     elif o.class == "Promise"
         open = "Promise \{"
         state := state_of(o)
         result := hidden_of(o, "{PRIVATE}result")
-        shown := show(mut st, result, depth + 1, true)
+        shown := self.show(mut st, result, depth + 1, true)
         entry := match state
             "pending" => "<pending>"
             "rejected" => "<rejected> {shown}"
@@ -217,7 +217,7 @@ fn Vm.show_object(self, mut st Inspector, o ref JsObject, depth int) str
     elif o.class == "Generator"
         open = "Object [Generator] \{"
     elif o.class == "Number" or o.class == "String" or o.class == "Boolean"
-        base = "[{o.class}: {show(mut st, o.prim, depth + 1, true)}]"
+        base = "[{o.class}: {self.show(mut st, o.prim, depth + 1, true)}]"
     elif o.class == "RegExp"
         src := if p := o.props.get("source") then (str_of(p.value) else "") else ""
         fl := if p := o.props.get("flags") then (str_of(p.value) else "") else ""
@@ -239,7 +239,7 @@ fn Vm.show_object(self, mut st Inspector, o ref JsObject, depth int) str
             continue
         if is_array_kind and index_of_key(k) != none
             continue
-        shown_value := if p.accessor then accessor_label(p) else show(
+        shown_value := if p.accessor then accessor_label(p) else self.show(
             mut st,
             p.value,
             depth + 1,

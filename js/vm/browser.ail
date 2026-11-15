@@ -43,13 +43,13 @@ fn Vm.interface(mut self, name str, proto ref JsObject)
 fn Vm.sub_interface(mut self, name str, parent str) ref JsObject
     p := object("Object", proto_of(parent))
     protos[name] = Obj(p)
-    interface(name, p)
+    self.interface(name, p)
     p
 
 ## The element interfaces of ELEMENT_INTERFACES, with what they add.
 fn Vm.element_interfaces(mut self)
-    sub_interface("HTMLDocument", "Document")
-    media := sub_interface("HTMLMediaElement", "HTMLElement")
+    self.sub_interface("HTMLDocument", "Document")
+    media := self.sub_interface("HTMLMediaElement", "HTMLElement")
     methods(media, "dom.media", "canPlayType:1 play:0 pause:0 load:0")
     mut done := Set[str]()
     for item in ELEMENT_INTERFACES.split(" ")
@@ -59,7 +59,7 @@ fn Vm.element_interfaces(mut self)
         done.add(name)
         parent := if name == "HTMLAudioElement"
             or name == "HTMLVideoElement" then "HTMLMediaElement" else "HTMLElement"
-        p := sub_interface(name, parent)
+        p := self.sub_interface(name, parent)
         if name == "HTMLImageElement"
             methods(p, "dom.img", "decode:0")
         if name == "HTMLIFrameElement"
@@ -71,10 +71,10 @@ fn Vm.element_interfaces(mut self)
 ## `Object.prototype.toString` names them as Chrome does.
 fn Vm.host_interfaces(mut self)
     window_proto := object("Object", global_obj.proto)
-    interface("Window", window_proto)
+    self.interface("Window", window_proto)
     global_obj.proto = Obj(window_proto)
     if lp := obj_of(proto_of("Location"))
-        interface("Location", lp)
+        self.interface("Location", lp)
     for pair in [
         "screen:Screen",
         "history:History",
@@ -89,17 +89,17 @@ fn Vm.host_interfaces(mut self)
             continue
         p := object("Object", o.proto)
         protos[kv[1]] = Obj(p)
-        interface(kv[1], p)
+        self.interface(kv[1], p)
         o.proto = Obj(p)
 
 ## Navigator's values become getters on its prototype, enumerable as in
 ## Chrome; each throws "Illegal invocation" unless `this` is navigator.
 fn Vm.navigator_surface(mut self, nav_proto ref JsObject)
     permissions := object("Permissions", proto_of("Object"))
-    permissions_proto := sub_interface("Permissions", "Object")
+    permissions_proto := self.sub_interface("Permissions", "Object")
     permissions.proto = Obj(permissions_proto)
     methods(permissions_proto, "dom.permissions", "query:1")
-    sub_interface("PermissionStatus", "EventTarget")
+    self.sub_interface("PermissionStatus", "EventTarget")
     nav_proto.props["permissions"] = data(Obj(permissions))
     storage := object("Object", proto_of("Object"))
     methods(storage, "dom.storage", "queryUsageAndQuota:2 requestQuota:2")
@@ -121,8 +121,8 @@ fn Vm.navigator_surface(mut self, nav_proto ref JsObject)
             writable: true,
             configurable: true,
         )
-    interface("Navigator", nav_proto)
-    notification := sub_interface("Notification", "EventTarget")
+    self.interface("Navigator", nav_proto)
+    notification := self.sub_interface("Notification", "EventTarget")
     if c := obj_of(get(Obj(notification), "constructor") else Undef)
         c.props["permission"] = Prop(
             value: Str("default"),
@@ -189,7 +189,7 @@ fn Vm.browser_native(mut self, m str, this_val Value, args List[Value]) Value? !
         id := node_id(this_val) else return type_error("Illegal invocation")
         if dom[id].tag != "iframe" or not connected(id)
             return Null
-        return if m == "frame.contentWindow" then frame_window(id) else node_value(0)
+        return if m == "frame.contentWindow" then self.frame_window(id) else node_value(0)
     if m.starts_with("selection.")
         if m == "selection.getSelection"
             return (global_obj.props.get("{PRIVATE}selection") else hidden(Null)).value
@@ -213,7 +213,7 @@ fn Vm.frame_window(mut self, id int) Value
     w := object("Window", global_obj.proto)
     for k in global_obj.props.keys()
         mut p := global_obj.props[k]
-        p.value = copy_builtin(p.value, true)
+        p.value = self.copy_builtin(p.value, true)
         w.props[k] = p
     for k in ["window", "self", "frames", "globalThis"]
         w.props[k] = hidden(Obj(w))
@@ -243,7 +243,7 @@ fn Vm.copy_builtin(mut self, v Value, deep bool) Value
     for k in o.props.keys()
         mut p := o.props[k]
         if deep
-            p.value = copy_builtin(p.value, false)
+            p.value = self.copy_builtin(p.value, false)
         f.props[k] = p
     if not deep or not native
         return Obj(f)
@@ -254,7 +254,7 @@ fn Vm.copy_builtin(mut self, v Value, deep bool) Value
     np.elems = pp.elems
     for k in pp.props.keys()
         mut p := pp.props[k]
-        p.value = if k == "constructor" then Value.Obj(f) else copy_builtin(p.value, false)
+        p.value = if k == "constructor" then Value.Obj(f) else self.copy_builtin(p.value, false)
         np.props[k] = p
     f.props["prototype"] = Prop(
         value: Obj(np),

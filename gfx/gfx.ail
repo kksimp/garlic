@@ -513,10 +513,10 @@ struct Bx
     mr_auto bool
 
 fn Bx.boxed(self) bool
-    bg != none or bt > 0.0 or br > 0.0 or bb > 0.0 or bl > 0.0
+    self.bg != none or self.bt > 0.0 or self.br > 0.0 or self.bb > 0.0 or self.bl > 0.0
 
 fn Bx.padded(self) bool
-    pt > 0.0 or pb > 0.0 or bt > 0.0 or bb > 0.0
+    self.pt > 0.0 or self.pb > 0.0 or self.bt > 0.0 or self.bb > 0.0
 
 ## A column at least this wide is `max_content`'s measuring column.
 SHRINK_W := 50000.0
@@ -971,13 +971,13 @@ CONTROLS := {"button", "input", "select", "textarea"}
 FLOW_FLEX := {"flex", "inline-flex"}
 
 fn Ctx.visible(mut self, id int) bool
-    n := d.nodes[id]
-    n.kind == Element and not page.HIDDEN.contains(n.tag) and d.attr(id, "hidden") == none
+    n := self.d.nodes[id]
+    n.kind == Element and not page.HIDDEN.contains(n.tag) and self.d.attr(id, "hidden") == none
 
 fn Ctx.element_style(mut self, id int) Map[str, str]
-    if d.nodes[id].tag == "#document"
+    if self.d.nodes[id].tag == "#document"
         return Map[str, str]()
-    if cached := styles.get(id)
+    if cached := self.styles.get(id)
         return cached
     r := self.cascaded(id)
     sc := self.scope(id)
@@ -985,34 +985,34 @@ fn Ctx.element_style(mut self, id int) Map[str, str]
     for k in r.keys()
         if not k.starts_with("--")
             out[k] = subst(r[k], sc)
-    styles[id] = out
+    self.styles[id] = out
     out
 
 fn Ctx.cascaded(mut self, id int) Map[str, str]
-    if cached := cascades.get(id)
+    if cached := self.cascades.get(id)
         return cached
-    r := css.cascade(d, id, sheet)
-    cascades[id] = r
+    r := css.cascade(self.d, id, self.sheet)
+    self.cascades[id] = r
     r
 
 ## The custom properties in scope at node `id`: its parent's, then its own.
 fn Ctx.scope(mut self, id int) Map[str, str]
-    if cached := scopes.get(id)
+    if cached := self.scopes.get(id)
         return cached
-    parent := d.nodes[id].parent
+    parent := self.d.nodes[id].parent
     mut m := Map[str, str]()
     if id != 0
         m = self.scope(parent)
-    if d.nodes[id].kind == Element
+    if self.d.nodes[id].kind == Element
         r := self.cascaded(id)
         for k in r.keys()
             if k.starts_with("--")
                 m[k] = subst(r[k], m)
-    scopes[id] = m
+    self.scopes[id] = m
     m
 
 fn Ctx.is_block(mut self, id int, cs Map[str, str]) bool
-    tag := d.nodes[id].tag
+    tag := self.d.nodes[id].tag
     display := cs.get("display") else ""
     if display == "none"
         return false
@@ -1022,18 +1022,18 @@ fn Ctx.is_block(mut self, id int, cs Map[str, str]) bool
 
 ## Moves the pending margin into the flow.
 fn Ctx.settle(mut self)
-    y += pend
-    pend = 0.0
+    self.y += self.pend
+    self.pend = 0.0
 
 ## `cs` plus what the attributes of `a` elements add: the resolved target
 ## and the label.
 fn Ctx.with_attrs(mut self, id int, tag str, cs Map[str, str]) Map[str, str]
     mut out := cs
     if tag == "a"
-        if h := d.attr(id, "href")
-            out["href"] = page.resolve(url, h)
+        if h := self.d.attr(id, "href")
+            out["href"] = page.resolve(self.url, h)
         out["node"] = "{id}"
-        out["alt-label"] = d.attr(id, "aria-label") else (d.attr(id, "title") else "")
+        out["alt-label"] = self.d.attr(id, "aria-label") else (self.d.attr(id, "title") else "")
     out
 
 fn Ctx.add_text(mut self, raw str, st St)
@@ -1044,29 +1044,29 @@ fn Ctx.add_text(mut self, raw str, st St)
         lines := text.replace("\r", "").split("\n")
         for k in 0..lines.len()
             if k > 0
-                atoms.push(self.break_atom(st))
+                self.atoms.push(self.break_atom(st))
             if lines[k] != ""
-                atoms.push(self.word_atom(lines[k], st))
+                self.atoms.push(self.word_atom(lines[k], st))
         return
     mut cur := List[char]()
     mut gap := false
     for c in text.chars()
         if c == ' ' or c == '\n' or c == '\t' or c == '\r'
             if cur.len() > 0
-                atoms.push(self.word_atom(cur.join(""), st))
+                self.atoms.push(self.word_atom(cur.join(""), st))
                 cur = []
             gap = true
-            if atoms.len() == 0 or atoms[atoms.len() - 1].kind != SPACE
-                atoms.push(self.space_atom(st))
+            if self.atoms.len() == 0 or self.atoms[self.atoms.len() - 1].kind != SPACE
+                self.atoms.push(self.space_atom(st))
         elif breaks_anywhere(c)
             if cur.len() > 0
-                atoms.push(self.word_atom(cur.join(""), st))
+                self.atoms.push(self.word_atom(cur.join(""), st))
                 cur = []
-            atoms.push(self.word_atom([c].join(""), st))
+            self.atoms.push(self.word_atom([c].join(""), st))
         else
             cur.push(c)
     if cur.len() > 0
-        atoms.push(self.word_atom(cur.join(""), st))
+        self.atoms.push(self.word_atom(cur.join(""), st))
 
 ## Whether a line may break after `c` with no space: the ideographs, kana,
 ## Hangul syllables and full-width forms (UAX 14 classes ID and similar).
@@ -1083,18 +1083,18 @@ fn breaks_anywhere(c char) bool
 ## estimate, which is then noted so the host can be asked.
 fn Ctx.tw(mut self, text str, size float, bold bool, italic bool, font str) float
     key := probe_key(text, size, bold, italic, font)
-    if w := meas.get(key)
+    if w := self.meas.get(key)
         return w
-    if text != "" and not probed.contains(key)
-        probed.add(key)
-        probes.push(Probe(text, size, bold, italic, font))
+    if text != "" and not self.probed.contains(key)
+        self.probed.add(key)
+        self.probes.push(Probe(text, size, bold, italic, font))
     text_width(text, size, bold, font == "mono")
 
 fn Ctx.word_atom(mut self, text str, st St) Atom
     Atom(
         kind: WORD,
         text,
-        w: tw(text, st.size, st.bold, st.italic, font_of(st)),
+        w: self.tw(text, st.size, st.bold, st.italic, font_of(st)),
         h: st.size * st.lh,
         size: st.size,
         st,
@@ -1108,7 +1108,7 @@ fn Ctx.space_atom(mut self, st St) Atom
     Atom(
         kind: SPACE,
         text: " ",
-        w: tw(" ", st.size, st.bold, st.italic, font_of(st)),
+        w: self.tw(" ", st.size, st.bold, st.italic, font_of(st)),
         h: st.size * st.lh,
         size: st.size,
         st,
@@ -1135,7 +1135,7 @@ fn Ctx.break_atom(mut self, st St) Atom
 ## Lays out the pending inline atoms as lines in the column from `x`, `w`
 ## wide.
 fn Ctx.flush(mut self, x float, w float, align0 str)
-    if atoms.len() == 0
+    if self.atoms.len() == 0
         return
     ## In the very wide column `max_content` measures in, nothing is centred
     ## or pushed right: the extent would be the column's.
@@ -1144,8 +1144,8 @@ fn Ctx.flush(mut self, x float, w float, align0 str)
     mut lw := 0.0
     mut lx := x
     mut room := w
-    mut pending := atoms
-    atoms = []
+    mut pending := self.atoms
+    self.atoms = []
     for a in pending
         if a.kind == BREAK
             self.emit(line, lx, room, align, a.h)
@@ -1157,7 +1157,7 @@ fn Ctx.flush(mut self, x float, w float, align0 str)
                 lw += a.w
         else
             if line.len() == 0
-                beside := self.avail(x, w, y + pend, y + pend + a.h)
+                beside := self.avail(x, w, self.y + self.pend, self.y + self.pend + a.h)
                 lx = beside.0
                 room = beside.1
             if lw + a.w > room + 0.5 and not a.st.nowrap and not a.st.pre
@@ -1165,7 +1165,7 @@ fn Ctx.flush(mut self, x float, w float, align0 str)
                     self.emit(line, lx, room, align, 0.0)
                     line = []
                     lw = 0.0
-                    beside := self.avail(x, w, y + pend, y + pend + a.h)
+                    beside := self.avail(x, w, self.y + self.pend, self.y + self.pend + a.h)
                     lx = beside.0
                     room = beside.1
             line.push(a)
@@ -1178,7 +1178,7 @@ fn Ctx.flush(mut self, x float, w float, align0 str)
 fn Ctx.avail(self, x float, w float, top float, bottom float)(float, float)
     mut left := x
     mut right := x + w
-    for f in floats
+    for f in self.floats
         if f.y < bottom and f.y + f.h > top
             if f.right
                 right = fmin(right, f.x)
@@ -1258,10 +1258,10 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
     while line.len() > 0 and line[line.len() - 1].kind == SPACE
         line.pop()
     if line.len() == 0
-        settle()
-        y += empty
+        self.settle()
+        self.y += empty
         return
-    settle()
+    self.settle()
     mut total := 0.0
     mut asc := 0.0
     mut desc := 0.0
@@ -1275,13 +1275,13 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
         cx = x + fmax((w - total) / 2.0, 0.0)
     elif align == "right" or align == "end"
         cx = x + fmax(w - total, 0.0)
-    if marker != ""
+    if self.marker != ""
         first := line[0]
-        mw := tw(marker, first.size, false, false, "sans")
-        ops.push(draw.Op.Str(
-            x: marker_x - mw,
-            y: y + asc - atom_asc(first),
-            text: marker,
+        mw := self.tw(self.marker, first.size, false, false, "sans")
+        self.ops.push(draw.Op.Str(
+            x: self.marker_x - mw,
+            y: self.y + asc - atom_asc(first),
+            text: self.marker,
             font: "sans",
             size: first.size,
             fg: first.st.color,
@@ -1289,12 +1289,12 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
             italic: false,
             underline: false,
         ))
-        marker = ""
+        self.marker = ""
     mut k := 0
     while k < line.len()
         a := line[k]
         a_asc := atom_asc(a)
-        top := y + asc - a_asc
+        top := self.y + asc - a_asc
         ## Neighbouring words in one style are drawn as one string, so the
         ## host spaces them itself; only the estimate places the string.
         if a.kind == WORD or a.kind == SPACE
@@ -1309,7 +1309,7 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
                 run_w += line[j].w
                 j += 1
             if text.trim() != ""
-                ops.push(draw.Op.Str(
+                self.ops.push(draw.Op.Str(
                     x: cx,
                     y: top,
                     text: text.trim_end(),
@@ -1321,7 +1321,7 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
                     underline: a.st.underline,
                 ))
                 if a.st.href != ""
-                    hits.push(Hit(
+                    self.hits.push(Hit(
                         x: cx,
                         y: top,
                         w: run_w,
@@ -1334,11 +1334,11 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
             k = j
             continue
         elif a.kind == IMAGE
-            ops.push(draw.Op.Pic(x: cx, y: y + asc - a.h, w: a.w, h: a.h, src: a.src))
+            self.ops.push(draw.Op.Pic(x: cx, y: self.y + asc - a.h, w: a.w, h: a.h, src: a.src))
             if a.st.href != ""
-                hits.push(Hit(
+                self.hits.push(Hit(
                     x: cx,
-                    y: y + asc - a.h,
+                    y: self.y + asc - a.h,
                     w: a.w,
                     h: a.h,
                     href: a.st.href,
@@ -1346,17 +1346,17 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
                     anchor: a.st.node,
                 ))
         elif a.kind == CONTROL
-            cy := y + asc - a.h * 0.8
-            hits.push(Hit(x: cx, y: cy, w: a.w, h: a.h, href: "", node: a.node, anchor: -1))
-            ops.push(draw.Op.Rect(x: cx, y: cy, w: a.w, h: a.h, color: a.edge))
-            ops.push(draw.Op.Rect(
+            cy := self.y + asc - a.h * 0.8
+            self.hits.push(Hit(x: cx, y: cy, w: a.w, h: a.h, href: "", node: a.node, anchor: -1))
+            self.ops.push(draw.Op.Rect(x: cx, y: cy, w: a.w, h: a.h, color: a.edge))
+            self.ops.push(draw.Op.Rect(
                 x: cx + 1.0,
                 y: cy + 1.0,
                 w: a.w - 2.0,
                 h: a.h - 2.0,
                 color: a.fill,
             ))
-            ops.push(draw.Op.Str(
+            self.ops.push(draw.Op.Str(
                 x: cx + 6.0,
                 y: cy + (a.h - a.size) / 2.0 - 1.0,
                 text: a.text,
@@ -1369,23 +1369,23 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
             ))
         cx += a.w
         k += 1
-    y += asc + desc
-    pend = 0.0
+    self.y += asc + desc
+    self.pend = 0.0
 
 fn Ctx.image_atom(mut self, id int, cs Map[str, str], st St, avail float) Atom?
     # A `<canvas>` is a picture too: scripts publish its bitmap as a `data:`
     # address in `data-garlic-pixels` (js/vm/canvas2d.ail).
-    pic_attr := if d.nodes[id].tag == "canvas" then "data-garlic-pixels" else "src"
-    src := d.attr(id, pic_attr)?
-    mut w := (d.attr(id, "width") else "0").to_float() else 0.0
-    mut h := (d.attr(id, "height") else "0").to_float() else 0.0
+    pic_attr := if self.d.nodes[id].tag == "canvas" then "data-garlic-pixels" else "src"
+    src := self.d.attr(id, pic_attr)?
+    mut w := (self.d.attr(id, "width") else "0").to_float() else 0.0
+    mut h := (self.d.attr(id, "height") else "0").to_float() else 0.0
     if v := cs.get("width")
         w = length(v, st.size, avail) else w
     if v := cs.get("height")
         h = length(v, st.size, avail) else h
     ## A missing side comes from the picture's own size, keeping its shape.
     if w <= 0.0 or h <= 0.0
-        nat := pics.get(page.resolve(url, src)) else [0, 0]
+        nat := self.pics.get(page.resolve(self.url, src)) else [0, 0]
         if nat[0] <= 0 or nat[1] <= 0
             return none
         nw := nat[0].to_float()
@@ -1409,15 +1409,15 @@ fn Ctx.image_atom(mut self, id int, cs Map[str, str], st St, avail float) Atom?
         h: ih,
         size: st.size,
         st,
-        src: page.resolve(url, src),
+        src: page.resolve(self.url, src),
         fill: 0,
         edge: 0,
         node: -1,
     )
 
 fn Ctx.control_atom(mut self, id int, st St) Atom?
-    tag := d.nodes[id].tag
-    kind := d.attr(id, "type") else "text"
+    tag := self.d.nodes[id].tag
+    kind := self.d.attr(id, "type") else "text"
     if tag == "input" and (kind == "hidden")
         return none
     mut label := ""
@@ -1426,30 +1426,33 @@ fn Ctx.control_atom(mut self, id int, st St) Atom?
     mut ink := st
     if tag == "button" or kind == "submit" or kind == "button" or kind == "reset"
         label = if tag
-            == "button" then d.visible_text(id).trim() else (d.attr(id, "value") else "Submit")
-        w = tw(label, st.size, false, false, "sans") + 20.0
+            == "button" then self.d.visible_text(id).trim() else (self.d.attr(id, "value") else "Submit")
+        w = self.tw(label, st.size, false, false, "sans") + 20.0
         fill = 0xefefef
     elif tag == "input" and (kind == "checkbox" or kind == "radio")
-        label = if d.attr(id, "checked") != none then "x" else ""
+        label = if self.d.attr(id, "checked") != none then "x" else ""
         w = st.size + 2.0
     elif tag == "select"
         label = ""
         mut chosen := false
-        for o in d.all("option")
-            if d.within(o, id) and (label == "" or (not chosen and d.attr(o, "selected") != none))
-                label = d.text(o).trim()
-                chosen = d.attr(o, "selected") != none
-        w = fmax(tw(label, st.size, false, false, "sans") + 30.0, 80.0)
+        for o in self.d.all("option")
+            if self.d.within(
+                o,
+                id,
+            ) and (label == "" or (not chosen and self.d.attr(o, "selected") != none))
+                label = self.d.text(o).trim()
+                chosen = self.d.attr(o, "selected") != none
+        w = fmax(self.tw(label, st.size, false, false, "sans") + 30.0, 80.0)
     else
-        label = d.attr(id, "value") else ""
+        label = self.d.attr(id, "value") else ""
         if label == "" and tag == "textarea"
-            label = d.text(id).trim()
+            label = self.d.text(id).trim()
         if label == ""
-            label = d.attr(id, "placeholder") else ""
+            label = self.d.attr(id, "placeholder") else ""
             ink.color = 0x8a8a8a
     mut edge := 0x767676
-    if id == editing
-        typed := d.attr(id, "value") else (if tag == "textarea" then d.text(id) else "")
+    if id == self.editing
+        typed := self.d.attr(id, "value") else (if tag == "textarea" then self.d.text(id) else "")
         label = "{typed}|"
         ink.color = st.color
         edge = 0x0a84ff
@@ -1470,14 +1473,14 @@ fn Ctx.control_atom(mut self, id int, st St) Atom?
 ## attribute or the style), else its `viewBox`, else 24 points; none when
 ## it draws nothing.
 fn Ctx.svg_atom(mut self, id int, cs Map[str, str], st St, avail float) Atom?
-    mut w := (d.attr(id, "width") else "0").replace("px", "").to_float() else 0.0
-    mut h := (d.attr(id, "height") else "0").replace("px", "").to_float() else 0.0
+    mut w := (self.d.attr(id, "width") else "0").replace("px", "").to_float() else 0.0
+    mut h := (self.d.attr(id, "height") else "0").replace("px", "").to_float() else 0.0
     if v := cs.get("width")
         w = length(v, st.size, avail) else w
     if v := cs.get("height")
         h = length(v, st.size, avail) else h
     if w <= 0.0 or h <= 0.0
-        vb := d.attr(id, "viewBox") else ""
+        vb := self.d.attr(id, "viewBox") else ""
         parts := [p for p in vb.replace(",", " ").split(" ") if p != ""]
         vw := if parts.len() == 4 then (parts[2].to_float() else 24.0) else 24.0
         vh := if parts.len() == 4 then (parts[3].to_float() else 24.0) else 24.0
@@ -1490,21 +1493,27 @@ fn Ctx.svg_atom(mut self, id int, cs Map[str, str], st St, avail float) Atom?
             h = vh
     w = w.min(avail)
     key := "svg:{id}:{w.round().to_int()}x{h.round().to_int()}:{st.color.to_hex()}"
-    if not svgs.contains(key)
-        bm := svg.render(d, id, w.round().to_int().max(1), h.round().to_int().max(1), st.color) else
+    if not self.svgs.contains(key)
+        bm := svg.render(
+            self.d,
+            id,
+            w.round().to_int().max(1),
+            h.round().to_int().max(1),
+            st.color,
+        ) else
             return none
-        svgs[key] = bm
+        self.svgs[key] = bm
     Atom(kind: IMAGE, text: "", w, h, size: st.size, st, src: key, fill: 0, edge: 0, node: -1)
 
 ## Adds element `id`'s inline content to the pending atoms.
 fn Ctx.inline(mut self, id int, parent St, avail float)
-    n := d.nodes[id]
+    n := self.d.nodes[id]
     if n.kind == Text
-        add_text(n.text, parent)
+        self.add_text(n.text, parent)
         return
-    if n.kind != Element or not visible(id)
+    if n.kind != Element or not self.visible(id)
         return
-    cs := element_style(id)
+    cs := self.element_style(id)
     if (cs.get("display") else "") == "none" or (cs.get("visibility") else "") == "hidden"
         return
     tag := n.tag
@@ -1512,113 +1521,119 @@ fn Ctx.inline(mut self, id int, parent St, avail float)
     st := text_style(tag, ecs, parent)
     if tag == "svg"
         if a := self.svg_atom(id, cs, st, avail)
-            atoms.push(a)
+            self.atoms.push(a)
         elif parent.alt != ""
-            add_text(parent.alt, parent)
+            self.add_text(parent.alt, parent)
         return
     if tag == "br"
-        atoms.push(self.break_atom(st))
+        self.atoms.push(self.break_atom(st))
         return
     if tag == "img" or tag == "canvas"
-        side := (cs.get("float") else (d.attr(id, "align") else "")).trim()
+        side := (cs.get("float") else (self.d.attr(id, "align") else "")).trim()
         if a := self.image_atom(id, cs, st, avail)
             if side == "left" or side == "right"
-                flush(col_x, col_w, parent.align)
-                settle()
-                fx := if side == "right" then col_x + col_w - a.w else col_x
-                ops.push(draw.Op.Pic(x: fx, y: y, w: a.w, h: a.h, src: a.src))
+                self.flush(self.col_x, self.col_w, parent.align)
+                self.settle()
+                fx := if side == "right" then self.col_x + self.col_w - a.w else self.col_x
+                self.ops.push(draw.Op.Pic(x: fx, y: self.y, w: a.w, h: a.h, src: a.src))
                 if st.href != ""
-                    hits.push(Hit(
+                    self.hits.push(Hit(
                         x: fx,
-                        y: y,
+                        y: self.y,
                         w: a.w,
                         h: a.h,
                         href: st.href,
                         node: -1,
                         anchor: st.node,
                     ))
-                floats.push(Float(
+                self.floats.push(Float(
                     x: if side == "right" then fx - 8.0 else fx,
-                    y: y,
+                    y: self.y,
                     w: a.w + 8.0,
                     h: a.h + 4.0,
                     right: side == "right",
                 ))
             else
-                atoms.push(a)
-        elif alt := d.attr(id, "alt")
+                self.atoms.push(a)
+        elif alt := self.d.attr(id, "alt")
             if alt != ""
-                add_text(alt, text_style(tag, ecs, parent))
+                self.add_text(alt, text_style(tag, ecs, parent))
         return
     if CONTROLS.contains(tag)
         if a := self.control_atom(id, st)
-            atoms.push(a)
+            self.atoms.push(a)
         return
     bx := box_of(tag, cs, st, avail)
     if bx.ml > 0.0 and (cs.get("display") else "").starts_with("inline-")
-        atoms.push(self.word_atom("", st))
+        self.atoms.push(self.word_atom("", st))
     for c in n.children
-        inline(c, st, avail)
+        self.inline(c, st, avail)
 
 ## Lays out the children of element `id` (style `st`) in the column from
 ## `x`, `w` wide, flowing inline runs into lines.
 fn Ctx.children(mut self, id int, st St, x float, w float)
-    saved_x := col_x
-    saved_w := col_w
-    col_x = x
-    col_w = w
-    for c in d.nodes[id].children
-        n := d.nodes[c]
+    saved_x := self.col_x
+    saved_w := self.col_w
+    self.col_x = x
+    self.col_w = w
+    for c in self.d.nodes[id].children
+        n := self.d.nodes[c]
         if n.kind == Text
-            add_text(n.text, st)
-        elif n.kind == Element and visible(c)
-            cs := element_style(c)
+            self.add_text(n.text, st)
+        elif n.kind == Element and self.visible(c)
+            cs := self.element_style(c)
             pos := (cs.get("position") else "").trim()
             side := (cs.get("float") else "").trim()
             if pos == "absolute" or pos == "fixed"
                 continue
             clr := (cs.get("clear") else "").trim()
             if clr == "left" or clr == "right" or clr == "both"
-                flush(x, w, st.align)
-                settle()
-                for f in floats
+                self.flush(x, w, st.align)
+                self.settle()
+                for f in self.floats
                     if clr == "both" or (clr == "right") == f.right
-                        y = fmax(y, f.y + f.h)
+                        self.y = fmax(self.y, f.y + f.h)
             if (side == "left" or side == "right") and n.tag != "img"
-                flush(x, w, st.align)
+                self.flush(x, w, st.align)
                 self.place_float(c, st, x, w, side == "right")
             elif self.is_block(c, cs)
-                flush(x, w, st.align)
-                block(c, st, x, w)
+                self.flush(x, w, st.align)
+                self.block(c, st, x, w)
             else
-                inline(c, st, w)
-    flush(x, w, st.align)
-    col_x = saved_x
-    col_w = saved_w
+                self.inline(c, st, w)
+    self.flush(x, w, st.align)
+    self.col_x = saved_x
+    self.col_w = saved_w
 
 ## Lays out box `id` as a float against the left or right edge of the
 ## column from `x`, `w` wide, at the current line; text then wraps around it.
 fn Ctx.place_float(mut self, id int, st St, x float, w float, right bool)
-    cs := element_style(id)
-    fst := text_style(d.nodes[id].tag, self.with_attrs(id, d.nodes[id].tag, cs), st)
-    bx := box_of(d.nodes[id].tag, cs, fst, w)
-    settle()
+    cs := self.element_style(id)
+    fst := text_style(self.d.nodes[id].tag, self.with_attrs(id, self.d.nodes[id].tag, cs), st)
+    bx := box_of(self.d.nodes[id].tag, cs, fst, w)
+    self.settle()
     ## The measured extent already includes the left margin (the box is laid out from x = 0).
     wide := fmin(
         (if bw := bx.width then bw + bx.ml else self.max_content(id, st) + bx.pr + bx.br) + bx.mr,
         w,
     )
     fx := if right then x + w - wide else x
-    y0 := y
-    p0 := pend
-    pend = 0.0
+    y0 := self.y
+    p0 := self.pend
+    self.pend = 0.0
     if wide < SHRINK_W
-        reach = fmax(reach, fx + wide)
+        self.reach = fmax(self.reach, fx + wide)
     self.block(id, st, fx, wide)
-    h := y + pend - y0
-    y = y0
-    pend = p0
-    floats.push(Float(x: if right then fx - 8.0 else fx, y: y0, w: wide + 8.0, h: h + 4.0, right))
+    h := self.y + self.pend - y0
+    self.y = y0
+    self.pend = p0
+    self.floats.push(Float(
+        x: if right then fx - 8.0 else fx,
+        y: y0,
+        w: wide + 8.0,
+        h: h + 4.0,
+        right,
+    ))
 
 ## Operation `op` moved down by `dy`.
 fn lowered(op draw.Op, dy float) draw.Op
@@ -1648,24 +1663,24 @@ fn lowered(op draw.Op, dy float) draw.Op
 
 ## Moves the element boxes recorded from operation `o0` on down by `dy`.
 fn Ctx.shift_boxes(mut self, o0 int, dy float)
-    for k in 0..boxes.len()
-        b := boxes[k]
+    for k in 0..self.boxes.len()
+        b := self.boxes[k]
         if b.at >= o0
-            boxes[k] = Box(node: b.node, x: b.x, y: b.y + dy, w: b.w, h: b.h, at: b.at)
+            self.boxes[k] = Box(node: b.node, x: b.x, y: b.y + dy, w: b.w, h: b.h, at: b.at)
 
 ## Drops the element boxes recorded from operation `o0` on.
 fn Ctx.drop_boxes(mut self, o0 int)
-    kept := [b for b in boxes if b.at < o0]
-    boxes = kept
+    kept := [b for b in self.boxes if b.at < o0]
+    self.boxes = kept
 
 ## Moves the operations and hit boxes from `o0` and `h0` on down by `dy`.
 fn Ctx.lower(mut self, o0 int, h0 int, dy float)
-    shift_boxes(o0, dy)
-    for k in o0..ops.len()
-        ops[k] = lowered(ops[k], dy)
-    for k in h0..hits.len()
-        h := hits[k]
-        hits[k] = Hit(
+    self.shift_boxes(o0, dy)
+    for k in o0..self.ops.len()
+        self.ops[k] = lowered(self.ops[k], dy)
+    for k in h0..self.hits.len()
+        h := self.hits[k]
+        self.hits[k] = Hit(
             x: h.x,
             y: h.y + dy,
             w: h.w,
@@ -1678,73 +1693,73 @@ fn Ctx.lower(mut self, o0 int, h0 int, dy float)
 ## Lays out the absolutely positioned children of `id` against the
 ## positioned ancestor's box, out of the flow.
 fn Ctx.absolutes(mut self, id int, st St, late bool, boxh float)
-    for c in d.nodes[id].children
-        if d.nodes[c].kind == Element and visible(c)
-            cs := element_style(c)
+    for c in self.d.nodes[id].children
+        if self.d.nodes[c].kind == Element and self.visible(c)
+            cs := self.element_style(c)
             pos := (cs.get("position") else "").trim()
             if pos != "absolute" and pos != "fixed"
                 continue
-            tag := d.nodes[c].tag
+            tag := self.d.nodes[c].tag
             cst := text_style(tag, self.with_attrs(c, tag, cs), st)
-            bx := box_of(tag, cs, cst, aw)
+            bx := box_of(tag, cs, cst, self.aw)
             anchored := bx.bottom != none and bx.top == none
             if anchored != late
                 continue
             fixed := pos == "fixed"
-            ox := if fixed then 0.0 else ax
-            oy := if fixed then 0.0 else ay
-            ow := if fixed then page_w else aw
+            ox := if fixed then 0.0 else self.ax
+            oy := if fixed then 0.0 else self.ay
+            ow := if fixed then self.page_w else self.aw
             wide := fmin((bx.width else self.max_content(c, st)) + bx.ml + bx.mr, ow)
             mut at := ox
             if l := bx.left
                 at = ox + l
             elif r := bx.right
                 at = ox + ow - r - wide
-            y0 := y
-            p0 := pend
-            settle()
+            y0 := self.y
+            p0 := self.pend
+            self.settle()
             if t := bx.top
-                y = oy + t
+                self.y = oy + t
             elif late
-                y = oy
-            start := y
-            o0 := ops.len()
-            h0 := hits.len()
-            pend = 0.0
+                self.y = oy
+            start := self.y
+            o0 := self.ops.len()
+            h0 := self.hits.len()
+            self.pend = 0.0
             self.block(c, st, at, wide)
             if late
                 bb := bx.bottom else 0.0
-                delta := oy + boxh - bb - (y + pend - start) - start
+                delta := oy + boxh - bb - (self.y + self.pend - start) - start
                 self.lower(o0, h0, delta)
-            y = y0
-            pend = p0
+            self.y = y0
+            self.pend = p0
 
 ## The width node `id` takes when nothing makes it wrap: laid out once in a
 ## very wide column and measured, then taken back.
 fn Ctx.max_content(mut self, id int, st St) float
-    if cached := contents.get(id)
+    if cached := self.contents.get(id)
         return cached
-    if d.nodes[id].kind == Text
-        w := text_width(html.collapse(d.nodes[id].text).trim(), st.size, st.bold, st.mono)
-        contents[id] = w
+    if self.d.nodes[id].kind == Text
+        w := text_width(html.collapse(self.d.nodes[id].text).trim(), st.size, st.bold, st.mono)
+        self.contents[id] = w
         return w
-    o0 := ops.len()
-    h0 := hits.len()
-    y0 := y
-    p0 := pend
-    m0 := marker
-    saved := atoms
-    atoms = []
-    saved_reach := reach
-    reach = 0.0
-    f0 := floats.len()
+    o0 := self.ops.len()
+    h0 := self.hits.len()
+    y0 := self.y
+    p0 := self.pend
+    m0 := self.marker
+    saved := self.atoms
+    self.atoms = []
+    saved_reach := self.reach
+    self.reach = 0.0
+    f0 := self.floats.len()
     self.block(id, st, 0.0, 2.0 * SHRINK_W)
-    while floats.len() > f0
-        floats.pop()
-    mut extent := reach
-    reach = saved_reach
-    for k in o0..ops.len()
-        match ops[k]
+    while self.floats.len() > f0
+        self.floats.pop()
+    mut extent := self.reach
+    self.reach = saved_reach
+    for k in o0..self.ops.len()
+        match self.ops[k]
             Rect(x, _, w, _, _) => extent = if x + w < SHRINK_W then fmax(extent, x + w) else extent
             Str(x, _, t, _, size, _, bold, _, _) => extent = fmax(extent, x + text_width(
                 t,
@@ -1754,44 +1769,44 @@ fn Ctx.max_content(mut self, id int, st St) float
             ))
             Pic(x, _, w, _, _) => extent = fmax(extent, x + w)
             Text(_, _, _, _, _, _, _) => extent = extent
-    drop_boxes(o0)
-    while ops.len() > o0
-        ops.pop()
-    while hits.len() > h0
-        hits.pop()
-    y = y0
-    pend = p0
-    marker = m0
-    atoms = saved
+    self.drop_boxes(o0)
+    while self.ops.len() > o0
+        self.ops.pop()
+    while self.hits.len() > h0
+        self.hits.pop()
+    self.y = y0
+    self.pend = p0
+    self.marker = m0
+    self.atoms = saved
     if extent > 50000.0
         extent = 0.0
-    contents[id] = extent
+    self.contents[id] = extent
     extent
 
 ## The width of the text in `id` on one line, for shrink-to-fit items.
 fn Ctx.intrinsic(mut self, id int, st St) float
-    text := d.visible_text(id).trim()
-    tw(html.collapse(text), st.size, st.bold, st.italic, font_of(st))
+    text := self.d.visible_text(id).trim()
+    self.tw(html.collapse(text), st.size, st.bold, st.italic, font_of(st))
 
 ## Lays out block `id` inside a column from `x`, `w` wide, with the
 ## parent's text style `parent`.
 fn Ctx.block(mut self, id int, parent St, x float, w float)
-    n := d.nodes[id]
+    n := self.d.nodes[id]
     tag := n.tag
-    cs := element_style(id)
+    cs := self.element_style(id)
     display := cs.get("display") else ""
     if display == "none" or (cs.get("visibility") else "") == "hidden"
         return
     if tag == "svg"
         ## An icon is drawn; one that draws nothing is stood for by its link's label.
-        cs0 := element_style(id)
+        cs0 := self.element_style(id)
         st0 := text_style(tag, self.with_attrs(id, tag, cs0), parent)
         if a := self.svg_atom(id, cs0, st0, w)
-            atoms.push(a)
-            flush(x, w, parent.align)
+            self.atoms.push(a)
+            self.flush(x, w, parent.align)
         elif parent.alt != ""
-            add_text(parent.alt, parent)
-            flush(x, w, parent.align)
+            self.add_text(parent.alt, parent)
+            self.flush(x, w, parent.align)
         return
     ecs := self.with_attrs(id, tag, cs)
     mut st := text_style(tag, ecs, parent)
@@ -1799,11 +1814,17 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
     if bg := bx.bg
         st.under = bg
     if tag == "hr"
-        settle()
-        y += bx.mt
-        ops.push(draw.Op.Rect(x: x + bx.ml, y: y, w: w - bx.ml - bx.mr, h: 1.0, color: RULE))
-        y += 1.0
-        pend = bx.mb
+        self.settle()
+        self.y += bx.mt
+        self.ops.push(draw.Op.Rect(
+            x: x + bx.ml,
+            y: self.y,
+            w: w - bx.ml - bx.mr,
+            h: 1.0,
+            color: RULE,
+        ))
+        self.y += 1.0
+        self.pend = bx.mb
         return
     mut inner_w := w - bx.ml - bx.mr
     mut left := x + bx.ml
@@ -1827,27 +1848,27 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
     border_w := inner_w
     content_x := left + bx.bl + bx.pl
     content_w := fmax(border_w - bx.bl - bx.br - bx.pl - bx.pr, 1.0)
-    pend = fmax(pend, bx.mt)
+    self.pend = fmax(self.pend, bx.mt)
     mut slot := -1
-    mut top := y + pend
+    mut top := self.y + self.pend
     positioned := bx.pos == "relative" or bx.pos == "absolute" or bx.pos == "fixed"
     boxed := bx.boxed() or bx.padded() or bx.height != none or positioned
     if boxed
-        settle()
-        top = y
+        self.settle()
+        top = self.y
         if bx.bg != none or (bx.radius != 0.0 and bx.bt > 0.0)
-            slot = ops.len()
-            ops.push(draw.Op.Rect(x: left, y: top, w: border_w, h: 0.0, color: 0))
-        y += bx.bt + bx.pt
+            slot = self.ops.len()
+            self.ops.push(draw.Op.Rect(x: left, y: top, w: border_w, h: 0.0, color: 0))
+        self.y += bx.bt + bx.pt
     if tag == "li"
-        li_marker(id, st, content_x)
-    saved_ax := ax
-    saved_ay := ay
-    saved_aw := aw
+        self.li_marker(id, st, content_x)
+    saved_ax := self.ax
+    saved_ay := self.ay
+    saved_aw := self.aw
     if positioned
-        ax = left
-        ay = top
-        aw = border_w
+        self.ax = left
+        self.ay = top
+        self.aw = border_w
     self.absolutes(id, st, false, 0.0)
     if tag == "table"
         self.table(id, st, content_x, content_w)
@@ -1866,24 +1887,24 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
         self.columns(id, st, cs, content_x, content_w, column_count(cs))
     else
         self.children(id, st, content_x, content_w)
-    marker = ""
-    ax = saved_ax
-    ay = saved_ay
-    aw = saved_aw
+    self.marker = ""
+    self.ax = saved_ax
+    self.ay = saved_ay
+    self.aw = saved_aw
     if boxed
-        settle()
-        y += bx.pb + bx.bb
+        self.settle()
+        self.y += bx.pb + bx.bb
         if hh := bx.height
-            y = fmax(y, top + hh)
-        bottom := y
+            self.y = fmax(self.y, top + hh)
+        bottom := self.y
         if positioned
-            ax = left
-            ay = top
-            aw = border_w
+            self.ax = left
+            self.ay = top
+            self.aw = border_w
             self.absolutes(id, st, true, bottom - top)
-            ax = saved_ax
-            ay = saved_ay
-            aw = saved_aw
+            self.ax = saved_ax
+            self.ay = saved_ay
+            self.aw = saved_aw
         radius := if bx.radius < 0.0 then fmin(
             border_w,
             bottom - top,
@@ -1912,20 +1933,20 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
                     radius,
                     bx.bg else st.under,
                 ))
-            ops[slot] = shape[0]
+            self.ops[slot] = shape[0]
             for k in 1..shape.len()
-                ops.insert(slot + k, shape[k])
-            pend = bx.mb
+                self.ops.insert(slot + k, shape[k])
+            self.pend = bx.mb
             if tag == "body" or tag == "html"
                 if bg := bx.bg
-                    canvas = bg
+                    self.canvas = bg
             return
         if bg := bx.bg
-            ops[slot] = draw.Op.Rect(x: left, y: top, w: border_w, h: bottom - top, color: bg)
+            self.ops[slot] = draw.Op.Rect(x: left, y: top, w: border_w, h: bottom - top, color: bg)
         if bx.bt > 0.0
-            ops.push(draw.Op.Rect(x: left, y: top, w: border_w, h: bx.bt, color: bx.bcolor))
+            self.ops.push(draw.Op.Rect(x: left, y: top, w: border_w, h: bx.bt, color: bx.bcolor))
         if bx.bb > 0.0
-            ops.push(draw.Op.Rect(
+            self.ops.push(draw.Op.Rect(
                 x: left,
                 y: bottom - bx.bb,
                 w: border_w,
@@ -1933,22 +1954,35 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
                 color: bx.bcolor,
             ))
         if bx.bl > 0.0
-            ops.push(draw.Op.Rect(x: left, y: top, w: bx.bl, h: bottom - top, color: bx.bcolor))
+            self.ops.push(draw.Op.Rect(
+                x: left,
+                y: top,
+                w: bx.bl,
+                h: bottom - top,
+                color: bx.bcolor,
+            ))
         if bx.br > 0.0
-            ops.push(draw.Op.Rect(
+            self.ops.push(draw.Op.Rect(
                 x: left + border_w - bx.br,
                 y: top,
                 w: bx.br,
                 h: bottom - top,
                 color: bx.bcolor,
             ))
-        pend = bx.mb
+        self.pend = bx.mb
     else
-        pend = fmax(pend, bx.mb)
-    boxes.push(Box(node: id, x: left, y: top, w: border_w, h: fmax(y - top, 0.0), at: ops.len()))
+        self.pend = fmax(self.pend, bx.mb)
+    self.boxes.push(Box(
+        node: id,
+        x: left,
+        y: top,
+        w: border_w,
+        h: fmax(self.y - top, 0.0),
+        at: self.ops.len(),
+    ))
     if tag == "body" or tag == "html"
         if bg := bx.bg
-            canvas = bg
+            self.canvas = bg
 
 ## The `list-style-type` or `list-style` in `cs` as `none` or its first
 ## token, or "" when neither is set.
@@ -1965,39 +1999,39 @@ fn list_kind(cs Map[str, str]) str
 
 ## Sets the marker of list item `id` whose content starts at `x`.
 fn Ctx.li_marker(mut self, id int, st St, x float)
-    parent := d.nodes[id].parent
-    ptag := d.nodes[parent].tag
+    parent := self.d.nodes[id].parent
+    ptag := self.d.nodes[parent].tag
     ## `list-style` inherits: the item's own value, then its list's, then
     ## the nearest ancestor's (`none` may be one token of the shorthand).
     mut kind := ""
     mut e := id
     while e > 0 and kind == ""
         kind = list_kind(self.element_style(e))
-        e = d.nodes[e].parent
+        e = self.d.nodes[e].parent
     if kind == "none"
         return
-    marker_x = x - 6.0
+    self.marker_x = x - 6.0
     if ptag == "ol"
-        mut k := (d.attr(parent, "start") else "1").to_int() else 1
-        for c in d.nodes[parent].children
+        mut k := (self.d.attr(parent, "start") else "1").to_int() else 1
+        for c in self.d.nodes[parent].children
             if c == id
                 break
-            if d.nodes[c].tag == "li"
+            if self.d.nodes[c].tag == "li"
                 k += 1
-        marker = "{k}."
+        self.marker = "{k}."
     else
-        marker = "\u{2022}"
-        marker_x = x - 8.0
+        self.marker = "\u{2022}"
+        self.marker_x = x - 8.0
 
 ## The child elements that take part in a row, column or grid layout.
 fn Ctx.items(mut self, id int) List[int]
     mut out := List[int]()
-    for c in d.nodes[id].children
-        if d.nodes[c].kind == Text
-            if html.collapse(d.nodes[c].text).trim() != ""
+    for c in self.d.nodes[id].children
+        if self.d.nodes[c].kind == Text
+            if html.collapse(self.d.nodes[c].text).trim() != ""
                 out.push(c)
-        elif visible(c)
-            cs := element_style(c)
+        elif self.visible(c)
+            cs := self.element_style(c)
             pos := (cs.get("position") else "").trim()
             if (cs.get("display") else "") != "none" and pos != "absolute" and pos != "fixed"
                 out.push(c)
@@ -2015,22 +2049,22 @@ fn Ctx.row(
     center bool,
     min_h float,
 )
-    settle()
-    y0 := y
+    self.settle()
+    y0 := self.y
     mut heights := List[float]()
     mut spans := List[(int, int, int, int)]()
     for k in 0..items.len()
-        y = y0
-        pend = 0.0
-        o0 := ops.len()
-        h0 := hits.len()
-        if d.nodes[items[k]].kind == Text
-            add_text(d.nodes[items[k]].text, parent)
-            flush(x + offsets[k], widths[k], parent.align)
+        self.y = y0
+        self.pend = 0.0
+        o0 := self.ops.len()
+        h0 := self.hits.len()
+        if self.d.nodes[items[k]].kind == Text
+            self.add_text(self.d.nodes[items[k]].text, parent)
+            self.flush(x + offsets[k], widths[k], parent.align)
         else
             self.block(items[k], parent, x + offsets[k], widths[k])
-        heights.push(y + pend - y0)
-        spans.push((o0, ops.len(), h0, hits.len()))
+        heights.push(self.y + self.pend - y0)
+        spans.push((o0, self.ops.len(), h0, self.hits.len()))
     mut tall := min_h
     for h in heights
         tall = fmax(tall, h)
@@ -2038,21 +2072,21 @@ fn Ctx.row(
         for k in 0..items.len()
             dy := (tall - heights[k]) / 2.0
             if dy > 0.5
-                shift_boxes(spans[k].0, dy)
+                self.shift_boxes(spans[k].0, dy)
                 for o in spans[k].0..spans[k].1
-                    ops[o] = shifted(ops[o], dy)
+                    self.ops[o] = shifted(self.ops[o], dy)
                 for h in spans[k].2..spans[k].3
-                    hits[h] = Hit(
-                        x: hits[h].x,
-                        y: hits[h].y + dy,
-                        w: hits[h].w,
-                        h: hits[h].h,
-                        href: hits[h].href,
-                        node: hits[h].node,
-                        anchor: hits[h].anchor,
+                    self.hits[h] = Hit(
+                        x: self.hits[h].x,
+                        y: self.hits[h].y + dy,
+                        w: self.hits[h].w,
+                        h: self.hits[h].h,
+                        href: self.hits[h].href,
+                        node: self.hits[h].node,
+                        anchor: self.hits[h].anchor,
                     )
-    y = y0 + tall
-    pend = 0.0
+    self.y = y0 + tall
+    self.pend = 0.0
 
 ## `column-count` (or the count in `columns`): 1 when absent or not a number.
 fn column_count(cs Map[str, str]) int
@@ -2071,50 +2105,50 @@ fn Ctx.columns(mut self, id int, st St, cs Map[str, str], x float, w float, n in
     items := self.items(id)
     gap := length(cs.get("column-gap") else (cs.get("gap") else "1em"), st.size, w) else 16.0
     colw := (w - gap * (n - 1).to_float()) / n.to_float()
-    settle()
-    y0 := y
+    self.settle()
+    y0 := self.y
     mut heights := List[float]()
     mut total := 0.0
     for it in items
-        o0 := ops.len()
-        h0 := hits.len()
-        saved := atoms
-        atoms = []
-        y = y0
-        pend = 0.0
+        o0 := self.ops.len()
+        h0 := self.hits.len()
+        saved := self.atoms
+        self.atoms = []
+        self.y = y0
+        self.pend = 0.0
         self.lay_item(it, st, x, colw)
-        heights.push(y + pend - y0)
-        total += y + pend - y0
-        drop_boxes(o0)
-        while ops.len() > o0
-            ops.pop()
-        while hits.len() > h0
-            hits.pop()
-        atoms = saved
+        heights.push(self.y + self.pend - y0)
+        total += self.y + self.pend - y0
+        self.drop_boxes(o0)
+        while self.ops.len() > o0
+            self.ops.pop()
+        while self.hits.len() > h0
+            self.hits.pop()
+        self.atoms = saved
     target := total / n.to_float()
     mut col := 0
     mut cur := 0.0
     mut tall := 0.0
-    y = y0
-    pend = 0.0
+    self.y = y0
+    self.pend = 0.0
     for k in 0..items.len()
         if col < n - 1 and cur > 0.0 and cur + heights[k] / 2.0 > target
             tall = fmax(tall, cur)
             col += 1
             cur = 0.0
-            y = y0
-            pend = 0.0
+            self.y = y0
+            self.pend = 0.0
         self.lay_item(items[k], st, x + col.to_float() * (colw + gap), colw)
-        cur = y + pend - y0
+        cur = self.y + self.pend - y0
     tall = fmax(tall, cur)
-    y = y0 + tall
-    pend = 0.0
+    self.y = y0 + tall
+    self.pend = 0.0
 
 ## One flow item of a multi-column or similar container, at `x`, `w` wide.
 fn Ctx.lay_item(mut self, it int, st St, x float, w float)
-    if d.nodes[it].kind == Text
-        add_text(d.nodes[it].text, st)
-        flush(x, w, st.align)
+    if self.d.nodes[it].kind == Text
+        self.add_text(self.d.nodes[it].text, st)
+        self.flush(x, w, st.align)
     else
         self.block(it, st, x, w)
 
@@ -2153,13 +2187,13 @@ fn Ctx.flex(mut self, id int, st St, cs Map[str, str], x float, w float, min_h f
     mut sizes := List[float]()
     mut grows := List[float]()
     for it in items
-        if d.nodes[it].kind == Text
+        if self.d.nodes[it].kind == Text
             sizes.push(self.max_content(it, st) + 2.0)
             grows.push(0.0)
             continue
-        ics := element_style(it)
-        ist := text_style(d.nodes[it].tag, ics, st)
-        ib := box_of(d.nodes[it].tag, ics, ist, w)
+        ics := self.element_style(it)
+        ist := text_style(self.d.nodes[it].tag, ics, st)
+        ib := box_of(self.d.nodes[it].tag, ics, ist, w)
         extra := ib.ml + ib.mr + ib.bl + ib.br + ib.pl + ib.pr
         mut grow := css_float(ics.get("flex-grow") else "0") else 0.0
         if f := ics.get("flex")
@@ -2226,9 +2260,9 @@ fn Ctx.flex(mut self, id int, st St, cs Map[str, str], x float, w float, min_h f
             (cs.get("align-items") else "").trim() == "center",
             min_h,
         )
-        y += 0.0
+        self.y += 0.0
         if end < items.len()
-            y += gap
+            self.y += gap
         k = end
 
 ## One grid track: positive for `Nfr`, negative for a fixed length, none for
@@ -2332,7 +2366,7 @@ fn Ctx.grid(mut self, id int, st St, cs Map[str, str], x float, w float)
         self.row(items[k..end], st, x, widths[0..end - k], offsets[0..end - k], false, 0.0)
         k = end
         if k < items.len()
-            y += gap
+            self.y += gap
 
 ## A grid with `grid-template-areas`: each item goes in the cells its
 ## `grid-area` names, a row at a time; items with no area follow, full width.
@@ -2365,7 +2399,7 @@ fn Ctx.grid_areas(
     mut extra := areas.len()
     for it in items
         name := (self.element_style(it).get("grid-area") else "").trim()
-        b := if d.nodes[it].kind == Element and name != "" then area_box(areas, name) else []
+        b := if self.d.nodes[it].kind == Element and name != "" then area_box(areas, name) else []
         if b.len() == 0
             cells.push([extra, extra, 0, ncols - 1])
             extra += 1
@@ -2374,9 +2408,9 @@ fn Ctx.grid_areas(
     ## Content-sized tracks take the widest item that sits in them alone.
     for k in 0..items.len()
         b := cells[k]
-        if b[2] == b[3] and autos[b[2]] and d.nodes[items[k]].kind == Element
+        if b[2] == b[3] and autos[b[2]] and self.d.nodes[items[k]].kind == Element
             cs2 := self.element_style(items[k])
-            cst := text_style(d.nodes[items[k]].tag, cs2, st)
+            cst := text_style(self.d.nodes[items[k]].tag, cs2, st)
             cols[b[2]] = fmax(cols[b[2]], self.intrinsic(items[k], cst))
     mut fixed := 0.0
     mut fr := 0.0
@@ -2424,7 +2458,7 @@ fn Ctx.grid_areas(
                 ws.push(span)
                 os.push(offsets[b[2]])
             self.row(row, st, x, ws, os, false, 0.0)
-            y += gap
+            self.y += gap
 
 fn Ctx.table(mut self, id int, st St, x float, w float)
     mut rows := List[int]()
@@ -2440,8 +2474,8 @@ fn Ctx.table(mut self, id int, st St, x float, w float)
     for r in rows
         cells := self.items(r)
         for k in 0..cells.len()
-            cs := element_style(cells[k])
-            cst := text_style(d.nodes[cells[k]].tag, cs, st)
+            cs := self.element_style(cells[k])
+            cst := text_style(self.d.nodes[cells[k]].tag, cs, st)
             natural[k] = fmax(natural[k], self.intrinsic(cells[k], cst) + 12.0)
     mut sum := 0.0
     for v in natural
@@ -2461,8 +2495,8 @@ fn Ctx.table(mut self, id int, st St, x float, w float)
         self.row(cells, st, x, widths[0..cells.len()], offsets[0..cells.len()], false, 0.0)
 
 fn Ctx.collect_rows(mut self, id int, mut out List[int])
-    for c in d.nodes[id].children
-        tag := d.nodes[c].tag
+    for c in self.d.nodes[id].children
+        tag := self.d.nodes[c].tag
         if tag == "tr"
             out.push(c)
         elif tag == "thead" or tag == "tbody" or tag == "tfoot"
@@ -2567,17 +2601,17 @@ pub fn layout_measured(
 
 ## The link or control under point (`x`, `y`) of the page, if any.
 pub fn Scene.hit_at(self, x float, y float) Hit?
-    mut k := hits.len()
+    mut k := self.hits.len()
     while k > 0
         k -= 1
-        h := hits[k]
+        h := self.hits[k]
         if x >= h.x and x < h.x + h.w and y >= h.y and y < h.y + h.h
             return h
     none
 
 ## The link under point (`x`, `y`) of the page, if any.
 pub fn Scene.link_at(self, x float, y float) str?
-    h := hit_at(x, y)?
+    h := self.hit_at(x, y)?
     if h.href == ""
         return none
     h.href

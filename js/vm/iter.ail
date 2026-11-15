@@ -82,7 +82,7 @@ pub fn Vm.symbol_native(
                 return Value.Str(key)
             Undef
         _ =>
-            s := this_symbol(this_val)?
+            s := self.this_symbol(this_val)?
             match name
                 "Symbol.prototype.toString" => Value.Str(symbol_text(s))
                 "Symbol.prototype.description" =>
@@ -130,9 +130,12 @@ pub fn Vm.iterator_native(mut self, name str, this_val Value) Value ! Thrown
                 r.props["value"] = data(Undef)
                 r.props["done"] = data(Bool(true))
             Value.Obj(r)
-        "Iterator.of.chars" => list_iterator(iterate(Str(to_string(this_val)?))?, "String Iterator")
-        "Iterator.of.entries" => call_method(this_val, "entries", [])
-        _ => call_method(this_val, "values", [])
+        "Iterator.of.chars" => self.list_iterator(
+            iterate(Str(to_string(this_val)?))?,
+            "String Iterator",
+        )
+        "Iterator.of.entries" => self.call_method(this_val, "entries", [])
+        _ => self.call_method(this_val, "values", [])
 
 fn Vm.call_method(mut self, v Value, key str, args List[Value]) Value ! Thrown
     f := get(v, key)?

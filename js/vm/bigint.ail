@@ -259,7 +259,7 @@ pub fn Vm.big_binary(mut self, op str, a Value, b Value) Value ! Thrown
             big_value(big_pow(x, k))
         "&" | "|" | "^" => big_value(big_bitop(op, x, y))
         "<<" | ">>" =>
-            k := big_count(y)?
+            k := self.big_count(y)?
             left := (op == "<<") == (k >= 0)
             n := k.abs()
             if left
@@ -305,7 +305,7 @@ pub fn Vm.big_function(mut self, args List[Value], new_target Value) Value ! Thr
             if n != n or not is_finite(n) or n != n.floor()
                 return range_error("The number {syntax.number_to_string(n)} cannot be converted to a BigInt because it is not an integer")
             big_value(float_to_big(n))
-        Undef | Null | Bool | Str | Big | Sym | Obj => to_bigint(p)
+        Undef | Null | Bool | Str | Big | Sym | Obj => self.to_bigint(p)
 
 fn Vm.this_big(mut self, v Value, m str) Value ! Thrown
     if is_big_val(v)
@@ -325,11 +325,11 @@ pub fn Vm.big_native(mut self, m str, this_val Value, args List[Value]) Value ! 
         if n < 0.0 or n > 9007199254740991.0
             return range_error("Invalid value: not (convertible to) a safe integer")
         bits := n.to_int()
-        x := big_of(to_bigint(arg_at(args, 1))?)
+        x := big_of(self.to_bigint(arg_at(args, 1))?)
         if bits > 10000000
             return range_error("Maximum BigInt size exceeded")
         return big_value(if m == "asIntN" then big_as_int(bits, x) else big_as_uint(bits, x))
-    v := this_big(this_val, m)?
+    v := self.this_big(this_val, m)?
     match m
         "valueOf" => v
         "toLocaleString" => Value.Str(big_group(bigval_text(v)))

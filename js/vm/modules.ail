@@ -160,7 +160,7 @@ pub fn Vm.add_import_map(mut self, source str)
     base := location_href.split("#")[0]
     ent := get(root, "imports") else err
         return
-    for k, a in import_table(ent, base)
+    for k, a in self.import_table(ent, base)
         modules.imap[k] = a
     sc := get(root, "scopes") else err
         return
@@ -169,7 +169,7 @@ pub fn Vm.add_import_map(mut self, source str)
             sv := get(sc, k) else err
                 continue
             prefix := resolve_against(base, k)
-            t := import_table(sv, base)
+            t := self.import_table(sv, base)
             if not modules.iscopes.contains(prefix)
                 modules.iscope_keys.push(prefix)
                 modules.iscopes[prefix] = t
@@ -224,11 +224,11 @@ fn Vm.mod_load(mut self, key str, url str, kind str, mut seen Set[str], mut miss
         if source == none and not modules.failed.contains(url)
             missing.push(url)
             return
-        modules.mods[key] = mod_create(key, url, kind, source)
+        modules.mods[key] = self.mod_create(key, url, kind, source)
     m := modules.mods.get(key) else return
     for r in m.reqs
         if r.url != ""
-            mod_load(r.key, r.url, r.kind, mut seen, mut missing)
+            self.mod_load(r.key, r.url, r.kind, mut seen, mut missing)
 
 fn Vm.mod_create(mut self, key str, url str, kind str, source str?) ref ModRec
     m := ref ModRec(
@@ -270,7 +270,7 @@ fn Vm.mod_create(mut self, key str, url str, kind str, source str?) ref ModRec
     mut body := List[syntax.Stmt]()
     for s in prog.body
         match s
-            Module(item, p) => mod_item(m, item, p, mut body)
+            Module(item, p) => self.mod_item(m, item, p, mut body)
             Exp | Var | FuncDecl | ClassDecl | Return | If | Block | Empty | For | ForIn | While | DoWhile | Break | Continue | Throw | Try | Switch | Labeled | With | Debugger =>
                 body.push(s)
     m.body = body
@@ -284,7 +284,7 @@ fn Vm.add_req(mut self, m ref ModRec, spec str, attrs List[syntax.ImportAttr]) i
     for i in 0..m.reqs.len()
         if m.reqs[i].spec == spec and m.reqs[i].kind == kind
             return i
-    u := module_specifier(spec, m.url)
+    u := self.module_specifier(spec, m.url)
     m.reqs.push(Req(spec: spec, url: u, key: mod_key(u, kind), kind: kind))
     m.reqs.len() - 1
 
@@ -299,12 +299,12 @@ fn Vm.mod_item(
 )
     match item
         ImportDecl(specs, source, attrs) =>
-            ri := add_req(m, source, attrs)
+            ri := self.add_req(m, source, attrs)
             for sp in specs
                 m.imports.push(ImportEntry(req: ri, imported: sp.imported, local: sp.local))
         ExportNamed(decl, specs, source, attrs) =>
             if src := source
-                ri := add_req(m, src, attrs)
+                ri := self.add_req(m, src, attrs)
                 for sp in specs
                     m.indirect.push(IndirectEntry(
                         exported: sp.exported,
@@ -337,7 +337,7 @@ fn Vm.mod_item(
                 m.locals.push(ExportEntry(exported: "default", local: "default"))
                 body.push(default_decl(v, p))
         ExportAll(exported, _, source, attrs) =>
-            ri := add_req(m, source, attrs)
+            ri := self.add_req(m, source, attrs)
             if name := exported
                 m.indirect.push(IndirectEntry(exported: name, req: ri, imported: "*"))
             else
@@ -371,7 +371,7 @@ fn declared_names(s syntax.Stmt) List[str]
 fn Vm.mod_order(self, key str) List[str]
     mut out := List[str]()
     mut seen := Set[str]()
-    mod_visit(key, mut seen, mut out)
+    self.mod_visit(key, mut seen, mut out)
     out
 
 fn Vm.mod_visit(self, key str, mut seen Set[str], mut out List[str])
@@ -380,21 +380,21 @@ fn Vm.mod_visit(self, key str, mut seen Set[str], mut out List[str])
     m := modules.mods.get(key) else return
     for r in m.reqs
         if r.url != ""
-            mod_visit(r.key, mut seen, mut out)
+            self.mod_visit(r.key, mut seen, mut out)
     out.push(key)
 
 ## Link the graph under `key` (§16.2.1.5.1): each module gets its scope,
 ## then its imports are bound. A name nobody exports is a SyntaxError.
 fn Vm.mod_link(mut self, key str) bool ! Thrown
-    order := mod_order(key)
+    order := self.mod_order(key)
     for k in order
         m := modules.mods.get(k) else continue
         if m.status == "new"
-            mod_instantiate(m)?
+            self.mod_instantiate(m)?
     for k in order
         m := modules.mods.get(k) else continue
         if m.status == "linking"
-            mod_bind(m)?
+            self.mod_bind(m)?
     for k in order
         m := modules.mods.get(k) else continue
         if m.status == "linking"
@@ -437,16 +437,16 @@ fn Vm.mod_bind(mut self, m ref ModRec) ! Thrown
     for e in m.imports
         r := m.reqs[e.req]
         if e.imported == "*"
-            init_binding(m.env, e.local, mod_namespace(r.key), false)
+            init_binding(m.env, e.local, self.mod_namespace(r.key), false)
             continue
         mut seen := List[str]()
-        res := resolve_export(r.key, e.imported, mut seen)
+        res := self.resolve_export(r.key, e.imported, mut seen)
         if res.kind == "missing"
             return syntax_error("The requested module '{r.spec}' does not provide an export named '{e.imported}'")
         if res.kind == "ambiguous"
             return syntax_error("The requested module '{r.spec}' contains conflicting star exports for name '{e.imported}'")
         if res.name == "*namespace*"
-            mod_namespace(res.key)
+            self.mod_namespace(res.key)
         getter := closure_native("Module.get", Str(res.key), [Str(res.name), Str(e.local)], 0)
         setter := closure_native("Module.set", Undef, [], 1)
         imported.props[e.local] = Prop(
@@ -462,7 +462,7 @@ fn Vm.mod_bind(mut self, m ref ModRec) ! Thrown
         if e.imported != "*"
             r := m.reqs[e.req]
             mut seen := List[str]()
-            res := resolve_export(r.key, e.imported, mut seen)
+            res := self.resolve_export(r.key, e.imported, mut seen)
             if res.kind == "missing"
                 return syntax_error("The requested module '{r.spec}' does not provide an export named '{e.imported}'")
             if res.kind == "ambiguous"
@@ -483,13 +483,13 @@ fn Vm.resolve_export(mut self, key str, name str, mut seen List[str]) Resolution
             dep := m.reqs[e.req].key
             if e.imported == "*"
                 return Resolution(kind: "found", key: dep, name: "*namespace*")
-            return resolve_export(dep, e.imported, mut seen)
+            return self.resolve_export(dep, e.imported, mut seen)
     if name == "default"
         return Resolution(kind: "missing", key: "", name: "")
     mut star := Resolution(kind: "missing", key: "", name: "")
     for ri in m.stars
         dep := m.reqs[ri].key
-        r := resolve_export(dep, name, mut seen)
+        r := self.resolve_export(dep, name, mut seen)
         if r.kind == "ambiguous"
             return r
         if r.kind == "found"
@@ -511,7 +511,7 @@ fn Vm.exported_names(mut self, key str, mut visited List[str]) List[str]
     for e in m.indirect
         out.push(e.exported)
     for ri in m.stars
-        for n in exported_names(m.reqs[ri].key, mut visited)
+        for n in self.exported_names(m.reqs[ri].key, mut visited)
             if n != "default" and not out.contains(n)
                 out.push(n)
     out
@@ -536,10 +536,10 @@ fn Vm.mod_namespace(mut self, key str) Value
     m.ns = Obj(ns)
     ns.prim = Str(key)
     mut visited := List[str]()
-    names := exported_names(key, mut visited)
+    names := self.exported_names(key, mut visited)
     for n in names.sorted()
         mut seen := List[str]()
-        res := resolve_export(key, n, mut seen)
+        res := self.resolve_export(key, n, mut seen)
         if res.kind == "found"
             m.nsmap[n] = res
             ns.props[n] = Prop(
@@ -552,7 +552,7 @@ fn Vm.mod_namespace(mut self, key str) Value
                 configurable: false,
             )
             if res.name == "*namespace*"
-                mod_namespace(res.key)
+                self.mod_namespace(res.key)
     ns.props[well_known("toStringTag")] = Prop(
         value: Str("Module"),
         get: Undef,
@@ -572,7 +572,7 @@ pub fn Vm.module_own(self, o ref JsObject, key str) Prop?
     key_text := str_of(o.prim) else return p
     m := modules.mods.get(key_text) else return p
     r := m.nsmap.get(key) else return p
-    v := read_ref(r) else Undef
+    v := self.read_ref(r) else Undef
     Prop(
         value: v,
         get: Undef,
@@ -597,7 +597,7 @@ pub fn Vm.mod_start(mut self, url str, kind str, report bool) ref JsObject
         promise: promise,
         report: report,
     )
-    if not mod_try_job(job)
+    if not self.mod_try_job(job)
         modules.jobs.push(job)
     promise
 
@@ -607,7 +607,7 @@ pub fn promise_failed(p ref JsObject) bool
 
 ## A page's `<script type=module src>`.
 pub fn Vm.run_module_script(mut self, url str)
-    mod_start(url, "", true)
+    self.mod_start(url, "", true)
 
 ## A page's inline `<script type=module>`: a module of its own that resolves
 ## imports against the page's address.
@@ -616,14 +616,14 @@ pub fn Vm.run_inline_module(mut self, source str)
     base := location_href.split("#")[0]
     url := "{base}#module-{modules.inline_seq}"
     external_scripts[url] = source
-    mod_start(url, "", true)
+    self.mod_start(url, "", true)
 
 ## Go on with `job` as far as the sources at hand allow. False when it still
 ## waits for the browser to fetch a module.
 fn Vm.mod_try_job(mut self, job ImportJob) bool
     mut missing := List[str]()
     mut seen := Set[str]()
-    mod_load(job.key, job.url, job.kind, mut seen, mut missing)
+    self.mod_load(job.key, job.url, job.kind, mut seen, mut missing)
     if missing.len() > 0
         for u in missing
             if modules.wanted.add(u)
@@ -635,7 +635,7 @@ fn Vm.mod_try_job(mut self, job ImportJob) bool
                     text: "",
                 ))
         return false
-    if linked := mod_link(job.key)
+    if linked := self.mod_link(job.key)
         linked
     else err
         if job.report
@@ -645,7 +645,7 @@ fn Vm.mod_try_job(mut self, job ImportJob) bool
         return true
     modules.seq += 1
     run := ref EvalRun(
-        order: mod_order(job.key),
+        order: self.mod_order(job.key),
         idx: 0,
         promise: job.promise,
         ns_key: job.key,
@@ -653,7 +653,7 @@ fn Vm.mod_try_job(mut self, job ImportJob) bool
         waiting: false,
     )
     modules.runs[modules.seq] = run
-    run_step(modules.seq, true, Undef)
+    self.run_step(modules.seq, true, Undef)
     true
 
 ## The browser fetched module source `text` for `url`, or failed (`ok` false).
@@ -662,14 +662,14 @@ pub fn Vm.module_arrived(mut self, url str, text str, ok bool)
         external_scripts[url] = text
     else
         modules.failed.add(url)
-    mod_kick()
+    self.mod_kick()
 
 ## Try again every import that waits for a module.
 fn Vm.mod_kick(mut self)
     jobs := modules.jobs
     modules.jobs = []
     for job in jobs
-        if not mod_try_job(job)
+        if not self.mod_try_job(job)
             modules.jobs.push(job)
 
 fn Vm.step_fn(mut self, id int, ok bool) Value
@@ -687,53 +687,53 @@ fn Vm.run_step(mut self, id int, ok bool, v Value)
         else
             done.status = "errored"
             done.failure = v
-            run_finish(id, r, false, v)
+            self.run_finish(id, r, false, v)
             return
     while r.idx < r.order.len()
         key := r.order[r.idx]
         r.idx += 1
         m := modules.mods.get(key) else continue
         if m.status == "errored"
-            run_finish(id, r, false, m.failure)
+            self.run_finish(id, r, false, m.failure)
             return
         if m.status == "evaluating"
             # Running in another graph's turn (or a cycle): wait for it if
             # it awaits, else it is as done as it will be for now.
             if w := obj_of(m.wait)
                 r.idx -= 1
-                promise_then(w, step_fn(id, true), step_fn(id, false), Undef)
+                promise_then(w, self.step_fn(id, true), self.step_fn(id, false), Undef)
                 return
             continue
         if m.status != "linked"
             continue
         m.status = "evaluating"
         if m.has_tla
-            started := mod_tla(m) else err
+            started := self.mod_tla(m) else err
                 m.status = "errored"
                 m.failure = err.value
-                run_finish(id, r, false, err.value)
+                self.run_finish(id, r, false, err.value)
                 return
             w := obj_of(started) else continue
             m.wait = started
             r.waiting = true
-            promise_then(w, step_fn(id, true), step_fn(id, false), Undef)
+            promise_then(w, self.step_fn(id, true), self.step_fn(id, false), Undef)
             return
-        if ran := mod_exec(m)
+        if ran := self.mod_exec(m)
             ran
         else err
             m.status = "errored"
             m.failure = err.value
             if err.limit
                 stopped = true
-            run_finish(id, r, false, err.value)
+            self.run_finish(id, r, false, err.value)
             return
         m.status = "evaluated"
-    run_finish(id, r, true, Undef)
+    self.run_finish(id, r, true, Undef)
 
 fn Vm.run_finish(mut self, id int, r ref EvalRun, ok bool, v Value)
     modules.runs.remove(id)
     if ok
-        ns := if r.ns_key == "" then Value.Undef else mod_namespace(r.ns_key)
+        ns := if r.ns_key == "" then Value.Undef else self.mod_namespace(r.ns_key)
         resolve_promise(r.promise, ns)
         return
     if r.report
@@ -792,7 +792,7 @@ pub fn Vm.import_expr(mut self, arg syntax.Expr?, opts syntax.Expr?, env ref Env
     mut base := location_href
     if is_declared("import.url", env)
         base = str_of(lookup("import.url", env)?) else location_href
-    url := module_specifier(spec, base)
+    url := self.module_specifier(spec, base)
     if url == ""
         reject_promise(promise, make_error(
             "TypeError",
@@ -818,7 +818,7 @@ pub fn Vm.module_native(mut self, m str, this_val Value, args List[Value]) Value
             key := str_of(this_val) else ""
             name := str_of(arg_at(args, 0)) else ""
             local := str_of(arg_at(args, 1)) else name
-            v := read_ref(Resolution(
+            v := self.read_ref(Resolution(
                 kind: "found",
                 key: key,
                 name: name,
@@ -826,16 +826,16 @@ pub fn Vm.module_native(mut self, m str, this_val Value, args List[Value]) Value
             v
         "set" => return type_error("Assignment to constant variable.")
         "kick" =>
-            mod_kick()
+            self.mod_kick()
             Undef
         "step" =>
             id := int_of(num_of(this_val) else -1.0)
-            run_step(id, truthy(arg_at(args, 0)), arg_at(args, 1))
+            self.run_step(id, truthy(arg_at(args, 0)), arg_at(args, 1))
             Undef
         "resolve" =>
             base := str_of(this_val) else ""
             spec := to_string(arg_at(args, 0))?
-            u := module_specifier(spec, base)
+            u := self.module_specifier(spec, base)
             if u == ""
                 return type_error("Failed to resolve module specifier \"{spec}\". Relative references must start with either \"/\", \"./\", or \"../\".")
             Str(u)
