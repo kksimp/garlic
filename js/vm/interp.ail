@@ -353,7 +353,7 @@ fn this_scope(env ref Env) ref Env
 pub fn Vm.declare_var(mut self, env ref Env, name str)
     scope := var_scope(env)
     if scope == self.global_env
-        if self.global_obj.props.get(name) == none
+        if not self.global_obj.props.contains(name)
             self.global_obj.props[name] = Prop(
                 value: Undef,
                 get: Undef,
@@ -364,27 +364,34 @@ pub fn Vm.declare_var(mut self, env ref Env, name str)
                 configurable: false,
             )
         return
-    if scope.vars.get(name) == none
+    if not scope.vars.contains(name)
         scope.vars[name] = Binding(value: Undef, mutable: true, ready: true)
 
 ## Give `name` its value in `env` itself (`let`, `const`, parameters).
 pub fn init_binding(env ref Env, name str, v Value, mutable bool)
     env.vars[name] = Binding(value: v, mutable: mutable, ready: true)
 
-## The value of a name (§9.1.2.1 ResolveBinding, then GetValue).
+## The value of a name (§9.1.2.1 ResolveBinding, then GetValue). A binding
+## is read in place (`vars[name].value`): binding it with `get` would copy
+## the `Binding` struct on every read.
 pub fn Vm.lookup(mut self, name str, env ref Env) Value ! Thrown
     mut e := env
     while true
-        if b := e.vars.get(name)
-            if not b.ready
+        if e.vars.contains(name)
+            if not e.vars[name].ready
                 return self.reference_error("Cannot access '{name}' before initialization")
-            return b.value
+            return e.vars[name].value
         if name == "arguments" and e.has_this and e.is_function and e != self.global_env
             if is_obj(e.func)
                 args := self.make_arguments(e.args)
                 e.vars["arguments"] = Binding(value: args, mutable: true, ready: true)
                 return args
         if o := obj_of(e.object)
+            # The global object's own data properties: what has_property
+            # and get_from would find, with one map lookup.
+            if o.class == "global" and o.props.contains(name)
+                if not o.props[name].accessor
+                    return o.props[name].value
             if has_property(o, name)
                 return get_from(o, name, e.object)
         e = e.parent else break
@@ -394,7 +401,7 @@ pub fn Vm.lookup(mut self, name str, env ref Env) Value ! Thrown
 pub fn Vm.is_declared(self, name str, env ref Env) bool
     mut e := env
     while true
-        if e.vars.get(name) != none
+        if e.vars.contains(name)
             return true
         if o := obj_of(e.object)
             if has_property(o, name)
@@ -406,12 +413,13 @@ pub fn Vm.is_declared(self, name str, env ref Env) bool
 pub fn Vm.assign_name(mut self, name str, v Value, env ref Env) ! Thrown
     mut e := env
     while true
-        if b := e.vars.get(name)
-            if not b.ready
+        if e.vars.contains(name)
+            if not e.vars[name].ready
                 return self.reference_error("Cannot access '{name}' before initialization")
-            if not b.mutable
+            if not e.vars[name].mutable
                 return self.type_error("Assignment to constant variable.")
-            e.vars[name] = Binding(value: v, mutable: true, ready: true)
+            # Ready and mutable: only the value changes.
+            e.vars[name].value = v
             return
         if o := obj_of(e.object)
             if has_property(o, name) or e.parent == none
