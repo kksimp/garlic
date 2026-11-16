@@ -261,8 +261,8 @@ pub fn Session.module(mut self, mut d html.Doc, url str, text str, ok bool, budg
 ## for (see `Outcome.missing`): when `ok`, `text` runs as that script (HTML
 ## §4.12.1.1, "execute the script element"), then `load` fires on the
 ## element; when not, `error` fires. Then timers and microtasks that became
-## due run. `document.currentScript` is the engine's business
-## (`run_script_node`); it is not set here.
+## due run. `document.currentScript` is the element while it runs
+## (`Vm.script_arrived`).
 pub fn Session.script(
     mut self,
     mut d html.Doc,
@@ -273,9 +273,12 @@ pub fn Session.script(
     budget_ms float,
 ) Outcome
     if ok and not self.machine.stopped
-        self.machine.cur_url = url
-        self.machine.run_script_text(text)
-        self.machine.run_microtasks()
+        if node >= 0 and node < self.machine.dom.len()
+            self.machine.script_arrived(node, url, text)
+        else
+            self.machine.cur_url = url
+            self.machine.run_script_text(text)
+            self.machine.run_microtasks()
     if node >= 0 and node < self.machine.dom.len()
         self.fire_plain(node, if ok then "load" else "error")
     self.machine.run_event_loop(self.machine.clock_ms + budget_ms, 10000)
