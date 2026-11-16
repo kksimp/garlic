@@ -18,6 +18,7 @@ INTL_KINDS := [
     "RelativeTimeFormat",
     "ListFormat",
     "DisplayNames",
+    "Segmenter",
 ]
 
 WEEKDAYS := ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
@@ -361,6 +362,7 @@ fn Vm.intl_setup(mut self)
             "PluralRules" => "select:1 selectRange:2 resolvedOptions:0"
             "RelativeTimeFormat" => "format:2 formatToParts:2 resolvedOptions:0"
             "ListFormat" => "format:1 formatToParts:1 resolvedOptions:0"
+            "Segmenter" => "segment:1 resolvedOptions:0"
             _ => "of:1 resolvedOptions:0"
         methods(proto, "intl.{kind}", spec)
         bin_tag(proto, "Intl.{kind}")
@@ -378,6 +380,11 @@ fn Vm.intl_setup(mut self)
         proto.props["constructor"] = hidden(Value.Obj(c))
         intl.props[kind] = hidden(Value.Obj(c))
     global_obj.props["Intl"] = hidden(Value.Obj(intl))
+    # What Intl.Segmenter.prototype.segment returns (segmenter.ail).
+    seg_proto := object("Object", proto_of("Object"))
+    protos["Intl.Segments"] = Value.Obj(seg_proto)
+    methods(seg_proto, "intl.Segments", "containing:1")
+    seg_proto.props[ITERATOR] = hidden(native_fn("intl.Segments.iterator", "[Symbol.iterator]", 0))
 
 ## The requested locale, as a string: the first of a list, else en-US.
 fn Vm.locale_of(mut self, v Value) str ! Thrown
@@ -475,6 +482,11 @@ fn Vm.intl_new(mut self, kind str, args List[Value]) Value ! Thrown
                 "always",
             )))
             resolved.props["numberingSystem"] = data(Value.Str("latn"))
+        "Segmenter" =>
+            granularity := str_or(self.str_option(options, "granularity")?, "grapheme")
+            if granularity != "grapheme" and granularity != "word" and granularity != "sentence"
+                return range_error("Value {granularity} out of range for Intl.Segmenter options property granularity")
+            resolved.props["granularity"] = data(Value.Str(granularity))
         "ListFormat" =>
             resolved.props["type"] = data(Value.Str(str_or(
                 self.str_option(options, "type")?,
@@ -666,8 +678,12 @@ pub fn Vm.intl_native(
     new_target Value,
 ) Value ! Thrown
     if made := m.strip_prefix("new.")
+        if made == "Segmenter" and new_target == Undef
+            return type_error("Constructor Intl.Segmenter requires 'new'")
         return self.intl_new(made, args)
     a0 := arg_at(args, 0)
+    if sm := m.strip_prefix("Segments.")
+        return self.segments_method(sm, this_val, a0)
     if m == "static.supportedLocalesOf" or m == "Intl.getCanonicalLocales"
         if is_nullish(a0)
             return array([])
@@ -770,6 +786,7 @@ pub fn Vm.intl_native(
                     items.push(to_string(x)?)
             text := list_text(items, resolved_str(r, "type"), resolved_str(r, "style"))
             if method == "formatToParts" then self.parts_of_text(text) else Value.Str(text)
+        "Segmenter" => self.segment_text(r, to_string(a0)?)
         _ =>
             # DisplayNames.of: the code itself, as the "code" fallback writes it.
             code := to_string(a0)?

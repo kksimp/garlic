@@ -71,7 +71,21 @@ pub struct Vm
     ## Set while an `error` event runs, so a failing handler can't recurse.
     pub in_error bool
     pub microtasks List[Value]
+    ## The next microtask to run: the queue is consumed from here and
+    ## compacted when a run ends, so a job is not a shift of the whole list.
+    pub micro_head int
+    ## Bumped by every tree change and `id` attribute change, for the
+    ## `getElementById` index (`id_index`, valid while `id_gen` matches).
+    pub dom_gen int
+    pub id_index Map[str, int]
+    pub id_gen int
+    pub id_len int
+    ## Parsed selectors by their text, for querySelector and friends.
+    pub sel_cache Map[str, List[List[Compound]]]
     pub started_scripts Set[int]
+    ## The classic script element running now, for `document.currentScript`;
+    ## -1 in modules, callbacks and between scripts.
+    pub cur_script int
     ## Custom elements (customelements.ail): the nodes whose upgrade is
     ## constructing them now, innermost last, and the nodes upgraded so far.
     pub ce_upgrading List[int]
@@ -949,6 +963,11 @@ fn Vm.assign_to(mut self, target syntax.Expr, v Value, env ref Env) ! Thrown
         Paren(inner, _) => self.assign_to(inner, v, env)?
         Member(object, prop, computed, _, _) =>
             base := self.member_base(object, env)?
+            if computed and is_array_value(base)
+                kv := self.eval(prop, env)?
+                if not array_fast_set(base, kv, v)
+                    put(base, self.to_key(kv)?, v)?
+                return
             key := self.member_key(prop, computed, env)?
             put(base, key, v)?
         Num | Str | Big | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
@@ -1114,6 +1133,11 @@ pub fn Vm.eval(mut self, e syntax.Expr, env ref Env) Value ! Thrown
             if optional and is_nullish(base)
                 self.chain_shorted = true
                 return Undef
+            if computed and is_array_value(base) and syntax.expr_kind(object) != "Super"
+                kv := self.eval(prop, env)?
+                if fast := array_fast_get(base, kv)
+                    return fast
+                return get(base, self.to_key(kv)?)
             key := self.member_key(prop, computed, env)?
             if syntax.expr_kind(object) == "Super"
                 return self.get_super(key, env)
@@ -1151,6 +1175,36 @@ fn Vm.member_key(mut self, prop syntax.Expr, computed bool, env ref Env) str ! T
         Num | Str | Big | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | Paren | Yield | Await =>
             self.to_key(self.eval(prop, env)?)
 
+## Whether `v` is an array or `arguments` object, whose index properties
+## are the elements themselves (§10.4.2, §10.4.4).
+fn is_array_value(v Value) bool
+    match v
+        Obj(o) => o.class == "Array" or o.class == "Arguments"
+        Undef | Null | Bool | Num | Str | Big | Sym => false
+
+## `a[i]` for an array `a` and a number `i` that is an index inside it: the
+## element, without making the key "i" and parsing it back.
+fn array_fast_get(base Value, kv Value) Value?
+    o := obj_of(base) else return none
+    n := num_of(kv) else return none
+    i := as_index(n) else return none
+    if i < o.elems.len()
+        return o.elems[i]
+    none
+
+## `a[i] = v` for an index inside an unfrozen array: the element is an own
+## writable data property, so no setter on the prototype chain can apply.
+fn array_fast_set(base Value, kv Value, v Value) bool
+    o := obj_of(base) else return false
+    if o.frozen
+        return false
+    n := num_of(kv) else return false
+    i := as_index(n) else return false
+    if i >= o.elems.len()
+        return false
+    o.elems[i] = v
+    true
+
 ## `super[key]` with the current `this` as the receiver.
 fn Vm.get_super(mut self, key str, env ref Env) Value ! Thrown
     home := this_scope(env).home
@@ -1178,6 +1232,11 @@ fn Vm.callee_of(mut self, callee syntax.Expr, env ref Env) Callee ! Thrown
             if optional and is_nullish(base)
                 self.chain_shorted = true
                 return Callee(f: Undef, this_val: Undef)
+            if computed and is_array_value(base) and syntax.expr_kind(object) != "Super"
+                kv := self.eval(prop, env)?
+                if fast := array_fast_get(base, kv)
+                    return Callee(f: fast, this_val: base)
+                return Callee(f: get(base, self.to_key(kv)?)?, this_val: base)
             key := self.member_key(prop, computed, env)?
             if syntax.expr_kind(object) == "Super"
                 return Callee(f: self.get_super(key, env)?, this_val: base)

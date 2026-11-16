@@ -1,0 +1,21 @@
+4 u true password null
+pw null [object HTMLFormControlsCollection]
+true true true 1
+0,1,2,3
+Failed to construct 'Event': Please use the 'new' operator, this DOM object constructor cannot be called as a function.
+Failed to construct 'Event': 1 argument required, but only 0 present.
+true true ping 1
+== body
+<form id="f" name="login"><input name="user" value="u"><input id="pw" type="password"><select name="s"><option>a</option></select><button name="go">Go</button></form><script>
+const f = document.forms[0];
+const els = f.elements;
+console.log(els.length, els.namedItem("user").value, els.user === els[0], els.pw.type, els.namedItem("missing"));
+console.log(els.item(1).id, els.item(9), Object.prototype.toString.call(els));
+console.log(document.forms.login === f, document.forms.f === f, document.forms.namedItem("login") === f, document.forms.length);
+console.log(Object.keys(els).join());
+try { Event("x"); } catch (e) { console.log(e.message); }
+try { new Event(); } catch (e) { console.log(e.message); }
+class MyEvent extends Event { constructor(t) { super(t); this.extra = 1; } }
+const me = new MyEvent("ping");
+console.log(me instanceof MyEvent, me instanceof Event, me.type, me.extra);
+</script>

@@ -242,6 +242,7 @@ pub fn Vm.outer_html(self, id int) str
             escape_text(n.text, false)
         8 => "<!--{n.text}-->"
         9 => self.inner_html(id)
+        10 => "<!DOCTYPE {n.tag}>"
         _ =>
             mut attrs := ""
             for a in n.attrs

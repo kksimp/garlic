@@ -125,7 +125,7 @@ fn Vm.mo_queue(mut self, kind str, target int, op str, nodes List[int], name str
         if record == Value.Undef
             record = self.mo_record(kind, target, op, nodes, name)
         observers[k].records.push(record)
-        if not microtasks.contains(Value.Str(MO_MARK))
+        if not microtasks[micro_head..].contains(Value.Str(MO_MARK))
             microtasks.push(Value.Str(MO_MARK))
 
 fn Vm.within(self, node int, ancestor int) bool

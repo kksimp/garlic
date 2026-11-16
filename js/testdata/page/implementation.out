@@ -1,0 +1,28 @@
+example.test
+true function true
+9 inert HTML HEAD BODY 2 html
+hi there B null
+true null true
+<p id="x">hi <b>there</b></p> null
+T <div class="a">one</div> 1
+10 svg -//W3C//DTD SVG 1.1//EN
+root 9
+== body
+<script>
+console.log(document.domain);
+const impl = document.implementation;
+console.log(impl === document.implementation, typeof impl.createHTMLDocument, impl.hasFeature());
+const d = impl.createHTMLDocument("inert");
+console.log(d.nodeType, d.title, d.documentElement.tagName, d.head.tagName, d.body.tagName, d.childNodes.length, d.doctype.name);
+d.body.innerHTML = "<p id=x>hi <b>there</b></p>";
+console.log(d.getElementById("x").textContent, d.querySelector("b").tagName, document.getElementById("x"));
+console.log(d.body.firstChild.ownerDocument === d, d.documentElement.parentElement, d.documentElement.parentNode === d);
+const n = document.importNode(d.getElementById("x"), true);
+console.log(n.outerHTML, n.parentNode);
+const x = new DOMParser().parseFromString("<title>T</title><div class=a>one</div>", "text/html");
+console.log(x.title, x.body.innerHTML, x.head.childNodes.length);
+const dt = impl.createDocumentType("svg", "-//W3C//DTD SVG 1.1//EN", "");
+console.log(dt.nodeType, dt.name, dt.publicId);
+const xd = impl.createDocument(null, "root", null);
+console.log(xd.documentElement.localName, xd.nodeType);
+</script>

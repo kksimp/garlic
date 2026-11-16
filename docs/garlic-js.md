@@ -85,6 +85,10 @@ tools/garlic/js/
     dom.ail         the DOM: nodes, the change log, selectors, events, timers, forms, location
     markup.ail      innerHTML: an HTML fragment parser and serialiser
     url.ail         URL and URLSearchParams
+    docimpl.ail     document.implementation and DOMParser: detached documents
+    collections.ail HTMLCollection and HTMLFormControlsCollection
+    streams.ail     ReadableStream, WritableStream, TransformStream (a JavaScript prelude)
+    segmenter.ail   Intl.Segmenter, an approximation of UAX #29
   testdata/
     syntax/         NAME.js with NAME.ast (tree) or NAME.err (SyntaxError)
     tokens/         a lexer sample and its tokens
@@ -317,8 +321,27 @@ regex engine is written.
 - `WeakMap`, `WeakSet`, `WeakRef` and `FinalizationRegistry` (`vm/weak.ail`)
   are a Map and Set that only take objects, a `deref` that always answers
   and a registry that never calls back: nothing is collected while scripts
-  run. `IntersectionObserver` and `ResizeObserver` take a callback and never
-  fire, since Garlic has no scrolling or resizing the page can see.
+  run. `IntersectionObserver` and `ResizeObserver` report each observed
+  target once, a frame after `observe` (intersecting, ratio 1, with its
+  layout box), so lazy pictures load; nothing changes after that, since
+  Garlic has no scrolling or resizing the page can see.
+- `document.currentScript` is the classic script element running now
+  (`Vm.cur_script`), null in modules and callbacks; `Vm.script_arrived`
+  runs a script the browser fetched for a `fetch-script` request.
+- The mutating `Array.prototype` methods (`push`, `splice`, `sort`, ...)
+  are generic: on an array-like (`{length: 0}`, a jQuery object, a proxy)
+  they work through `length` and the index properties (§23.1.3).
+- `document.implementation` and `DOMParser` (`vm/docimpl.ail`) make
+  detached documents, nodes of kind 9 in the same node list, so every
+  node and document method works on them; they are never connected, so
+  their scripts never run. `form.elements` and `document.forms` are
+  collections with `item`, `namedItem` and named properties, snapshots
+  whose prototype sits on `Array.prototype` (`vm/collections.ail`).
+- Streams (`vm/streams.ail`): `ReadableStream`, `WritableStream`,
+  `TransformStream`, `TextEncoderStream`, `TextDecoderStream`,
+  `Response.body` and a `Response` made from a stream, written in
+  JavaScript over promises. Byte streams act as default streams (no BYOB
+  reader), and a strategy's `size` is not used.
 - `Proxy` and `Reflect` (`vm/proxy.ail`, ECMA-262 §10.5, §28.1): a proxy is
   an object of class `Proxy` holding its target and handler; `get`, `set`,
   `has` (the `in` operator), `deleteProperty`, `apply` and `construct`
@@ -404,7 +427,10 @@ it comes later for speed, and these frames will move onto it).
   frames of the bootstrap interpreter, whose limit is 10,000. A bytecode
   compiler for the whole interpreter will remove this.
 - Import maps and `<link rel=modulepreload>`; module workers.
-- `Intl` knows one locale, en-US. Local time is the system zone in the
+- `Intl` knows one locale, en-US. `Intl.Segmenter` (`vm/segmenter.ail`)
+  approximates UAX #29 without break tables: graphemes join combining
+  marks, ZWJ emoji, modifiers and flag pairs; words have no dictionary
+  (each Han or kana character is a word). Local time is the system zone in the
   app (`Vm.zone`, offsets from std.tz) and UTC in tests and `jsdom.run`.
   Zone names are IANA names: `Date.prototype.toString` ends in
   "(America/New_York)" and `timeZoneName: "short"` gives "GMT-5", where
@@ -433,7 +459,7 @@ it comes later for speed, and these frames will move onto it).
   (webgl.ail, WebGL 1) keeps its state and validates like
   Chromium's but rasterizes nothing except `clear`: draw calls do nothing
   and the window never shows it. `webgl2` is the same with the WebGL 2
-  API; WebGPU is null. Streams, `Worker`, `WebAssembly`,
+  API; WebGPU is null. `WebAssembly`,
   geolocation and service workers are missing: pages that feature-test
   them report them unsupported.
 - Media (mediaapi.ail): `navigator.mediaDevices`, `MediaStream`,

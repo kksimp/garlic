@@ -1,0 +1,20 @@
+2,1,4,4,8,1 0,2,3,7,11,19 false
++Hello|-,|- |+world|-!|- |+It's|- |+3.14|- |+now|-.
+Hi there. |How are you? |Fine!
+world 7 undefined word grapheme
+Constructor Intl.Segmenter requires 'new'
+RangeError
+== body
+<script>
+const g = new Intl.Segmenter("en", { granularity: "grapheme" });
+const gs = [...g.segment("éa\u{1F44D}\u{1F3FD}\u{1F1EB}\u{1F1F7}\u{1F468}‍\u{1F469}‍\u{1F467}x")];
+console.log(gs.map(s => s.segment.length).join(","), gs.map(s => s.index).join(","), "isWordLike" in gs[0]);
+const w = new Intl.Segmenter("en", { granularity: "word" });
+console.log([...w.segment("Hello, world! It's 3.14 now.")].map(s => (s.isWordLike ? "+" : "-") + s.segment).join("|"));
+const s = new Intl.Segmenter("en", { granularity: "sentence" });
+console.log([...s.segment("Hi there. How are you? Fine!")].map(x => x.segment).join("|"));
+const seg = w.segment("Hello, world");
+console.log(seg.containing(8).segment, seg.containing(8).index, seg.containing(99), w.resolvedOptions().granularity, new Intl.Segmenter().resolvedOptions().granularity);
+try { Intl.Segmenter(); } catch (e) { console.log(e.message); }
+try { new Intl.Segmenter("en", { granularity: "line" }); } catch (e) { console.log(e.name); }
+</script>
