@@ -23,6 +23,9 @@ use draw
 use gfx
 use jsdom
 use images
+# Not called here: `ail test garlic.ail` runs the @test functions of the
+# modules this file uses, and svg is otherwise reached only through images.
+use svg
 use favicon
 use history
 use attach
