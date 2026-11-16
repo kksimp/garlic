@@ -1,16 +1,25 @@
-## css: Garlic's CSS parser, selector matching and cascade for text cells
+## css: Garlic's CSS parser, selector matching and cascade
 ## (docs/design/garlic-browser.md, "CSS on cells").
 ##
 ## Written from CSS Syntax Level 3 (tokenizing, simplified), Selectors
 ## Level 4 (type, universal, `#id`, `.class`, `[attr]` with operators,
-## structural pseudo-classes, `:not()`, the four combinators, `,` lists) and CSS Cascade Level 4
-## (specificity, order, `!important`, inline `style`). At-rules are skipped
-## with their blocks, except `@layer` (its rules count as unlayered) and `@media`, whose rules apply when its query
-## matches the window (Media Queries Level 4, simplified: `media_matches`).
+## structural pseudo-classes, `:not()`, `:is()`, `:where()`, the four
+## combinators, `,` lists), CSS Nesting 1 (`&`, nested rules and at-rules),
+## CSS Cascade Levels 4 and 5 (specificity, order, `!important`, inline
+## `style`, `@layer` order) and Conditional Rules 3 (`@supports`). Other
+## at-rules are skipped with their blocks; `@media` rules apply when the
+## query matches the window (Media Queries Level 4, simplified:
+## `media_matches_env`).
+##
+## Dynamic pseudo-classes (`:hover`, `:focus`, `:active`, `:visited`,
+## `:target` and kin) parse but never hold: Garlic has no pointer or focus
+## state in the cascade, so `:not(:focus)` holds on every element and a
+## selector that needs `:hover` is dropped at parse (it could never match).
 
 use html
 
-## One declaration: `name: value [!important]`, the name lowercase.
+## One declaration: `name: value [!important]`, the name lowercase. The
+## value is lowercase except inside quoted strings and `url(...)`.
 pub struct Decl
     pub name str
     pub value str
@@ -25,8 +34,18 @@ pub struct Neg
     pub attrs List[AttrTest]
     pub pseudos List[str]
 
-## A compound selector: a `Neg`'s tests plus the `:not(...)` ones, none
-## of which may hold.
+## `:is()`/`:where()` (`negate` false: one of `sels` must match the
+## element) or `:not()` with a list or complex selectors (`negate` true:
+## none may). `weight` is the specificity it adds: the largest of `sels`,
+## 0 for `:where()` (Selectors 4, 17).
+pub struct Alts
+    pub negate bool
+    pub sels List[Selector]
+    pub weight int
+
+## A compound selector: a `Neg`'s tests plus the simple `:not(...)` ones,
+## none of which may hold, and the `:is()`/`:where()`/`:not(list)` ones.
+## A pseudo-class that never holds is stored as the pseudo "never".
 pub struct Compound
     pub tag str
     pub ids List[str]
@@ -34,6 +53,7 @@ pub struct Compound
     pub attrs List[AttrTest]
     pub pseudos List[str]
     pub nots List[Neg]
+    pub alts List[Alts]
 
 ## `[name]` (`op` empty) or `[name op value]` with `op` one of `=`, `~=`,
 ## `|=`, `^=`, `$=`, `*=`.
@@ -51,21 +71,40 @@ pub struct Selector
 
 ## A style rule; `order` is its position, for the cascade. `media` holds
 ## the media queries it sits in, one per line, all of which must match;
-## "" for none.
+## "" for none. `layer` indexes its sheet's `layers` (-1: unlayered).
 pub struct Rule
     pub selector Selector
     pub decls List[Decl]
     pub order int
     pub media str
+    pub layer int
 
 ## A parsed style sheet: rules indexed by their rightmost compound's id,
 ## first class or type, so matching an element tries only likely rules.
+## `layers` names the cascade layers in their order (Cascade 5, 6.4):
+## a rule in a later layer wins over one in an earlier layer.
 pub struct Sheet
     pub rules List[Rule]
     pub by_id Map[str, List[int]]
     pub by_class Map[str, List[int]]
     pub by_tag Map[str, List[int]]
     pub general List[int]
+    pub layers List[str]
+
+## Where the parser is: the media queries, layer and enclosing style
+## rule's selector list ("" at the top level) of the rules it reads.
+struct Nest
+    media str
+    layer int
+    layer_name str
+    parent str
+    start int
+
+## The window media queries are asked about: CSS pixels and colour scheme.
+struct Media
+    w int
+    h int
+    dark bool
 
 ## The properties Garlic lays out or paints; the rest are dropped at parse
 ## (custom properties `--x` are always kept).
@@ -223,9 +262,9 @@ fn strip_comments(src str) str
             out.push(rest)
             break
         out.push(rest.slice(0, at))
-        after := rest.slice(at + 2, rest.chars().len())
+        after := rest.slice(at + 2, rest.len())
         close := after.find("*/") else break
-        rest = after.slice(close + 2, after.chars().len())
+        rest = after.slice(close + 2, after.len())
     out.join("")
 
 ## Parses a style sheet. Rules after an index of `start` keep their order
@@ -237,56 +276,217 @@ pub fn parse(src str, start int) Sheet
 ## (as `Rule.media`), such as a `<link media=...>` sheet.
 pub fn parse_in(src str, start int, media str) Sheet
     mut rules := List[Rule]()
-    rules_of(strip_comments(src).chars(), media, start, mut rules)
-    index(rules)
+    mut layers := List[str]()
+    top := Nest(media, layer: -1, layer_name: "", parent: "", start)
+    rules_of(strip_comments(src).chars(), top, mut rules, mut layers)
+    build(rules, layers)
 
-## Adds the rules in `cs` to `rules`, inside media queries `media`.
-fn rules_of(cs List[char], media str, start int, mut rules List[Rule])
+## Adds the rules in `cs`, a list of rules and at-rules, to `rules`.
+fn rules_of(cs List[char], sc Nest, mut rules List[Rule], mut layers List[str])
     mut i := 0
     mut prelude := List[char]()
     while i < cs.len()
         c := cs[i]
         if c == '@' and prelude.join("").trim() == ""
-            end := skip_at_rule(cs, i)
-            head := cs[i..end].join("")
-            if head.to_lower().starts_with("@media")
-                if open := head.find("\{")
-                    query := head.slice(6, open).trim()
-                    inner := if media == "" then query else "{media}\n{query}"
-                    close := block_end(cs, i + open)
-                    rules_of(cs[i + open + 1..close], inner, start, mut rules)
-            elif head.to_lower().starts_with("@supports")
-                ## Conditional Rules 3, simplified: a plain feature test passes
-                ## (Garlic claims a modern engine); anything with `not` or a
-                ## vendor-prefixed test is a fallback for other engines.
-                if open := head.find("\{")
-                    cond := head.slice(9, open).to_lower()
-                    if not cond.contains("not")
-                        and not cond.contains("-webkit-")
-                        and not cond.contains("-moz-")
-                        close := block_end(cs, i + open)
-                        rules_of(cs[i + open + 1..close], media, start, mut rules)
-            elif head.to_lower().starts_with("@layer")
-                ## Cascade Layers 5, simplified: the rules apply as if unlayered.
-                if open := head.find("\{")
-                    close := block_end(cs, i + open)
-                    rules_of(cs[i + open + 1..close], media, start, mut rules)
-            i = end
+            i = at_rule(cs, i, sc, mut rules, mut layers)
             prelude.clear()
+            continue
+        if c == '"' or c == '\''
+            stop := string_end(cs, i).min(cs.len())
+            for k in i..stop
+                prelude.push(cs[k])
+            i = stop
             continue
         if c == '{'
             close := block_end(cs, i)
-            body := cs[i + 1..close].join("")
-            decls := declarations(body)
-            if decls.len() > 0
-                for text in split_top(prelude.join(""))
-                    if sel := selector(text)
-                        rules.push(Rule(selector: sel, decls, order: start + rules.len(), media))
+            style_rule(prelude.join(""), cs[i + 1..close], sc, mut rules, mut layers)
             prelude.clear()
-            i = close + 1
+            i = (close + 1).min(cs.len())
             continue
         prelude.push(c)
         i += 1
+
+## Reads the at-rule starting at `cs[at]` (`@`); returns the index after
+## it. `@layer a, b;` declares layer order; blocks go to `at_block`.
+fn at_rule(cs List[char], at int, sc Nest, mut rules List[Rule], mut layers List[str]) int
+    mut j := at + 1
+    mut depth := 0
+    while j < cs.len()
+        c := cs[j]
+        if c == '"' or c == '\''
+            j = string_end(cs, j)
+            continue
+        if c == '('
+            depth += 1
+        elif c == ')' and depth > 0
+            depth -= 1
+        elif depth == 0 and (c == '{' or c == ';')
+            break
+        j += 1
+    j = j.min(cs.len())
+    head := cs[at + 1..j].join("")
+    if j >= cs.len() or cs[j] == ';'
+        name := at_name(head)
+        if name == "layer"
+            for n in head.slice(name.len(), head.len()).split(",")
+                if n.trim() != ""
+                    _ := declare_layer(layer_path(sc, n.trim()), mut layers)
+        return (j + 1).min(cs.len())
+    close := block_end(cs, j)
+    at_block(head, cs[j + 1..close], sc, mut rules, mut layers)
+    (close + 1).min(cs.len())
+
+## An at-rule's lowercase name: the start of `head` (the text after `@`).
+fn at_name(head str) str
+    mut out := List[char]()
+    for c in head.chars()
+        if c.is_alnum() or c == '-'
+            out.push(c)
+        else
+            break
+    out.join("").to_lower()
+
+## The block of at-rule `@head { inner }`. `@media`, `@supports` and
+## `@layer` blocks hold rules (or, nested in a style rule, declarations
+## and rules); every other at-rule is skipped.
+fn at_block(head str, inner List[char], sc Nest, mut rules List[Rule], mut layers List[str])
+    name := at_name(head)
+    rest := head.slice(name.len(), head.len()).trim()
+    if name == "media"
+        mut within := sc
+        within.media = if sc.media == "" then rest else "{sc.media}\n{rest}"
+        block_rules(inner, within, mut rules, mut layers)
+    elif name == "supports"
+        if supports(rest)
+            block_rules(inner, sc, mut rules, mut layers)
+    elif name == "layer"
+        full := if rest == "" then "#anonymous{layers.len()}" else layer_path(sc, rest)
+        mut within := sc
+        within.layer = declare_layer(full, mut layers)
+        within.layer_name = full
+        block_rules(inner, within, mut rules, mut layers)
+
+## The contents of a conditional block: rules at the top level,
+## declarations and nested rules inside a style rule.
+fn block_rules(cs List[char], sc Nest, mut rules List[Rule], mut layers List[str])
+    if sc.parent == ""
+        rules_of(cs, sc, mut rules, mut layers)
+    else
+        rule_body(cs, sc, mut rules, mut layers)
+
+## A layer name as declared inside the current layer (`a` in `@layer x`
+## is `x.a`).
+fn layer_path(sc Nest, name str) str
+    if sc.layer_name == ""
+        name
+    else
+        "{sc.layer_name}.{name}"
+
+## The index of layer `name` in `layers`, adding it at the end the first
+## time it appears (Cascade 5, 6.4.2: layers order by first declaration).
+## Simplified: sublayers order with their parents, by first appearance.
+fn declare_layer(name str, mut layers List[str]) int
+    if at := layers.index_of(name)
+        return at
+    layers.push(name)
+    layers.len() - 1
+
+## A style rule `prelude { body }`: its selectors resolved against the
+## enclosing rule (CSS Nesting 1), then its declarations and nested rules.
+fn style_rule(prelude str, body List[char], sc Nest, mut rules List[Rule], mut layers List[str])
+    mut within := sc
+    within.parent = nest(prelude, sc.parent)
+    if within.parent.trim() == ""
+        return
+    rule_body(body, within, mut rules, mut layers)
+
+## The selector list `child` nested in `parent` (CSS Nesting 1, 3.1): `&`
+## stands for the parent (as `:is(parent)` unless it is one compound) and
+## a selector without `&` is a descendant of it.
+fn nest(child str, parent str) str
+    if parent == ""
+        return if child.contains("&") then child.replace("&", ":root") else child
+    p := if one_compound(parent) then parent.trim() else ":is({parent})"
+    mut out := List[str]()
+    for text in split_top(child)
+        t := text.trim()
+        if t == ""
+            continue
+        if t.contains("&")
+            out.push(t.replace("&", p))
+        else
+            out.push("{p} {t}")
+    out.join(", ")
+
+## Whether selector text `s` is a single compound selector: no `,` and no
+## combinator outside parentheses and brackets.
+fn one_compound(s str) bool
+    mut depth := 0
+    for c in s.trim().chars()
+        if c == '(' or c == '['
+            depth += 1
+        elif c == ')' or c == ']'
+            depth -= 1
+        elif depth == 0 and (c == ',' or c == ' ' or c == '>' or c == '+' or c == '~' or c == '\t' or c == '\n')
+            return false
+    true
+
+## A style rule's block: its declarations become one rule per selector of
+## `sc.parent`; nested style rules and `@media`/`@supports`/`@layer`
+## blocks follow it.
+fn rule_body(cs List[char], sc Nest, mut rules List[Rule], mut layers List[str])
+    mut decl := List[char]()
+    mut seg := List[char]()
+    mut heads := List[str]()
+    mut opens := List[int]()
+    mut closes := List[int]()
+    mut depth := 0
+    mut i := 0
+    while i < cs.len()
+        c := cs[i]
+        if c == '"' or c == '\''
+            stop := string_end(cs, i).min(cs.len())
+            for k in i..stop
+                seg.push(cs[k])
+            i = stop
+            continue
+        if c == '('
+            depth += 1
+        elif c == ')' and depth > 0
+            depth -= 1
+        elif depth == 0 and c == ';'
+            seg.push(c)
+            decl.extend(seg)
+            seg.clear()
+            i += 1
+            continue
+        elif depth == 0 and c == '{'
+            close := block_end(cs, i)
+            heads.push(seg.join("").trim())
+            opens.push(i)
+            closes.push(close)
+            seg.clear()
+            i = (close + 1).min(cs.len())
+            continue
+        seg.push(c)
+        i += 1
+    decl.extend(seg)
+    decls := declarations(decl.join(""))
+    if decls.len() > 0
+        for text in split_top(sc.parent)
+            if sel := selector(text)
+                rules.push(Rule(
+                    selector: sel,
+                    decls,
+                    order: sc.start + rules.len(),
+                    media: sc.media,
+                    layer: sc.layer,
+                ))
+    for n in 0..heads.len()
+        if rest := heads[n].strip_prefix("@")
+            at_block(rest, cs[opens[n] + 1..closes[n]], sc, mut rules, mut layers)
+        elif heads[n] != ""
+            style_rule(heads[n], cs[opens[n] + 1..closes[n]], sc, mut rules, mut layers)
 
 ## `text` split at the commas outside parentheses and brackets.
 fn split_top(text str) List[str]
@@ -306,112 +506,435 @@ fn split_top(text str) List[str]
     out.push(cur.join(""))
     out
 
-## Builds the lookup maps of a sheet's rules.
+## Builds the lookup maps of a sheet's rules (no cascade layers).
 pub fn index(rules List[Rule]) Sheet
-    mut s := Sheet(rules, by_id: {}, by_class: {}, by_tag: {}, general: [])
+    build(rules, [])
+
+## Builds the lookup maps of a sheet's rules, whose `layer` fields index
+## `layers`.
+fn build(rules List[Rule], layers List[str]) Sheet
+    mut s := Sheet(rules, by_id: {}, by_class: {}, by_tag: {}, general: [], layers)
     for k in 0..rules.len()
-        last := rules[k].selector.parts[rules[k].selector.parts.len() - 1]
-        if last.ids.len() > 0
-            s.by_id.push(last.ids[0], k)
-        elif last.classes.len() > 0
-            s.by_class.push(last.classes[0], k)
-        elif last.tag != ""
-            s.by_tag.push(last.tag, k)
-        else
+        last := rules[k].selector.parts.len() - 1
+        if rules[k].selector.parts[last].ids.len() > 0
+            s.by_id.push(rules[k].selector.parts[last].ids[0], k)
+        elif rules[k].selector.parts[last].classes.len() > 0
+            s.by_class.push(rules[k].selector.parts[last].classes[0], k)
+        elif rules[k].selector.parts[last].tag != ""
+            s.by_tag.push(rules[k].selector.parts[last].tag, k)
+        elif not index_alts(mut s, rules[k].selector.parts[last], k)
             s.general.push(k)
     s
 
-## Two sheets as one, `b`'s rules after `a`'s.
+## Files rule `k` under the keys of its rightmost compound's first
+## `:is()`/`:where()` list (such as `:is(h1, .x)` or a nested `&` rule's
+## `:is(parent)`) when every alternative's rightmost compound has an id,
+## class or type; false (the rule is then general) otherwise. A rule
+## filed twice is only tried twice.
+fn index_alts(mut s Sheet, c Compound, k int) bool
+    for alt in c.alts
+        if alt.negate
+            continue
+        mut keys := List[str]()
+        for sel in alt.sels
+            n := sel.parts.len() - 1
+            if sel.parts[n].ids.len() > 0
+                keys.push("#{sel.parts[n].ids[0]}")
+            elif sel.parts[n].classes.len() > 0
+                keys.push(".{sel.parts[n].classes[0]}")
+            elif sel.parts[n].tag != ""
+                keys.push(sel.parts[n].tag)
+            else
+                return false
+        for key in keys
+            if rest := key.strip_prefix("#")
+                s.by_id.push(rest, k)
+            elif rest := key.strip_prefix(".")
+                s.by_class.push(rest, k)
+            else
+                s.by_tag.push(key, k)
+        return true
+    false
+
+## Two sheets as one, `b`'s rules after `a`'s; `b`'s layers join `a`'s
+## (a layer both name keeps `a`'s place).
 pub fn concat(a Sheet, b Sheet) Sheet
     mut all := a.rules
+    mut layers := a.layers
+    mut remap := List[int]()
+    for name in b.layers
+        remap.push(declare_layer(name, mut layers))
     for r in b.rules
         all.push(Rule(
             selector: r.selector,
             decls: r.decls,
             order: a.rules.len() + r.order,
             media: r.media,
+            layer: if r.layer >= 0 and r.layer < remap.len() then remap[r.layer] else r.layer,
         ))
-    index(all)
+    build(all, layers)
 
 ## The rules of `s` that apply in a window `px` CSS pixels wide.
 pub fn for_width(s Sheet, px int) Sheet
-    index([r for r in s.rules if r.media == "" or all_match(r.media, px)])
+    for_size(s, px, default_height(px), true)
 
-fn all_match(media str, px int) bool
+## The rules of `s` that apply in a window `w` by `h` CSS pixels, in the
+## dark colour scheme when `dark` is true.
+pub fn for_size(s Sheet, w int, h int, dark bool) Sheet
+    scr := Media(w, h, dark)
+    build([r for r in s.rules if r.media == "" or all_match(r.media, scr)], s.layers)
+
+## The window height assumed when only the width is known: a landscape
+## window of 16:10.
+fn default_height(w int) int
+    (w * 5 / 8).max(1)
+
+fn all_match(media str, scr Media) bool
     for q in media.split("\n")
-        if not media_matches(q, px)
+        if not query_list_matches(q, scr)
             return false
     true
 
 ## Whether media query list `query` matches a screen `px` CSS pixels wide
-## (Media Queries 4, simplified). Types `all` and `screen` match; widths
-## compare in `px`, `em` and `rem` (16 px); the screen is dark (Kaleb, 2026-10-26), without
-## hover or motion. Anything else doesn't match, so its rules stay off.
+## (Media Queries 4, simplified), dark (Kaleb, 2026-10-26) and landscape.
 pub fn media_matches(query str, px int) bool
+    media_matches_env(query, px, default_height(px), true)
+
+## Whether media query list `query` matches a dark screen `w` by `h` CSS
+## pixels.
+pub fn media_matches_wh(query str, w int, h int) bool
+    media_matches_env(query, w, h, true)
+
+## Whether media query list `query` matches a screen `w` by `h` CSS pixels
+## whose colour scheme is dark when `dark` is true (Media Queries 4,
+## simplified). Types `all` and `screen` match. Lengths are `px`, `em` and
+## `rem` (16 px), plain or in `calc()`; ranges may be written `(width >=
+## 600px)` or `(400px <= width < 700px)`; conditions take `not`, `and`,
+## `or` and nested parentheses. The screen has a fine pointer that can
+## hover, no motion (Garlic does not animate), standard contrast and no
+## forced colours. Anything else doesn't match, so its rules stay off.
+pub fn media_matches_env(query str, w int, h int, dark bool) bool
+    query_list_matches(query, Media(w, h, dark))
+
+fn query_list_matches(query str, scr Media) bool
     q := query.trim().to_lower()
     if q == ""
         return true
-    for part in q.split(",")
-        if one_matches(part.trim(), px)
+    for part in split_top(q)
+        if one_matches(part.trim(), scr)
             return true
     false
 
-fn one_matches(query str, px int) bool
-    mut q := query.strip_prefix("only ") else query
+## One media query: `[only | not] type [and condition]` or a condition.
+fn one_matches(query str, scr Media) bool
+    toks := cond_tokens(query)
+    if toks.len() == 0
+        return false
+    mut i := 0
     mut negate := false
-    if rest := q.strip_prefix("not ")
+    if toks[0] == "only"
+        i = 1
+    elif toks[0] == "not" and toks.len() > 1 and not toks[1].starts_with("(")
         negate = true
-        q = rest
-    mut ok := true
-    for piece in q.split(" and ")
-        p := piece.trim()
-        if p.starts_with("(")
-            inner := (p.strip_prefix("(") else p).trim()
-            ok = ok and feature_matches((inner.strip_suffix(")") else inner).trim(), px)
-        else
-            ok = ok and (p == "all" or p == "screen")
+        i = 1
+    if i >= toks.len()
+        return false
+    if toks[i].starts_with("(") or toks[i] == "not"
+        return cond_eval(toks, i, false, scr)
+    mut ok := toks[i] == "all" or toks[i] == "screen"
+    if i + 1 < toks.len()
+        if toks[i + 1] != "and" or i + 2 >= toks.len()
+            return false
+        ok = ok and cond_eval(toks, i + 2, false, scr)
     ok != negate
 
-fn feature_matches(f str, px int) bool
-    for op in [">=", "<=", ">", "<"]
-        if at := f.find(op)
-            name := f.slice(0, at).trim()
-            n := length_px(f.slice(at + op.chars().len(), f.chars().len())) else return false
-            if name != "width"
-                return false
-            return match op
-                ">=" => px >= n
-                "<=" => px <= n
-                ">" => px > n
-                _ => px < n
-    colon := f.find(":") else return f == "color"
+## The tokens of a media or `@supports` condition: each parenthesised
+## group whole, with its parentheses, and each word between them, so a
+## minified `(a)and (b)` reads like `(a) and (b)`.
+fn cond_tokens(text str) List[str]
+    cs := text.chars()
+    mut out := List[str]()
+    mut i := 0
+    while i < cs.len()
+        c := cs[i]
+        if c == ' ' or c == '\t' or c == '\n' or c == '\r'
+            i += 1
+            continue
+        mut j := i
+        if c == '('
+            mut depth := 0
+            while j < cs.len()
+                if cs[j] == '('
+                    depth += 1
+                elif cs[j] == ')'
+                    depth -= 1
+                    if depth == 0
+                        break
+                j += 1
+            j = (j + 1).min(cs.len())
+        else
+            while j < cs.len() and cs[j] != '(' and cs[j] != ' ' and cs[j] != '\t' and cs[j] != '\n' and cs[j] != '\r'
+                j += 1
+        out.push(cs[i..j].join(""))
+        i = j
+    out
+
+## The number of tokens term `toks[k]` takes: a function such as
+## `selector(...)` is its name and its parenthesised group.
+fn term_len(toks List[str], k int) int
+    if not toks[k].starts_with("(") and k + 1 < toks.len() and toks[k + 1].starts_with("(")
+        return 2
+    1
+
+## Evaluates `not term`, or terms joined by `and` / `or`, from `toks[at]`:
+## a media condition, or an `@supports` condition when `sup` is true.
+fn cond_eval(toks List[str], at int, sup bool, scr Media) bool
+    if at >= toks.len()
+        return false
+    if toks[at] == "not"
+        return at + 1 < toks.len() and not cond_term(toks, at + 1, sup, scr)
+    mut ok := cond_term(toks, at, sup, scr)
+    mut i := at + term_len(toks, at)
+    while i < toks.len()
+        op := toks[i]
+        if i + 1 >= toks.len()
+            return false
+        v := cond_term(toks, i + 1, sup, scr)
+        if op == "and"
+            ok = ok and v
+        elif op == "or"
+            ok = ok or v
+        else
+            return false
+        i += 1 + term_len(toks, i + 1)
+    ok
+
+## One term: a parenthesised condition, feature or declaration, or a
+## function (`selector(...)` in `@supports`).
+fn cond_term(toks List[str], k int, sup bool, scr Media) bool
+    t := toks[k]
+    if not t.starts_with("(")
+        if sup and t.to_lower() == "selector" and k + 1 < toks.len() and toks[k + 1].len() >= 2
+            arg := toks[k + 1]
+            return parse_selector(arg.slice(1, arg.len() - 1)) != none
+        return false
+    inner := t.slice(1, if t.ends_with(")") then t.len() - 1 else t.len()).trim()
+    sub := cond_tokens(inner)
+    if sub.len() > 0 and (sub[0] == "not" or sub[0].starts_with("("))
+        return cond_eval(sub, 0, sup, scr)
+    if sup
+        return supports_decl(inner)
+    feature_matches(inner, scr)
+
+## Whether a media feature (the text inside its parentheses) holds.
+fn feature_matches(f str, scr Media) bool
+    colon := f.find(":") else return range_matches(f, scr)
     name := f.slice(0, colon).trim()
-    value := f.slice(colon + 1, f.chars().len()).trim()
+    value := f.slice(colon + 1, f.len()).trim()
+    if low := name.strip_prefix("min-")
+        least := media_value(low, scr) else return false
+        return least >= (media_len(value) else return false)
+    if high := name.strip_prefix("max-")
+        most := media_value(high, scr) else return false
+        return most <= (media_len(value) else return false)
+    if exact := media_value(name, scr)
+        return exact == (media_len(value) else return false)
     match name
-        "min-width" | "min-device-width" => px >= (length_px(value) else return false)
-        "max-width" | "max-device-width" => px <= (length_px(value) else return false)
-        "width" => px == (length_px(value) else return false)
-        "prefers-color-scheme" => value == "dark"
+        "prefers-color-scheme" => value == (if scr.dark then "dark" else "light")
         "prefers-reduced-motion" => value == "reduce"
-        "hover" | "any-hover" => value == "none"
-        "orientation" => value == "landscape"
+        "prefers-contrast" | "prefers-reduced-transparency" | "prefers-reduced-data" => value == "no-preference"
+        "forced-colors" | "inverted-colors" => value == "none"
+        "hover" | "any-hover" => value == "hover"
+        "pointer" | "any-pointer" => value == "fine"
+        "orientation" => value == (if scr.w >= scr.h then "landscape" else "portrait")
+        "display-mode" => value == "browser"
+        "scripting" => value == "enabled"
+        "update" => value == "fast"
+        "color-gamut" => value == "srgb"
+        "dynamic-range" | "video-dynamic-range" => value == "standard"
         _ => false
 
-## A length in CSS pixels: `N`, `Npx`, `Nem` or `Nrem`, with a fraction.
-fn length_px(s str) int?
+## A feature without a value (`(color)`, `(hover)`), or a range such as
+## `width >= 600px`, `600px <= width` or `400px <= width < 700px`.
+fn range_matches(f str, scr Media) bool
+    p := range_parts(f)
+    if p.len() == 1
+        name := p[0].trim()
+        if bare := media_value(name, scr)
+            return bare != 0.0
+        return name == "hover" or name == "any-hover" or name == "pointer" or name == "any-pointer" or name == "prefers-reduced-motion" or name == "scripting"
+    if p.len() == 3
+        if left := media_value(p[0].trim(), scr)
+            right := media_len(p[2]) else return false
+            return cmp_op(left, p[1], right)
+        feature := media_value(p[2].trim(), scr) else return false
+        given := media_len(p[0]) else return false
+        return cmp_op(given, p[1], feature)
+    if p.len() == 5
+        mid := media_value(p[2].trim(), scr) else return false
+        lo := media_len(p[0]) else return false
+        hi := media_len(p[4]) else return false
+        return cmp_op(lo, p[1], mid) and cmp_op(mid, p[3], hi)
+    false
+
+## `f` split at its comparison operators, which are kept as pieces:
+## "width >= 600px" gives ["width ", ">=", " 600px"].
+fn range_parts(f str) List[str]
+    cs := f.chars()
+    mut out := List[str]()
+    mut cur := List[char]()
+    mut i := 0
+    while i < cs.len()
+        c := cs[i]
+        if c == '<' or c == '>' or c == '='
+            out.push(cur.join(""))
+            cur.clear()
+            if c != '=' and i + 1 < cs.len() and cs[i + 1] == '='
+                out.push("{c}=")
+                i += 2
+            else
+                out.push("{c}")
+                i += 1
+            continue
+        cur.push(c)
+        i += 1
+    out.push(cur.join(""))
+    out
+
+fn cmp_op(a float, op str, b float) bool
+    match op
+        ">=" => a >= b
+        "<=" => a <= b
+        ">" => a > b
+        "<" => a < b
+        "=" => a == b
+        _ => false
+
+## The value of a numeric media feature, or none for other names.
+fn media_value(name str, scr Media) float?
+    if name == "width" or name == "device-width"
+        return scr.w.to_float()
+    if name == "height" or name == "device-height"
+        return scr.h.to_float()
+    if name == "aspect-ratio" or name == "device-aspect-ratio"
+        return scr.w.to_float() / scr.h.max(1).to_float()
+    if name == "color"
+        return 8.0
+    if name == "monochrome"
+        return 0.0
+    none
+
+## A media query length in CSS pixels: `N`, `Npx`, `Nem` or `Nrem` (16
+## px), or `calc()` of them; or a ratio `a/b` as a number.
+fn media_len(s str) float?
     t := s.trim()
-    mut scale := 1.0
-    mut num := t
-    if rest := t.strip_suffix("rem")
-        scale = 16.0
-        num = rest
-    elif rest := t.strip_suffix("em")
-        scale = 16.0
-        num = rest
-    elif rest := t.strip_suffix("px")
-        num = rest
-    v := num.trim().to_float()?
-    (v * scale).to_int()
+    if t.contains("/") and not t.contains("(")
+        halves := t.split("/")
+        if halves.len() != 2
+            return none
+        a := halves[0].trim().to_float()?
+        b := halves[1].trim().to_float()?
+        if b == 0.0
+            return none
+        return a / b
+    cs := t.chars()
+    mut i := 0
+    v := calc_sum(cs, mut i)?
+    skip_ws(cs, mut i)
+    if i != cs.len()
+        return none
+    v
+
+fn skip_ws(cs List[char], mut i int)
+    while i < cs.len() and (cs[i] == ' ' or cs[i] == '\t' or cs[i] == '\n')
+        i += 1
+
+## `a + b - c` in a `calc()` (CSS Values 4, 10.1, simplified).
+fn calc_sum(cs List[char], mut i int) float?
+    mut total := calc_product(cs, mut i)?
+    while true
+        skip_ws(cs, mut i)
+        if i >= cs.len() or (cs[i] != '+' and cs[i] != '-')
+            break
+        plus := cs[i] == '+'
+        i += 1
+        v := calc_product(cs, mut i)?
+        total = if plus then total + v else total - v
+    total
+
+## `a * b / c` in a `calc()`.
+fn calc_product(cs List[char], mut i int) float?
+    mut v := calc_atom(cs, mut i)?
+    while true
+        skip_ws(cs, mut i)
+        if i >= cs.len() or (cs[i] != '*' and cs[i] != '/')
+            break
+        times := cs[i] == '*'
+        i += 1
+        w := calc_atom(cs, mut i)?
+        if times
+            v = v * w
+        elif w == 0.0
+            return none
+        else
+            v = v / w
+    v
+
+## A number with an optional `px`, `em` or `rem` unit, a parenthesised
+## sum, or `calc(...)`.
+fn calc_atom(cs List[char], mut i int) float?
+    skip_ws(cs, mut i)
+    if i >= cs.len()
+        return none
+    if cs[i] == '('
+        i += 1
+        inner := calc_sum(cs, mut i)?
+        skip_ws(cs, mut i)
+        if i < cs.len() and cs[i] == ')'
+            i += 1
+        return inner
+    start := i
+    if cs[i] == '-' or cs[i] == '+'
+        i += 1
+    while i < cs.len() and (cs[i].is_digit() or cs[i] == '.')
+        i += 1
+    num := cs[start..i].join("")
+    ustart := i
+    while i < cs.len() and (cs[i].is_alpha() or cs[i] == '%')
+        i += 1
+    unit := cs[ustart..i].join("").to_lower()
+    if num == "" or num == "-" or num == "+"
+        if unit != "calc" or i >= cs.len() or cs[i] != '('
+            return none
+        i += 1
+        got := calc_sum(cs, mut i)?
+        skip_ws(cs, mut i)
+        if i < cs.len() and cs[i] == ')'
+            i += 1
+        return if num == "-" then 0.0 - got else got
+    n := num.to_float()?
+    if unit == "em" or unit == "rem"
+        return n * 16.0
+    if unit != "" and unit != "px"
+        return none
+    n
+
+## Whether an `@supports` condition holds (Conditional Rules 3, 6):
+## `not`, `and`, `or`, parentheses, `(property: value)` and
+## `selector(...)`. A property test holds when Garlic keeps the property
+## (`USED`, or a custom property); anything else is false.
+fn supports(cond str) bool
+    toks := cond_tokens(cond)
+    if toks.len() == 0
+        return false
+    cond_eval(toks, 0, true, Media(w: 0, h: 0, dark: true))
+
+fn supports_decl(text str) bool
+    colon := text.find(":") else return false
+    name := text.slice(0, colon).trim().to_lower()
+    if text.slice(colon + 1, text.len()).trim() == ""
+        return false
+    USED.contains(name) or name.starts_with("--")
 
 ## The index just past the matching `}` of the block opening at `open`
 ## (or the end of input), skipping strings.
@@ -442,37 +965,89 @@ fn string_end(cs List[char], at int) int
         i += 1
     i + 1
 
-## Skips an at-rule from `@`: up to `;`, or past its block.
-fn skip_at_rule(cs List[char], at int) int
-    mut i := at
+## A block body split at the `;` outside strings and parentheses, so
+## `url(data:...;base64,...)` and `content: "a;b"` stay whole.
+fn split_decls(body str) List[str]
+    cs := body.chars()
+    mut out := List[str]()
+    mut cur := List[char]()
+    mut depth := 0
+    mut i := 0
     while i < cs.len()
-        if cs[i] == ';'
-            return i + 1
-        if cs[i] == '{'
-            ## An unclosed block ends with the sheet.
-            return (block_end(cs, i) + 1).min(cs.len())
+        c := cs[i]
+        if c == '"' or c == '\''
+            stop := string_end(cs, i).min(cs.len())
+            for k in i..stop
+                cur.push(cs[k])
+            i = stop
+            continue
+        if c == '('
+            depth += 1
+        elif c == ')' and depth > 0
+            depth -= 1
+        if c == ';' and depth == 0
+            out.push(cur.join(""))
+            cur.clear()
+        else
+            cur.push(c)
         i += 1
-    i
+    out.push(cur.join(""))
+    out
+
+## `v` in lowercase except inside quoted strings and `url(...)`, whose
+## case matters (URLs, `content` text, font names).
+fn lower_outside(v str) str
+    low := v.to_lower()
+    if not low.contains("url(") and not v.contains("\"") and not v.contains("'")
+        return low
+    cs := v.chars()
+    mut out := List[str]()
+    mut run := List[char]()
+    mut i := 0
+    while i < cs.len()
+        c := cs[i]
+        if c == '"' or c == '\''
+            out.push(run.join("").to_lower())
+            run.clear()
+            stop := string_end(cs, i).min(cs.len())
+            out.push(cs[i..stop].join(""))
+            i = stop
+            continue
+        if c == '(' and run.len() >= 3 and run[run.len() - 3..run.len()].join("").to_lower() == "url"
+            run.push(c)
+            out.push(run.join("").to_lower())
+            run.clear()
+            mut k := i + 1
+            while k < cs.len() and cs[k] != ')'
+                k += 1
+            out.push(cs[i + 1..k].join(""))
+            i = k
+            continue
+        run.push(c)
+        i += 1
+    out.push(run.join("").to_lower())
+    out.join("")
 
 ## The declarations of a block body that Garlic uses.
 pub fn declarations(body str) List[Decl]
     mut out := List[Decl]()
-    for part in body.split(";")
+    for part in split_decls(body)
         colon := part.find(":") else continue
         name := part.slice(0, colon).trim().to_lower()
         ## Custom properties (`--x`) are kept for `var()` in the layout.
         if not USED.contains(name) and not name.starts_with("--")
             continue
-        mut value := part.slice(colon + 1, part.chars().len()).trim()
+        mut value := part.slice(colon + 1, part.len()).trim()
         mut important := false
-        if bang := value.find("!")
-            important = value.slice(bang + 1, value.chars().len()).trim().to_lower() == "important"
-            value = value.slice(0, bang).trim()
+        if bang := value.rfind("!")
+            if value.slice(bang + 1, value.len()).trim().to_lower() == "important"
+                important = true
+                value = value.slice(0, bang).trim()
         if name == "list-style"
             ## The shorthand resets the type, so it competes with `list-style-type`.
             out.push(Decl("list-style-type", value: list_style_type(value.to_lower()), important))
         else
-            out.push(Decl(name, value: value.to_lower(), important))
+            out.push(Decl(name, value: lower_outside(value), important))
     out
 
 ## The type a `list-style` shorthand sets: `none`, a keyword, or `disc`.
@@ -485,12 +1060,29 @@ fn list_style_type(v str) str
     "disc"
 
 ## Parses one complex selector, or none when Garlic doesn't support it
-## (pseudo-elements, dynamic pseudo-classes such as `:hover`, `:is`,
-## `:where`, `:has`), so the rule is dropped. Selectors Level 4: type,
-## `*`, `#id`, `.class` (with `\` escapes), `[attr]` and its operators,
-## `:not()`, `:first-child`, `:nth-child()` and kin, `:empty`, `:checked`,
-## `:disabled`, `:enabled`, `:link`, and the ` `, `>`, `+`, `~` combinators.
+## (pseudo-elements such as `::before`, `:has()`) or when it can never
+## match (it needs `:hover`, `:focus` and kin), so the rule is dropped;
+## the other selectors of its list keep it. Selectors Level 4: type, `*`,
+## `#id`, `.class` (with `\` escapes), `[attr]` and its operators,
+## `:not()`, `:is()`, `:where()`, `:first-child`, `:nth-child()` and kin,
+## `:empty`, `:checked`, `:disabled`, `:enabled`, `:link`, and the ` `,
+## `>`, `+`, `~` combinators.
 pub fn selector(text str) Selector?
+    s := parse_selector(text)?
+    if not can_match(s)
+        return none
+    s
+
+## Whether selector `s` may match some element: none of its compounds
+## needs a pseudo-class that never holds.
+fn can_match(s Selector) bool
+    for p in s.parts
+        if p.pseudos.contains("never")
+            return false
+    true
+
+## Parses one complex selector, keeping those that can never match.
+fn parse_selector(text str) Selector?
     t := text.trim().replace(":root", "html")
     if t == ""
         return none
@@ -541,6 +1133,8 @@ pub fn selector(text str) Selector?
         spec += simple_weight(p.tag, p.ids, p.classes, p.attrs, p.pseudos)
         for ng in p.nots
             spec += simple_weight(ng.tag, ng.ids, ng.classes, ng.attrs, ng.pseudos)
+        for alt in p.alts
+            spec += alt.weight
     Selector(parts, comb, specificity: spec)
 
 ## The specificity a compound's simple selectors add (Selectors 4, 17).
@@ -581,7 +1175,7 @@ fn attr_test(inner str) AttrTest?
     two := before != "" and "~|^$*".contains(before)
     op := if two then "{before}=" else "="
     name := inner.slice(0, if two then eq - 1 else eq).trim().to_lower()
-    v := inner.slice(eq + 1, inner.chars().len()).trim().replace("\"", "").replace("'", "")
+    v := inner.slice(eq + 1, inner.len()).trim().replace("\"", "").replace("'", "")
     if name == ""
         return none
     AttrTest(name, op, value: v)
@@ -599,13 +1193,52 @@ PLAIN_PSEUDOS := {
     "enabled",
     "link",
     "any-link",
+    "-webkit-any-link",
 }
 
 NTH_PSEUDOS := {"nth-child", "nth-last-child", "nth-of-type", "nth-last-of-type"}
 
+## Pseudo-classes that depend on the pointer, focus, history, the URL
+## fragment, media playback or user input. Garlic's cascade has none of
+## that state, so they parse and never hold (stored as "never").
+NEVER_PSEUDOS := {
+    "hover",
+    "active",
+    "focus",
+    "focus-visible",
+    "focus-within",
+    "visited",
+    "target",
+    "target-within",
+    "local-link",
+    "current",
+    "past",
+    "future",
+    "playing",
+    "paused",
+    "autofill",
+    "-webkit-autofill",
+    "user-invalid",
+    "user-valid",
+    "invalid",
+    "placeholder-shown",
+    "popover-open",
+    "modal",
+    "fullscreen",
+    "picture-in-picture",
+    "-moz-focusring",
+    "-moz-ui-invalid",
+}
+
+## `:is()` and its older names, and `:where()`: forgiving selector lists.
+IS_PSEUDOS := {"is", "where", "matches", "-webkit-any", "-moz-any"}
+
 ## Adds the pseudo-class `name(arg)` to `c`; false when Garlic doesn't
 ## support it (the rule is then dropped).
 fn add_pseudo(mut c Compound, name str, arg str) bool
+    if NEVER_PSEUDOS.contains(name)
+        c.pseudos.push("never")
+        return true
     if PLAIN_PSEUDOS.contains(name)
         c.pseudos.push(name)
         return true
@@ -615,16 +1248,18 @@ fn add_pseudo(mut c Compound, name str, arg str) bool
         compact := arg.replace(" ", "").to_lower()
         c.pseudos.push("{name}({compact})")
         return true
+    if IS_PSEUDOS.contains(name)
+        return add_alts(mut c, name == "where", false, arg)
     if name == "not"
         inner := arg.trim()
-        for bad in [",", " ", ">", "+", "~"]
-            if inner.contains(bad)
-                return false
         if inner == ""
             return false
+        for bad in [",", " ", ">", "+", "~"]
+            if inner.contains(bad)
+                return add_alts(mut c, false, true, inner)
         n := compound(inner) else return false
-        if n.nots.len() > 0
-            return false
+        if n.nots.len() > 0 or n.alts.len() > 0
+            return add_alts(mut c, false, true, inner)
         c.nots.push(Neg(
             tag: n.tag,
             ids: n.ids,
@@ -634,6 +1269,31 @@ fn add_pseudo(mut c Compound, name str, arg str) bool
         ))
         return true
     false
+
+## Adds `:is(arg)` (`zero`: `:where(arg)`) or, when `negate`, `:not(arg)`
+## with a selector list. `:is()` and `:where()` forgive selectors Garlic
+## can't parse and drop them (Selectors 4, 4.2); `:not()` does not, so
+## its rule is dropped. An argument that can never match is left out:
+## `:is()` of nothing never holds, `:not()` of it always does.
+fn add_alts(mut c Compound, zero bool, negate bool, arg str) bool
+    mut sels := List[Selector]()
+    mut weight := 0
+    for text in split_top(arg)
+        s := parse_selector(text) else
+            if negate
+                return false
+            continue
+        weight = weight.max(s.specificity)
+        if can_match(s)
+            sels.push(s)
+    if zero
+        weight = 0
+    if sels.len() == 0
+        if not negate
+            c.pseudos.push("never")
+        return true
+    c.alts.push(Alts(negate, sels, weight))
+    true
 
 ## `an+b` as [a, b] (`odd`, `even`, `n`, `2n`, `-n+3`, `4`), or [] when
 ## it isn't one.
@@ -645,7 +1305,7 @@ fn nth_ab(arg str) List[int]
         return [2, 0]
     if at := t.find("n")
         apart := t.slice(0, at).replace("+", "")
-        bpart := t.slice(at + 1, t.chars().len()).replace("+", "")
+        bpart := t.slice(at + 1, t.len()).replace("+", "")
         mut a := 1
         if apart == "-"
             a = -1
@@ -660,7 +1320,7 @@ fn nth_ab(arg str) List[int]
 
 ## Parses a compound selector such as `a.nav#top[href]:not(.x)`.
 fn compound(word str) Compound?
-    mut c := Compound(tag: "", ids: [], classes: [], attrs: [], pseudos: [], nots: [])
+    mut c := Compound(tag: "", ids: [], classes: [], attrs: [], pseudos: [], nots: [], alts: [])
     cs := word.chars()
     mut i := 0
     mut kind := 't'
@@ -734,7 +1394,7 @@ fn has_attr(d html.Doc, id int, name str) bool
 ## Whether attribute test `a` holds on element `id`.
 fn attr_ok(d html.Doc, id int, a AttrTest) bool
     v := d.attr(id, a.name) else return false
-    n := a.value.chars().len()
+    n := a.value.len()
     if a.op == ""
         return true
     if a.op == "="
@@ -748,7 +1408,7 @@ fn attr_ok(d html.Doc, id int, a AttrTest) bool
     if a.op == "^="
         return v.starts_with(a.value)
     if a.op == "$="
-        return v.chars().len() >= n and v.slice(v.chars().len() - n, v.chars().len()) == a.value
+        return v.ends_with(a.value)
     a.op == "*=" and v.contains(a.value)
 
 ## The 1-based position of element `id` among its parent's element
@@ -773,7 +1433,8 @@ fn sib_pos(d html.Doc, id int, from_end bool, of_type bool) int
 
 ## Whether pseudo-class `p` (as `add_pseudo` stored it) holds on `id`.
 fn pseudo_ok(d html.Doc, id int, p str) bool
-    tag := d.nodes[id].tag
+    if p == "never"
+        return false
     if p == "first-child"
         return sib_pos(d, id, false, false) == 1
     if p == "last-child"
@@ -788,22 +1449,24 @@ fn pseudo_ok(d html.Doc, id int, p str) bool
         return sib_pos(d, id, false, true) == 1 and sib_pos(d, id, true, true) == 1
     if p == "empty"
         for k in d.nodes[id].children
-            n := d.nodes[k]
-            if n.kind == html.Kind.Element or (n.kind == html.Kind.Text and n.text != "")
+            if d.nodes[k].kind == html.Kind.Element
+                return false
+            if d.nodes[k].kind == html.Kind.Text and d.nodes[k].text != ""
                 return false
         return true
     if p == "checked"
         return has_attr(d, id, "checked") or has_attr(d, id, "selected")
     if p == "disabled"
         return has_attr(d, id, "disabled")
+    tag := d.nodes[id].tag
     if p == "enabled"
         return (tag == "input" or tag == "button" or tag == "select" or tag == "textarea")
             and not has_attr(d, id, "disabled")
-    if p == "link" or p == "any-link"
+    if p == "link" or p == "any-link" or p == "-webkit-any-link"
         return (tag == "a" or tag == "area") and has_attr(d, id, "href")
     open := p.find("(") else return false
     name := p.slice(0, open)
-    ab := nth_ab(p.slice(open + 1, p.chars().len() - 1))
+    ab := nth_ab(p.slice(open + 1, p.len() - 1))
     if ab.len() == 0
         return false
     pos := sib_pos(d, id, name.contains("last"), name.contains("of-type"))
@@ -813,6 +1476,16 @@ fn pseudo_ok(d html.Doc, id int, p str) bool
     if ab[0] > 0
         return diff >= 0 and diff % ab[0] == 0
     diff <= 0 and (0 - diff) % (0 - ab[0]) == 0
+
+## Whether class attribute value `attr` lists class `want` (separated by
+## spaces, tabs or newlines), without splitting it into a list.
+fn has_class(attr str, want str) bool
+    if not attr.contains(want)
+        return false
+    if attr.contains("\n") or attr.contains("\t") or attr.contains("\r")
+        norm := attr.replace("\n", " ").replace("\t", " ").replace("\r", " ")
+        return " {norm} ".contains(" {want} ")
+    " {attr} ".contains(" {want} ")
 
 ## Whether element `id` satisfies one set of simple selectors.
 fn simple_ok(
@@ -830,9 +1503,9 @@ fn simple_ok(
         if d.attr(id, "id") != want
             return false
     if classes.len() > 0
-        have := (d.attr(id, "class") else "").replace("\n", " ").replace("\t", " ").split(" ")
+        have := d.attr(id, "class") else return false
         for want in classes
-            if not have.contains(want)
+            if not has_class(have, want)
                 return false
     for a in attrs
         if not attr_ok(d, id, a)
@@ -850,6 +1523,14 @@ fn matches_compound(d html.Doc, id int, c Compound) bool
         return false
     for ng in c.nots
         if simple_ok(d, id, ng.tag, ng.ids, ng.classes, ng.attrs, ng.pseudos)
+            return false
+    for alt in c.alts
+        mut hit := false
+        for s in alt.sels
+            if matches(d, id, s)
+                hit = true
+                break
+        if hit == alt.negate
             return false
     true
 
@@ -889,49 +1570,223 @@ fn matches_from(d html.Doc, id int, s Selector, k int) bool
         p = d.nodes[p].parent
     false
 
-## The rules of `sheet` that may match element `id`, by the index.
+## The rules of `sheet` that may match element `id`, by the index: a
+## fresh list, so the sheet's own lists are read, not copied.
 fn candidates(d html.Doc, id int, sheet Sheet) List[int]
-    mut out := sheet.general
-    if key := d.attr(id, "id")
-        for k in sheet.by_id.get(key) else []
-            out.push(k)
-    for cls in (d.attr(id, "class") else "").split(" ")
-        if cls != ""
-            for k in sheet.by_class.get(cls) else []
-                out.push(k)
-    for k in sheet.by_tag.get(d.nodes[id].tag) else []
+    mut out := List[int]()
+    for k in sheet.general
         out.push(k)
+    if key := d.attr(id, "id")
+        if sheet.by_id.contains(key)
+            for k in sheet.by_id[key]
+                out.push(k)
+    if attr := d.attr(id, "class")
+        for cls in attr.replace("\n", " ").replace("\t", " ").split(" ")
+            if cls != "" and sheet.by_class.contains(cls)
+                for k in sheet.by_class[cls]
+                    out.push(k)
+    if sheet.by_tag.contains(d.nodes[id].tag)
+        for k in sheet.by_tag[d.nodes[id].tag]
+            out.push(k)
     out
 
+## The cascade weight of a declaration from a style sheet (Cascade 5,
+## 6.1): importance, then layer, then specificity, then order. Unlayered
+## rules beat layered ones and later layers beat earlier ones; for
+## `!important` both are reversed. Inline `style` beats every sheet
+## declaration of the same importance (`INLINE_NORMAL`, `INLINE_IMPORTANT`).
+fn rule_weight(important bool, layer int, spec int, order int) int
+    normal := if layer < 0 then 1000 else layer.min(999)
+    rank := if important then 1000 - normal else normal
+    level := if important then 2 else 0
+    ((level * 1001 + rank) * 100000000 + spec.min(99999999)) * 10000000 + order.min(9999999)
+
+INLINE_NORMAL := 1001000000000000000
+
+INLINE_IMPORTANT := 3003000000000000000
+
 ## The cascaded value of each property Garlic uses on element `id`:
-## matching rules by importance, specificity and order, then the element's
-## own `style` attribute (Cascade 4, simplified). Inherited values are the
-## layout's business.
+## matching rules by importance, layer, specificity and order, then the
+## element's own `style` attribute (Cascade 5, simplified). Inherited
+## values are the layout's business. Rules are read through
+## `sheet.rules[k]`, never bound, so no rule is copied.
 pub fn cascade(d html.Doc, id int, sheet Sheet) Map[str, str]
     mut best := Map[str, int]()
     mut out := Map[str, str]()
     for k in candidates(d, id, sheet)
-        r := sheet.rules[k]
-        if not matches(d, id, r.selector)
+        if not matches(d, id, sheet.rules[k].selector)
             continue
-        for decl in r.decls
-            level := if decl.important then 2 else 0
-            weight := level * 1000000000000 + r.selector.specificity * 1000000 + r.order
+        spec := sheet.rules[k].selector.specificity
+        order := sheet.rules[k].order
+        layer := sheet.rules[k].layer
+        for decl in sheet.rules[k].decls
+            weight := rule_weight(decl.important, layer, spec, order)
             if weight >= (best.get(decl.name) else -1)
                 best[decl.name] = weight
                 out[decl.name] = decl.value
     if inline := d.attr(id, "style")
         for decl in declarations(inline)
-            level := if decl.important then 3 else 1
-            weight := level * 1000000000000
-            if weight >= (best.get(decl.name) else -1)
-                best[decl.name] = weight
+            own := if decl.important then INLINE_IMPORTANT else INLINE_NORMAL
+            if own >= (best.get(decl.name) else -1)
+                best[decl.name] = own
                 out[decl.name] = decl.value
     out
 
-## Every `<style>` element's sheet, in document order, as one sheet.
+## Every `<style>` element's sheet, in document order, as one sheet. The
+## rules are collected into one list and indexed once.
 pub fn document_sheet(d html.Doc) Sheet
-    mut all := parse("", 0)
+    mut rules := List[Rule]()
+    mut layers := List[str]()
     for s in d.all("style")
-        all = concat(all, parse_in(d.text(s), 0, (d.attr(s, "media") else "").trim()))
-    all
+        sc := Nest(media: (d.attr(s, "media") else "").trim(), layer: -1, layer_name: "", parent: "", start: 0)
+        rules_of(strip_comments(d.text(s)).chars(), sc, mut rules, mut layers)
+    build(rules, layers)
+
+## Tests: run with `ail test garlic.ail` (this module's `@test` functions
+## are picked up with the program's).
+
+@test fn css_keeps_the_layout_and_paint_properties()
+    got := declarations("overflow: hidden; opacity: 0; grid-column: 1 / span 12; z-index: 2; inset: 0; transition: all 1s")
+    assert_eq([x.name for x in got], ["overflow", "opacity", "grid-column", "z-index", "inset"])
+
+@test fn css_dynamic_pseudo_classes_parse_and_never_match()
+    sheet := parse(".j:not(:focus) \{ display: none } a:hover \{ color: red } a:focus-visible, p \{ color: blue } .k:not(.m:hover) \{ color: green }", 0)
+    assert_eq(sheet.rules.len(), 3)
+    d := html.parse("<a class='j k' href=x>skip</a><p>t</p>")
+    a := d.first("a")?
+    got := cascade(d, a, sheet)
+    assert_eq(got["display"], "none")
+    assert_eq(got["color"], "green")
+    assert_eq(cascade(d, d.first("p")?, sheet)["color"], "blue")
+    assert(selector("a:hover") == none)
+    assert(matches(d, a, selector("a:not(:hover):not(:active)")?))
+    assert_eq(selector(".x:not(:focus)")?.specificity, 200)
+
+@test fn css_pseudo_elements_drop_only_their_own_selector()
+    sheet := parse("li::before, li.x, li:after \{ display: none } p::marker \{ color: red }", 0)
+    assert_eq(sheet.rules.len(), 1)
+    d := html.parse("<ul><li class=x>1</li></ul>")
+    assert_eq(cascade(d, d.first("li")?, sheet)["display"], "none")
+
+@test fn css_is_where_and_not_lists_match_with_their_specificity()
+    d := html.parse("<div class=x><h2><b>t</b></h2><p class=a>1</p><p class=c>2</p></div>")
+    b := d.first("b")?
+    ps := d.all("p")
+    assert(matches(d, b, selector(":is(h1, h2) > b")?))
+    assert(not matches(d, b, selector(":is(h1, h3) > b")?))
+    assert(matches(d, ps[1], selector("p:not(.a, .b)")?))
+    assert(not matches(d, ps[0], selector("p:not(.a, .b)")?))
+    assert(matches(d, ps[1], selector(":is(:hover, .c)")?))
+    assert(matches(d, ps[0], selector("div :not(.x .c)")?))
+    assert(selector(":is(:hover, :focus) p") == none)
+    assert_eq(selector(":where(.x) p")?.specificity, 1)
+    assert_eq(selector(":is(.x, #y) p")?.specificity, 10001)
+    later := parse(":where(.x) p \{ display: none } p \{ display: block }", 0)
+    assert_eq(cascade(d, ps[0], later)["display"], "block")
+    stronger := parse(":is(.x) p \{ display: none } p \{ display: block }", 0)
+    assert_eq(cascade(d, ps[0], stronger)["display"], "none")
+    assert(stronger.by_tag.contains("p"))
+    keyed := parse(":is(h1, .a) \{ display: none }", 0)
+    assert(keyed.by_class.contains("a") and keyed.by_tag.contains("h1"))
+    assert_eq(keyed.general.len(), 0)
+
+@test fn css_media_queries_read_minified_calc_ranges_and_features()
+    assert(media_matches("(min-width:640px)and (hover:hover)and (pointer:fine)", 1000))
+    assert(not media_matches("(min-width:640px)and (hover:hover)and (pointer:fine)", 600))
+    assert(media_matches("screen and (any-pointer: fine) and (any-hover: hover)", 800))
+    assert(not media_matches("(hover: none)", 800))
+    assert(media_matches("(max-width: calc(1120px - 1px))", 1000))
+    assert(not media_matches("(max-width: calc(1120px - 1px))", 1120))
+    assert(media_matches("(max-width: calc(40em - 1px))", 639))
+    assert(not media_matches("(max-width: calc(40em - 1px))", 640))
+    assert(media_matches("(min-width: 37.5rem)", 600))
+    assert(media_matches("(width >= 600px)", 600))
+    assert(not media_matches("(width > 600px)", 600))
+    assert(media_matches("(600px < width)", 700))
+    assert(media_matches("(400px <= width <= 700px)", 500))
+    assert(not media_matches("(400px <= width <= 700px)", 800))
+    assert(media_matches("not (hover: none)", 800))
+    assert(media_matches("(hover: none) or (min-width: 10px)", 800))
+    assert(not media_matches("(hover: none) and (min-width: 10px)", 800))
+    assert(media_matches("((min-width: 10px) and (max-width: 900px))", 800))
+    assert(media_matches("(prefers-contrast: no-preference) and (forced-colors: none)", 800))
+    assert(media_matches("(prefers-reduced-motion: reduce)", 800))
+    assert(not media_matches("(prefers-reduced-motion: no-preference)", 800))
+    assert(media_matches("only screen and (color)", 800))
+    assert(not media_matches("print and (min-width: 10px)", 800))
+    assert(media_matches_wh("(min-height: 500px) and (orientation: landscape)", 800, 600))
+    assert(media_matches_wh("(orientation: portrait)", 400, 800))
+    assert(media_matches_wh("(min-aspect-ratio: 4/3)", 800, 600))
+    assert(not media_matches_wh("(max-height: 400px)", 800, 600))
+    assert(media_matches_env("(prefers-color-scheme: light)", 800, 600, false))
+    assert(not media_matches_env("(prefers-color-scheme: dark)", 800, 600, false))
+    assert(not media_matches("(min-width: calc(100% - 1px))", 800))
+
+@test fn css_nested_rules_resolve_against_their_parent()
+    sheet := parse(".a \{ color: red; &:hover \{ color: blue } .b \{ display: none } @media (min-width: 10px) \{ display: block } > i \{ font-style: italic } &.c \{ font-weight: bold } }", 0)
+    assert_eq(sheet.rules.len(), 5)
+    d := html.parse("<div class='a c'><p class=b>x</p><i>y</i></div><i>z</i>")
+    wide := for_width(sheet, 800)
+    div := d.first("div")?
+    got := cascade(d, div, wide)
+    assert_eq(got["color"], "red")
+    assert_eq(got["display"], "block")
+    assert_eq(got["font-weight"], "bold")
+    assert_eq(cascade(d, d.first("p")?, wide)["display"], "none")
+    italics := d.all("i")
+    assert_eq(cascade(d, italics[0], wide)["font-style"], "italic")
+    assert(not cascade(d, italics[1], wide).contains("font-style"))
+    listed := parse(".a, .b \{ & + p \{ display: none } }", 0)
+    assert_eq(listed.rules.len(), 1)
+    e := html.parse("<i class=b></i><p>1</p>")
+    assert_eq(cascade(e, e.first("p")?, listed)["display"], "none")
+
+@test fn css_declarations_split_outside_strings_and_parentheses()
+    got := declarations("background: url(data:image/svg+xml;base64,AAA;BBB); content: \"Hi;There\"; COLOR: RED; font-family: \"Helvetica Neue\", Arial !important")
+    assert_eq(got.len(), 4)
+    assert_eq(got[0].value, "url(data:image/svg+xml;base64,AAA;BBB)")
+    assert_eq(got[1].value, "\"Hi;There\"")
+    assert_eq(got[2].name, "color")
+    assert_eq(got[2].value, "red")
+    assert_eq(got[3].value, "\"Helvetica Neue\", arial")
+    assert(got[3].important)
+    sheet := parse("p \{ background-image: URL(A.PNG); color: Blue }", 0)
+    assert_eq(sheet.rules[0].decls[0].value, "url(A.PNG)")
+
+@test fn css_layers_order_below_unlayered_rules()
+    sheet := parse(
+        "@layer base, theme; p \{ color: green } @layer theme \{ p.x \{ color: red; display: block } } @layer base \{ p.x \{ display: none; font-style: italic !important } } p \{ font-style: normal !important }",
+        0,
+    )
+    assert_eq(sheet.layers, ["base", "theme"])
+    d := html.parse("<p class=x>t</p>")
+    got := cascade(d, d.first("p")?, sheet)
+    assert_eq(got["color"], "green")
+    assert_eq(got["display"], "block")
+    assert_eq(got["font-style"], "italic")
+    both := concat(parse("@layer a \{ p \{ color: red } }", 0), parse("@layer b \{ p \{ color: blue } } @layer a \{ i \{ color: red } }", 0))
+    assert_eq(both.layers, ["a", "b"])
+    assert_eq(both.rules[2].layer, 0)
+
+@test fn css_supports_tests_the_properties_garlic_keeps()
+    sheet := parse(
+        "@supports (display: grid) and (gap: 1px) \{ p \{ color: red } } @supports (backdrop-filter: blur(2px)) \{ i \{ color: red } } @supports not (frobnicate: 1) \{ b \{ color: red } } @supports selector(:is(a, b)) \{ u \{ color: red } } @supports selector(:has(a)) \{ s \{ color: red } } @supports (display: grid) or (frob: 1) \{ q \{ color: red } } @supports ((display: flex) and (not (frob: 1))) \{ em \{ color: red } }",
+        0,
+    )
+    assert_eq([sheet.rules[k].selector.parts[0].tag for k in 0..sheet.rules.len()], ["p", "b", "u", "q", "em"])
+
+@test fn css_cascade_reads_rules_through_the_index()
+    sheet := parse("[data-mode] \{ color: red } .a \{ display: none } #i \{ font-style: italic } span \{ font-weight: bold } .zz \{ color: blue }", 0)
+    assert_eq(sheet.general.len(), 1)
+    assert(sheet.by_class.contains("a") and sheet.by_id.contains("i") and sheet.by_tag.contains("span"))
+    d := html.parse("<span id=i data-mode=x class='q\na'>t</span>")
+    got := cascade(d, d.first("span")?, sheet)
+    assert_eq(got["color"], "red")
+    assert_eq(got["display"], "none")
+    assert_eq(got["font-style"], "italic")
+    assert_eq(got["font-weight"], "bold")
+    assert(has_class("q\ta  b", "a") and not has_class("ab", "a"))
+    doc := html.parse("<style>p \{ color: red }</style><style media='(max-width: 10px)'>p \{ color: blue }</style><p>t</p>")
+    merged := document_sheet(doc)
+    assert_eq(merged.rules.len(), 2)
+    assert_eq(cascade(doc, doc.first("p")?, for_width(merged, 800))["color"], "red")
