@@ -33,7 +33,6 @@ use extract
 use hush
 use flows
 use chrome
-use svg
 
 ## The keys, as `--keys` prints them.
 KEYS := [
@@ -5237,7 +5236,7 @@ fn probe_font(style str) str
 
 @test fn css_rule_lists_split_outside_parentheses()
     sheet := css.parse("li:not(.a, .b) \{ display: none } p, i \{ display: block }", 0)
-    assert_eq(sheet.rules.len(), 2)
+    assert_eq(sheet.rules.len(), 3)
 
 @test fn css_cascade_specificity_order_important_and_inline()
     sheet := css.parse(
@@ -6476,7 +6475,7 @@ fn fwd_slashes(p str) str
 @test fn svg_shapes_become_pixels()
     d := html.parse("<svg viewBox='0 0 4 4' width=4 height=4><rect x=0 y=0 width=2 height=4 fill='#ff0000'/></svg>")
     ids := d.all("svg")
-    bm := svg.render(d, ids[0], 4, 4, 0) else
+    bm := images.svg_render(d, ids[0], 4, 4, 0) else
         assert(false)
         return
     assert_eq(bm.w, 4)

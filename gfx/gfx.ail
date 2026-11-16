@@ -18,7 +18,6 @@ use css
 use draw
 use page
 use images
-use svg
 
 ## The screen rectangle of a link, in page pixels.
 pub struct Hit
@@ -1417,7 +1416,7 @@ fn Ctx.image_atom(mut self, id int, cs Map[str, str], st St, avail float) Atom?
     # A `<canvas>` is a picture too: scripts publish its bitmap as a `data:`
     # address in `data-garlic-pixels` (js/vm/canvas2d.ail).
     pic_attr := if self.d.nodes[id].tag == "canvas" then "data-garlic-pixels" else "src"
-    src := self.d.attr(id, pic_attr)?
+    src := (if pic_attr == "src" then images.source_of(self.d, id) else self.d.attr(id, pic_attr))?
     mut w := (self.d.attr(id, "width") else "0").to_float() else 0.0
     mut h := (self.d.attr(id, "height") else "0").to_float() else 0.0
     if v := cs.get("width")
@@ -1535,7 +1534,7 @@ fn Ctx.svg_atom(mut self, id int, cs Map[str, str], st St, avail float) Atom?
     w = w.min(avail)
     key := "svg:{id}:{w.round().to_int()}x{h.round().to_int()}:{st.color.to_hex()}"
     if not self.svgs.contains(key)
-        bm := svg.render(
+        bm := images.svg_render(
             self.d,
             id,
             w.round().to_int().max(1),
