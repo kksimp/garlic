@@ -44,6 +44,18 @@ pub struct JsObject
     pub id int
     ## Object.freeze: no property may change, elements included.
     pub frozen bool
+    ## A Map's or Set's hash index of `elems` (builtins.ail `coll_find`),
+    ## made once it is large; none for every other object.
+    pub coll ref CollIndex?
+
+## Where each key of a large Map or Set is in its `elems`: the key's
+## canonical text (`coll_key`) to its index. It is right while `synced` is
+## `elems.len()`; a change it was not told of leaves it stale (-1), and it
+## is rebuilt after a few lookups by scan.
+pub struct CollIndex
+    pub at Map[str, int]
+    pub synced int
+    pub scans int
 
 ## What calling a function object does.
 pub enum Callable

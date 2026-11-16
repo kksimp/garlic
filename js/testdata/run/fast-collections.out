@@ -1,0 +1,31 @@
+3 17 nan minus zero minus zero string zero o1 o2 undefined sym
+t st null undef x big inf undefined bigint undefined
+true true false true true
+true false false 2 2 16
+k1 k0 k2 again
+15 1 undefined o2 nan
+0 undefined false
+1 1
+7 true true true true false true false true
+true false false true false 5
+1 v0
+4 false true true
+0 false
+40 54 nan minus zero minus zero string zero o1 o2 undefined sym
+t st null undef x big inf undefined bigint undefined
+true true false true true
+true false false 2 39 53
+k1 k0 k2 again
+34 20 3 o2 nan
+0 undefined false
+1 1
+44 true true true true false true false true
+true false false true false 42
+1 v0
+22 false true true
+0 false
+2000 3998000 3998 undefined undefined
+1000 2000
+30 k20,1;k21,1;k22,1
+39 undefined true undefined
+2 4 x,NaN
