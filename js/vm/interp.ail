@@ -617,7 +617,10 @@ fn has_label(labels List[str]?, l str) bool
 ## A statement with the labels in front of it (§14.13); none when it has
 ## none, so a plain statement allocates no list.
 fn Vm.exec_in(mut self, s syntax.Stmt, env ref Env, labels List[str]?) Flow ! Thrown
-    self.tick()?
+    # `tick`, written out: this runs for every statement.
+    self.step_count += 1
+    if self.step_count > self.step_limit and self.step_limit > 0
+        return Thrown(value: Undef, text: "step limit of {self.step_limit} reached", limit: true)
     if self.trace
         # The statement itself (shared, not copied); `at_text` finds its
         # position only when an error is made.
