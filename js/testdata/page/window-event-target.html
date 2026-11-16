@@ -1,0 +1,9 @@
+<!doctype html><html><body><script>
+console.log(typeof Window, typeof EventTarget, Object.getPrototypeOf(window) === Window.prototype, Window.prototype instanceof EventTarget, "addEventListener" in EventTarget.prototype, Object.getOwnPropertyNames(window).indexOf("addEventListener") >= 0, Object.getOwnPropertyDescriptor(EventTarget.prototype, "addEventListener") !== undefined, window instanceof EventTarget);
+</script></body></html>
+<script>
+var got = [];
+EventTarget.prototype.addEventListener.call(window, "ping", function (e) { got.push(e.type); });
+window.dispatchEvent(new Event("ping"));
+console.log(window instanceof EventTarget, got.join(), Object.prototype.toString.call(window), typeof window.hasOwnProperty);
+</script>

@@ -1,0 +1,6 @@
+function function true true true true true true
+true ping [object Window] function
+== body
+<script>
+console.log(typeof Window, typeof EventTarget, Object.getPrototypeOf(window) === Window.prototype, Window.prototype instanceof EventTarget, "addEventListener" in EventTarget.prototype, Object.getOwnPropertyNames(window).indexOf("addEventListener") >= 0, Object.getOwnPropertyDescriptor(EventTarget.prototype, "addEventListener") !== undefined, window instanceof EventTarget);
+</script>

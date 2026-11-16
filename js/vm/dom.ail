@@ -695,6 +695,11 @@ pub fn Vm.dom_setup(mut self)
         interface(name, p)
     element_interfaces()
     sub_interface("DocumentFragment", "Node")
+    ## Interfaces of nodes an HTML document never holds, which polyfills
+    ## patch by name (YouTube's ShadyDOM walks Text, Comment, CDATASection
+    ## and ProcessingInstruction).
+    sub_interface("CDATASection", "Text")
+    sub_interface("ProcessingInstruction", "CharacterData")
     impl_setup()
     collections_setup()
 
