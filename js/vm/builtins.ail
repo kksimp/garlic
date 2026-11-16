@@ -58,6 +58,7 @@ pub fn new_vm() Vm
         timer_seq: 0,
         microtasks: [],
         started_scripts: Set[int](),
+        cur_script: -1,
         ce_upgrading: [],
         ce_upgraded: Set[int](),
         host_requests: [],

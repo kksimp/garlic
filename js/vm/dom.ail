@@ -357,7 +357,7 @@ fn Vm.after_insert(mut self, id int)
                 text: "",
             ))
         else
-            self.run_script_text(self.text_content(s))
+            self.run_classic(s, self.text_content(s))
     if dom[id].kind == 1
         ce_connected(id)
 
@@ -386,15 +386,19 @@ fn Vm.run_script_node(mut self, s int, mode str)
         add_import_map(self.text_content(s))
         return
     if mode == "module"
+        # `document.currentScript` is null in a module (HTML §4.12.1.1).
+        outer := cur_script
+        cur_script = -1
         if src := self.attr_of(s, "src")
             run_module_script(self.resolve_url(src))
         else
             run_inline_module(self.text_content(s))
+        cur_script = outer
         return
     if src := self.attr_of(s, "src")
         if source := external_scripts.get(self.resolve_url(src))
             cur_url = self.resolve_url(src)
-            self.run_script_text(source)
+            self.run_classic(s, source)
         else
             host_requests.push(HostRequest(
                 kind: "fetch-script",
@@ -405,7 +409,26 @@ fn Vm.run_script_node(mut self, s int, mode str)
             ))
     else
         cur_url = location_href
-        self.run_script_text(self.text_content(s))
+        self.run_classic(s, self.text_content(s))
+
+## Run classic script element `s` with `source`: `document.currentScript` is
+## `s` while it runs and goes back to what it was after (HTML §4.12.1.1,
+## "execute the script element", step 5).
+fn Vm.run_classic(mut self, s int, source str)
+    outer := cur_script
+    cur_script = s
+    self.run_script_text(source)
+    cur_script = outer
+
+## An external classic script the browser fetched after a `fetch-script`
+## request: run it for element `s`, with `document.currentScript` set.
+pub fn Vm.script_arrived(mut self, s int, url str, source str)
+    external_scripts[url] = source
+    outer_url := cur_url
+    cur_url = url
+    self.run_classic(s, source)
+    cur_url = outer_url
+    self.run_microtasks()
 
 ## `id` and its descendants with the tag, in document order.
 pub fn Vm.descendants_by_tag(self, id int, tag str) List[int]
@@ -1432,7 +1455,7 @@ fn Vm.dom_get(mut self, p str, this_val Value) Value ! Thrown
         "visibilityState" => Value.Str("visible")
         "characterSet" => Value.Str("UTF-8")
         "compatMode" => Value.Str("CSS1Compat")
-        "currentScript" => Null
+        "currentScript" => self.node_value(cur_script)
         "cookie" => Value.Str(["{k}={cookies[k]}" for k in cookies.keys()].join("; "))
         _ => Undef
 
