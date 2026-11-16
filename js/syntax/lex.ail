@@ -57,6 +57,10 @@ pub struct Token
 
 pub struct Lexer
     src List[char]
+    ## The same source as a string, and whether it is ASCII: then a
+    ## character offset is a byte offset and `text.slice` is O(1).
+    text str
+    ascii bool
     pos int
     line int
     ## Offset of the first character of `line`.
@@ -124,7 +128,14 @@ PUNCTUATORS := [
 ]
 
 pub fn new_lexer(source str) Lexer
-    Lexer(src: source.chars(), pos: 0, line: 1, line_start: 0)
+    Lexer(
+        src: source.chars(),
+        text: source,
+        ascii: source.byte_len() == source.len(),
+        pos: 0,
+        line: 1,
+        line_start: 0,
+    )
 
 ## Line terminators (§12.3): LF, CR, LS, PS.
 pub fn is_line_term(c char) bool
