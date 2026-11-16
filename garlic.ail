@@ -129,6 +129,9 @@ struct Browser
     ## pictures: they come a batch per step after the first frame
     ## (`picture_step`) while `pics_due` says some may be missing.
     lazy_pics bool
+    ## Whether `relayout` lays the text cells out again; the pixel window
+    ## draws `gfx` scenes, so it keeps the cells of the last load.
+    cells bool
     pics_due bool
 
 ## A page as it was left: its tree, style sheets and place.
@@ -1736,6 +1739,7 @@ fn Browser.empty(url str, width int, height int) Browser
         ld: idle_load(),
         stepped: false,
         lazy_pics: false,
+        cells: true,
         pics_due: false,
     )
     b
@@ -1752,9 +1756,10 @@ fn Browser.scroll_to(mut self, row int)
 
 ## Lays the page out again, after a resize or a change to a form control.
 fn Browser.relayout(mut self)
-    t0 := time.now_ms()
-    self.pg = page.layout_with(self.doc, self.url, self.width, self.sheet)
-    spent(self.perf, "layout.cells", t0)
+    if self.cells
+        t0 := time.now_ms()
+        self.pg = page.layout_with(self.doc, self.url, self.width, self.sheet)
+        spent(self.perf, "layout.cells", t0)
     tally(self.perf, "relayouts", 1)
     self.stamp += 1
     self.pics_due = true
@@ -3097,6 +3102,13 @@ struct Gui
     scene_w float
     scene_url str
     scene_edit int
+    ## The window height the scene was laid out for (viewport units).
+    scene_h float
+    ## The style sheet the scene was laid out with (`gfx.page_sheet`), and
+    ## the page version and window size it was built for: built once per
+    ## version and size, not on every relayout (review-speed 3.6).
+    page_sheet css.Sheet
+    sheet_key str
     ## The text found by the last find-in-page, drawn highlighted; the
     ## match shown (0-based) and how many there are.
     found str
@@ -3151,6 +3163,9 @@ fn Gui.new(b Browser, w float, h float, cell_w float, cell_h float) Gui
         scene_w: 0.0,
         scene_url: "",
         scene_edit: -1,
+        scene_h: 0.0,
+        page_sheet: css.parse("", 0),
+        sheet_key: "",
         found: "",
         find_k: 0,
         find_n: 0,
@@ -3192,6 +3207,7 @@ fn Gui.refresh(mut self)
         return
     if self.b.stamp != self.scene_stamp
         or self.area_w != self.scene_w
+        or self.area_h != self.scene_h
         or self.b.editing() != self.scene_edit
         if self.b.lazy_pics
             ## The window: pictures come after the first frame, a batch per
@@ -3211,11 +3227,17 @@ fn Gui.refresh(mut self)
             )
             spent(self.b.perf, "fetch.images", t_images)
         t_pixels := time.now_ms()
-        self.scene = gfx.layout_measured(
+        high := self.area_h.max(1.0)
+        key := "{self.b.stamp}:{self.area_w}:{high}"
+        if key != self.sheet_key
+            self.page_sheet = gfx.page_sheet(self.b.doc, self.b.sheet, self.area_w, high, true)
+            self.sheet_key = key
+        self.scene = gfx.layout_env(
             self.b.doc,
             self.b.url,
             self.area_w,
-            self.b.sheet,
+            high,
+            self.page_sheet,
             self.b.sizes,
             self.meas,
             self.b.editing(),
@@ -3225,6 +3247,7 @@ fn Gui.refresh(mut self)
         self.scene_edit = self.b.editing()
         self.scene_stamp = self.b.stamp
         self.scene_w = self.area_w
+        self.scene_h = self.area_h
         for k in self.scene.bits.keys()
             if not self.b.bits.contains(k)
                 self.b.bits[k] = self.scene.bits[k]
@@ -4062,6 +4085,7 @@ fn Garlic.new_tab(mut self)
     mut fresh := Browser.empty("", self.g.b.width, self.g.b.height).with_workers(self.g.b.workers)
     fresh.zone = self.g.b.zone
     fresh.lazy_pics = self.g.b.lazy_pics
+    fresh.cells = self.g.b.cells
     mut fresh_gui := Gui.new(fresh, self.g.area_w, self.g.area_h, self.g.cell_w, self.g.cell_h)
     fresh_gui.pixel = self.g.pixel
     fresh_gui.refresh()
@@ -4845,6 +4869,7 @@ fn app_main(
     mut a := Garlic.new(b, GUI_W, GUI_H, GUI_CELL_W, GUI_CELL_H)
     a.first = first
     a.g.pixel = pixel
+    a.g.b.cells = not pixel
     a.light = light
     a.history_file = history.default_path()
     a.build = build_id()
