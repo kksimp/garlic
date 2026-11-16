@@ -120,6 +120,16 @@ struct Browser
     js jsdom.Session?
     ## The last load's phase times and counters (`--timings`).
     perf ref Perf
+    ## The load in progress (`Browser.step`). With `stepped` (the window)
+    ## `load` does its first step only and the window runs the rest, a step
+    ## per event; otherwise `load` runs them all.
+    ld Loading
+    stepped bool
+    ## With `lazy_pics` (the window) the pixel layout doesn't wait for the
+    ## pictures: they come a batch per step after the first frame
+    ## (`picture_step`) while `pics_due` says some may be missing.
+    lazy_pics bool
+    pics_due bool
 
 ## A page as it was left: its tree, style sheets and place.
 struct Kept
@@ -216,6 +226,7 @@ fn tally(p ref Perf, name str, n int)
 TIMING_PHASES := [
     "fetch.document",
     "html.parse",
+    "paint.first",
     "fetch.scripts",
     "fetch.modules",
     "script.run",
@@ -276,15 +287,6 @@ fn fetch_got(
             if not reload and h.fresh_until > now
                 tally(perf, "cache.fresh", 1)
                 return Got(url: h.final_url, text: h.text, ok: true, status: 0)
-        mut cond := Map[str, str]()
-        if h := have
-            ## Only an answer that didn't come through a redirect can be asked
-            ## about on the first request.
-            if h.final_url == url
-                if h.etag != ""
-                    cond["if-none-match"] = h.etag
-                if h.modified != ""
-                    cond["if-modified-since"] = h.modified
         w := walk(
             method,
             url,
@@ -293,37 +295,216 @@ fn fetch_got(
             from,
             navigation,
             true,
-            cond,
+            cond_headers(have, url),
             mut cj,
             perf,
         )
-        if w.failure != ""
-            return Got(url: w.url, text: error_page(w.url, w.failure), ok: false, status: 0)
-        if w.status == 304
-            if h := have
-                cache[url] = Cached(
-                    text: h.text,
-                    final_url: h.final_url,
-                    etag: h.etag,
-                    modified: h.modified,
-                    fresh_until: fresh_until(w.headers, now, h.fresh_until),
-                )
-                tally(perf, "cache.revalidated", 1)
-                return Got(url: h.final_url, text: h.text, ok: true, status: 0)
-        if w.status >= 400
-            return Got(
-                url: w.url,
-                text: failed_body(w.url, w.status, w.text),
-                ok: false,
-                status: w.status,
-            )
-        if method == "GET" and w.status == 200
-            keep_cached(url, w, now, mut cache)
-        return Got(url: w.url, text: w.text, ok: true, status: 0)
+        return settle(url, method, w, have, now, mut cache, perf)
+    file_got(url)
+
+## A file (`file://` or a path) as a fetch gets it.
+fn file_got(url str) Got
     file := page.file_path(url).split("?")[0].split("#")[0]
     data := fs.read_bytes(file) else err
         return Got(url, error_page(url, "{err}"), false, 0)
     Got(url, decode(data, ""), true, 0)
+
+## The conditional headers that ask whether `have`, the kept copy of `url`,
+## is still good: none when there is no copy, or when it came through a
+## redirect (only the first request can be asked about).
+fn cond_headers(have Cached?, url str) Map[str, str]
+    mut cond := Map[str, str]()
+    if h := have
+        if h.final_url == url
+            if h.etag != ""
+                cond["if-none-match"] = h.etag
+            if h.modified != ""
+                cond["if-modified-since"] = h.modified
+    cond
+
+## What `method` `url` got, from the walk `w` that asked with `have` (the
+## copy kept before it, if any) at `now`: a 304 renews the copy, an error
+## status shows the server's page, and a 200 GET is kept when it may be.
+fn settle(
+    url str,
+    method str,
+    w Walked,
+    have Cached?,
+    now int,
+    mut cache Map[str, Cached],
+    perf ref Perf,
+) Got
+    if w.failure != ""
+        return Got(url: w.url, text: error_page(w.url, w.failure), ok: false, status: 0)
+    if w.status == 304
+        if h := have
+            cache[url] = Cached(
+                text: h.text,
+                final_url: h.final_url,
+                etag: h.etag,
+                modified: h.modified,
+                fresh_until: fresh_until(w.headers, now, h.fresh_until),
+            )
+            tally(perf, "cache.revalidated", 1)
+            return Got(url: h.final_url, text: h.text, ok: true, status: 0)
+    if w.status >= 400
+        return Got(
+            url: w.url,
+            text: failed_body(w.url, w.status, w.text),
+            ok: false,
+            status: w.status,
+        )
+    if method == "GET" and w.status == 200
+        keep_cached(url, w, now, mut cache)
+    Got(url: w.url, text: w.text, ok: true, status: 0)
+
+# ---- Fetching side by side --------------------------------------------------
+#
+# A page's sheets, scripts, modules and pictures are fetched `images.LANES`
+# at a time by short-lived tasks (lanes) that the caller waits for, and the
+# results are used in document order, so the page comes out as a serial
+# load makes it. A lane gets plain values only (addresses, headers, a copy
+# of the jar) and gives back a `Walked`; the cache and the jar stay with the
+# window, which applies what came back. std.net's keep-alive pool has no
+# lock, so lanes never use it (`images.fetch_alone`); one request alone goes
+# through the pool on the caller's thread as before.
+
+## One sub-resource GET for `fetch_many`: its address, the page it is for,
+## and the conditional headers for a kept copy.
+struct Want
+    url str
+    from str
+    cond Map[str, str]
+
+## A `Walked` for a request no lane got to (a lane that trapped).
+fn not_fetched(url str) Walked
+    Walked(
+        url: url,
+        failure: "not fetched",
+        status: 0,
+        headers: {},
+        text: "",
+        cookies: [],
+        bytes: 0,
+        requests: 0,
+    )
+
+## What each GET in `wants` got, in the wants' order whatever order they
+## finished in, at most `images.LANES` at once. The cookies the responses
+## set are stored in `cj` afterwards, in the wants' order (each lane sends
+## the cookies `cj` held when the batch began).
+fn fetch_many(wants List[Want], mut cj jar.Jar, perf ref Perf) List[Walked]
+    n := wants.len()
+    if n == 0
+        return []
+    if n == 1
+        w := wants[0]
+        s := page.scheme(w.url)
+        if s == "http" or s == "https"
+            return [walk("GET", w.url, "", "", w.from, false, true, w.cond, mut cj, perf)]
+        return [file_walk(w.url)]
+    queue := Channel[int](n)
+    for i in 0..n
+        queue.send(i)
+    queue.close()
+    out := Mutex([not_fetched(w.url) for w in wants])
+    run_text_lanes(wants, queue, out, cj, n.min(images.LANES))
+    got := out.get()
+    tally(perf, "fetch.batches", 1)
+    for w in got
+        tally(perf, "requests", w.requests)
+        tally(perf, "bytes", w.bytes)
+        if w.failure != ""
+            tally(perf, "requests.failed", 1)
+        for c in w.cookies
+            parts := c.split(" ", 2)
+            if parts.len() == 2
+                cj.set_cookie(parts[0], parts[1])
+    got
+
+## Runs `lanes` text lanes over `queue` and returns when all have ended.
+fn run_text_lanes(
+    wants List[Want],
+    queue Channel[int],
+    out Mutex[List[Walked]],
+    cj jar.Jar,
+    lanes int,
+)
+    g := TaskGroup()
+    for _ in 0..lanes
+        g.add(spawn text_lane(wants, queue, out, cj))
+    g.wait_all() else return
+
+## One text lane (a task): takes the next want's index from `queue` and
+## stores what came back at that index of `out`, until `queue` is empty.
+fn text_lane(wants List[Want], queue Channel[int], out Mutex[List[Walked]], cj jar.Jar)
+    mut own := cj
+    for i in queue
+        w := wants[i]
+        mut got := not_fetched(w.url)
+        s := page.scheme(w.url)
+        if s == "http" or s == "https"
+            got = walk_on("GET", w.url, "", "", w.from, false, true, w.cond, true, mut own)
+        else
+            got = file_walk(w.url)
+        with out as mut results
+            results[i] = got
+
+## A file read as a `Walked`.
+fn file_walk(url str) Walked
+    g := file_got(url)
+    Walked(
+        url: g.url,
+        failure: if g.ok then "" else "cannot read {url}",
+        status: if g.ok then 200 else 0,
+        headers: {},
+        text: g.text,
+        cookies: [],
+        bytes: 0,
+        requests: 0,
+    )
+
+## What each sub-resource in `urls` of the page `from` got, in order, as
+## `fetch_got` gets a GET: a fresh kept copy without a request, the rest
+## side by side (`fetch_many`) and settled against the cache in order. A
+## `data:` address is its own text.
+fn fetch_gots(
+    urls List[str],
+    from str,
+    mut cj jar.Jar,
+    mut cache Map[str, Cached],
+    perf ref Perf,
+) List[Got]
+    now := time.now_ms()
+    mut out := [Got(url: u, text: "", ok: false, status: 0) for u in urls]
+    mut wants := List[Want]()
+    mut slots := List[int]()
+    mut haves := List[Cached?]()
+    for i in 0..urls.len()
+        u := urls[i]
+        if u.starts_with("data:")
+            out[i] = Got(url: u, text: data_text(u), ok: true, status: 0)
+            continue
+        have := cache.get(u)
+        if h := have
+            if h.fresh_until > now
+                tally(perf, "cache.fresh", 1)
+                out[i] = Got(url: h.final_url, text: h.text, ok: true, status: 0)
+                continue
+        wants.push(Want(url: u, from: from, cond: cond_headers(have, u)))
+        slots.push(i)
+        haves.push(have)
+    got := fetch_many(wants, mut cj, perf)
+    for k in 0..slots.len()
+        u := urls[slots[k]]
+        s := page.scheme(u)
+        if s == "http" or s == "https"
+            out[slots[k]] = settle(u, "GET", got[k], haves[k], now, mut cache, perf)
+        elif got[k].failure == ""
+            out[slots[k]] = Got(url: u, text: got[k].text, ok: true, status: 0)
+        else
+            out[slots[k]] = Got(url: u, text: error_page(u, got[k].failure), ok: false, status: 0)
+    out
 
 ## What a page that answered `status` (400 or more) shows: the body as the
 ## server sent it, as a browser renders it (an error page, a bot check);
@@ -372,6 +553,12 @@ struct Walked
     status int
     headers Map[str, str]
     text str
+    ## The `Set-Cookie` lines the hops brought, each as `URL LINE`, for a
+    ## lane's caller to store in the window's jar (`fetch_many`).
+    cookies List[str]
+    ## Bytes received, as `requests` and `bytes` count them.
+    bytes int
+    requests int
 
 ## `method` `url` with `body` (of `ctype`), following redirects by hand. A
 ## navigation (`navigation`) from the page `from` sends its lax cookies; a
@@ -388,6 +575,28 @@ fn walk(
     mut cj jar.Jar,
     perf ref Perf,
 ) Walked
+    w := walk_on(method, url, body, ctype, from, navigation, creds, extra, false, mut cj)
+    tally(perf, "requests", w.requests)
+    tally(perf, "bytes", w.bytes)
+    if w.failure != ""
+        tally(perf, "requests.failed", 1)
+    w
+
+## `walk`, on connections of its own when `alone` (a lane: see
+## `images.fetch_alone`), else through std.net's keep-alive pool. The
+## cookies each hop sets go into `cj` and into `Walked.cookies`.
+fn walk_on(
+    method str,
+    url str,
+    body str,
+    ctype str,
+    from str,
+    navigation bool,
+    creds bool,
+    extra Map[str, str],
+    alone bool,
+    mut cj jar.Jar,
+) Walked
     mut o := options()
     o.max_redirects = 0
     ## `extra` (conditional headers) goes to the first request only.
@@ -397,7 +606,15 @@ fn walk(
     if body != "" and m != "GET" and m != "HEAD"
         o.body = body
         o.headers["content-type"] = if ctype == "" then "text/plain;charset=UTF-8" else ctype
+    if alone
+        ## A sub-resource in a lane: one stalled host doesn't hold the page
+        ## for std.net's 30 s default.
+        o.connect_ms = SUB_CONNECT_MS
+        o.timeout_ms = SUB_TIMEOUT_MS
     mut cur := url
+    mut stored := List[str]()
+    mut got := 0
+    mut sent := 0
     for _ in 0..MAX_HOPS
         cookie := if creds then cj.header_from(cur, from, navigation and m == "GET") else ""
         via_page := page.referrer(from, cur)
@@ -409,14 +626,23 @@ fn walk(
             o.headers["cookie"] = cookie
         else
             o.headers.remove("cookie")
-        tally(perf, "requests", 1)
-        r := net.request_bytes(m, cur, o) else err
-            tally(perf, "requests.failed", 1)
-            return Walked(url: cur, failure: "{err}", status: 0, headers: {}, text: "")
-        tally(perf, "bytes", r.data.len())
+        sent += 1
+        r := request_once(m, cur, o, alone) else err
+            return Walked(
+                url: cur,
+                failure: "{err}",
+                status: 0,
+                headers: {},
+                text: "",
+                cookies: stored,
+                bytes: got,
+                requests: sent,
+            )
+        got += r.data.len()
         if creds
             for line in r.all_headers.get("set-cookie") else List[str]()
                 cj.set_cookie(cur, line)
+                stored.push("{cur} {line}")
         loc := r.headers.get("location") else ""
         hop := r.status == 301
             or r.status == 302
@@ -438,8 +664,31 @@ fn walk(
             status: r.status,
             headers: r.headers,
             text: body_text(r),
+            cookies: stored,
+            bytes: got,
+            requests: sent,
         )
-    Walked(url: cur, failure: "more than {MAX_HOPS} redirects", status: 0, headers: {}, text: "")
+    Walked(
+        url: cur,
+        failure: "more than {MAX_HOPS} redirects",
+        status: 0,
+        headers: {},
+        text: "",
+        cookies: stored,
+        bytes: got,
+        requests: sent,
+    )
+
+## The connect and read limits of a sub-resource fetched in a lane (ms).
+SUB_CONNECT_MS := 3000
+SUB_TIMEOUT_MS := 10000
+
+## One request with no redirects followed: on a connection of its own when
+## `alone`, else through the keep-alive pool.
+fn request_once(method str, url str, o net.Options, alone bool) net.RawResponse ! net.NetError
+    if alone
+        return images.fetch_alone(method, url, o)
+    net.request_bytes(method, url, o)
 
 ## The labels that name windows-1252, which HTML reads `iso-8859-1` and
 ## `us-ascii` as (WHATWG Encoding).
@@ -611,13 +860,18 @@ fn joined_media(outer str, inner str) str
 ## two `<style>` elements still loses to the later one: `gfx` and `page`
 ## append `css.document_sheet` last, and one walk over both in document
 ## order needs a change there.
+## The sheets are fetched first, side by side (`prefetch_sheets`), into
+## `memo`, which keeps them for the rest of the load (the first frame and
+## the page after its scripts read the same texts).
 fn linked_sheets(
     d html.Doc,
     url str,
     mut cj jar.Jar,
     mut cache Map[str, Cached],
     perf ref Perf,
+    mut memo Map[str, str],
 ) css.Sheet
+    prefetch_sheets(d, url, mut cj, mut cache, perf, mut memo)
     mut nodes := List[int]()
     style_nodes(d, 0, mut nodes)
     mut all := css.parse("", 0)
@@ -642,7 +896,7 @@ fn linked_sheets(
         if seen.contains(u) or seen.len() >= MAX_SHEETS
             continue
         seen.add(u)
-        text := fetch_sheet(u, url, mut cj, mut cache, perf)
+        text := memo.get(u) else fetch_sheet(u, url, mut cj, mut cache, perf)
         all = css.concat(all, sheet_with_imports(
             text,
             u,
@@ -653,11 +907,72 @@ fn linked_sheets(
             mut cj,
             mut cache,
             perf,
+            memo,
         ))
     if early >= 0
         for k in early..all.rules.len()
             all.rules[k].order = (LATE_ORDER + k - early).min(999999)
     all
+
+## Fetches into `memo` the sheets `linked_sheets` will read and `memo`
+## lacks, side by side, a level at a time: the linked sheets, then the
+## sheets their leading `@import` rules name, `MAX_IMPORT_DEPTH` deep, with
+## the filters and the `MAX_SHEETS` cap that `linked_sheets` applies. A
+## sheet that can't be had is kept as "".
+fn prefetch_sheets(
+    d html.Doc,
+    url str,
+    mut cj jar.Jar,
+    mut cache Map[str, Cached],
+    perf ref Perf,
+    mut memo Map[str, str],
+)
+    mut nodes := List[int]()
+    style_nodes(d, 0, mut nodes)
+    mut level := List[str]()
+    mut medias := List[str]()
+    mut seen := Set[str]()
+    for l in nodes
+        if d.nodes[l].tag == "style"
+            continue
+        rel := (d.attr(l, "rel") else "").to_lower().split(" ")
+        media := (d.attr(l, "media") else "").trim()
+        if not rel.contains("stylesheet") or rel.contains("alternate") or not media_fits(media)
+            continue
+        if d.attr(l, "disabled") != none
+            continue
+        href := d.attr(l, "href") else continue
+        u := page.resolve(page.base_of(d, url), href)
+        if seen.contains(u) or seen.len() >= MAX_SHEETS
+            continue
+        seen.add(u)
+        level.push(u)
+        medias.push(media)
+    mut depth := 0
+    while level.len() > 0
+        wanted := [u for u in level if not memo.contains(u)]
+        t0 := time.now_ms()
+        got := fetch_gots(wanted, url, mut cj, mut cache, perf)
+        spent(perf, "fetch.sheets", t0)
+        for k in 0..wanted.len()
+            memo[wanted[k]] = if got[k].ok then got[k].text else ""
+            tally(perf, "sheets", 1)
+        if depth >= MAX_IMPORT_DEPTH
+            break
+        mut deeper := List[str]()
+        mut deeper_media := List[str]()
+        for k in 0..level.len()
+            for imp in leading_imports(memo.get(level[k]) else "")
+                u := page.resolve(level[k], imp.href)
+                inner := joined_media(medias[k], imp.media)
+                if seen.contains(u) or seen.len() >= MAX_SHEETS or not media_fits(inner)
+                    continue
+                seen.add(u)
+                deeper.push(u)
+                deeper_media.push(inner)
+        level = deeper
+        medias = deeper_media
+        depth += 1
 
 ## The text of style sheet `u` for the page `from` ("" when it can't be had).
 fn fetch_sheet(u str, from str, mut cj jar.Jar, mut cache Map[str, Cached], perf ref Perf) str
@@ -681,6 +996,7 @@ fn sheet_with_imports(
     mut cj jar.Jar,
     mut cache Map[str, Cached],
     perf ref Perf,
+    memo Map[str, str],
 ) css.Sheet
     mut all := css.parse("", 0)
     if depth < MAX_IMPORT_DEPTH
@@ -690,7 +1006,7 @@ fn sheet_with_imports(
             if seen.contains(u) or seen.len() >= MAX_SHEETS or not media_fits(inner)
                 continue
             seen.add(u)
-            got := fetch_sheet(u, from, mut cj, mut cache, perf)
+            got := memo.get(u) else fetch_sheet(u, from, mut cj, mut cache, perf)
             all = css.concat(all, sheet_with_imports(
                 got,
                 u,
@@ -701,6 +1017,7 @@ fn sheet_with_imports(
                 mut cj,
                 mut cache,
                 perf,
+                memo,
             ))
     t0 := time.now_ms()
     own := css.parse_in(text, 0, media)
@@ -919,144 +1236,160 @@ fn hide_noscript(mut d html.Doc)
     for n in d.all("noscript")
         d.set_attr(n, "hidden", "")
 
-## Fetches and parses `target`, then runs its scripts (unless `--no-js`),
-## which change the tree or send the browser on to another page.
-fn load_doc(
-    target str,
-    method str,
-    body str,
-    from str,
-    reload bool,
+# ---- Loading in steps -------------------------------------------------------
+#
+# Why steps: the window used to load a page in one call inside `update`, so
+# nothing was drawn until scripts, sheets, pictures and the favicon were all
+# done. std.app's loop sends a frame after every `update` and takes the next
+# event from the inbox, which the program's own tasks may post to. So a load
+# is a few steps (`Browser.step`), and the window posts itself a `load-step`
+# event after each one (`Garlic.continue_load`): the frame between steps
+# shows the page, and clicks, scrolls and keys that arrived meanwhile are
+# handled before the next step.
+#
+# Rejected: running the whole load in a task that hands frames to the window.
+# A task gets copies of its arguments, and the page's script engine holds
+# `ref` cells that can't be shared between tasks (conc.share.2), so scripts
+# must run on the window's thread anyway; the network part is the part that
+# runs in tasks (the lanes of `fetch_many` and `images.fetch_all`).
+#
+# Headless (`--print`, `--json`, `--pixels-dump`, tests) and for an agent,
+# `Browser.load` runs every step at once, as before.
+
+## A load in progress: what `Browser.step` does next.
+struct Loading
+    stage int
+    ## The address to fetch next (`LOAD_FETCH`), or the page's address after
+    ## redirects (`LOAD_SCRIPTS`), and the request for it.
+    at str
+    method str
+    body str
+    via str
+    ## Ask the server even for a fresh copy (Reload; the first fetch only).
+    reload bool
+    ## Hops fetched (refreshes and script navigations), `MAX_REFRESHES` at most.
+    hops int
+    ## The page's HTTP status when it was 400 or more, else 0.
+    status int
+    ## The page as parsed, its scripts not yet run.
+    d html.Doc
+    ## Style sheet texts this load fetched, by address (`linked_sheets`).
+    sheets Map[str, str]
+    ## Whether a first frame is laid out before the scripts run (the
+    ## window), and whether it was.
+    paint bool
+    painted bool
+
+## `Loading.stage`: no load; fetch and parse a hop; run the parsed page's scripts.
+LOAD_IDLE := 0
+LOAD_FETCH := 1
+LOAD_SCRIPTS := 2
+
+## No load in progress.
+fn idle_load() Loading
+    Loading(
+        stage: LOAD_IDLE,
+        at: "",
+        method: "GET",
+        body: "",
+        via: "",
+        reload: false,
+        hops: 0,
+        status: 0,
+        d: html.parse(""),
+        sheets: {},
+        paint: false,
+        painted: false,
+    )
+
+## The page's external scripts and the modules they import, by engine
+## address ("" for one that can't be had): every `<script src>` fetched side
+## by side in one batch, then the module graph (`prefetch_module_graph`).
+fn page_scripts(
+    d html.Doc,
+    at str,
     mut cj jar.Jar,
     mut cache Map[str, Cached],
-    mut socks Map[int, ws.Sock],
-    zone str,
-    pool jsdom.Pool,
     perf ref Perf,
-) Loaded
-    mut at := target
-    mut m := method
-    mut b := body
-    mut via := from
-    mut first := true
-    for _ in 0..MAX_REFRESHES
-        t_doc := time.now_ms()
-        got := fetch_got(at, m, b, via, true, reload and first, mut cj, mut cache, perf)
-        spent(perf, "fetch.document", t_doc)
-        first = false
-        via = at
-        at = got.url
-        t_parse := time.now_ms()
-        mut d := if env.args().contains("--no-js") then html.parse(got.text) else html.parse_scripting(got.text)
-        spent(perf, "html.parse", t_parse)
-        tally(perf, "dom.nodes.parsed", d.nodes.len())
-        if env.args().contains("--no-js")
-            next := refresh_target(d, at, false) else return Loaded(
-                url: at,
-                doc: d,
-                js: none,
-                out: quiet(),
-                status: got.status,
-            )
-            at = next
-            m = "GET"
-            b = ""
+) Map[str, str]
+    mut scripts := Map[str, str]()
+    t_scripts := time.now_ms()
+    mut urls := List[str]()
+    mut keys := List[str]()
+    for s in d.all("script")
+        if src := d.attr(s, "src")
+            u := page.resolve(page.base_of(d, at), src)
+            key := script_url(u)
+            if not keys.contains(key)
+                tally(perf, "scripts", 1)
+                keys.push(key)
+                urls.push(u)
+    got := fetch_gots(urls, at, mut cj, mut cache, perf)
+    for k in 0..keys.len()
+        scripts[keys[k]] = if got[k].ok then got[k].text else ""
+    spent(perf, "fetch.scripts", t_scripts)
+    t_modules := time.now_ms()
+    prefetch_module_graph(d, at, mut scripts, mut cj, mut cache, perf)
+    spent(perf, "fetch.modules", t_modules)
+    scripts
+
+## Fetches the static imports of the page's module scripts, and theirs, into
+## `scripts` by engine address: a level of the graph at a time, each level
+## side by side, each module once and `MAX_MODULES` in all. When the page
+## has module scripts, its `<link rel=modulepreload>` addresses join the
+## first level. The engine runs a module once everything it imports is at
+## hand, and asks for anything still missing (`serve_page`).
+fn prefetch_module_graph(
+    d html.Doc,
+    at str,
+    mut scripts Map[str, str],
+    mut cj jar.Jar,
+    mut cache Map[str, Cached],
+    perf ref Perf,
+)
+    mut level := List[str]()
+    mut queued := Set[str]()
+    mut has_modules := false
+    for s in d.all("script")
+        if (d.attr(s, "type") else "").to_lower().trim() != "module"
             continue
-        mut scripts := Map[str, str]()
-        t_scripts := time.now_ms()
-        for s in d.all("script")
-            if src := d.attr(s, "src")
-                u := page.resolve(page.base_of(d, at), src)
-                if not scripts.contains(script_url(u))
-                    tally(perf, "scripts", 1)
-                    scripts[script_url(u)] = fetch_text(u, at, mut cj, mut cache, perf)
-        spent(perf, "fetch.scripts", t_scripts)
-        t_modules := time.now_ms()
-        for s in d.all("script")
-            if (d.attr(s, "type") else "").to_lower().trim() != "module"
+        has_modules = true
+        mut source := d.text(s)
+        mut base := script_url(at)
+        if src := d.attr(s, "src")
+            base = script_url(page.resolve(page.base_of(d, at), src))
+            source = scripts.get(base) else ""
+        for dep in jsdom.module_deps(source, base)
+            if not queued.contains(dep) and not scripts.contains(dep)
+                queued.add(dep)
+                level.push(dep)
+    if has_modules
+        for l in d.all("link")
+            rel := (d.attr(l, "rel") else "").to_lower().split(" ")
+            if not rel.contains("modulepreload")
                 continue
-            if src := d.attr(s, "src")
-                u := script_url(page.resolve(page.base_of(d, at), src))
-                prefetch_modules(
-                    scripts.get(u) else "",
-                    u,
-                    at,
-                    mut scripts,
-                    mut cj,
-                    mut cache,
-                    perf,
-                )
-            else
-                prefetch_modules(
-                    d.text(s),
-                    script_url(at),
-                    at,
-                    mut scripts,
-                    mut cj,
-                    mut cache,
-                    perf,
-                )
-        spent(perf, "fetch.modules", t_modules)
-        now := time.now_ms().to_float()
-        ## A page with no scripts has nothing to run, and starting the engine
-        ## costs about 0.2 s.
-        mut session := none
-        mut out := jsdom.Outcome(
-            url: "",
-            method: "",
-            body: "",
-            console: [],
-            missing: [],
-            mods: [],
-            changes: 0,
-            cookies: [],
-            clips: [],
-            asks: [],
-            sockets: [],
-            net: [],
-        )
-        if d.all("script").len() > 0
-            t_run := time.now_ms()
-            ran := jsdom.start(
-                mut d,
-                script_url(at),
-                scripts,
-                cj.for_script(at),
-                now,
-                zone,
-                1000.0,
-                5000000,
-                pool,
-            )
-            spent(perf, "script.run", t_run)
-            mut live := ran.0
-            out = serve_page(mut live, mut d, ran.1, at, mut cj, mut socks, mut cache, perf)
-            tally(perf, "js.steps", live.steps())
-            if live.stopped()
-                tally(perf, "js.stopped", 1)
-            tally(perf, "dom.mutations", out.changes)
-            session = live
-        for line in out.cookies
-            cj.set_from_script(at, line)
-        if env.args().contains("--console")
-            for line in out.console
-                io.eprint("console: {line}")
-        mut next := local_url(out.url)
-        if next == "" or next == at
-            # A `<meta http-equiv=refresh>` in `<noscript>` is for browsers
-            # without scripts (HTML §4.12.2).
-            next = refresh_target(d, at, true) else ""
-            if next == ""
-                hide_noscript(mut d)
-                return Loaded(url: at, doc: d, js: session, out: out, status: got.status)
-            m = "GET"
-            b = ""
-        else
-            m = out.method
-            b = out.body
-        at = next
-    last := fetch_got(at, m, b, via, true, false, mut cj, mut cache, perf)
-    Loaded(url: last.url, doc: html.parse(last.text), js: none, out: quiet(), status: last.status)
+            href := d.attr(l, "href") else continue
+            u := script_url(page.resolve(page.base_of(d, at), href))
+            if not queued.contains(u) and not scripts.contains(u)
+                queued.add(u)
+                level.push(u)
+    mut count := 0
+    while level.len() > 0 and count < MAX_MODULES
+        batch := level[0..level.len().min(MAX_MODULES - count)]
+        count += batch.len()
+        got := fetch_gots([local_url(u) for u in batch], at, mut cj, mut cache, perf)
+        mut deeper := List[str]()
+        for k in 0..batch.len()
+            tally(perf, "modules", 1)
+            text := if got[k].ok then got[k].text else ""
+            if text == ""
+                continue
+            scripts[batch[k]] = text
+            for dep in jsdom.module_deps(text, batch[k])
+                if not queued.contains(dep) and not scripts.contains(dep)
+                    queued.add(dep)
+                    deeper.push(dep)
+        level = deeper
 
 ## What page scripts asked the browser for, answered against the live engine
 ## `live`; the scripts never run again. Classic scripts the page inserted
@@ -1282,35 +1615,6 @@ fn module_source(u str, from str, mut cj jar.Jar, perf ref Perf) str?
 ## The most modules fetched ahead for one page.
 MAX_MODULES := 400
 
-## Fetches the static imports of the module `source` (at the engine address
-## `base`), and theirs, into `scripts`: the engine runs a module only once
-## everything it imports is at hand.
-fn prefetch_modules(
-    source str,
-    base str,
-    from str,
-    mut scripts Map[str, str],
-    mut cj jar.Jar,
-    mut cache Map[str, Cached],
-    perf ref Perf,
-)
-    mut queue := jsdom.module_deps(source, base)
-    mut i := 0
-    while i < queue.len() and i < MAX_MODULES
-        u := queue[i]
-        i += 1
-        if scripts.contains(u)
-            continue
-        real := u.strip_prefix("file://local/") else u
-        text := fetch_text(real, from, mut cj, mut cache, perf)
-        tally(perf, "modules", 1)
-        if text == ""
-            continue
-        scripts[u] = text
-        for dep in jsdom.module_deps(text, u)
-            if not queue.contains(dep)
-                queue.push(dep)
-
 ## The origin (`scheme://host:port`) of an address.
 fn origin_of(u str) str
     parts := u.split("/")
@@ -1409,6 +1713,10 @@ fn Browser.empty(url str, width int, height int) Browser
         bits: {},
         js: none,
         perf: new_perf(),
+        ld: idle_load(),
+        stepped: false,
+        lazy_pics: false,
+        pics_due: false,
     )
     b
 
@@ -1429,6 +1737,7 @@ fn Browser.relayout(mut self)
     spent(self.perf, "layout.cells", t0)
     tally(self.perf, "relayouts", 1)
     self.stamp += 1
+    self.pics_due = true
     self.scroll_to(self.scroll)
 
 ## Opens `target`, remembering the current page for Back.
@@ -1459,6 +1768,9 @@ fn Browser.keep(mut self)
 ## else fetches it.
 fn Browser.revisit(mut self, target str)
     if k := self.kept.get(target)
+        ## A load still in progress is abandoned.
+        self.ld = idle_load()
+        self.pics_due = true
         self.url = target
         self.doc = k.doc
         self.sheet = k.sheet
@@ -1608,25 +1920,215 @@ fn Browser.reload(mut self)
     self.reloading = true
     self.load(self.url, "GET", "")
 
+## Opens `target` (with `method` and a form `body`): fetches and parses it,
+## runs its scripts (unless `--no-js`) and lays it out with its style
+## sheets. Stepped (the window), only the first step runs now (the
+## document, its sheets and a first frame); `step` does the rest.
 fn Browser.load(mut self, target str, method str, body str)
     restart(self.perf)
     self.close_sockets()
     self.stop_workers()
-    loaded := load_doc(
-        target,
-        method,
-        body,
-        self.refer,
-        self.reloading,
-        mut self.cj,
-        mut self.cache,
-        mut self.socks,
-        self.zone,
-        self.workers,
-        self.perf,
+    ## The old page's engine must not touch the new page between steps.
+    self.js = none
+    self.ld = Loading(
+        stage: LOAD_FETCH,
+        at: target,
+        method: method,
+        body: body,
+        via: self.refer,
+        reload: self.reloading,
+        hops: 0,
+        status: 0,
+        d: html.parse(""),
+        sheets: {},
+        paint: self.stepped,
+        painted: false,
     )
     self.reloading = false
     self.refer = ""
+    if self.stepped
+        self.step()
+        return
+    self.complete()
+
+## Whether a load is in progress.
+fn Browser.loading(self) bool
+    self.ld.stage != LOAD_IDLE
+
+## Runs the rest of the load in progress now (an agent's call, a test).
+fn Browser.complete(mut self)
+    while self.ld.stage != LOAD_IDLE
+        self.step()
+
+## The next step of the load in progress, if any.
+fn Browser.step(mut self)
+    if self.ld.stage == LOAD_FETCH
+        self.fetch_step()
+    elif self.ld.stage == LOAD_SCRIPTS
+        self.script_step()
+
+## One hop: fetches and parses `ld.at`. With `--no-js` a `<meta
+## http-equiv=refresh>` leads to the next hop, else the page is done; with
+## scripts the next step runs them, and a stepped load first shows the page
+## as it came (`first_paint`).
+fn Browser.fetch_step(mut self)
+    if self.ld.hops >= MAX_REFRESHES
+        last := fetch_got(
+            self.ld.at,
+            self.ld.method,
+            self.ld.body,
+            self.ld.via,
+            true,
+            false,
+            mut self.cj,
+            mut self.cache,
+            self.perf,
+        )
+        self.finish(Loaded(
+            url: last.url,
+            doc: html.parse(last.text),
+            js: none,
+            out: quiet(),
+            status: last.status,
+        ))
+        return
+    self.ld.hops += 1
+    t_doc := time.now_ms()
+    got := fetch_got(
+        self.ld.at,
+        self.ld.method,
+        self.ld.body,
+        self.ld.via,
+        true,
+        self.ld.reload,
+        mut self.cj,
+        mut self.cache,
+        self.perf,
+    )
+    spent(self.perf, "fetch.document", t_doc)
+    self.ld.reload = false
+    self.ld.via = self.ld.at
+    at := got.url
+    self.ld.at = at
+    no_js := env.args().contains("--no-js")
+    t_parse := time.now_ms()
+    d := if no_js then html.parse(got.text) else html.parse_scripting(got.text)
+    spent(self.perf, "html.parse", t_parse)
+    tally(self.perf, "dom.nodes.parsed", d.nodes.len())
+    if no_js
+        next := refresh_target(d, at, false) else
+            self.finish(Loaded(url: at, doc: d, js: none, out: quiet(), status: got.status))
+            return
+        self.ld.at = next
+        self.ld.method = "GET"
+        self.ld.body = ""
+        return
+    self.ld.d = d
+    self.ld.status = got.status
+    self.ld.stage = LOAD_SCRIPTS
+    if self.ld.paint
+        self.first_paint()
+
+## Runs the scripts of the page `fetch_step` parsed, after fetching its
+## scripts and modules side by side, and answers what they asked for
+## (`serve_page`); then the page is done, or the navigation the scripts or a
+## refresh asked for is the next hop.
+fn Browser.script_step(mut self)
+    mut d := self.ld.d
+    at := self.ld.at
+    scripts := page_scripts(d, at, mut self.cj, mut self.cache, self.perf)
+    now := time.now_ms().to_float()
+    ## A page with no scripts has nothing to run, and starting the engine
+    ## costs about 0.2 s.
+    mut session := none
+    mut out := quiet()
+    if d.all("script").len() > 0
+        t_run := time.now_ms()
+        ran := jsdom.start(
+            mut d,
+            script_url(at),
+            scripts,
+            self.cj.for_script(at),
+            now,
+            self.zone,
+            1000.0,
+            5000000,
+            self.workers,
+        )
+        spent(self.perf, "script.run", t_run)
+        mut live := ran.0
+        out = serve_page(
+            mut live,
+            mut d,
+            ran.1,
+            at,
+            mut self.cj,
+            mut self.socks,
+            mut self.cache,
+            self.perf,
+        )
+        tally(self.perf, "js.steps", live.steps())
+        if live.stopped()
+            tally(self.perf, "js.stopped", 1)
+        tally(self.perf, "dom.mutations", out.changes)
+        session = live
+    for line in out.cookies
+        self.cj.set_from_script(at, line)
+    if env.args().contains("--console")
+        for line in out.console
+            io.eprint("console: {line}")
+    mut next := local_url(out.url)
+    if next == "" or next == at
+        # A `<meta http-equiv=refresh>` in `<noscript>` is for browsers
+        # without scripts (HTML §4.12.2).
+        next = refresh_target(d, at, true) else ""
+        if next == ""
+            hide_noscript(mut d)
+            self.finish(Loaded(url: at, doc: d, js: session, out: out, status: self.ld.status))
+            return
+        self.ld.method = "GET"
+        self.ld.body = ""
+    else
+        self.ld.method = out.method
+        self.ld.body = out.body
+    self.ld.at = next
+    self.ld.stage = LOAD_FETCH
+
+## Shows the page as it came, before its scripts run (speed review §3.1):
+## `<noscript>` hidden as it will be, laid out with its style sheets, which
+## are fetched now, side by side, and kept for after the scripts. The
+## window's frame after this step is the first paint.
+fn Browser.first_paint(mut self)
+    t0 := time.now_ms()
+    mut shown := self.ld.d
+    hide_noscript(mut shown)
+    if not env.args().contains("--noisy")
+        hush.apply(mut shown)
+    self.url = self.ld.at
+    self.doc = shown
+    self.sheet = linked_sheets(
+        self.doc,
+        self.url,
+        mut self.cj,
+        mut self.cache,
+        self.perf,
+        mut self.ld.sheets,
+    )
+    t_cells := time.now_ms()
+    self.pg = page.layout_with(self.doc, self.url, self.width, self.sheet)
+    spent(self.perf, "layout.cells", t_cells)
+    self.stamp += 1
+    self.scroll = 0
+    self.focus = 0
+    self.message = if self.ld.status >= 400 then "HTTP status {self.ld.status}" else ""
+    self.pics_due = true
+    self.ld.painted = true
+    spent(self.perf, "paint.first", t0)
+    tally(self.perf, "first.frame.ms", time.now_ms() - self.perf.start)
+
+## The load is done: the page its last hop left (`loaded`) is shown with its
+## style sheets (those the first frame fetched are not fetched again).
+fn Browser.finish(mut self, loaded Loaded)
     self.url = loaded.url
     self.doc = loaded.doc
     if not env.args().contains("--noisy")
@@ -1635,20 +2137,58 @@ fn Browser.load(mut self, target str, method str, body str)
     self.console_log = []
     self.net_log = []
     self.record(loaded.out)
-    self.sheet = linked_sheets(self.doc, self.url, mut self.cj, mut self.cache, self.perf)
+    self.sheet = linked_sheets(
+        self.doc,
+        self.url,
+        mut self.cj,
+        mut self.cache,
+        self.perf,
+        mut self.ld.sheets,
+    )
     t_cells := time.now_ms()
     self.pg = page.layout_with(self.doc, self.url, self.width, self.sheet)
     spent(self.perf, "layout.cells", t_cells)
     self.stamp += 1
-    self.scroll = 0
+    if self.ld.painted
+        ## Where the reader scrolled to while the scripts ran.
+        self.scroll_to(self.scroll)
+    else
+        self.scroll = 0
     self.focus = 0
     ## A page that came with an error status is shown as sent; the status
     ## line says what it was.
     self.message = if loaded.status >= 400 then "HTTP status {loaded.status}" else ""
     self.perf.pending = true
+    self.pics_due = true
+    self.ld = idle_load()
     ## A fresh load replaces any copy kept for that address.
     self.kept.remove(self.url)
     self.kept_order = [u for u in self.kept_order if u != self.url]
+
+## Pictures fetched per window step after the first frame.
+PICTURE_BATCH := 6
+
+## One batch of the page's pictures for the window (`lazy_pics`): fetched
+## and decoded side by side (`images.prefetch_some`), then the pixel layout
+## follows `stamp` and draws them. `pics_due` is cleared once none is missing.
+fn Browser.picture_step(mut self)
+    t0 := time.now_ms()
+    n := images.prefetch_some(
+        self.doc,
+        page.base_of(self.doc, self.url),
+        self.url,
+        self.cj,
+        image_options(),
+        mut self.sizes,
+        mut self.bits,
+        PICTURE_BATCH,
+    )
+    spent(self.perf, "fetch.images", t0)
+    if n == 0
+        self.pics_due = false
+        return
+    tally(self.perf, "images", n)
+    self.stamp += 1
 
 ## Whether there is a page to go back or forward to.
 fn Browser.can_back(self) bool
@@ -2633,17 +3173,23 @@ fn Gui.refresh(mut self)
     if self.b.stamp != self.scene_stamp
         or self.area_w != self.scene_w
         or self.b.editing() != self.scene_edit
-        t_images := time.now_ms()
-        images.prefetch(
-            self.b.doc,
-            page.base_of(self.b.doc, self.b.url),
-            self.b.url,
-            self.b.cj,
-            image_options(),
-            mut self.b.sizes,
-            mut self.b.bits,
-        )
-        spent(self.b.perf, "fetch.images", t_images)
+        if self.b.lazy_pics
+            ## The window: pictures come after the first frame, a batch per
+            ## step (`Browser.picture_step`); until then an `<img>` keeps the
+            ## room its `width` and `height` give, and a canvas is drawn now.
+            images.canvases(self.b.doc, mut self.b.sizes, mut self.b.bits)
+        else
+            t_images := time.now_ms()
+            images.prefetch(
+                self.b.doc,
+                page.base_of(self.b.doc, self.b.url),
+                self.b.url,
+                self.b.cj,
+                image_options(),
+                mut self.b.sizes,
+                mut self.b.bits,
+            )
+            spent(self.b.perf, "fetch.images", t_images)
         t_pixels := time.now_ms()
         self.scene = gfx.layout_measured(
             self.b.doc,
@@ -3269,6 +3815,12 @@ struct Garlic
     icons Map[str, images.Bitmap]
     icon_sent Set[str]
     icon_fresh Set[str]
+    ## Load steps (`continue_load`): `kick` asks the `step_poster` task to
+    ## post a `load-step` event (`has_kick` says `app_main` started it), and
+    ## `step_posted` says one is on its way; at most one is.
+    kick Channel[int]
+    has_kick bool
+    step_posted bool
 
 fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
     g := Gui.new(b, w, h, cell_w, cell_h)
@@ -3322,12 +3874,17 @@ fn Garlic.new(b Browser, w float, h float, cell_w float, cell_h float) Garlic
         icons: {},
         icon_sent: {},
         icon_fresh: {},
+        kick: Channel[int](1),
+        has_kick: false,
+        step_posted: false,
     )
 
 ## Answers one MCP request from an attached agent: the sites it may use are
 ## the ones the tabs show plus those allowed at launch, and the answer goes
 ## back through the bridge.
 fn Garlic.agent_call(mut self, body str)
+    ## An agent reads the finished page, not a step of its load.
+    self.g.b.complete()
     mut sites := self.guard.fixed
     for t in self.tabs
         sites.push(host_of(t.b.url))
@@ -3450,6 +4007,8 @@ fn Garlic.tick(mut self)
     self.g.b.advance()
     due := [j for j in self.jobs if j.due <= self.seconds]
     self.jobs = [j for j in self.jobs if j.due > self.seconds]
+    if due.len() > 0
+        self.g.b.complete()
     for j in due
         mut sites := self.guard.fixed
         for t in self.tabs
@@ -3482,6 +4041,7 @@ fn Garlic.new_tab(mut self)
     self.tabs[self.cur] = self.g
     mut fresh := Browser.empty("", self.g.b.width, self.g.b.height).with_workers(self.g.b.workers)
     fresh.zone = self.g.b.zone
+    fresh.lazy_pics = self.g.b.lazy_pics
     mut fresh_gui := Gui.new(fresh, self.g.area_w, self.g.area_h, self.g.cell_w, self.g.cell_h)
     fresh_gui.pixel = self.g.pixel
     fresh_gui.refresh()
@@ -3737,10 +4297,13 @@ fn Garlic.start_load(mut self, what str)
     else
         self.do_load()
 
-## Does the load `start_load` queued.
+## Does the load `start_load` queued. With an inbox the load is stepped:
+## this event fetches the document and its sheets and lays them out, the
+## frame after it is the first paint, and `continue_load` runs the rest.
 fn Garlic.do_load(mut self)
     what := self.load_next
     self.load_next = ""
+    self.g.b.stepped = self.has_kick
     if what.starts_with("open:")
         self.g.open(what.slice(5, what.chars().len()))
     elif what == "back"
@@ -3751,6 +4314,31 @@ fn Garlic.do_load(mut self)
         self.g.b.reload()
     elif what == "first"
         self.g.b.load(self.g.b.url, "GET", "")
+    self.g.b.stepped = false
+
+## Whether the shown tab has load or picture steps to run.
+fn Garlic.steps_left(self) bool
+    self.g.b.loading() or (self.g.pixel and self.g.b.lazy_pics and self.g.b.pics_due)
+
+## Queues the next step of the shown tab's load (or of its pictures) as a
+## `load-step` event, so a frame goes out and waiting events are handled
+## first; at most one is queued at a time. The event is posted by the
+## `step_poster` task, not here: `update` runs on the only thread that empties
+## the inbox, so a post from it to a full inbox (input piled up during a long
+## step) would wait for ever. `kick` holds one token and is empty whenever
+## `step_posted` is false, so this send never waits.
+fn Garlic.continue_load(mut self)
+    if self.has_kick and not self.step_posted and self.steps_left()
+        self.step_posted = true
+        self.kick.send(1)
+
+## One `load-step`: the load's next step, else a batch of pictures.
+fn Garlic.load_step(mut self)
+    self.step_posted = false
+    if self.g.b.loading()
+        self.g.b.step()
+    elif self.g.pixel and self.g.b.lazy_pics and self.g.b.pics_due
+        self.g.b.picture_step()
 
 ## The omnibox dropdown's rows for what is typed (none while it shows the
 ## address as it is).
@@ -4031,6 +4619,8 @@ impl app.App for Garlic
             External =>
                 if ev.id == "load"
                     self.do_load()
+                elif ev.id == "load-step"
+                    self.load_step()
                 elif ev.id == "mcp"
                     self.agent_call(ev.text)
                 elif ev.id == "tick"
@@ -4046,7 +4636,9 @@ impl app.App for Garlic
             self.omni = chrome.omni(self.g.b.url)
             self.pick_row = -1
         self.remember()
-        if self.g.pixel
+        ## The favicon waits until the load is done, so the first frame
+        ## doesn't wait for it.
+        if self.g.pixel and not self.g.b.loading()
             t_icon := time.now_ms()
             self.g.icon = favicon.fetch(
                 self.g.b.doc,
@@ -4061,6 +4653,7 @@ impl app.App for Garlic
         ## A load's timings once its first pixel layout is done, before the
         ## frame goes out.
         report_timings(self.g.b.perf)
+        self.continue_load()
 
     fn view(self) app.Node
         ## A canvas of 0 by 0 fills the window; the host reports its size.
@@ -4194,6 +4787,10 @@ fn to_app(op draw.Op, g Gui) app.Op
                 io.eprint("pic {src.slice(0, 60)} bits={g.b.bits.contains(src)} fresh={g.fresh.contains(src)} sent={g.sent.contains(src)}")
             if env.get("GARLIC_PICS_BY_URL") != none
                 return app.Op.Pic(x: x, y: y, w: w, h: h, src: src)
+            ## A picture still to come: a placeholder of the room it keeps.
+            ## Once the steps are done, one that never came is drawn as before.
+            if g.b.lazy_pics and g.b.pics_due and not g.b.sizes.contains(src)
+                return app.draw_rect(x, y, w, h, PICTURE_PLACEHOLDER)
             bm := g.b.bits.get(src) else return app.Op.Pic(x: x, y: y, w: w, h: h, src: src)
             app.Op.Bitmap(
                 x: x,
@@ -4205,6 +4802,9 @@ fn to_app(op draw.Op, g Gui) app.Op
                 ph: bm.h,
                 data: if g.fresh.contains(src) then bm.data else "",
             )
+
+## The colour of the box a picture keeps while it is fetched.
+PICTURE_PLACEHOLDER := 0xeeeeee
 
 ## The native window: the page area starts at `GUI_W` by `GUI_H` points with
 ## cells of `GUI_CELL_W` by `GUI_CELL_H` until the host reports its own.
@@ -4230,6 +4830,21 @@ fn app_main(
     a.build = build_id()
     a.visits = history.load(a.history_file)
     a.g.refresh()
+    ## Loads run in steps and pictures come after the first frame; the
+    ## `step_poster` task posts the steps' events (`Garlic.continue_load`).
+    kick := Channel[int](1)
+    a.kick = kick
+    a.has_kick = true
+    a.g.b.lazy_pics = true
+    steps := TaskGroup()
+    steps.add(spawn step_poster(kick, inbox))
+    window_main(mut a, attached, sites, inbox) else err
+        kick.close()
+        return err
+    kick.close()
+
+## The window of `app_main`, with the attach server when `attached`.
+fn window_main(mut a Garlic, attached bool, sites str, inbox app.Inbox) !
     if attached
         attached_main(mut a, sites, inbox)?
         return
@@ -4244,6 +4859,12 @@ fn app_main(
         if a.first
             a.g.b.load(a.g.b.url, "GET", "")
         print(a.g.b.pg.text())
+
+## Posts a `load-step` event to the window for each token on `kick`, until
+## it closes (`Garlic.continue_load` says why a task posts them).
+fn step_poster(kick Channel[int], inbox app.Inbox)
+    for _ in kick
+        inbox.post(app.external("load-step", ""))
 
 ## "Garlic COMMIT · ail COMMIT" from the checkout the program runs in
 ## (`.git/HEAD` and `.ail-version` in the current directory), "" elsewhere.
@@ -6741,3 +7362,121 @@ fn fwd_slashes(p str) str
     assert_eq(page.font_shorthand("700 14px Arial", true, false), (false, true))
     assert_eq(page.font_shorthand("12px Arial", true, true), (false, false))
     assert_eq(page.font_shorthand("italic", false, true), (false, true))
+
+# ---- Loading in steps, side-by-side fetches, pictures after the first frame --
+
+@test fn a_stepped_load_paints_before_the_scripts_and_ends_as_a_whole_load_does()
+    url := "{testdata()}/noscript-text.html"
+    whole := Browser.new(url, 60, 12)
+    mut b := Browser.empty(url, 60, 12)
+    b.stepped = true
+    b.load(url, "GET", "")
+    ## The first step: the page as it came, `<noscript>` already hidden.
+    assert(b.loading())
+    assert(b.pg.text().contains("Waiting"))
+    assert(not b.pg.text().contains("enable JavaScript"))
+    assert(not b.has_js())
+    b.step()
+    assert(not b.loading())
+    assert(b.pg.text().contains("Scripts ran"))
+    assert_eq(b.pg.text(), whole.pg.text())
+
+@test fn stepped_hops_follow_a_refresh_and_fetch_each_sheet_once()
+    for name in ["refresh.html", "many-sheets.html", "imports.html", "styled.html"]
+        url := "{testdata()}/{name}"
+        whole := Browser.new(url, 60, 12)
+        mut b := Browser.empty(url, 60, 12)
+        b.stepped = true
+        b.load(url, "GET", "")
+        mut steps := 1
+        while b.loading() and steps < 20
+            b.step()
+            steps += 1
+        assert(not b.loading())
+        assert_eq(b.url, whole.url)
+        assert_eq(b.pg.text(), whole.pg.text())
+        assert_eq(b.sheet.rules.len(), whole.sheet.rules.len())
+        assert_eq((b.perf.counts.get("sheets") else 0), (whole.perf.counts.get("sheets") else 0))
+
+@test fn side_by_side_fetches_come_back_in_the_order_asked()
+    names := [
+        "styled.css",
+        "print.css",
+        "import-a.css",
+        "import-b.css",
+        "import-c.css",
+        "import-print.css",
+        "late-script.js",
+        "no-such-file.css",
+    ]
+    urls := ["{testdata()}/{n}" for n in names]
+    mut cj := jar.new()
+    mut cache := Map[str, Cached]()
+    perf := new_perf()
+    got := fetch_gots(urls, "{testdata()}/index.html", mut cj, mut cache, perf)
+    assert_eq([g.url for g in got], urls)
+    last := urls.len() - 1
+    for k in 0..last
+        assert(got[k].ok)
+        assert_eq(got[k].text, fetch_got(urls[k], "GET", "", "", false, false, mut cj, mut cache, perf).text)
+    assert(not got[last].ok)
+    ## `data:` addresses are their own text, in their places.
+    mixed := fetch_gots(["data:text/css,a", urls[0], "data:text/css,b"], "", mut cj, mut cache, perf)
+    assert_eq(mixed[0].text, "a")
+    assert_eq(mixed[1].text, got[0].text)
+    assert_eq(mixed[2].text, "b")
+    assert_eq(fetch_gots([], "", mut cj, mut cache, perf).len(), 0)
+
+## The box of picture `op` (x, y, w, h); empty for any other operation.
+fn pic_box(op draw.Op) List[float]
+    match op
+        Pic(x, y, w, h, _) => [x, y, w, h]
+        Rect(_, _, _, _, _) | Text(_, _, _, _, _, _, _) | Str(_, _, _, _, _, _, _, _, _) => []
+
+@test fn pictures_still_coming_keep_their_room_and_arrive_in_a_step()
+    dir := "{env.cwd()}/vendor/image/testdata"
+    mut a := Garlic.new(Browser.new("file://{dir}/missing.html", 100, 32), 400.0, 300.0, 8.0, 16.0)
+    a.g.pixel = true
+    a.g.b.lazy_pics = true
+    a.g.b.doc = html.parse("<img src=gray8.png width=20 height=10><img src=gray8.png>")
+    a.g.b.url = "file://{dir}/page.html"
+    a.g.b.stamp += 1
+    a.g.b.pics_due = true
+    a.g.refresh()
+    ## Before the pictures' step: the sized one keeps its 20 by 10 as a
+    ## placeholder; the unsized one has no room until its size is known.
+    pics := [op for op in a.g.display() if pic_src(op) != ""]
+    assert_eq(pics.len(), 1)
+    bx := pic_box(pics[0])
+    assert_eq([bx[2], bx[3]], [20.0, 10.0])
+    assert(to_app(pics[0], a.g) == app.draw_rect(bx[0], bx[1], 20.0, 10.0, PICTURE_PLACEHOLDER))
+    assert(a.steps_left())
+    a.g.b.picture_step()
+    assert_eq(a.g.b.sizes["file://{dir}/gray8.png"], [37, 29])
+    a.g.refresh()
+    assert_eq([op for op in a.g.display() if pic_src(op) != ""].len(), 2)
+    ## Nothing is missing now: the next step ends the pictures' steps.
+    a.g.b.picture_step()
+    assert(not a.g.b.pics_due)
+    assert(not a.steps_left())
+
+@test fn the_window_queues_one_step_at_a_time_until_the_load_is_done()
+    url := "{testdata()}/noscript-text.html"
+    mut a := Garlic.new(Browser.empty(url, 100, 32), 400.0, 300.0, 8.0, 16.0)
+    a.has_kick = true
+    a.load_next = "first"
+    a.do_load()
+    assert(a.g.b.loading())
+    assert(not a.g.b.stepped)
+    assert(a.g.b.pg.text().contains("Waiting"))
+    a.continue_load()
+    assert(a.step_posted)
+    assert_eq((a.kick.try_recv() else 0), 1)
+    ## One at a time: no second token while the first is on its way.
+    a.continue_load()
+    assert_eq((a.kick.try_recv() else 0), 0)
+    a.update(app.external("load-step", ""))
+    assert(not a.g.b.loading())
+    assert(not a.step_posted)
+    assert(a.g.b.pg.text().contains("Scripts ran"))
+    assert_eq((a.kick.try_recv() else 0), 0)
