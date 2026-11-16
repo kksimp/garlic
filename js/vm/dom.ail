@@ -542,7 +542,7 @@ pub fn Vm.dom_setup(mut self)
     methods(
         node_proto,
         "dom",
-        "appendChild:1 insertBefore:2 removeChild:1 replaceChild:2 cloneNode:0 contains:1 hasChildNodes:0 getRootNode:0",
+        "appendChild:1 insertBefore:2 removeChild:1 replaceChild:2 cloneNode:0 contains:1 isEqualNode:1 isSameNode:1 hasChildNodes:0 getRootNode:0",
     )
     for item in ["ELEMENT_NODE=1", "TEXT_NODE=3", "COMMENT_NODE=8", "DOCUMENT_NODE=9"]
         kv := item.split("=")
@@ -1815,6 +1815,10 @@ fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
             Undef
         "cloneNode" =>
             self.node_value(self.clone(id, truthy(a0)))
+        "isSameNode" => Value.Bool(node_id(a0) == id)
+        "isEqualNode" =>
+            other := node_id(a0) else return Value.Bool(false)
+            Value.Bool(self.equal_nodes(id, other))
         "contains" =>
             other := node_id(a0) else return Value.Bool(false)
             mut e := other
@@ -2400,6 +2404,27 @@ fn Vm.plain_listener(mut self, m str, this_val Value, args List[Value]) Value ! 
     if m == "addEventListener"
         list.elems.push(array([Value.Str(type_name), cb, Value.Bool(capture), Value.Bool(once)]))
     Undef
+
+## Whether nodes `a` and `b` are equal (DOM §4.4 "equals"): the same kind,
+## name and text, the same attributes in any order, and equal children.
+fn Vm.equal_nodes(mut self, a int, b int) bool
+    na := dom[a]
+    nb := dom[b]
+    if na.kind != nb.kind or na.tag != nb.tag or na.text != nb.text
+        return false
+    if na.attrs.len() != nb.attrs.len() or na.children.len() != nb.children.len()
+        return false
+    for x in na.attrs
+        mut found := false
+        for y in nb.attrs
+            if y.name == x.name and y.value == x.value
+                found = true
+        if not found
+            return false
+    for i in 0..na.children.len()
+        if not self.equal_nodes(na.children[i], nb.children[i])
+            return false
+    true
 
 ## A listener runs; an exception is reported and doesn't stop the dispatch.
 fn Vm.call_listener(mut self, cb Value, target int, ev Value, args List[Value]) Value ! Thrown

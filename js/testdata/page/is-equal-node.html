@@ -1,0 +1,8 @@
+<!doctype html>
+<html><head><meta name="a" content="1"><meta content="1" name="a"><meta name="a" content="2"></head><body><script>
+var m = document.querySelectorAll("meta");
+console.log(m[0].isEqualNode(m[1]), m[0].isEqualNode(m[2]), m[0].isSameNode(m[0]), m[0].isSameNode(m[1]), m[0].isEqualNode(null));
+var d1 = document.createElement("div"), d2 = document.createElement("div");
+d1.innerHTML = "<b>x</b>"; d2.innerHTML = "<b>x</b>";
+console.log(d1.isEqualNode(d2), (d2.firstChild.textContent = "y", d1.isEqualNode(d2)));
+</script></body></html>
