@@ -1618,9 +1618,11 @@ fn module_source(u str, from str, mut cj jar.Jar, perf ref Perf) str?
 ## The most modules fetched ahead for one page.
 MAX_MODULES := 400
 
-## The `Origin` header a CORS request from page `from` to `url` carries
-## (Fetch §3.1.7): none to its own origin. Servers such as redditstatic.com
-## answer `Access-Control-Allow-Origin` only to a request that has it.
+## The `Origin` header a module script request from page `from` to `url`
+## carries (Fetch §3.1.7): none to its own origin. Servers such as
+## redditstatic.com answer `Access-Control-Allow-Origin` only to a request
+## that has it. Script `fetch` and XMLHttpRequest do not send it yet: with
+## it, BBC's consent service answers and its scripts blank the page (gr4).
 fn cors_headers(from str, url str) Map[str, str]
     o := origin_of(from)
     if o == "" or o == origin_of(url) or not o.starts_with("http")
@@ -1649,18 +1651,7 @@ fn script_reply(ask jsdom.Ask, from str, mut cj jar.Jar, perf ref Perf) str
     ctype := lines[0]
     body := lines[1..lines.len()].join("\n")
     same := origin_of(from) == origin_of(ask.url)
-    w := walk(
-        ask.method,
-        ask.url,
-        body,
-        ctype,
-        from,
-        false,
-        same,
-        cors_headers(from, ask.url),
-        mut cj,
-        perf,
-    )
+    w := walk(ask.method, ask.url, body, ctype, from, false, same, {}, mut cj, perf)
     if w.failure != ""
         return failed
     if origin_of(w.url) != origin_of(from)
