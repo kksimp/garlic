@@ -97,6 +97,17 @@ pub fn Vm.own(self, o ref JsObject, key str) Prop?
                 )
     o.props.get(key)
 
+## Whether `own(o, key)` is `o.props.get(key)`: not a proxy or module
+## namespace, and not an index or `length` of an array, `arguments`, typed
+## array or string wrapper. Such a property is read in place, with no
+## `Prop` copied.
+fn props_only(o ref JsObject, key str) bool
+    if o.class == "Proxy" or o.class == "Module"
+        return false
+    if is_array_like(o) or o.class == "String" or is_view(o)
+        return not starts_with_digit(key) and key != "length"
+    true
+
 ## [[Get]] (§10.1.8): from `o` or its prototypes, with `receiver` as the
 ## `this` of a getter.
 pub fn Vm.get_from(mut self, start ref JsObject, key str, receiver Value) Value ! Thrown
@@ -104,7 +115,15 @@ pub fn Vm.get_from(mut self, start ref JsObject, key str, receiver Value) Value 
     while true
         if o.class == "Proxy"
             return proxy_get(o, key, receiver)
-        if p := self.own(o, key)
+        if props_only(o, key)
+            if o.props.contains(key)
+                if o.props[key].accessor
+                    getter := o.props[key].get
+                    if is_callable(getter)
+                        return self.call(getter, receiver, [])
+                    return Undef
+                return o.props[key].value
+        elif p := self.own(o, key)
             if p.accessor
                 if is_callable(p.get)
                     return call(p.get, receiver, [])
@@ -159,7 +178,17 @@ pub fn Vm.put_obj(mut self, target ref JsObject, key str, v Value, receiver Valu
     while true
         if o.class == "Proxy"
             return proxy_set(o, key, v, receiver)
-        if p := self.own(o, key)
+        if props_only(o, key)
+            if o.props.contains(key)
+                if o.props[key].accessor
+                    setter := o.props[key].set
+                    if is_callable(setter)
+                        self.call(setter, receiver, [v])?
+                    return
+                if not o.props[key].writable
+                    return
+                break
+        elif p := self.own(o, key)
             if p.accessor
                 if is_callable(p.set)
                     call(p.set, receiver, [v])?
@@ -206,12 +235,10 @@ pub fn Vm.set_own(mut self, o ref JsObject, key str, v Value) ! Thrown
             while o.elems.len() < len
                 o.elems.push(Undef)
             return
-    if p := o.props.get(key)
-        if p.accessor or not p.writable
+    if o.props.contains(key)
+        if o.props[key].accessor or not o.props[key].writable
             return
-        mut q := p
-        q.value = v
-        o.props[key] = q
+        o.props[key].value = v
         return
     if o.extensible
         o.props[key] = data(v)
@@ -228,7 +255,10 @@ pub fn Vm.define(mut self, o ref JsObject, key str, p Prop) ! Thrown
 pub fn Vm.has_property(self, start ref JsObject, key str) bool
     mut o := start
     while true
-        if self.own(o, key) != none
+        if props_only(o, key)
+            if o.props.contains(key)
+                return true
+        elif self.own(o, key) != none
             return true
         match o.proto
             Obj(next) => o = next

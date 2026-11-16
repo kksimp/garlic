@@ -312,6 +312,10 @@ pub fn as_index(x float) int?
 
 ## An array index key (§6.1.7): "0", "1", ... without leading zeros.
 pub fn index_of_key(key str) int?
+    # Most keys are names: one that doesn't start with a digit, or is longer
+    # than any index, is answered before making the list of characters.
+    if not starts_with_digit(key) or key.byte_len() > 10
+        return none
     cs := key.chars()
     if cs.len() == 0 or cs.len() > 10 or cs[0] == '0' and cs.len() > 1
         return none
@@ -321,6 +325,11 @@ pub fn index_of_key(key str) int?
             return none
         v = v * 10 + c.code() - 48
     if v < 4294967295 then v else none
+
+## Whether `key` starts with an ASCII digit, by comparing strings: "0" <=
+## key < ":" holds exactly for those, and allocates nothing.
+pub fn starts_with_digit(key str) bool
+    key >= "0" and key < ":"
 
 ## ToInt32 (§7.1.6).
 pub fn to_int32(x float) int

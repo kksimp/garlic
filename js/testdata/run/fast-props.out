@@ -1,0 +1,16 @@
+child! base 1 true false undefined
+5 1 own base name,_s,plain get g on child; set s 5
+A.v:1 B>A.m true false B
+3 e true true true false undefined function
+1 [1] e
+custom2
+3 h true HEY undefined
+bar 0,1,2,foo
+1 undefined
+5 undefined
+true false M 1
+M 1
+2 6 true false 2
+{"a":3,"b":2,"c":1}
+4951 true
+sv true
