@@ -105,7 +105,9 @@ pub struct Vm
     ## Generators and async functions stopped part way (gen.ail), by id, and
     ## the compiled bodies they run.
     pub frames Map[int, Frame]
-    pub codes List[Code]
+    pub codes List[ref Code]
+    ## Compiled bodies by function source and place (gen.ail `code_for`).
+    pub code_keys Map[str, int]
     pub frame_seq int
     ## Generators running now, to catch one that resumes itself.
     pub running Set[int]

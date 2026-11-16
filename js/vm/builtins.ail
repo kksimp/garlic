@@ -78,6 +78,7 @@ pub fn new_vm() Vm
         unhandled: [],
         frames: {},
         codes: [],
+        code_keys: {},
         frame_seq: 0,
         running: Set[int](),
         agen_queues: {},
