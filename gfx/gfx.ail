@@ -203,12 +203,21 @@ pub fn css_float(v str) float?
         return "-0{t.slice(1, t.chars().len())}".to_float()
     t.to_float()
 
-## A length in pixels: `px`, `em`, `rem`, `pt`, `%` (of `rel`) or `0`.
-## `none` for `auto`, keywords and anything else.
+## A length in pixels: `px`, `em`, `rem`, `pt`, `pc`, `in`, `cm`, `mm`,
+## `ex` (half an em), `ch` (the width of "0"), `%` (of `rel`) or `0`, plain
+## or in `calc()`, `min()`, `max()` and `clamp()` (CSS Values 4 §5, §10).
+## Viewport units are pixels by now (`viewport_px`). `none` for `auto`,
+## keywords and anything else.
 pub fn length(v str, size float, rel float) float?
     t := v.trim().to_lower()
     if inner := t.strip_prefix("calc(")
         return calc_sum(inner.slice(0, inner.chars().len() - 1), size, rel)
+    if inner := t.strip_prefix("min(")
+        return math_fn(inner, 0, size, rel)
+    if inner := t.strip_prefix("max(")
+        return math_fn(inner, 1, size, rel)
+    if inner := t.strip_prefix("clamp(")
+        return math_fn(inner, 2, size, rel)
     mut scale := 1.0
     mut num := t
     if r := t.strip_suffix("px")
@@ -225,10 +234,120 @@ pub fn length(v str, size float, rel float) float?
     elif r := t.strip_suffix("%")
         scale = rel / 100.0
         num = r
+    elif r := t.strip_suffix("ex")
+        scale = size * 0.5
+        num = r
+    elif r := t.strip_suffix("ch")
+        scale = size * 0.6
+        num = r
+    elif r := t.strip_suffix("pc")
+        scale = 16.0
+        num = r
+    elif r := t.strip_suffix("in")
+        scale = 96.0
+        num = r
+    elif r := t.strip_suffix("cm")
+        scale = 96.0 / 2.54
+        num = r
+    elif r := t.strip_suffix("mm")
+        scale = 96.0 / 25.4
+        num = r
     elif t != "0"
         return none
     x := css_float(num)?
     x * scale
+
+## `min(a, b, ...)` (`kind` 0), `max(...)` (1) or `clamp(lo, v, hi)` (2) of
+## the sums in `inner`, the text after the opening parenthesis (CSS Values 4
+## §10.2). `none` when an argument is not a length.
+fn math_fn(inner str, kind int, size float, rel float) float?
+    if not inner.ends_with(")")
+        return none
+    args := top_commas(inner.slice(0, inner.chars().len() - 1))
+    mut vals := List[float]()
+    for a in args
+        vals.push(calc_sum(a, size, rel)?)
+    if vals.len() == 0
+        return none
+    if kind == 2
+        if vals.len() != 3
+            return none
+        return fmax(vals[0], fmin(vals[1], vals[2]))
+    mut best := vals[0]
+    for x in vals
+        best = if kind == 0 then fmin(best, x) else fmax(best, x)
+    best
+
+## Viewport-relative units and how many hundredths of the width (`w`), the
+## height (`h`), the smaller (`min`) or the larger (`max`) side each is.
+VIEW_UNITS := {
+    "vw": "w",
+    "svw": "w",
+    "lvw": "w",
+    "dvw": "w",
+    "vi": "w",
+    "svi": "w",
+    "lvi": "w",
+    "dvi": "w",
+    "vh": "h",
+    "svh": "h",
+    "lvh": "h",
+    "dvh": "h",
+    "vb": "h",
+    "svb": "h",
+    "lvb": "h",
+    "dvb": "h",
+    "vmin": "min",
+    "svmin": "min",
+    "lvmin": "min",
+    "dvmin": "min",
+    "vmax": "max",
+    "svmax": "max",
+    "lvmax": "max",
+    "dvmax": "max",
+}
+
+## `v` with every viewport-relative length (CSS Values 4 §6.1.2: `50vw`,
+## `100dvh`, `2vmin`, ...) written as pixels of a window `vw` by `vh`, so
+## `length` and the rest read them as plain lengths. The small, large and
+## dynamic variants are the same here: the window has no browser bars that
+## come and go.
+pub fn viewport_px(v str, vw float, vh float) str
+    if not (v.contains("vw") or v.contains("vh") or v.contains("vm") or v.contains("vi") or v.contains("vb"))
+        return v
+    cs := v.chars()
+    n := cs.len()
+    mut out := List[str]()
+    mut i := 0
+    while i < n
+        c := cs[i]
+        lead := c.is_digit() or (c == '.' and i + 1 < n and cs[i + 1].is_digit())
+        glued := i > 0 and (cs[i - 1].is_alnum() or cs[i - 1] == '#' or cs[i - 1] == '_')
+        if not lead or glued
+            out.push([c].join(""))
+            i += 1
+            continue
+        mut j := i
+        while j < n and (cs[j].is_digit() or cs[j] == '.')
+            j += 1
+        mut k := j
+        while k < n and cs[k].is_alpha()
+            k += 1
+        unit := cs[j..k].join("").to_lower()
+        num := css_float(cs[i..j].join(""))
+        side := VIEW_UNITS.get(unit) else ""
+        if side != "" and num != none
+            x := num else 0.0
+            per := match side
+                "w" => vw
+                "h" => vh
+                "min" => fmin(vw, vh)
+                _ => fmax(vw, vh)
+            out.push("{x * per / 100.0}px")
+        else
+            out.push(cs[i..k].join(""))
+        i = k
+    out.join("")
 
 ## A unitless number, plain or as a `calc()` of numbers only (CSS Values 4
 ## §10.9): `calc(1.5 / 1)`, a Tailwind line height, is the number 1.5 and not
@@ -378,31 +497,177 @@ pub fn color_over(v str, under int) int?
             alpha := if ds.len() == 8 then (ds[6] * 16 + ds[7]).to_float() / 255.0 else 1.0
             return mix(ds[0] * 16 + ds[1], ds[2] * 16 + ds[3], ds[4] * 16 + ds[5], alpha, under)
         return none
-    if t.starts_with("rgb")
+    if inner := t.strip_prefix("color-mix(")
+        return color_mix(inner, under)
+    if t.starts_with("rgb") or t.starts_with("hsl") or t.starts_with("ok") or t.starts_with("color(")
         open := t.find("(")?
-        close := t.find(")")?
-        inner := t.slice(open + 1, close).replace("/", ",").replace(" ", ",")
-        mut parts := List[float]()
-        for p in inner.split(",")
-            q := p.trim()
-            if q == ""
-                continue
-            if r := q.strip_suffix("%")
-                parts.push((css_float(r)? * 2.55))
-            else
-                parts.push(css_float(q)?)
-        if parts.len() < 3
+        if not t.ends_with(")")
             return none
-        mut alpha := 1.0
-        if parts.len() > 3
-            alpha = parts[3]
-            if inner.contains("%") and alpha > 1.0
-                alpha = alpha / 100.0
-        r := fmin(fmax(parts[0], 0.0), 255.0).to_int()
-        g := fmin(fmax(parts[1], 0.0), 255.0).to_int()
-        b := fmin(fmax(parts[2], 0.0), 255.0).to_int()
-        return mix(r, g, b, alpha, under)
+        args := color_args(t.slice(open + 1, t.chars().len() - 1))
+        if args.len() < 3
+            return none
+        alpha := if args.len() > 3 then channel(args[3], 1.0)? else 1.0
+        fn_name := t.slice(0, open).trim()
+        if fn_name == "rgb" or fn_name == "rgba"
+            return mix(
+                byte_of(channel(args[0], 255.0)?),
+                byte_of(channel(args[1], 255.0)?),
+                byte_of(channel(args[2], 255.0)?),
+                alpha,
+                under,
+            )
+        if fn_name == "hsl" or fn_name == "hsla"
+            hs := hsl_rgb(hue(args[0])?, channel(args[1], 1.0)?, channel(args[2], 1.0)?)
+            return mix(hs[0], hs[1], hs[2], alpha, under)
+        if fn_name == "oklab"
+            lab := oklab_rgb(channel(args[0], 1.0)?, channel(args[1], 0.4)?, channel(args[2], 0.4)?)
+            return mix(lab[0], lab[1], lab[2], alpha, under)
+        if fn_name == "oklch"
+            chroma := channel(args[1], 0.4)?
+            turn := hue(args[2])? * 3.141592653589793 / 180.0
+            lch := oklab_rgb(channel(args[0], 1.0)?, chroma * turn.cos(), chroma * turn.sin())
+            return mix(lch[0], lch[1], lch[2], alpha, under)
+        if fn_name == "color" and args.len() >= 4 and (args[0] == "srgb" or args[0] == "display-p3")
+            a2 := if args.len() > 4 then channel(args[4], 1.0)? else 1.0
+            return mix(
+                byte_of(channel(args[1], 1.0)? * 255.0),
+                byte_of(channel(args[2], 1.0)? * 255.0),
+                byte_of(channel(args[3], 1.0)? * 255.0),
+                a2,
+                under,
+            )
+        return none
     NAMED.get(t)
+
+## The arguments of a colour function, legacy (`rgb(1, 2, 3, .5)`) or modern
+## (`rgb(1 2 3 / 50%)`): the words split at commas, spaces and `/`.
+fn color_args(inner str) List[str]
+    [p for p in inner.replace(",", " ").replace("/", " ").split(" ") if p.trim() != ""]
+
+## A colour channel: a percentage of `full`, `none` as 0, else the number.
+fn channel(v str, full float) float?
+    t := v.trim()
+    if t == "none"
+        return 0.0
+    if r := t.strip_suffix("%")
+        return css_float(r)? * full / 100.0
+    css_float(t)
+
+## A hue in degrees: a number, or an angle in `deg`, `turn`, `rad` or `grad`.
+fn hue(v str) float?
+    t := v.trim()
+    if t == "none"
+        return 0.0
+    if r := t.strip_suffix("deg")
+        return css_float(r)
+    if r := t.strip_suffix("grad")
+        return css_float(r)? * 0.9
+    if r := t.strip_suffix("rad")
+        return css_float(r)? * 180.0 / 3.141592653589793
+    if r := t.strip_suffix("turn")
+        return css_float(r)? * 360.0
+    css_float(t)
+
+## A channel in 0 to 255 as an int, clamped.
+fn byte_of(x float) int
+    fmin(fmax(x, 0.0), 255.0).round().to_int()
+
+## `hsl(h s l)` as [r, g, b] (CSS Color 4 §7.1): `s` and `l` from 0 to 1.
+fn hsl_rgb(h0 float, s0 float, l0 float) List[int]
+    h := h0 - (h0 / 360.0).floor() * 360.0
+    s := fmin(fmax(s0, 0.0), 1.0)
+    l := fmin(fmax(l0, 0.0), 1.0)
+    a := s * fmin(l, 1.0 - l)
+    mut out := List[int]()
+    for n in [0.0, 8.0, 4.0]
+        mut k := n + h / 30.0
+        k = k - (k / 12.0).floor() * 12.0
+        f := l - a * fmax(-1.0, fmin(fmin(k - 3.0, 9.0 - k), 1.0))
+        out.push(byte_of(f * 255.0))
+    out
+
+## An Oklab colour (`l` 0 to 1) as sRGB [r, g, b] (CSS Color 4 §9.2 and
+## the Oklab reference matrices), clamped into the gamut.
+fn oklab_rgb(l0 float, a float, b float) List[int]
+    l1 := l0 + 0.3963377774 * a + 0.2158037573 * b
+    m1 := l0 - 0.1055613458 * a - 0.0638541728 * b
+    s1 := l0 - 0.0894841775 * a - 1.291485548 * b
+    l := l1 * l1 * l1
+    m := m1 * m1 * m1
+    s := s1 * s1 * s1
+    r := 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
+    g := 0.0 - 1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
+    bl := 0.0 - 0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s
+    [byte_of(gamma(r) * 255.0), byte_of(gamma(g) * 255.0), byte_of(gamma(bl) * 255.0)]
+
+## A linear-light sRGB channel encoded with the sRGB transfer function.
+fn gamma(x float) float
+    if x <= 0.0
+        return 0.0
+    if x <= 0.0031308
+        return 12.92 * x
+    1.055 * x.pow(1.0 / 2.4) - 0.055
+
+## `color-mix(in SPACE, a [p%], b [q%])` given the text after `color-mix(`,
+## mixed in sRGB whatever the space (CSS Color 5 §2, simplified): a missing
+## percentage is the rest of 100, and `transparent` gives the other colour
+## at its share of opacity, over `under`.
+fn color_mix(inner str, under int) int?
+    if not inner.ends_with(")")
+        return none
+    parts := top_commas(inner.slice(0, inner.chars().len() - 1))
+    if parts.len() != 3
+        return none
+    a := mix_part(parts[1])
+    b := mix_part(parts[2])
+    mut pa := a.1
+    mut pb := b.1
+    if pa < 0.0 and pb < 0.0
+        pa = 50.0
+        pb = 50.0
+    elif pa < 0.0
+        pa = 100.0 - pb
+    elif pb < 0.0
+        pb = 100.0 - pa
+    total := pa + pb
+    if total <= 0.0
+        return none
+    ca := color_over(a.0, under)
+    cb := color_over(b.0, under)
+    if x := ca
+        if y := cb
+            wa := pa / total
+            r := (x / 65536).to_float() * wa + (y / 65536).to_float() * (1.0 - wa)
+            g := (x / 256 % 256).to_float() * wa + (y / 256 % 256).to_float() * (1.0 - wa)
+            bb := (x % 256).to_float() * wa + (y % 256).to_float() * (1.0 - wa)
+            return mix(byte_of(r), byte_of(g), byte_of(bb), fmin(total, 100.0) / 100.0, under)
+        return mix(x / 65536, x / 256 % 256, x % 256, pa / total * fmin(total, 100.0) / 100.0, under)
+    if y := cb
+        return mix(y / 65536, y / 256 % 256, y % 256, pb / total * fmin(total, 100.0) / 100.0, under)
+    none
+
+## One colour of `color-mix()` and its percentage (-1 when not given).
+fn mix_part(s str)(str, float)
+    ts := tokens(s.trim())
+    mut color_text := List[str]()
+    mut pct := -1.0
+    for t in ts
+        if r := t.strip_suffix("%")
+            if x := css_float(r)
+                pct = x
+                continue
+        color_text.push(t)
+    (color_text.join(" "), pct)
+
+## `v` with `currentcolor` (CSS Color 4 §6.4) written as the text colour `ink`.
+fn with_current(v str, ink int) str
+    if not v.contains("currentcolor")
+        return v
+    v.replace("currentcolor", hex_of(ink))
+
+## `#rrggbb` for colour `c`.
+fn hex_of(c int) str
+    "#{c.to_hex().pad_left(6, '0')}"
 
 ## Channels `r`, `g`, `b` at opacity `alpha` over `under`; none when clear.
 fn mix(r int, g int, b int, alpha float, under int) int?
@@ -479,6 +744,15 @@ struct St
     alt str
     ## The background colour text and boxes are drawn over, for `rgba()`.
     under int
+    ## `visibility: hidden` or `collapse` (CSS 2.1 §11.2): laid out, not
+    ## painted; a descendant with `visibility: visible` paints again.
+    ghost bool
+    ## The product of the `opacity` of the element and its ancestors (CSS
+    ## Color 4 §14.1); colours are mixed toward `under` by it, and nothing is
+    ## painted below 0.02.
+    fade float
+    ## `color: transparent`: the text takes its room and is not drawn.
+    clear bool
 
 ## A block's own box: margins, borders, padding, background and width.
 struct Bx
@@ -510,6 +784,15 @@ struct Bx
     bottom float?
     ml_auto bool
     mr_auto bool
+    ## `min-width`, `min-height` and `max-height` (border box, as `width`).
+    min_width float?
+    min_height float?
+    max_height float?
+    ## `aspect-ratio` as width over height, 0 when not set.
+    aspect float
+    ## `overflow` (or `-x`/`-y`) is `hidden`, `clip`, `auto` or `scroll`: the
+    ## content is cut at the padding box (CSS Overflow 3 §3).
+    clips bool
 
 fn Bx.boxed(self) bool
     self.bg != none or self.bt > 0.0 or self.br > 0.0 or self.bb > 0.0 or self.bl > 0.0
@@ -617,17 +900,32 @@ fn text_style(tag str, cs Map[str, str], parent St) St
     if s := cs.get("font-style")
         st.italic = page.font_italic(s, parent.italic)
     if c := cs.get("color")
-        if c.trim() == "inherit"
+        ct := c.trim()
+        if ct == "inherit" or ct == "currentcolor"
             st.color = parent.color
-        elif k := color_over(c, parent.under)
+        elif ct == "transparent"
+            st.clear = true
+        elif k := color_over(ct, parent.under)
             st.color = k
+            st.clear = false
     if fill := cs.get("-webkit-text-fill-color")
         if fill.trim() == "transparent"
             ## `background-clip: text` over a gradient: the first stop.
             if g := gradient_first(cs.get("background") else (cs.get("background-image") else ""))
                 st.color = g
-        elif k := color_over(fill, parent.under)
+                st.clear = false
+        elif k := color_over(with_current(fill, st.color), parent.under)
             st.color = k
+    if v := cs.get("visibility")
+        vt := v.trim()
+        if vt == "hidden" or vt == "collapse"
+            st.ghost = true
+        elif vt == "visible"
+            st.ghost = false
+    if v := cs.get("opacity")
+        ot := v.trim()
+        o := if ot.ends_with("%") then (css_float(ot.slice(0, ot.chars().len() - 1)) else 100.0) / 100.0 else (css_float(ot) else 1.0)
+        st.fade = st.fade * fmin(fmax(o, 0.0), 1.0)
     if td := cs.get("text-decoration")
         st.underline = td.contains("underline")
     if a := cs.get("text-align")
@@ -680,6 +978,11 @@ fn box_of(tag str, cs Map[str, str], st St, avail float) Bx
         bottom: none,
         ml_auto: false,
         mr_auto: false,
+        min_width: none,
+        min_height: none,
+        max_height: none,
+        aspect: 0.0,
+        clips: overflow_clips(cs),
     )
     size := st.size
     match tag
@@ -777,7 +1080,7 @@ fn box_of(tag str, cs Map[str, str], st St, avail float) Bx
         b.bb = m.2
         b.bl = m.3
     if v := cs.get("border-color")
-        b.bcolor = color_over(v, st.under) else b.bcolor
+        b.bcolor = color_over(with_current(v, st.color), st.under) else b.bcolor
     if v := cs.get("border-top")
         p := border_part(v, size, st.color, st.under)
         b.bt = p.0
@@ -795,13 +1098,20 @@ fn box_of(tag str, cs Map[str, str], st St, avail float) Bx
         b.br = p.0
         b.bcolor = p.1
     if v := cs.get("background-color")
-        b.bg = color_over(v, st.under)
+        b.bg = color_over(with_current(v, st.color), st.under)
     if v := cs.get("background")
-        for t in tokens(v)
+        for t in tokens(with_current(v, st.color))
             if k := color_over(t, st.under)
                 b.bg = k
         if b.bg == none
             b.bg = gradient_first(v)
+        if v.trim() == "none" or v.trim() == "transparent"
+            b.bg = none
+    ## An icon cut out by a mask picture (`mask-image: url(...)`) is not
+    ## drawn as the solid box under it (review W7) until masks are painted.
+    for name in ["mask-image", "-webkit-mask-image", "mask", "-webkit-mask"]
+        if (cs.get(name) else "").contains("url(")
+            b.bg = none
     clip := cs.get("background-clip") else (cs.get("-webkit-background-clip") else "")
     if clip.trim() == "text"
         b.bg = none
@@ -834,9 +1144,59 @@ fn box_of(tag str, cs Map[str, str], st St, avail float) Bx
     if v := cs.get("height")
         b.height = length(v, size, 0.0)
     if v := cs.get("min-height")
-        if m := length(v, size, 0.0)
-            b.height = m
+        b.min_height = length(v, size, 0.0)
+    if v := cs.get("max-height")
+        b.max_height = length(v, size, 0.0)
+    if v := cs.get("min-width")
+        if not (avail >= SHRINK_W and v.trim().ends_with("%"))
+            b.min_width = length(v, size, avail)
+    if v := cs.get("aspect-ratio")
+        b.aspect = ratio_of(v)
+    if v := cs.get("inset")
+        ts := tokens(v)
+        n := ts.len()
+        if n > 0
+            ## Top, right, bottom and left as `margin` gives them; a side
+            ## set on its own wins (CSS Positioned Layout 3 §3.1).
+            mut four := [ts[0], ts[0], ts[0], ts[0]]
+            if n == 2
+                four = [ts[0], ts[1], ts[0], ts[1]]
+            elif n == 3
+                four = [ts[0], ts[1], ts[2], ts[1]]
+            elif n >= 4
+                four = [ts[0], ts[1], ts[2], ts[3]]
+            if cs.get("top") == none
+                b.top = length(four[0], size, avail)
+            if cs.get("right") == none
+                b.right = length(four[1], size, avail)
+            if cs.get("bottom") == none
+                b.bottom = length(four[2], size, avail)
+            if cs.get("left") == none
+                b.left = length(four[3], size, avail)
     b
+
+## `aspect-ratio: w / h`, `w/h` or a number as width over height; 0 for
+## `auto` and anything unreadable. `auto 16 / 9` takes the ratio.
+fn ratio_of(v str) float
+    t := v.replace("auto", "").trim()
+    if t == ""
+        return 0.0
+    parts := t.split("/")
+    a := css_float(parts[0]) else 0.0
+    b := if parts.len() > 1 then (css_float(parts[1]) else 0.0) else 1.0
+    if a <= 0.0 or b <= 0.0
+        return 0.0
+    a / b
+
+## Whether `overflow`, `overflow-x` or `overflow-y` in `cs` cuts the content
+## off at the padding box (`hidden`, `clip`, `auto`, `scroll`).
+fn overflow_clips(cs Map[str, str]) bool
+    for name in ["overflow", "overflow-x", "overflow-y"]
+        if v := cs.get(name)
+            for t in tokens(v.trim())
+                if t == "hidden" or t == "clip" or t == "auto" or t == "scroll"
+                    return true
+    false
 
 # ---- Layout ---------------------------------------------------------------
 
@@ -879,12 +1239,41 @@ struct Atom
     edge int
     ## The form control's node, -1 if none.
     node int
+    ## A picture's drawn size inside its box (`object-fit`), else the box's.
+    pw float
+    ph float
+    ## An inline box's (`BOX`) operations and hit boxes, laid out from
+    ## (0, 0); `emit` moves them to where the line puts the box.
+    sub List[draw.Op]
+    sub_hits List[Hit]
 
 WORD := 0
 SPACE := 1
 BREAK := 2
 IMAGE := 3
 CONTROL := 4
+## An inline-level box laid out on its own (`inline-block`, `inline-flex`,
+## a styled `button`): CSS 2.1 §9.2.2 atomic inline.
+BOX := 5
+
+## An atom of `kind` with the other fields empty.
+fn atom_of(kind int, text str, w float, h float, st St) Atom
+    Atom(
+        kind,
+        text,
+        w,
+        h,
+        size: st.size,
+        st,
+        src: "",
+        fill: 0,
+        edge: 0,
+        node: -1,
+        pw: w,
+        ph: h,
+        sub: [],
+        sub_hits: [],
+    )
 
 ## A float's box, which text beside it wraps around.
 struct Float
@@ -943,14 +1332,131 @@ struct Ctx
     ## The right edge of the shrink-wrapped floats placed while measuring, so
     ## their padding and border count even when nothing is drawn there.
     reach float
+    ## The window, for viewport units (`viewport_px`).
+    view_w float
+    view_h float
+    ## Whether each element is drawn at all (`Ctx.shows`), by node.
+    shown Map[int, bool]
 
 CONTROLS := {"button", "input", "select", "textarea"}
 FLOW_FLEX := {"flex", "inline-flex"}
 
+## Whether element `id` is drawn at all (cached per layout): see `Ctx.shows`.
 fn Ctx.visible(mut self, id int) bool
-    n := self.d.nodes[id]
-    n.kind == Element and not page.HIDDEN.contains(n.tag) and self.d.attr(id, "hidden") == none
+    if self.d.nodes[id].kind != Element
+        return false
+    if cached := self.shown.get(id)
+        return cached
+    ok := self.shows(id)
+    self.shown[id] = ok
+    ok
 
+## Whether element `id` is drawn: not metadata, not `hidden`, not a closed
+## `dialog` or a `popover` (HTML §6.12, §15.3.3; a popover script opened is
+## not known here), not the content of a closed `details` other than its
+## first `summary` (HTML §4.11.1), and not hidden by its style (`hidden_box`).
+fn Ctx.shows(mut self, id int) bool
+    tag := self.d.nodes[id].tag
+    if page.HIDDEN.contains(tag) or self.d.attr(id, "hidden") != none
+        return false
+    if tag == "dialog" and self.d.attr(id, "open") == none
+        return false
+    if self.d.attr(id, "popover") != none
+        return false
+    if page.closed_child(self.d, id)
+        return false
+    not hidden_box(self.element_style(id))
+
+## Whether cascaded values `cs` hide the box and everything in it without
+## `display: none`, by the patterns sites use to hide text from the eye
+## (review W5, G3, X6): a `clip: rect()` of at most a pixel on an
+## absolutely positioned box, `clip-path: inset(50%)` or more, an
+## overflow-cutting box at most a pixel wide or high with no padding to show,
+## a `scale(0)` transform, `content-visibility: hidden`, or an absolutely
+## positioned box moved a thousand pixels or more off the page's top or left.
+fn hidden_box(cs Map[str, str]) bool
+    pos := (cs.get("position") else "").trim()
+    if pos == "absolute" or pos == "fixed"
+        if v := cs.get("clip")
+            if tiny_rect(v)
+                return true
+        for side in ["left", "top", "right"]
+            if v := cs.get(side)
+                if (length(v, 16.0, 0.0) else 0.0) <= -999.0
+                    return true
+    if v := cs.get("clip-path")
+        shape := v.trim().replace(" ", "")
+        if shape.starts_with("inset(50%") or shape.starts_with("inset(100%") or shape.starts_with("circle(0")
+            return true
+    ## A flex item that grows (`flex: 1; width: 0; overflow: hidden`, the
+    ## truncation idiom) is given its width by its container, not hidden.
+    if overflow_clips(cs) and flex_of(cs).grow <= 0.0
+        for name in ["width", "max-width"]
+            if v := cs.get(name)
+                if not v.contains("%") and (length(v, 16.0, 0.0) else 2.0) <= 1.0
+                    if not padded_in(cs, ["padding", "padding-left", "padding-right", "padding-inline"])
+                        return true
+        for name in ["height", "max-height"]
+            if v := cs.get(name)
+                if not v.contains("%") and (length(v, 16.0, 0.0) else 2.0) <= 1.0
+                    if not padded_in(cs, ["padding", "padding-top", "padding-bottom", "padding-block"])
+                        return true
+    if v := cs.get("transform")
+        tf := v.replace(" ", "")
+        if tf.contains("scale(0)") or tf.contains("scale(0,0)") or tf.contains("scalex(0)") or tf.contains("scaley(0)")
+            return true
+    (cs.get("content-visibility") else "").trim() == "hidden"
+
+## Whether `clip: rect(top right bottom left)` leaves at most a pixel each way.
+fn tiny_rect(v str) bool
+    t := v.trim()
+    inner := t.strip_prefix("rect(") else return false
+    nums := color_args(inner.replace(")", ""))
+    if nums.len() != 4
+        return false
+    mut vals := List[float]()
+    for n in nums
+        vals.push(length(n, 16.0, 0.0) else 0.0)
+    vals[2] - vals[0] <= 1.0 and vals[1] - vals[3] <= 1.0
+
+## Whether any of the padding properties `names` in `cs` is more than zero.
+fn padded_in(cs Map[str, str], names List[str]) bool
+    for name in names
+        if v := cs.get(name)
+            for t in tokens(v)
+                if (length(t, 16.0, 100.0) else 0.0) > 0.0
+                    return true
+    false
+
+## Properties whose value is inherited by default (CSS 2.1 property index),
+## among those Garlic reads: for these `inherit` and `unset` are what the
+## layout does with no value at all.
+INHERITED := {
+    "color",
+    "font",
+    "font-size",
+    "font-weight",
+    "font-style",
+    "font-family",
+    "line-height",
+    "text-align",
+    "text-transform",
+    "white-space",
+    "visibility",
+    "list-style",
+    "list-style-type",
+    "color-scheme",
+    "-webkit-text-fill-color",
+    "overflow-wrap",
+}
+
+## Element `id`'s cascaded values with custom properties substituted,
+## viewport units in pixels (`viewport_px`), and the CSS-wide keywords
+## resolved (CSS Cascade 4 §7.3): `inherit` on a property that is not
+## inherited takes the parent's value; `initial`, `unset`, `revert` and
+## `revert-layer` drop the value so the tag's default applies, and so do
+## `inherit` and `unset` on an inherited one (the text style already
+## inherits). `display` keeps its keyword for `is_block`.
 fn Ctx.element_style(mut self, id int) Map[str, str]
     if self.d.nodes[id].tag == "#document"
         return Map[str, str]()
@@ -961,8 +1467,20 @@ fn Ctx.element_style(mut self, id int) Map[str, str]
     none_own := Map[str, str]()
     mut out := Map[str, str]()
     for k in r.keys()
-        if not k.starts_with("--")
-            out[k] = self.subst_at(r[k], none_own, owner)
+        if k.starts_with("--")
+            continue
+        v := viewport_px(self.subst_at(r[k], none_own, owner), self.view_w, self.view_h)
+        t := v.trim()
+        if k == "display"
+            out[k] = v
+        elif t == "inherit" and not INHERITED.contains(k)
+            parent := self.d.nodes[id].parent
+            if pv := self.element_style(parent).get(k)
+                out[k] = pv
+        elif t == "inherit" or t == "initial" or t == "unset" or t == "revert" or t == "revert-layer"
+            continue
+        else
+            out[k] = v
     self.styles[id] = out
     out
 
@@ -1131,46 +1649,13 @@ fn Ctx.tw(mut self, text str, size float, bold bool, italic bool, font str) floa
     text_width(text, size, bold, font == "mono")
 
 fn Ctx.word_atom(mut self, text str, st St) Atom
-    Atom(
-        kind: WORD,
-        text,
-        w: self.tw(text, st.size, st.bold, st.italic, font_of(st)),
-        h: st.size * st.lh,
-        size: st.size,
-        st,
-        src: "",
-        fill: 0,
-        edge: 0,
-        node: -1,
-    )
+    atom_of(WORD, text, self.tw(text, st.size, st.bold, st.italic, font_of(st)), st.size * st.lh, st)
 
 fn Ctx.space_atom(mut self, st St) Atom
-    Atom(
-        kind: SPACE,
-        text: " ",
-        w: self.tw(" ", st.size, st.bold, st.italic, font_of(st)),
-        h: st.size * st.lh,
-        size: st.size,
-        st,
-        src: "",
-        fill: 0,
-        edge: 0,
-        node: -1,
-    )
+    atom_of(SPACE, " ", self.tw(" ", st.size, st.bold, st.italic, font_of(st)), st.size * st.lh, st)
 
 fn Ctx.break_atom(mut self, st St) Atom
-    Atom(
-        kind: BREAK,
-        text: "",
-        w: 0.0,
-        h: st.size * st.lh,
-        size: st.size,
-        st,
-        src: "",
-        fill: 0,
-        edge: 0,
-        node: -1,
-    )
+    atom_of(BREAK, "", 0.0, st.size * st.lh, st)
 
 ## Lays out the pending inline atoms as lines in the column from `x`, `w`
 ## wide.
@@ -1277,6 +1762,9 @@ fn same_look(a St, b St) bool
         and a.mono == b.mono
         and a.serif == b.serif
         and a.href == b.href
+        and a.ghost == b.ghost
+        and a.fade == b.fade
+        and a.clear == b.clear
 
 fn Ctx.has_content(mut self, line List[Atom]) bool
     for a in line
@@ -1318,23 +1806,25 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
     if self.marker != ""
         first := line[0]
         mw := self.tw(self.marker, first.size, false, false, "sans")
-        self.ops.push(draw.Op.Str(
-            x: self.marker_x - mw,
-            y: self.y + asc - atom_asc(first),
-            text: self.marker,
-            font: "sans",
-            size: first.size,
-            fg: first.st.color,
-            bold: false,
-            italic: false,
-            underline: false,
-        ))
+        if inked(first.st)
+            self.ops.push(draw.Op.Str(
+                x: self.marker_x - mw,
+                y: self.y + asc - atom_asc(first),
+                text: self.marker,
+                font: "sans",
+                size: first.size,
+                fg: tint(first.st.color, first.st),
+                bold: false,
+                italic: false,
+                underline: false,
+            ))
         self.marker = ""
     mut k := 0
     while k < line.len()
         a := line[k]
         a_asc := atom_asc(a)
         top := self.y + asc - a_asc
+        inks := inked(a.st)
         ## Neighbouring words in one style are drawn as one string, so the
         ## host spaces them itself; only the estimate places the string.
         if a.kind == WORD or a.kind == SPACE
@@ -1348,18 +1838,19 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
                 text = "{text}{line[j].text}"
                 run_w += line[j].w
                 j += 1
-            if text.trim() != ""
-                self.ops.push(draw.Op.Str(
-                    x: cx,
-                    y: top,
-                    text: text.trim_end(),
-                    font: font_of(a.st),
-                    size: a.size,
-                    fg: a.st.color,
-                    bold: a.st.bold,
-                    italic: a.st.italic,
-                    underline: a.st.underline,
-                ))
+            if text.trim() != "" and inks
+                if not a.st.clear
+                    self.ops.push(draw.Op.Str(
+                        x: cx,
+                        y: top,
+                        text: text.trim_end(),
+                        font: font_of(a.st),
+                        size: a.size,
+                        fg: tint(a.st.color, a.st),
+                        bold: a.st.bold,
+                        italic: a.st.italic,
+                        underline: a.st.underline,
+                    ))
                 if a.st.href != ""
                     self.hits.push(Hit(
                         x: cx,
@@ -1373,28 +1864,53 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
             cx += run_w
             k = j
             continue
-        elif a.kind == IMAGE
-            self.ops.push(draw.Op.Pic(x: cx, y: self.y + asc - a.h, w: a.w, h: a.h, src: a.src))
+        elif a.kind == IMAGE and inks
+            py := self.y + asc - a.h
+            if a.src != ""
+                self.ops.push(draw.Op.Pic(
+                    x: cx + (a.w - a.pw) / 2.0,
+                    y: py + (a.h - a.ph) / 2.0,
+                    w: a.pw,
+                    h: a.ph,
+                    src: a.src,
+                ))
+            elif a.text != ""
+                self.alt_in_box(a, cx, py)
             if a.st.href != ""
                 self.hits.push(Hit(
                     x: cx,
-                    y: self.y + asc - a.h,
+                    y: py,
                     w: a.w,
                     h: a.h,
                     href: a.st.href,
                     node: -1,
                     anchor: a.st.node,
                 ))
-        elif a.kind == CONTROL
+        elif a.kind == BOX
+            for op in a.sub
+                self.ops.push(moved(op, cx, top))
+            for hh in a.sub_hits
+                self.hits.push(Hit(
+                    x: hh.x + cx,
+                    y: hh.y + top,
+                    w: hh.w,
+                    h: hh.h,
+                    href: hh.href,
+                    node: hh.node,
+                    anchor: hh.anchor,
+                ))
+            if a.node >= 0 and inks
+                self.hits.push(Hit(x: cx, y: top, w: a.w, h: a.h, href: "", node: a.node, anchor: -1))
+        elif a.kind == CONTROL and inks
             cy := self.y + asc - a.h * 0.8
             self.hits.push(Hit(x: cx, y: cy, w: a.w, h: a.h, href: "", node: a.node, anchor: -1))
-            self.ops.push(draw.Op.Rect(x: cx, y: cy, w: a.w, h: a.h, color: a.edge))
+            self.ops.push(draw.Op.Rect(x: cx, y: cy, w: a.w, h: a.h, color: tint(a.edge, a.st)))
             self.ops.push(draw.Op.Rect(
                 x: cx + 1.0,
                 y: cy + 1.0,
                 w: a.w - 2.0,
                 h: a.h - 2.0,
-                color: a.fill,
+                color: tint(a.fill, a.st),
             ))
             self.ops.push(draw.Op.Str(
                 x: cx + 6.0,
@@ -1402,7 +1918,7 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
                 text: a.text,
                 font: "sans",
                 size: a.size,
-                fg: a.st.color,
+                fg: tint(a.st.color, a.st),
                 bold: false,
                 italic: false,
                 underline: false,
@@ -1412,48 +1928,160 @@ fn Ctx.emit(mut self, atoms_in List[Atom], x float, w float, align str, empty fl
     self.y += asc + desc
     self.pend = 0.0
 
+## The `alt` text of picture atom `a` that could not be drawn, inside its
+## box at (`x`, `y`): wrapped to the box's width, and only the lines that
+## fit its height (HTML §15.4.2 renders it in the picture's place).
+fn Ctx.alt_in_box(mut self, a Atom, x float, y float)
+    size := fmin(a.size, 13.0)
+    line_h := size * 1.2
+    room := a.w - 4.0
+    if room < size or a.h < line_h
+        return
+    mut at := y + 2.0
+    mut cur := List[str]()
+    for word in a.text.split(" ")
+        if word == ""
+            continue
+        cur.push(word)
+        if cur.len() > 1 and text_width(cur.join(" "), size, false, false) > room
+            cur.pop()
+            if at + line_h > y + a.h
+                return
+            self.alt_line(cur.join(" "), x + 2.0, at, size, room, a.st)
+            at += line_h
+            cur = [word]
+    if cur.len() > 0 and at + line_h <= y + a.h
+        self.alt_line(cur.join(" "), x + 2.0, at, size, room, a.st)
+
+## One line of `alt` text, cut to `room` pixels.
+fn Ctx.alt_line(mut self, text str, x float, y float, size float, room float, st St)
+    self.ops.push(draw.Op.Str(
+        x,
+        y,
+        text: fit_text(text, size, false, room),
+        font: "sans",
+        size,
+        fg: tint(st.color, st),
+        bold: false,
+        italic: false,
+        underline: false,
+    ))
+
+## The longest start of `text` that is at most `room` pixels wide at `size`.
+fn fit_text(text str, size float, bold bool, room float) str
+    fit_text_in(text, size, bold, false, room)
+
+## `fit_text` in a proportional or (`mono`) fixed font.
+fn fit_text_in(text str, size float, bold bool, mono bool, room float) str
+    if text_width(text, size, bold, mono) <= room
+        return text
+    cs := text.chars()
+    mut used := 0.0
+    mut n := 0
+    for c in cs
+        cw := text_width([c].join(""), size, bold, mono)
+        if used + cw > room
+            break
+        used += cw
+        n += 1
+    cs[0..n].join("")
+
+## A picture (`img`, or a `canvas` a script drew) as an atom: CSS 2.1
+## §10.3.2 and §10.6.2 with CSS Sizing 4 §5 (`aspect-ratio`). A side CSS sets
+## wins over the `width`/`height` attributes, which only count when CSS sets
+## neither (HTML §15.4.1); a missing side follows the shape, from the
+## picture itself, else the attributes, else `aspect-ratio`. `min-width`,
+## `max-width` and `max-height` then hold it, keeping the shape, and it never
+## overflows `avail`. `object-fit` places the picture in its box. A picture
+## that was fetched and cannot be decoded keeps its box and shows its `alt`
+## text inside it (review B6). `none` when nothing gives a size: the caller
+## shows the `alt` text inline.
 fn Ctx.image_atom(mut self, id int, cs Map[str, str], st St, avail float) Atom?
     # A `<canvas>` is a picture too: scripts publish its bitmap as a `data:`
     # address in `data-garlic-pixels` (js/vm/canvas2d.ail).
     pic_attr := if self.d.nodes[id].tag == "canvas" then "data-garlic-pixels" else "src"
     src := (if pic_attr == "src" then images.source_of(self.d, id) else self.d.attr(id, pic_attr))?
-    mut w := (self.d.attr(id, "width") else "0").to_float() else 0.0
-    mut h := (self.d.attr(id, "height") else "0").to_float() else 0.0
+    at := page.resolve(self.url, src)
+    nat := self.pics.get(at) else [0, 0]
+    known := nat[0] > 0 and nat[1] > 0
+    broken := self.pics.contains(at) and not known
+    nw := nat[0].to_float()
+    nh := nat[1].to_float()
+    measuring := avail >= SHRINK_W
+    aw := (self.d.attr(id, "width") else "0").replace("px", "").to_float() else 0.0
+    ah := (self.d.attr(id, "height") else "0").replace("px", "").to_float() else 0.0
+    mut ratio := 0.0
+    if known
+        ratio = nw / nh
+    elif aw > 0.0 and ah > 0.0
+        ratio = aw / ah
+    ar := cs.get("aspect-ratio") else ""
+    if ratio_of(ar) > 0.0 and not (known and ar.contains("auto"))
+        ratio = ratio_of(ar)
+    mut w := -1.0
+    mut h := -1.0
     if v := cs.get("width")
-        w = length(v, st.size, avail) else w
+        if not (measuring and v.contains("%"))
+            w = length(v, st.size, avail) else -1.0
     if v := cs.get("height")
-        h = length(v, st.size, avail) else h
-    ## A missing side comes from the picture's own size, keeping its shape.
-    if w <= 0.0 or h <= 0.0
-        nat := self.pics.get(page.resolve(self.url, src)) else [0, 0]
-        if nat[0] <= 0 or nat[1] <= 0
-            return none
-        nw := nat[0].to_float()
-        nh := nat[1].to_float()
-        if w > 0.0
-            h = w * nh / nw
-        elif h > 0.0
-            w = h * nw / nh
-        else
-            w = nw
+        if not v.contains("%")
+            h = length(v, st.size, 0.0) else -1.0
+    if w < 0.0 and h < 0.0
+        if aw > 0.0
+            w = aw
+        if ah > 0.0
+            h = ah
+    if w < 0.0 and h < 0.0 and known
+        w = nw
+        h = nh
+    if w >= 0.0 and h < 0.0
+        if ratio > 0.0
+            h = w / ratio
+        elif known
             h = nh
-    mut iw := w
-    mut ih := h
-    if iw > avail
-        ih = ih * avail / iw
-        iw = avail
-    Atom(
-        kind: IMAGE,
-        text: "",
-        w: iw,
-        h: ih,
-        size: st.size,
-        st,
-        src: page.resolve(self.url, src),
-        fill: 0,
-        edge: 0,
-        node: -1,
-    )
+    if h >= 0.0 and w < 0.0
+        if ratio > 0.0
+            w = h * ratio
+        elif known
+            w = nw
+    if w < 0.0 or h < 0.0
+        return none
+    if v := cs.get("max-width")
+        if not (measuring and v.contains("%"))
+            if mw := length(v, st.size, avail)
+                if w > mw
+                    h = if ratio > 0.0 then mw / ratio else h
+                    w = mw
+    if v := cs.get("min-width")
+        if not v.contains("%")
+            if mn := length(v, st.size, avail)
+                if w < mn
+                    h = if ratio > 0.0 then mn / ratio else h
+                    w = mn
+    if v := cs.get("max-height")
+        if not v.contains("%")
+            if mh := length(v, st.size, 0.0)
+                if h > mh
+                    w = if ratio > 0.0 then mh * ratio else w
+                    h = mh
+    if w > avail
+        h = h * avail / w
+        w = avail
+    mut a := atom_of(IMAGE, "", w, h, st)
+    if broken
+        ## Nothing to draw: the box keeps its place and says what it held.
+        a.text = self.d.attr(id, "alt") else ""
+        return a
+    a.src = at
+    if known and w > 0.0 and h > 0.0
+        fit := (cs.get("object-fit") else "fill").trim()
+        if fit == "contain" or fit == "scale-down" or fit == "none"
+            mut k := fmin(w / nw, h / nh)
+            if fit != "contain"
+                k = fmin(k, 1.0)
+            a.pw = nw * k
+            a.ph = nh * k
+    a
 
 fn Ctx.control_atom(mut self, id int, st St) Atom?
     tag := self.d.nodes[id].tag
@@ -1496,18 +2124,11 @@ fn Ctx.control_atom(mut self, id int, st St) Atom?
         label = "{typed}|"
         ink.color = st.color
         edge = 0x0a84ff
-    Atom(
-        kind: CONTROL,
-        text: label,
-        w,
-        h: st.size * 1.6,
-        size: st.size,
-        st: ink,
-        src: "",
-        fill,
-        edge,
-        node: id,
-    )
+    mut a := atom_of(CONTROL, label, w, st.size * 1.6, ink)
+    a.fill = fill
+    a.edge = edge
+    a.node = id
+    a
 
 ## An inline `<svg>` as a picture atom: its size from `width`/`height` (the
 ## attribute or the style), else its `viewBox`, else 24 points; none when
@@ -1543,20 +2164,23 @@ fn Ctx.svg_atom(mut self, id int, cs Map[str, str], st St, avail float) Atom?
         ) else
             return none
         self.svgs[key] = bm
-    Atom(kind: IMAGE, text: "", w, h, size: st.size, st, src: key, fill: 0, edge: 0, node: -1)
+    mut a := atom_of(IMAGE, "", w, h, st)
+    a.src = key
+    a
 
 ## Adds element `id`'s inline content to the pending atoms.
 fn Ctx.inline(mut self, id int, parent St, avail float)
-    n := self.d.nodes[id]
-    if n.kind == Text
-        self.add_text(n.text, parent)
+    if self.d.nodes[id].kind == Text
+        if not page.closed_child(self.d, id)
+            self.add_text(self.d.nodes[id].text, parent)
         return
-    if n.kind != Element or not self.visible(id)
+    if not self.visible(id)
         return
     cs := self.element_style(id)
-    if (cs.get("display") else "") == "none" or (cs.get("visibility") else "") == "hidden"
+    display := cs.get("display") else ""
+    if display == "none"
         return
-    tag := n.tag
+    tag := self.d.nodes[id].tag
     ecs := self.with_attrs(id, tag, cs)
     st := text_style(tag, ecs, parent)
     if tag == "svg"
@@ -1571,21 +2195,28 @@ fn Ctx.inline(mut self, id int, parent St, avail float)
     if tag == "img" or tag == "canvas"
         side := (cs.get("float") else (self.d.attr(id, "align") else "")).trim()
         if a := self.image_atom(id, cs, st, avail)
-            if side == "left" or side == "right"
+            if (side == "left" or side == "right") and a.src != ""
                 self.flush(self.col_x, self.col_w, parent.align)
                 self.settle()
                 fx := if side == "right" then self.col_x + self.col_w - a.w else self.col_x
-                self.ops.push(draw.Op.Pic(x: fx, y: self.y, w: a.w, h: a.h, src: a.src))
-                if st.href != ""
-                    self.hits.push(Hit(
-                        x: fx,
-                        y: self.y,
-                        w: a.w,
-                        h: a.h,
-                        href: st.href,
-                        node: -1,
-                        anchor: st.node,
+                if inked(st)
+                    self.ops.push(draw.Op.Pic(
+                        x: fx + (a.w - a.pw) / 2.0,
+                        y: self.y + (a.h - a.ph) / 2.0,
+                        w: a.pw,
+                        h: a.ph,
+                        src: a.src,
                     ))
+                    if st.href != ""
+                        self.hits.push(Hit(
+                            x: fx,
+                            y: self.y,
+                            w: a.w,
+                            h: a.h,
+                            href: st.href,
+                            node: -1,
+                            anchor: st.node,
+                        ))
                 self.floats.push(Float(
                     x: if side == "right" then fx - 8.0 else fx,
                     y: self.y,
@@ -1597,17 +2228,95 @@ fn Ctx.inline(mut self, id int, parent St, avail float)
                 self.atoms.push(a)
         elif alt := self.d.attr(id, "alt")
             if alt != ""
-                self.add_text(alt, text_style(tag, ecs, parent))
+                ## Inline `alt` text takes at least a normal line, even
+                ## under `line-height: 0` (a picture wrapper's), so it does
+                ## not pile onto its neighbours (review B6).
+                mut ast := st
+                ast.lh = fmax(ast.lh, 1.2)
+                self.add_text(alt, ast)
+        return
+    if ATOMIC.contains(display) or (tag == "button" and styled_control(cs))
+        self.atoms.push(self.box_atom(id, parent, cs, avail))
         return
     if CONTROLS.contains(tag)
         if a := self.control_atom(id, st)
             self.atoms.push(a)
         return
     bx := box_of(tag, cs, st, avail)
-    if bx.ml > 0.0 and (cs.get("display") else "").starts_with("inline-")
+    if bx.ml > 0.0 and display.starts_with("inline-")
         self.atoms.push(self.word_atom("", st))
-    for c in n.children
+    for c in self.d.nodes[id].children
         self.inline(c, st, avail)
+
+## The `display` values laid out as one box on a line (CSS Display 3 §2).
+ATOMIC := {"inline-block", "inline-flex", "inline-grid", "inline-table", "inline flow-root", "inline flex", "inline grid"}
+
+## Whether author styles give a `button` its own look (a background, a
+## border or padding), so it is laid out as a box with its content rather
+## than drawn as the default grey control (review X8).
+fn styled_control(cs Map[str, str]) bool
+    for name in ["background", "background-color", "border", "padding", "display", "border-radius"]
+        if cs.contains(name)
+            return true
+    false
+
+## Element `id` as one inline-level box (CSS 2.1 §10.3.9: shrink-to-fit
+## width, at most `avail`): laid out on its own from (0, 0) as a block, with
+## its background, border, padding and rounded corners, and carried as a
+## `BOX` atom that `emit` moves onto the line. The content width is
+## measured once per node (`max_content`).
+fn Ctx.box_atom(mut self, id int, parent St, cs Map[str, str], avail float) Atom
+    tag := self.d.nodes[id].tag
+    st := text_style(tag, self.with_attrs(id, tag, cs), parent)
+    bx := box_of(tag, cs, st, avail)
+    mut wide := 0.0
+    if bw := bx.width
+        wide = fmax(bw, bx.min_width else 0.0) + bx.ml + bx.mr
+    else
+        wide = fmax(self.max_content(id, parent) + bx.pr + bx.br, (bx.min_width else 0.0) + bx.ml) + bx.mr
+    wide = fmin(wide, avail)
+    o0 := self.ops.len()
+    h0 := self.hits.len()
+    y0 := self.y
+    p0 := self.pend
+    m0 := self.marker
+    f0 := self.floats.len()
+    saved := self.atoms
+    self.atoms = []
+    self.y = 0.0
+    self.pend = 0.0
+    self.marker = ""
+    self.block(id, parent, 0.0, wide)
+    self.settle()
+    h := self.y
+    mut a := atom_of(BOX, "", wide, h, st)
+    a.sub = self.ops[o0..self.ops.len()]
+    a.sub_hits = self.hits[h0..self.hits.len()]
+    if tag == "button"
+        a.node = id
+    self.drop_boxes(o0)
+    while self.ops.len() > o0
+        self.ops.pop()
+    while self.hits.len() > h0
+        self.hits.pop()
+    while self.floats.len() > f0
+        self.floats.pop()
+    self.atoms = saved
+    self.y = y0
+    self.pend = p0
+    self.marker = m0
+    a
+
+## Whether text and pictures in style `st` are painted: not hidden by
+## `visibility` and not fully transparent.
+fn inked(st St) bool
+    not st.ghost and st.fade >= 0.02
+
+## Colour `c` drawn at the opacity of style `st` over its background.
+fn tint(c int, st St) int
+    if st.fade >= 0.98
+        return c
+    mix(c / 65536, c / 256 % 256, c % 256, st.fade, st.under) else st.under
 
 ## Lays out the children of element `id` (style `st`) in the column from
 ## `x`, `w` wide, flowing inline runs into lines.
@@ -1627,7 +2336,8 @@ fn Ctx.children(mut self, id int, st St, x float, w float)
 ## children of a `display: contents` element take its place (CSS Display 3 §2.5).
 fn Ctx.flow_child(mut self, c int, st St, x float, w float)
     if self.d.nodes[c].kind == Text
-        self.add_text(self.d.nodes[c].text, st)
+        if not page.closed_child(self.d, c)
+            self.add_text(self.d.nodes[c].text, st)
     elif self.d.nodes[c].kind == Element and self.visible(c)
         n := self.d.nodes[c]
         cs := self.element_style(c)
@@ -1712,6 +2422,94 @@ fn lowered(op draw.Op, dy float) draw.Op
         )
         Pic(x, y, w, h, src) => draw.Op.Pic(x, y: y + dy, w, h, src)
 
+## Operation `op` moved right by `dx` and down by `dy`.
+fn moved(op draw.Op, dx float, dy float) draw.Op
+    match op
+        Rect(x, y, w, h, c) => draw.Op.Rect(x: x + dx, y: y + dy, w, h, color: c)
+        Text(x, y, t, fg, bold, italic, underline) => draw.Op.Text(
+            x: x + dx,
+            y: y + dy,
+            text: t,
+            fg,
+            bold,
+            italic,
+            underline,
+        )
+        Str(x, y, t, font, size, fg, bold, italic, underline) => draw.Op.Str(
+            x: x + dx,
+            y: y + dy,
+            text: t,
+            font,
+            size,
+            fg,
+            bold,
+            italic,
+            underline,
+        )
+        Pic(x, y, w, h, src) => draw.Op.Pic(x: x + dx, y: y + dy, w, h, src)
+
+## The empty operation a clipped-away one is replaced by, so indexes into
+## the list stay put: a rectangle of no size, which nothing draws.
+fn no_op() draw.Op
+    draw.Op.Rect(x: 0.0, y: 0.0, w: 0.0, h: 0.0, color: 0)
+
+## Cuts the operations from `o0` and the hit boxes from `h0` on to the
+## rectangle (`cx`, `cy`, `cw`, `ch`), the padding box of an element whose
+## `overflow` hides what sticks out (CSS Overflow 3 §3). The display list
+## has no clip operation that every consumer knows yet, so the cut is done
+## here: rectangles are intersected, text whose line falls mostly outside is
+## dropped and text running past the right edge is shortened, pictures
+## mostly outside are dropped. A hit box outside goes, one across the edge is
+## cut, so nothing hidden can be clicked.
+fn Ctx.clip_from(mut self, o0 int, h0 int, cx float, cy float, cw float, ch float)
+    x1 := cx + cw
+    y1 := cy + ch
+    for k in o0..self.ops.len()
+        match self.ops[k]
+            Rect(x, y, w, h, c) =>
+                rl := fmax(x, cx)
+                rt := fmax(y, cy)
+                rr := fmin(x + w, x1)
+                rb := fmin(y + h, y1)
+                if rr <= rl or rb <= rt
+                    if w > 0.0 or h > 0.0
+                        self.ops[k] = no_op()
+                elif rl != x or rt != y or rr != x + w or rb != y + h
+                    self.ops[k] = draw.Op.Rect(x: rl, y: rt, w: rr - rl, h: rb - rt, color: c)
+            Str(x, y, txt, font, size, fg, bold, italic, underline) =>
+                txt_w := text_width(txt, size, bold, font == "mono")
+                if y + size * 0.6 > y1 or y + size * 0.4 < cy or x >= x1 or x + txt_w <= cx
+                    self.ops[k] = no_op()
+                elif x + txt_w > x1 + 0.5
+                    cut := fit_text_in(txt, size, bold, font == "mono", x1 - x)
+                    self.ops[k] = if cut.trim() == "" then no_op() else draw.Op.Str(
+                        x,
+                        y,
+                        text: cut,
+                        font,
+                        size,
+                        fg,
+                        bold,
+                        italic,
+                        underline,
+                    )
+            Pic(x, y, w, h, _) =>
+                if x + w / 2.0 < cx or x + w / 2.0 > x1 or y + h / 2.0 < cy or y + h / 2.0 > y1
+                    self.ops[k] = no_op()
+            Text(_, _, _, _, _, _, _) => continue
+    mut kept := List[Hit]()
+    for k in h0..self.hits.len()
+        hh := self.hits[k]
+        hl := fmax(hh.x, cx)
+        ht := fmax(hh.y, cy)
+        hr := fmin(hh.x + hh.w, x1)
+        hb := fmin(hh.y + hh.h, y1)
+        if hr > hl and hb > ht
+            kept.push(Hit(x: hl, y: ht, w: hr - hl, h: hb - ht, href: hh.href, node: hh.node, anchor: hh.anchor))
+    while self.hits.len() > h0
+        self.hits.pop()
+    self.hits.extend(kept)
+
 ## Moves the element boxes recorded from operation `o0` on down by `dy`.
 fn Ctx.shift_boxes(mut self, o0 int, dy float)
     for k in 0..self.boxes.len()
@@ -1760,7 +2558,13 @@ fn Ctx.absolutes(mut self, id int, st St, late bool, boxh float)
             ox := if fixed then 0.0 else self.ax
             oy := if fixed then 0.0 else self.ay
             ow := if fixed then self.page_w else self.aw
-            wide := fmin((bx.width else self.max_content(c, st)) + bx.ml + bx.mr, ow)
+            mut wide := fmin((bx.width else self.max_content(c, st)) + bx.ml + bx.mr, ow)
+            ## Both `left` and `right` with no `width` stretch the box between
+            ## them (CSS 2.1 §10.3.7).
+            if bx.width == none
+                if l := bx.left
+                    if r := bx.right
+                        wide = fmax(ow - l - r, 0.0)
             mut at := ox
             if l := bx.left
                 at = ox + l
@@ -1844,20 +2648,18 @@ fn Ctx.intrinsic(mut self, id int, st St) float
 fn Ctx.block(mut self, id int, parent St, x float, w float)
     forced := self.force_h
     self.force_h = -1.0
-    n := self.d.nodes[id]
-    tag := n.tag
+    tag := self.d.nodes[id].tag
     cs := self.element_style(id)
     display := cs.get("display") else ""
-    if display == "none" or (cs.get("visibility") else "") == "hidden"
+    if display == "none"
         return
     if display == "contents"
         self.children(id, text_style(tag, self.with_attrs(id, tag, cs), parent), x, w)
         return
     if tag == "svg"
         ## An icon is drawn; one that draws nothing is stood for by its link's label.
-        cs0 := self.element_style(id)
-        st0 := text_style(tag, self.with_attrs(id, tag, cs0), parent)
-        if a := self.svg_atom(id, cs0, st0, w)
+        st0 := text_style(tag, self.with_attrs(id, tag, cs), parent)
+        if a := self.svg_atom(id, cs, st0, w)
             self.atoms.push(a)
             self.flush(x, w, parent.align)
         elif parent.alt != ""
@@ -1869,55 +2671,71 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
     mut bx := box_of(tag, cs, st, w)
     if forced >= 0.0
         bx.height = forced
+    ## Painted at all: not `visibility: hidden` and not fully transparent.
+    paints := inked(st)
     if bg := bx.bg
-        st.under = bg
+        ## What text and boxes inside are drawn over; also this box's fill.
+        st.under = tint(bg, st)
     if tag == "hr"
         self.settle()
         self.y += bx.mt
-        self.ops.push(draw.Op.Rect(
-            x: x + bx.ml,
-            y: self.y,
-            w: w - bx.ml - bx.mr,
-            h: 1.0,
-            color: RULE,
-        ))
+        if paints
+            self.ops.push(draw.Op.Rect(
+                x: x + bx.ml,
+                y: self.y,
+                w: w - bx.ml - bx.mr,
+                h: 1.0,
+                color: tint(RULE, st),
+            ))
         self.y += 1.0
         self.pend = bx.mb
         return
+    measuring := w >= SHRINK_W
     mut inner_w := w - bx.ml - bx.mr
     mut left := x + bx.ml
     mut set_w := bx.width
     if m := bx.max_width
         if set_w == none
-            if m < inner_w and w < SHRINK_W
+            if m < inner_w and not measuring
                 set_w = m
         elif m < (set_w else 0.0)
             set_w = m
+    if mw := bx.min_width
+        if mw > (set_w else (if measuring then 0.0 else inner_w))
+            set_w = mw
     if sw := set_w
         if sw < inner_w
             free := inner_w - sw
-            if w >= SHRINK_W
+            if measuring
                 left += 0.0
             elif bx.ml_auto and bx.mr_auto
                 left += free / 2.0
             elif bx.ml_auto
                 left += free
             inner_w = sw
+        elif bx.min_width != none
+            inner_w = sw
     border_w := inner_w
+    ## `aspect-ratio` gives a box with no set height its height from its
+    ## width (CSS Sizing 4 §5.1).
+    if bx.aspect > 0.0 and bx.height == none and not measuring
+        bx.height = border_w / bx.aspect
     content_x := left + bx.bl + bx.pl
     content_w := fmax(border_w - bx.bl - bx.br - bx.pl - bx.pr, 1.0)
     self.pend = fmax(self.pend, bx.mt)
     mut slot := -1
     mut top := self.y + self.pend
     positioned := bx.pos == "relative" or bx.pos == "absolute" or bx.pos == "fixed"
-    boxed := bx.boxed() or bx.padded() or bx.height != none or positioned
+    boxed := bx.boxed() or bx.padded() or bx.height != none or bx.min_height != none or positioned or bx.clips
     if boxed
         self.settle()
         top = self.y
-        if bx.bg != none or (bx.radius != 0.0 and bx.bt > 0.0)
+        if paints and (bx.bg != none or (bx.radius != 0.0 and bx.bt > 0.0))
             slot = self.ops.len()
             self.ops.push(draw.Op.Rect(x: left, y: top, w: border_w, h: 0.0, color: 0))
         self.y += bx.bt + bx.pt
+    o_in := self.ops.len()
+    h_in := self.hits.len()
     if tag == "li"
         self.li_marker(id, st, content_x)
     saved_ax := self.ax
@@ -1928,7 +2746,12 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
         self.ay = top
         self.aw = border_w
     self.absolutes(id, st, false, 0.0)
-    if tag == "table"
+    if tag == "img" or tag == "canvas"
+        ## A picture made a block (`display: block`, a flex or grid item).
+        if a := self.image_atom(id, cs, st, content_w)
+            self.atoms.push(a)
+            self.flush(content_x, content_w, st.align)
+    elif tag == "table"
         self.table(id, st, content_x, content_w)
     elif FLOW_FLEX.contains(display)
         inner_h := (bx.height else 0.0) - bx.pt - bx.pb - bx.bt - bx.bb
@@ -1951,6 +2774,15 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
         self.y += bx.pb + bx.bb
         if hh := bx.height
             self.y = fmax(self.y, top + hh)
+        if mh := bx.min_height
+            self.y = fmax(self.y, top + mh)
+        ## A box that cuts its overflow ends at its set height, and at most
+        ## at its `max-height`; the rest is cut off below (CSS 2.1 §10.7).
+        if bx.clips
+            if hh := bx.height
+                self.y = fmin(self.y, top + fmax(hh, bx.min_height else 0.0))
+            if mh := bx.max_height
+                self.y = fmin(self.y, top + fmax(mh, bx.min_height else 0.0))
         bottom := self.y
         if positioned
             self.ax = left
@@ -1960,70 +2792,59 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
             self.ax = saved_ax
             self.ay = saved_ay
             self.aw = saved_aw
+        if bx.clips
+            cw := if border_w >= SHRINK_W then 4.0 * SHRINK_W else border_w - bx.bl - bx.br
+            self.clip_from(o_in, h_in, left + bx.bl, top + bx.bt, cw, fmax(bottom - top - bx.bt - bx.bb, 0.0))
         radius := if bx.radius < 0.0 then fmin(
             border_w,
             bottom - top,
         ) * (0.0 - bx.radius) / 100.0 else bx.radius
         uniform := bx.bt == bx.br and bx.br == bx.bb and bx.bb == bx.bl
-        if radius >= 1.0 and uniform and (bx.bg != none or bx.bt > 0.0)
+        if radius >= 1.0 and uniform and slot >= 0
             ## Rounded corners: an outer shape in the border colour and an
             ## inner one in the fill, before the children.
+            fill := st.under
             mut shape := List[draw.Op]()
             if bx.bt > 0.0
-                shape.extend(rounded(left, top, border_w, bottom - top, radius, bx.bcolor))
+                shape.extend(rounded(left, top, border_w, bottom - top, radius, tint(bx.bcolor, st)))
                 shape.extend(rounded(
                     left + bx.bl,
                     top + bx.bt,
                     border_w - bx.bl - bx.br,
                     bottom - top - bx.bt - bx.bb,
                     fmax(radius - bx.bt, 0.0),
-                    bx.bg else st.under,
+                    fill,
                 ))
             else
-                shape.extend(rounded(
-                    left,
-                    top,
-                    border_w,
-                    bottom - top,
-                    radius,
-                    bx.bg else st.under,
-                ))
+                shape.extend(rounded(left, top, border_w, bottom - top, radius, fill))
             self.ops[slot] = shape[0]
             for k in 1..shape.len()
                 self.ops.insert(slot + k, shape[k])
-            self.pend = bx.mb
-            if tag == "body" or tag == "html"
-                if bg := bx.bg
-                    self.canvas = bg
-            return
-        if bg := bx.bg
-            self.ops[slot] = draw.Op.Rect(x: left, y: top, w: border_w, h: bottom - top, color: bg)
-        if bx.bt > 0.0
-            self.ops.push(draw.Op.Rect(x: left, y: top, w: border_w, h: bx.bt, color: bx.bcolor))
-        if bx.bb > 0.0
-            self.ops.push(draw.Op.Rect(
-                x: left,
-                y: bottom - bx.bb,
-                w: border_w,
-                h: bx.bb,
-                color: bx.bcolor,
-            ))
-        if bx.bl > 0.0
-            self.ops.push(draw.Op.Rect(
-                x: left,
-                y: top,
-                w: bx.bl,
-                h: bottom - top,
-                color: bx.bcolor,
-            ))
-        if bx.br > 0.0
-            self.ops.push(draw.Op.Rect(
-                x: left + border_w - bx.br,
-                y: top,
-                w: bx.br,
-                h: bottom - top,
-                color: bx.bcolor,
-            ))
+        else
+            if slot >= 0 and bx.bg != none
+                self.ops[slot] = draw.Op.Rect(x: left, y: top, w: border_w, h: bottom - top, color: st.under)
+            if paints
+                ink := tint(bx.bcolor, st)
+                if bx.bt > 0.0
+                    self.ops.push(draw.Op.Rect(x: left, y: top, w: border_w, h: bx.bt, color: ink))
+                if bx.bb > 0.0
+                    self.ops.push(draw.Op.Rect(
+                        x: left,
+                        y: bottom - bx.bb,
+                        w: border_w,
+                        h: bx.bb,
+                        color: ink,
+                    ))
+                if bx.bl > 0.0
+                    self.ops.push(draw.Op.Rect(x: left, y: top, w: bx.bl, h: bottom - top, color: ink))
+                if bx.br > 0.0
+                    self.ops.push(draw.Op.Rect(
+                        x: left + border_w - bx.br,
+                        y: top,
+                        w: bx.br,
+                        h: bottom - top,
+                        color: ink,
+                    ))
         self.pend = bx.mb
     else
         self.pend = fmax(self.pend, bx.mb)
@@ -2037,7 +2858,8 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
     ))
     if tag == "body" or tag == "html"
         if bg := bx.bg
-            self.canvas = bg
+            if paints
+                self.canvas = bg
 
 ## The `list-style-type` or `list-style` in `cs` as `none` or its first
 ## token, or "" when neither is set.
@@ -2083,7 +2905,7 @@ fn Ctx.items(mut self, id int) List[int]
     mut out := List[int]()
     for c in self.d.nodes[id].children
         if self.d.nodes[c].kind == Text
-            if html.collapse(self.d.nodes[c].text).trim() != ""
+            if html.collapse(self.d.nodes[c].text).trim() != "" and not page.closed_child(self.d, c)
                 out.push(c)
         elif self.visible(c)
             cs := self.element_style(c)
@@ -3011,13 +3833,20 @@ fn grid_place(cols List[List[int]], rows List[List[int]], ncols int) List[List[i
         cc += span
     out
 
-## The rows of `grid-template-areas`, each a list of area names.
+## The rows of `grid-template-areas` (or of the strings in a
+## `grid-template` shorthand), each a list of area names in lower case: the
+## quoted strings only, so `none` and the track sizes between the strings of
+## the shorthand are not rows (CSS Grid 1 §7.3, §7.4). Names compare without
+## case because the style sheet lower-cases `grid-area` values but not
+## strings (Wikipedia's `columnStart`, review task B1).
 fn area_rows(spec str) List[List[str]]
     mut rows := List[List[str]]()
-    for part in spec.replace("\"", "'").split("'")
-        words := [t for t in part.split(" ") if t.trim() != ""]
-        if words.len() > 0
-            rows.push(words)
+    parts := spec.replace("\"", "'").split("'")
+    for k in 0..parts.len()
+        if k % 2 == 1
+            words := [t.to_lower() for t in parts[k].replace("\t", " ").replace("\n", " ").split(" ") if t.trim() != ""]
+            if words.len() > 0
+                rows.push(words)
     rows
 
 ## The first and last row and column (0-based) `name` covers in `rows`, or [].
@@ -3053,7 +3882,9 @@ fn Ctx.grid(mut self, id int, st St, cs Map[str, str], x float, w float)
     shorthand := cs.get("grid-template") else ""
     if spec == "" and shorthand.contains("/")
         spec = shorthand.slice((shorthand.find("/") else 0) + 1, shorthand.chars().len()).trim()
-    areas := area_rows((cs.get("grid-template-areas") else "").trim())
+    mut areas := area_rows((cs.get("grid-template-areas") else "").trim())
+    if areas.len() == 0 and shorthand.contains("'")
+        areas = area_rows(shorthand)
     if areas.len() > 0
         self.grid_areas(items, st, cs, x, w, spec, areas)
         return
@@ -3100,26 +3931,54 @@ fn Ctx.grid_rows(
         at += cw + gap
     mut last := -1
     for b in cells
-        last = last.max(b[0])
+        last = last.max(b[1])
+    ## Where each item spanning several rows ends, and the row it ends in:
+    ## the rows it spans are laid out without it, then the grid grows to
+    ## hold it if it is taller than they are together.
+    mut tall_end := List[float]()
+    mut tall_row := List[int]()
     mut first := true
     for r in 0..last + 1
         mut row := List[int]()
         mut ws := List[float]()
         mut os := List[float]()
+        mut tall := List[int]()
         for k in 0..items.len()
             b := cells[k]
             if b[0] == r
                 mut span := gap * (b[3] - b[2]).to_float()
                 for c in b[2]..b[3] + 1
                     span += widths[c]
-                row.push(items[k])
-                ws.push(span)
-                os.push(offsets[b[2]])
-        if row.len() > 0
+                if b[1] > b[0]
+                    tall.push(k)
+                else
+                    row.push(items[k])
+                    ws.push(span)
+                    os.push(offsets[b[2]])
+        if row.len() > 0 or tall.len() > 0
             if not first
                 self.y += gaps[0]
             first = false
+            self.settle()
+            y_row := self.y
             self.row(row, st, x, ws, os, center, 0.0)
+            after := self.y
+            for k in tall
+                tb := cells[k]
+                mut tspan := gap * (tb[3] - tb[2]).to_float()
+                for c in tb[2]..tb[3] + 1
+                    tspan += widths[c]
+                self.y = y_row
+                self.pend = 0.0
+                self.lay_item(items[k], st, x + offsets[tb[2]], tspan)
+                self.settle()
+                tall_end.push(self.y)
+                tall_row.push(tb[1])
+            self.y = after
+            self.pend = 0.0
+        for k in 0..tall_row.len()
+            if tall_row[k] == r
+                self.y = fmax(self.y, tall_end[k])
 
 ## A grid with `grid-template-areas`: each item goes in the cells its
 ## `grid-area` names; items with no area follow, full width, a row each.
@@ -3144,8 +4003,13 @@ fn Ctx.grid_areas(
     mut cells := List[List[int]]()
     mut extra := areas.len()
     for it in items
-        name := (self.element_style(it).get("grid-area") else "").trim()
-        b := if self.d.nodes[it].kind == Element and name != "" then area_box(areas, name) else []
+        mut name := ""
+        if self.d.nodes[it].kind == Element
+            name = (self.element_style(it).get("grid-area") else "").trim().to_lower()
+            if name == ""
+                ## `grid-row-start: name` and the like name an area too.
+                name = (self.element_style(it).get("grid-row-start") else "").trim().to_lower()
+        b := if name != "" and not name.contains("/") then area_box(areas, name) else []
         if b.len() == 0
             cells.push([extra, extra, 0, ncols - 1])
             extra += 1
@@ -3213,7 +4077,8 @@ pub fn layout_with(
 
 ## `layout_with` using the run widths in `meas` (`probe_key`), drawing text
 ## field `editing` (a node, or -1) with a caret; the scene's `probes` are the
-## runs that were estimated, for the host to measure.
+## runs that were estimated, for the host to measure. The window is taken to
+## be 16:10 and dark; `layout_env` takes the real one.
 pub fn layout_measured(
     d html.Doc,
     url str,
@@ -3223,15 +4088,38 @@ pub fn layout_measured(
     meas Map[str, float],
     editing int,
 ) Scene
-    all := css.for_width(css.concat(sheet, css.document_sheet(d)), width.to_int())
-    ## `color-scheme: ... dark` on the root: the screen is dark, so the
-    ## default text is light (CSS Color Adjust 1).
-    mut ink := INK
-    if root := d.first("html")
-        if (css.cascade(d, root, all).get("color-scheme") else "").contains("dark")
-            ink = 0xe8e8e8
+    height := fmax(width * 5.0 / 8.0, 1.0)
+    layout_env(d, url, width, height, page_sheet(d, sheet, width, height, true), sizes, meas, editing)
+
+## The style sheet a layout of `d` uses in a window `width` by `height` CSS
+## pixels: the linked sheets in `sheet`, then the document's `<style>`
+## elements, keeping the rules whose media queries match. Building it parses
+## every `<style>` element and indexes every rule, so a caller that lays the
+## same document out again (measured text widths, a caret, a scroll that
+## re-lays) keeps it and passes it to `layout_env` (review-speed 3.6).
+pub fn page_sheet(d html.Doc, sheet css.Sheet, width float, height float, dark bool) css.Sheet
+    css.for_size(
+        css.concat(sheet, css.document_sheet(d)),
+        width.to_int().max(1),
+        height.to_int().max(1),
+        dark,
+    )
+
+## Lays `d` out `width` pixels wide in a window `height` pixels high (for
+## viewport units) with `all`, the sheet `page_sheet` built for that window;
+## the rest as `layout_measured`.
+pub fn layout_env(
+    d html.Doc,
+    url str,
+    width float,
+    height float,
+    all css.Sheet,
+    sizes Map[str, List[int]],
+    meas Map[str, float],
+    editing int,
+) Scene
     base := St(
-        color: ink,
+        color: INK,
         size: 16.0,
         bold: false,
         italic: false,
@@ -3247,6 +4135,9 @@ pub fn layout_measured(
         nowrap: false,
         alt: "",
         under: 0xffffff,
+        ghost: false,
+        fade: 1.0,
+        clear: false,
     )
     mut c := Ctx(
         d,
@@ -3281,8 +4172,18 @@ pub fn layout_measured(
         col_x: 0.0,
         col_w: width,
         reach: 0.0,
+        view_w: width,
+        view_h: height,
+        shown: {},
     )
-    c.block(0, base, 0.0, width)
+    ## `color-scheme: ... dark` on the root: the screen is dark, so the
+    ## default text is light (CSS Color Adjust 1). The root's cascade is kept
+    ## for the layout that follows.
+    mut st := base
+    if root := d.first("html")
+        if (c.cascaded(root).get("color-scheme") else "").contains("dark")
+            st.color = 0xe8e8e8
+    c.block(0, st, 0.0, width)
     c.settle()
     Scene(
         ops: c.ops,
@@ -3494,3 +4395,214 @@ fn run_with(s Scene, word str) str
     assert_eq(rect_in(s, 0xff0000).len(), 4)
     assert_eq(rect_in(s, 0x00ff00).len(), 4)
     assert_eq(rect_in(s, 0x0000ff).len(), 4)
+
+## The colour of the first string drawn that starts with `word`, or -1.
+fn ink_of(s Scene, word str) int
+    for op in s.ops
+        match op
+            Str(_, _, t, _, _, fg, _, _, _) =>
+                if t.starts_with(word)
+                    return fg
+            Rect | Text | Pic => continue
+    -1
+
+## Every picture drawn as [x, y, w, h].
+fn pics_in(s Scene) List[List[float]]
+    mut out := List[List[float]]()
+    for op in s.ops
+        match op
+            Pic(x, y, w, h, _) => out.push([x, y, w, h])
+            Rect | Text | Str => continue
+    out
+
+@test fn viewport_units_take_the_window_size()
+    s := test_scene(
+        "<style>body \{ margin: 0 } .a \{ width: 50vw; height: 10vh; background: #ff0000 } .b \{ width: 20vmin; height: 1px; background: #00ff00 }</style><div class=a></div><div class=b></div>",
+        1000.0,
+    )
+    a := rect_in(s, 0xff0000)
+    assert_near(a[2], 500.0, 0.5)
+    ## The window is taken as 16:10 when only the width is known.
+    assert_near(a[3], 62.5, 0.5)
+    assert_near(rect_in(s, 0x00ff00)[2], 125.0, 0.5)
+    assert_near(length(viewport_px("calc(100dvh - 2vw)", 1000.0, 800.0), 16.0, 0.0) else 0.0, 780.0, 0.01)
+    assert_eq(viewport_px("1px solid", 1000.0, 800.0), "1px solid")
+
+@test fn min_max_and_clamp_work_in_lengths()
+    assert_near(length("min(calc(100% - 32px), 722px)", 16.0, 1000.0) else 0.0, 722.0, 0.01)
+    assert_near(length("min(calc(100% - 32px), 722px)", 16.0, 500.0) else 0.0, 468.0, 0.01)
+    assert_near(length("clamp(100px, 50%, 300px)", 16.0, 1000.0) else 0.0, 300.0, 0.01)
+    assert_near(length("max(2em, 10px)", 16.0, 0.0) else 0.0, 32.0, 0.01)
+    assert_near(length("calc(10px + min(5px, 1em))", 16.0, 0.0) else 0.0, 15.0, 0.01)
+    s := test_scene(
+        "<style>body \{ margin: 0 } .w \{ max-width: min(calc(100% - 32px), 722px); background: #ff0000 }</style><div class=w>text</div>",
+        1000.0,
+    )
+    assert_near(rect_in(s, 0xff0000)[2], 722.0, 0.5)
+
+@test fn colour_functions_read_as_their_colours()
+    assert_eq(color("hsl(120 100% 25%)") else -1, 0x008000)
+    assert_eq(color("hsla(0, 100%, 50%, 1)") else -1, 0xff0000)
+    assert_eq(color("oklch(1 0 0)") else -1, 0xffffff)
+    assert_eq(color("oklab(0 0 0)") else -1, 0x000000)
+    assert_eq(color("rgb(255 0 0 / 50%)") else -1, 0xff8080)
+    assert_eq(color("rgba(0, 0, 255, .5)") else -1, 0x8080ff)
+    assert_eq(color("color-mix(in srgb, #ff0000 50%, #0000ff)") else -1, 0x800080)
+    assert_eq(color("color-mix(in oklab, #000000 50%, transparent)") else -1, 0x808080)
+    assert(color("transparent") == none)
+    s := test_scene(
+        "<style>.c \{ color: #00ff00; background: currentColor } .t \{ color: transparent }</style><div class=c>cur</div><p class=t>gone</p><p>kept</p>",
+        400.0,
+    )
+    assert_eq(rect_in(s, 0x00ff00).len(), 4)
+    assert_eq(text_at(s, "gone").len(), 0)
+    assert_eq(text_at(s, "kept").len(), 2)
+
+@test fn visually_hidden_patterns_draw_nothing_and_take_no_room()
+    src := """
+        <style>body \{ margin: 0 } p \{ margin: 0 } .sr \{ position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0) } .vh \{ width: 1px; height: 1px; overflow: hidden; margin: -1px } .cp \{ position: absolute; clip-path: inset(50%) } .off \{ position: absolute; left: -9999px } .z \{ transform: scale(0) }</style>
+        <p>top</p><div class=sr>Skip one</div><div class=vh>Skip two</div><div class=cp>Skip three</div><div class=off>Skip four</div><div class=z>Skip five</div><p>next</p>
+        """
+    s := test_scene(src, 400.0)
+    assert_eq(run_with(s, "Skip"), "")
+    plain := test_scene("<style>body \{ margin: 0 } p \{ margin: 0 }</style><p>top</p><p>next</p>", 400.0)
+    assert_near(text_at(s, "next")[1], text_at(plain, "next")[1], 0.5)
+
+@test fn overflow_hidden_cuts_the_content_at_the_box()
+    src := """
+        <style>body \{ margin: 0 } p \{ margin: 0; line-height: 20px } .box \{ height: 40px; overflow: hidden } .shut \{ height: 0; overflow: hidden }</style>
+        <div class=box><p>one</p><p>two</p><p>three</p><p>four</p></div><p>after</p><div class=shut><p>folded</p></div>
+        """
+    s := test_scene(src, 400.0)
+    assert_eq(text_at(s, "one").len(), 2)
+    assert_eq(text_at(s, "two").len(), 2)
+    assert_eq(text_at(s, "three").len(), 0)
+    assert_eq(text_at(s, "four").len(), 0)
+    assert_near(text_at(s, "after")[1], 40.0, 1.0)
+    assert_eq(text_at(s, "folded").len(), 0)
+    wide := test_scene(
+        "<style>body \{ margin: 0 } .n \{ width: 60px; overflow: hidden; white-space: nowrap }</style><div class=n>abcdefghijklmnopqrstuvwxyz</div>",
+        400.0,
+    )
+    cut := run_with(wide, "abc")
+    assert(cut.len() > 2 and cut.len() < 26)
+
+@test fn visibility_hidden_keeps_its_room_and_opacity_fades()
+    src := """
+        <style>body \{ margin: 0 } p \{ margin: 0 } .h \{ visibility: hidden } .v \{ visibility: visible } .o \{ opacity: 0 } .half \{ opacity: .5; color: #000000 }</style>
+        <p class=h>ghost <span class=v>shown</span></p><p>below</p><p class=o>clear</p><p class=half>grey</p>
+        """
+    s := test_scene(src, 400.0)
+    assert_eq(text_at(s, "ghost").len(), 0)
+    assert_eq(text_at(s, "shown").len(), 2)
+    assert(text_at(s, "below")[1] > 10.0)
+    assert_eq(text_at(s, "clear").len(), 0)
+    assert_eq(ink_of(s, "grey"), 0x808080)
+
+@test fn closed_dialogs_details_and_hidden_are_not_drawn()
+    src := """
+        <dialog>modal</dialog><dialog open>shown dialog</dialog><p hidden>hid</p><div popover>pop</div>
+        <details><summary>More</summary><p>secret</p> loose</details><details open><summary>Open</summary><p>visible</p></details>
+        """
+    s := test_scene(src, 400.0)
+    assert_eq(run_with(s, "modal"), "")
+    assert(run_with(s, "shown dialog") != "")
+    assert_eq(run_with(s, "hid"), "")
+    assert_eq(run_with(s, "pop"), "")
+    assert(run_with(s, "More") != "")
+    assert_eq(run_with(s, "secret"), "")
+    assert_eq(run_with(s, "loose"), "")
+    assert(run_with(s, "visible") != "")
+
+@test fn pictures_follow_css_sizes_their_shape_and_object_fit()
+    sizes := {"https://x.test/a.png": [2000, 1000], "https://x.test/b.webp": [0, 0]}
+    src := """
+        <style>body \{ margin: 0 } img \{ max-width: 100%; height: auto } .f \{ width: 200px; height: 200px; object-fit: contain } p \{ margin: 0 }</style>
+        <p><img src="https://x.test/a.png" width="2000" height="1000"></p><p><img class=f src="https://x.test/a.png"></p>
+        """
+    s := layout_with(html.parse(src), "https://x.test/", 400.0, css.parse("", 0), sizes)
+    ps := pics_in(s)
+    assert_eq(ps.len(), 2)
+    assert_near(ps[0][2], 400.0, 0.5)
+    assert_near(ps[0][3], 200.0, 0.5)
+    assert_near(ps[1][2], 200.0, 0.5)
+    assert_near(ps[1][3], 100.0, 0.5)
+    ## Contained: centred in the 200 by 200 box.
+    assert_near(ps[1][1] - ps[0][3], 50.0, 1.5)
+    ## A picture that cannot be decoded keeps its box and shows its alt text in it.
+    broken := layout_with(
+        html.parse("<style>body \{ margin: 0 } p \{ margin: 0 }</style><p><img src=\"https://x.test/b.webp\" width=120 height=60 alt=\"A long description of the picture\"></p><p>after</p>"),
+        "https://x.test/",
+        400.0,
+        css.parse("", 0),
+        sizes,
+    )
+    assert_eq(pics_in(broken).len(), 0)
+    alt := text_at(broken, "A long")
+    assert_eq(alt.len(), 2)
+    assert(text_at(broken, "after")[1] >= 59.0)
+    assert(run_with(broken, "picture") == "" or text_at(broken, "picture")[1] < 60.0)
+
+@test fn alt_text_takes_a_line_even_under_line_height_zero()
+    src := "<style>p \{ margin: 0 } .w \{ line-height: 0 }</style><div class=w><img src=\"https://x.test/none.webp\" alt=\"first picture\"></div><p>next</p>"
+    s := test_scene(src, 400.0)
+    assert(text_at(s, "next")[1] >= text_at(s, "first")[1] + 15.0)
+
+@test fn inline_blocks_and_styled_buttons_draw_their_boxes_on_the_line()
+    src := """
+        <style>body \{ margin: 0 } p \{ margin: 0 } .b \{ display: inline-block; padding: 4px 8px; background: #ff0000; border-radius: 4px } .f \{ background: #00ff00; padding: 2px 6px; border: 0 }</style>
+        <p>Go <span class=b>Join</span> now <button class=f>Follow</button></p>
+        """
+    s := test_scene(src, 400.0)
+    box := rect_in(s, 0xff0000)
+    assert_eq(box.len(), 4)
+    go := text_at(s, "Go")
+    join := text_at(s, "Join")
+    now := text_at(s, "now")
+    assert(box[0] > go[0])
+    assert_near(join[0], box[0] + 8.0, 1.0)
+    assert(now[0] >= box[0] + box[2] - 0.5)
+    assert(box[1] <= join[1])
+    assert_eq(rect_in(s, 0x00ff00).len(), 4)
+    assert(run_with(s, "Follow") != "")
+    hit := s.hit_at(text_at(s, "Follow")[0] + 2.0, text_at(s, "Follow")[1] + 4.0) else Hit(x: 0.0, y: 0.0, w: 0.0, h: 0.0, href: "", node: -1, anchor: -1)
+    assert(hit.node >= 0)
+
+@test fn named_grid_areas_place_items_whatever_the_case_of_their_names()
+    src := """
+        <style>body \{ margin: 0 } .g \{ display: grid; grid-template-columns: 200px 1fr; grid-template-areas: 'siteNotice siteNotice' 'columnStart pageContent' 'footer footer' } .n \{ grid-area: siteNotice } .s \{ grid-area: columnStart } .c \{ grid-area: pageContent } .f \{ grid-area: footer }</style>
+        <div class=g><div class=n>notice</div><div class=s>contents</div><div class=c>article</div><div class=f>foot</div></div>
+        """
+    s := test_scene(src, 1000.0)
+    assert_near(text_at(s, "contents")[0], 0.0, 0.5)
+    assert_near(text_at(s, "article")[0], 200.0, 1.0)
+    assert_near(text_at(s, "article")[1], text_at(s, "contents")[1], 0.5)
+    assert(text_at(s, "contents")[1] > text_at(s, "notice")[1])
+    assert(text_at(s, "foot")[1] > text_at(s, "article")[1])
+    ## An area over several rows does not push the rows it spans apart.
+    span := test_scene(
+        "<style>body \{ margin: 0 } .g \{ display: grid; grid-template: 'a e' 'b e' 'c e' / 1fr 100px } .a \{ grid-area: a } .b \{ grid-area: b } .c \{ grid-area: c } .e \{ grid-area: e; height: 300px }</style><div class=g><div class=a>aa</div><div class=b>bb</div><div class=c>cc</div><div class=e>ee</div></div><p>end</p>",
+        600.0,
+    )
+    assert(text_at(span, "bb")[1] < 100.0)
+    assert(text_at(span, "end")[1] >= 300.0)
+
+@test fn css_wide_keywords_resolve_for_box_properties()
+    src := """
+        <style>body \{ margin: 0 } .p \{ background: #ff0000; margin-left: 30px } .k \{ background: inherit; margin-left: inherit } .i \{ margin-left: initial }</style>
+        <div class=p><div class=k>kid</div></div><div class=p><div class=i>reset</div></div>
+        """
+    s := test_scene(src, 400.0)
+    assert_near(text_at(s, "kid")[0], 60.0, 0.5)
+    assert_near(text_at(s, "reset")[0], 30.0, 0.5)
+
+@test fn aspect_ratio_min_width_and_max_height_size_boxes()
+    src := """
+        <style>body \{ margin: 0 } .a \{ width: 200px; aspect-ratio: 2 / 1; background: #ff0000 } .b \{ width: 100px; min-width: 300px; height: 5px; background: #00ff00 } .c \{ max-height: 30px; overflow: auto; background: #0000ff } p \{ margin: 0; line-height: 20px }</style>
+        <div class=a></div><div class=b></div><div class=c><p>l1</p><p>l2</p><p>l3</p></div>
+        """
+    s := test_scene(src, 600.0)
+    assert_near(rect_in(s, 0xff0000)[3], 100.0, 0.5)
+    assert_near(rect_in(s, 0x00ff00)[2], 300.0, 0.5)
+    assert_near(rect_in(s, 0x0000ff)[3], 30.0, 0.5)
+    assert_eq(text_at(s, "l3").len(), 0)

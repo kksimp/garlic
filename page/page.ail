@@ -459,17 +459,39 @@ pub fn label_of(d html.Doc, id int) str
 
 HEADINGS_LEVEL := {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
 
-## Whether element `id` is hidden by its tag or `hidden`.
+## Whether element `id` is hidden by its tag, `hidden`, `popover` (a popover
+## script opened is not known here), as a `dialog` that is not `open`, or as
+## content of a closed `details` other than its first `summary` (HTML
+## §4.11.1, §4.11.4, §6.12).
 fn Flow.hidden(self, id int, tag str) bool
-    HIDDEN.contains(tag) or self.d.attr(id, "hidden") != none
+    if HIDDEN.contains(tag) or self.d.attr(id, "hidden") != none or self.d.attr(id, "popover") != none
+        return true
+    if tag == "dialog" and self.d.attr(id, "open") == none
+        return true
+    closed_child(self.d, id)
+
+## Whether node `id` is inside a closed `details` and is not its first
+## `summary`.
+pub fn closed_child(d html.Doc, id int) bool
+    if id == 0
+        return false
+    p := d.nodes[id].parent
+    if p <= 0 or d.nodes[p].tag != "details" or d.attr(p, "open") != none
+        return false
+    if d.nodes[id].kind == html.Kind.Element and d.nodes[id].tag == "summary"
+        for c in d.nodes[p].children
+            if d.nodes[c].kind == html.Kind.Element and d.nodes[c].tag == "summary"
+                return c != id
+    true
 
 ## Display values that start a block; `none` and the inline ones don't.
 BLOCK_DISPLAY := {"block", "flex", "grid", "list-item", "table", "table-row", "flow-root"}
 
 fn Flow.node(mut self, id int)
-    n := self.d.nodes[id]
-    match n.kind
-        Text => self.text(n.text)
+    match self.d.nodes[id].kind
+        Text =>
+            if not closed_child(self.d, id)
+                self.text(self.d.nodes[id].text)
         Comment => return
         Document | Element => self.element(id)
 
@@ -866,6 +888,17 @@ PX_PER_CELL := 8
 
 ## Lays `d` out with `sheet` (its linked style sheets) before its own.
 pub fn layout_with(d html.Doc, url str, width int, sheet css.Sheet) Page
+    layout_prepared(d, url, width, page_sheet(d, sheet, width))
+
+## The style sheet `layout_prepared` takes for `d` in `width` cells: the
+## linked sheets in `sheet`, then the document's `<style>` elements, with the
+## rules whose media queries match the cells' width in CSS pixels. A caller
+## that lays the same document out again keeps it (review-speed 3.6).
+pub fn page_sheet(d html.Doc, sheet css.Sheet, width int) css.Sheet
+    css.for_width(css.concat(sheet, css.document_sheet(d)), width.max(10) * PX_PER_CELL)
+
+## `layout_with` with the sheet already built by `page_sheet`.
+pub fn layout_prepared(d html.Doc, url str, width int, all css.Sheet) Page
     plain := Style(
         bold: false,
         italic: false,
@@ -892,7 +925,7 @@ pub fn layout_with(d html.Doc, url str, width int, sheet css.Sheet) Page
         open: [],
         links: [],
         base: base_of(d, url),
-        sheet: css.for_width(css.concat(sheet, css.document_sheet(d)), width.max(10) * PX_PER_CELL),
+        sheet: all,
         flex: false,
         grid: [],
         grid_left: 0,
