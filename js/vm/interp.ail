@@ -17,7 +17,7 @@ pub struct Vm
     pub trace bool
     ## The script or module running, and its latest statement (when `trace`).
     pub cur_url str
-    pub cur_pos syntax.Pos
+    pub cur_stmt syntax.Stmt
     pub step_count int
     ## 0 for no limit.
     pub step_limit int
@@ -145,8 +145,10 @@ pub fn Vm.tick(mut self) ! Thrown
 
 ## Where an error is made: "url:line:col" when tracing, else "<anonymous>".
 pub fn Vm.at_text(self) str
-    if self.trace and self.cur_pos.line > 0
-        return "{self.cur_url}:{self.cur_pos.line}:{self.cur_pos.col}"
+    if self.trace
+        p := stmt_pos(self.cur_stmt)
+        if p.line > 0
+            return "{self.cur_url}:{p.line}:{p.col}"
     "<anonymous>"
 
 ## A new error object of a built-in kind ("TypeError", ...).
@@ -579,22 +581,31 @@ pub fn Vm.exec_block(mut self, body List[syntax.Stmt], env ref Env) Flow ! Throw
     Normal
 
 pub fn Vm.exec(mut self, s syntax.Stmt, env ref Env) Flow ! Thrown
-    self.exec_in(s, env, [])
+    self.exec_in(s, env, none)
 
 ## What a loop does with its body's completion: "next", "break", or "out"
 ## (leave the loop with it) (§14.7.1.1 LoopContinues).
-fn loop_action(f Flow, labels List[str]) str
+fn loop_action(f Flow, labels List[str]?) str
     match f
         Normal => "next"
-        Cont(l) => if l == "" or labels.contains(l) then "next" else "out"
-        Brk(l) => if l == "" or labels.contains(l) then "break" else "out"
+        Cont(l) => if l == "" or has_label(labels, l) then "next" else "out"
+        Brk(l) => if l == "" or has_label(labels, l) then "break" else "out"
         Ret => "out"
 
-## A statement with the labels in front of it (§14.13).
-fn Vm.exec_in(mut self, s syntax.Stmt, env ref Env, labels List[str]) Flow ! Thrown
+## Whether `l` is one of a loop's labels (none: an unlabelled statement).
+fn has_label(labels List[str]?, l str) bool
+    if ls := labels
+        return ls.contains(l)
+    false
+
+## A statement with the labels in front of it (§14.13); none when it has
+## none, so a plain statement allocates no list.
+fn Vm.exec_in(mut self, s syntax.Stmt, env ref Env, labels List[str]?) Flow ! Thrown
     self.tick()?
     if self.trace
-        self.cur_pos = stmt_pos(s)
+        # The statement itself (shared, not copied); `at_text` finds its
+        # position only when an error is made.
+        self.cur_stmt = s
     match s
         Exp(e, _) =>
             self.eval(e, env)?
@@ -671,7 +682,7 @@ fn Vm.exec_in(mut self, s syntax.Stmt, env ref Env, labels List[str]) Flow ! Thr
         )
         Switch(disc, cases, _) => self.switch_statement(disc, cases, env)
         Labeled(label, body, _) =>
-            mut inner := labels
+            mut inner := labels else List[str]()
             inner.push(label)
             f := self.exec_in(body, env, inner)?
             match f
@@ -707,7 +718,7 @@ fn Vm.for_loop(
     update syntax.Expr?,
     body syntax.Stmt,
     env ref Env,
-    labels List[str],
+    labels List[str]?,
 ) Flow ! Thrown
     loop_env := new_env(env, false)
     mut per_iteration := false
@@ -745,7 +756,7 @@ fn Vm.for_in(
     body syntax.Stmt,
     of bool,
     env ref Env,
-    labels List[str],
+    labels List[str]?,
 ) Flow ! Thrown
     mut head_env := env
     if d := left_decl(left)
@@ -804,7 +815,7 @@ fn Vm.for_of_lazy(
     it Value,
     body syntax.Stmt,
     env ref Env,
-    labels List[str],
+    labels List[str]?,
 ) Flow ! Thrown
     next := get(it, "next")?
     while true

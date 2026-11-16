@@ -30,7 +30,7 @@ pub fn new_vm() Vm
         echo: false,
         trace: false,
         cur_url: "",
-        cur_pos: syntax.Pos(line: 0, col: 0, offset: 0),
+        cur_stmt: syntax.Stmt.Empty(pos: syntax.Pos(line: 0, col: 0, offset: 0)),
         step_count: 0,
         step_limit: 0,
         next_id: 1,
