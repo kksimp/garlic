@@ -51,7 +51,7 @@ url ─► fetch (std.net) ─► bytes ─► decode ─► HTML tokenizer ─�
 | Decode | `str` | gzip and deflate undone; charset from `Content-Type`, then a `<meta charset>` in the first 1024 bytes, then UTF-8 when valid and windows-1252 when not; UTF-8 and windows-1252 (with its aliases `iso-8859-1`, `us-ascii`) decoded | other legacy charsets |
 | Tokenize | `html` | WHATWG tokenizer: data, tags, attributes (quoted, unquoted, bare), comments, doctype, raw text (`script`, `style`), escapable raw text (`title`, `textarea`), character references (numeric and a named subset) | the full named-reference table, every parse-error state |
 | Tree | `html` | simplified tree construction: implied `html`/`head`/`body`, void elements, implied end tags (`p`, `li`, `dt`, `dd`, `option`, `tr`, `td`, `th`), end tags close up to the matching open element | adoption agency, foster parenting, templates, foreign content (SVG, MathML) |
-| Style | `css` | a fixed user-agent model (block vs inline elements, headings, `pre`, hidden elements) plus author CSS from `<style>`, linked sheets (8 at most) and `style=`; `@media` and `media=` by the window's width at 8 CSS pixels per cell (`min-width`, `max-width`, ranges, `px`/`em`/`rem`; a dark screen without hover): type, `#id`, `.class` (with `\` escapes such as `.md\:flex`), `[attr]` and `[attr=~|^$*v]`, `:not()`, `:first-child`, `:last-child`, `:only-child`, `:nth-child()` and the `-last-` and `-of-type` forms, `:empty`, `:checked`, `:disabled`, `:enabled`, `:link`, the descendant, `>`, `+` and `~` combinators, specificity, order, `!important`; `display` (`none`, block or inline), `visibility: hidden`, `font-weight`, `font-style`, `text-transform: uppercase`, `white-space: pre` | dynamic pseudo-classes (`:hover`, `:focus`; a static page never matches them, so the rule is dropped), `:is`, `:where`, `:has`, pseudo-elements, `@supports`, colors and margins on cells, then the box model in pixels |
+| Style | `css` | a fixed user-agent model (block vs inline elements, headings, `pre`, hidden elements) plus author CSS from `<style>`, linked sheets and their leading `@import` rules (64 sheets at most, each address fetched once, `disabled` and `alternate` links and print-only sheets skipped, imports 4 deep with their media queries; a link after a `<style>` element overrides it, one between two `<style>` elements still loses to the later) and `style=`; `@media` and `media=` by the window's width at 8 CSS pixels per cell (`min-width`, `max-width`, ranges, `px`/`em`/`rem`; a dark screen without hover): type, `#id`, `.class` (with `\` escapes such as `.md\:flex`), `[attr]` and `[attr=~|^$*v]`, `:not()`, `:first-child`, `:last-child`, `:only-child`, `:nth-child()` and the `-last-` and `-of-type` forms, `:empty`, `:checked`, `:disabled`, `:enabled`, `:link`, the descendant, `>`, `+` and `~` combinators, specificity, order, `!important`; `display` (`none`, block or inline), `visibility: hidden`, `font-weight`, `font-style`, `text-transform: uppercase`, `white-space: pre` | dynamic pseudo-classes (`:hover`, `:focus`; a static page never matches them, so the rule is dropped), `:is`, `:where`, `:has`, pseudo-elements, `@supports`, colors and margins on cells, then the box model in pixels |
 | Layout | `page` | text cells: block flow, inline runs, whitespace collapsing, word wrap to the window's width, lists, block quotes, `pre`; data tables (one line of text and links per cell, no `colspan`, fits the width) as aligned columns, others as cells joined by ` | ` | CSS box model on the cell grid, then pixels (needs a pixel layer) |
 | Paint | `std.ui` | the text-cell window (`put_styled`), colors per run, link highlighting | pixels, images, fonts (see Dependencies) |
 | Script | none | no JavaScript (decision pending with the designer) | see below |
@@ -82,6 +82,26 @@ way the editor's screen does (ADR 0181).
   the page model (below); `--links` lists the links; `--follow N` and
   `--find TEXT` act first; `--width N` and `--height N` set the size. Tests
   run headless.
+- **Error pages**: a 4xx or 5xx response is shown as the server sent it
+  (bot checks and error pages have their own content); the status goes to
+  the status line (`HTTP status 403`), and only an empty body gets Garlic's
+  own page.
+- **Timings**: `--timings` (or `GARLIC_TIMINGS=1`) prints where the last
+  load's time went to standard error, one `timings: NAME VALUE` line each:
+  `nav.total` (from the start of the load to its first pixel layout in the
+  window, or to the end of the headless run), then the phases that ran, in
+  milliseconds, in load order (`fetch.document`, `html.parse`,
+  `fetch.scripts`, `fetch.modules`, `script.run`, `fetch.replies`,
+  `fetch.sheets`, `css.parse` of linked sheets, `layout.cells`,
+  `fetch.images` with their decoding, `layout.pixels` with the display list,
+  `fetch.favicon`), then counters: `requests`, `bytes` (as received, before
+  decompression), `requests.failed`, `cache.fresh`, `cache.revalidated`,
+  `sheets`, `scripts`, `scripts.inserted`, `modules`, `replies`,
+  `dom.nodes.parsed`, `dom.mutations`, `js.steps`, `js.stopped` (the step
+  limit ended the page's scripts), `relayouts`, `relayouts.skipped`,
+  `layouts.pixels`. Image and favicon requests are timed but not counted
+  (they go through `images` and `favicon`). Clocks are `time.now_ms`, so
+  phases under a millisecond show as 0.
 - **Speed**: the Go specification (290 KB of HTML) parses, cascades and
   lays out in 1.5 s on the bytecode tier (Linux x86-64; 1.1 s before CSS).
 

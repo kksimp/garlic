@@ -99,7 +99,12 @@ dependency and imports `garlicjs.vm` from `tools/garlic/jsdom`.
 In Garlic (`tools/garlic/jsdom`, `load_doc` in `garlic.ail`), a page's
 scripts run after it is parsed, with external scripts fetched first, a
 budget of 1 s of virtual time and 5,000,000 steps, and the real time as the
-clock. Their changes are replayed into Garlic's tree. A navigation a
+clock. Their changes are replayed into Garlic's tree. A classic script a
+script inserts (`fetch-script`, `Outcome.missing`) is fetched by the browser
+and run with `Session.script`, which fires `load` or `error` on its element;
+up to 64 per round, not counted against the 32 `fetch` replies. Once the
+page has loaded, its timers run once a second and the page is laid out
+again only when they changed the tree. A navigation a
 script asks for, or else a `<meta http-equiv=refresh>` outside `<noscript>`,
 is followed, up to 5 hops. `std.net.jar` (ADR 0638) is the cookie jar: cookies
 from `Set-Cookie` and `document.cookie` are sent back by domain, path and

@@ -13,8 +13,9 @@ pub struct Outcome
     pub body str
     ## Console lines and uncaught errors, in order.
     pub console List[str]
-    ## External scripts the page wanted that weren't in `scripts`.
-    pub missing List[str]
+    ## Classic scripts the page wanted that weren't in `scripts` (most often
+    ## ones a script inserted); answer each with `Session.script`.
+    pub missing List[ScriptAsk]
     ## How many changes were replayed.
     pub changes int
     ## What scripts assigned to `document.cookie`, in order.
@@ -31,6 +32,12 @@ pub struct Outcome
     pub sockets List[SockOp]
     ## The `fetch` and XMLHttpRequest requests the browser made for the page, as `METHOD url`.
     pub net List[str]
+
+## A classic script element (`node`) whose source at `url` (the address the
+## engine uses) the browser fetches and hands to `Session.script`.
+pub struct ScriptAsk
+    pub node int
+    pub url str
 
 ## A request from `fetch` or XMLHttpRequest, numbered `id`: `packed` is the
 ## content type, a newline and the body. The browser makes it and hands the
@@ -151,7 +158,7 @@ fn Session.collect(mut self, mut d html.Doc) Outcome
             out.method = r.method
             out.body = r.text
         if r.kind == "fetch-script"
-            out.missing.push(r.url)
+            out.missing.push(ScriptAsk(node: r.node, url: r.url))
         if r.kind == "fetch-module"
             out.mods.push(r.url)
         if r.kind == "fetch"
@@ -249,6 +256,46 @@ pub fn Session.module(mut self, mut d html.Doc, url str, text str, ok bool, budg
     self.machine.module_arrived(url, text, ok)
     self.machine.run_event_loop(self.machine.clock_ms + budget_ms, 10000)
     self.collect(mut d)
+
+## The browser's answer for classic script `url` that element `node` asked
+## for (see `Outcome.missing`): when `ok`, `text` runs as that script (HTML
+## §4.12.1.1, "execute the script element"), then `load` fires on the
+## element; when not, `error` fires. Then timers and microtasks that became
+## due run. `document.currentScript` is the engine's business
+## (`run_script_node`); it is not set here.
+pub fn Session.script(
+    mut self,
+    mut d html.Doc,
+    node int,
+    url str,
+    text str,
+    ok bool,
+    budget_ms float,
+) Outcome
+    if ok and not self.machine.stopped
+        self.machine.cur_url = url
+        self.machine.run_script_text(text)
+        self.machine.run_microtasks()
+    if node >= 0 and node < self.machine.dom.len()
+        self.fire_plain(node, if ok then "load" else "error")
+    self.machine.run_event_loop(self.machine.clock_ms + budget_ms, 10000)
+    self.collect(mut d)
+
+## Fires a `type_name` event that does not bubble at node `id`, as a
+## script element's `load` and `error` are (HTML §4.12.1.1).
+fn Session.fire_plain(mut self, id int, type_name str)
+    if self.machine.stopped
+        return
+    ev := self.machine.make_event_as("Event", type_name, vm.Value.Undef) else return
+    _ := self.machine.dispatch(id, ev) else false
+
+## How many statements the page's scripts have run (`--timings`).
+pub fn Session.steps(self) int
+    self.machine.step_count
+
+## Whether the step limit stopped the page's scripts for good.
+pub fn Session.stopped(self) bool
+    self.machine.stopped
 
 ## The modules a module's source imports statically, as engine addresses
 ## resolved against `base`, for the browser to fetch before the page runs.
