@@ -23,6 +23,9 @@ pub struct Vm
     pub step_limit int
     pub next_id int
     pub call_depth int
+    ## Closures and classes made so far: a loop whose turn made none can
+    ## keep its turn's scope (`for_loop`, `for_in`).
+    pub closures_made int
     ## Set when `?.` meets null or undefined, until its chain ends (§13.3.9).
     pub chain_shorted bool
     pub rand_state int
@@ -744,7 +747,11 @@ fn Vm.for_loop(
                 self.var_decl(d, loop_env)?
             InitExpr(e) => self.eval(e, loop_env)?
     # §14.7.4.4 CreatePerIterationEnvironment: closures see each turn's `let`.
+    # Only a closure (or class) made since the last copy can have seen the
+    # turn's scope; with none made, the copy would be unobservable, so the
+    # scope goes on as it is.
     mut iter_env := if per_iteration then copy_env(loop_env) else loop_env
+    mut made := self.closures_made
     while true
         if t := test
             if not truthy(self.eval(t, iter_env)?)
@@ -755,8 +762,9 @@ fn Vm.for_loop(
             break
         if act == "out"
             return f
-        if per_iteration
+        if per_iteration and self.closures_made != made
             iter_env = copy_env(iter_env)
+        made = self.closures_made
         if u := update
             self.eval(u, iter_env)?
     Normal
@@ -797,8 +805,19 @@ fn Vm.for_in(
             Bool | Num | Str | Big | Sym | Obj =>
                 for k in for_in_keys(self.to_object(subject)?)
                     items.push(Str(k))
+    # Each turn binds in a new scope, unless no closure was made since the
+    # last one (then nothing can see the old scope) and the head binds a
+    # plain name, which the next turn overwrites.
+    reuse := simple_left(left)
+    mut iter_env := new_env(env, false)
+    mut made := self.closures_made
+    mut turns := 0
     for item in items
-        f := self.loop_turn(left, item, body, env)?
+        if turns > 0 and (not reuse or self.closures_made != made)
+            iter_env = new_env(env, false)
+        made = self.closures_made
+        turns += 1
+        f := self.loop_turn(left, item, body, iter_env)?
         act := loop_action(f, labels)
         if act == "break"
             break
@@ -806,15 +825,24 @@ fn Vm.for_in(
             return f
     Normal
 
-## One turn of a `for-in` or `for-of` body with `item` bound.
+## Whether a `for-in`/`for-of` head binds one plain name in the turn's
+## scope (or nothing there), so that scope can serve the next turn.
+fn simple_left(left syntax.ForLeft) bool
+    match left
+        LeftDecl(d) =>
+            match d.decls[0].target
+                PatId => true
+                PatTarget | PatObj | PatArr | PatDefault => false
+        LeftPat => true
+
+## One turn of a `for-in` or `for-of` body with `item` bound in `iter_env`.
 fn Vm.loop_turn(
     mut self,
     left syntax.ForLeft,
     item Value,
     body syntax.Stmt,
-    env ref Env,
+    iter_env ref Env,
 ) Flow ! Thrown
-    iter_env := new_env(env, false)
     match left
         LeftDecl(d) => self.bind_pattern(d.decls[0].target, item, iter_env, d.kind)?
         LeftPat(p) => self.bind_pattern(p, item, iter_env, "assign")?
@@ -831,6 +859,10 @@ fn Vm.for_of_lazy(
     labels List[str]?,
 ) Flow ! Thrown
     next := get(it, "next")?
+    reuse := simple_left(left)
+    mut iter_env := new_env(env, false)
+    mut made := self.closures_made
+    mut turns := 0
     while true
         r := self.call(next, it, [])?
         if not is_obj(r)
@@ -838,7 +870,11 @@ fn Vm.for_of_lazy(
         if truthy(get(r, "done")?)
             break
         item := get(r, "value")?
-        f := self.loop_turn(left, item, body, env) else err
+        if turns > 0 and (not reuse or self.closures_made != made)
+            iter_env = new_env(env, false)
+        made = self.closures_made
+        turns += 1
+        f := self.loop_turn(left, item, body, iter_env) else err
             if not err.limit
                 self.close_iterator(it) else ignored
                     return err
@@ -1720,6 +1756,7 @@ fn is_computed(k syntax.Key) bool
 ## A function object (§10.2.3 OrdinaryFunctionCreate). `kind` is "normal"
 ## (has a `prototype` and can be `new`ed), "arrow" or "method".
 pub fn Vm.make_function(mut self, f syntax.Func, env ref Env, home Value, kind str) Value
+    self.closures_made += 1
     o := object("Function", proto_of("Function"))
     is_ctor := kind == "normal" and not f.is_gen and not f.is_async
     o.call = Closure(f: f, env: env, home: home, is_ctor: is_ctor, class_info: none)
@@ -1954,6 +1991,7 @@ fn Vm.init_fields(mut self, obj Value, info ClassInfo) ! Thrown
 
 ## A class (§15.7.14 ClassDefinitionEvaluation).
 fn Vm.make_class(mut self, c syntax.Class, env ref Env) Value ! Thrown
+    self.closures_made += 1
     class_env := new_env(env, false)
     class_env.strict = true
     name := c.name else ""

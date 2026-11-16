@@ -36,6 +36,7 @@ pub fn new_vm() Vm
         step_limit: 0,
         next_id: 1,
         call_depth: 0,
+        closures_made: 0,
         chain_shorted: false,
         rand_state: 88172645463325252,
         busy: Set[int](),
