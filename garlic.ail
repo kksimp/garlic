@@ -7418,10 +7418,19 @@ fn fwd_slashes(p str) str
     last := urls.len() - 1
     for k in 0..last
         assert(got[k].ok)
-        assert_eq(got[k].text, fetch_got(urls[k], "GET", "", "", false, false, mut cj, mut cache, perf).text)
+        assert_eq(
+            got[k].text,
+            fetch_got(urls[k], "GET", "", "", false, false, mut cj, mut cache, perf).text,
+        )
     assert(not got[last].ok)
     ## `data:` addresses are their own text, in their places.
-    mixed := fetch_gots(["data:text/css,a", urls[0], "data:text/css,b"], "", mut cj, mut cache, perf)
+    mixed := fetch_gots(
+        ["data:text/css,a", urls[0], "data:text/css,b"],
+        "",
+        mut cj,
+        mut cache,
+        perf,
+    )
     assert_eq(mixed[0].text, "a")
     assert_eq(mixed[1].text, got[0].text)
     assert_eq(mixed[2].text, "b")

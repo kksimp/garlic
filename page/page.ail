@@ -464,7 +464,10 @@ HEADINGS_LEVEL := {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
 ## content of a closed `details` other than its first `summary` (HTML
 ## §4.11.1, §4.11.4, §6.12).
 fn Flow.hidden(self, id int, tag str) bool
-    if HIDDEN.contains(tag) or self.d.attr(id, "hidden") != none or self.d.attr(id, "popover") != none
+    if HIDDEN.contains(tag) or self.d.attr(id, "hidden") != none or self.d.attr(
+        id,
+        "popover",
+    ) != none
         return true
     if tag == "dialog" and self.d.attr(id, "open") == none
         return true

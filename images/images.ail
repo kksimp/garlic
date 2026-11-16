@@ -255,10 +255,10 @@ pub fn job(at str, base net.Options, from str, cj jar.Jar) Job
     Job(at: at, o: o)
 
 ## Records what `self` brought: its size, and its pixels when decoded.
-pub fn Pic.keep(self, mut sizes Map[str, List[int]], mut bits Map[str, Bitmap])
+pub fn Pic.keep(self, mut sizes Map[str, List[int]], mut got Map[str, Bitmap])
     sizes[self.at] = self.size
     if bm := self.bits
-        bits[self.at] = bm
+        got[self.at] = bm
 
 ## Fetches and decodes job `j`; safe in a lane (no keep-alive pool).
 pub fn fetch_job(j Job) Pic
@@ -724,9 +724,33 @@ fn sized_svg(w int, h int) str
     mut sizes := Map[str, List[int]]()
     mut bits := Map[str, Bitmap]()
     j := jar.new()
-    assert_eq(prefetch_some(d, "file:///p.html", "file:///p.html", j, net.options(), mut sizes, mut bits, 6), 2)
+    assert_eq(
+        prefetch_some(
+            d,
+            "file:///p.html",
+            "file:///p.html",
+            j,
+            net.options(),
+            mut sizes,
+            mut bits,
+            6,
+        ),
+        2,
+    )
     assert_eq(sizes[sized_svg(2, 2)], [2, 2])
-    assert_eq(prefetch_some(d, "file:///p.html", "file:///p.html", j, net.options(), mut sizes, mut bits, 6), 0)
+    assert_eq(
+        prefetch_some(
+            d,
+            "file:///p.html",
+            "file:///p.html",
+            j,
+            net.options(),
+            mut sizes,
+            mut bits,
+            6,
+        ),
+        0,
+    )
 
 @test fn joined_bytes_keep_their_order()
     parts := [b"ab", b"c", b"", b"def", b"g"]

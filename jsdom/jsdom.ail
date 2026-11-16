@@ -614,6 +614,18 @@ fn replay(mut d html.Doc, log List[vm.Mutation]) int
         "obj.import(\"./no-member.js\");",
         "export default function f() \{ return \"./no-body.js\" }",
     ]
-    assert_eq(import_specifiers(lines.join("\n")), ["./a.js", "./b.js", "/c.js", "./d.js", "./e.js"])
-    assert_eq(module_deps("import \"./a.js\"; import \"https://x.test/m.js\"; import \"bare\"", "https://p.test/dir/main.js"), ["https://p.test/dir/a.js", "https://x.test/m.js"])
+    assert_eq(import_specifiers(lines.join("\n")), [
+        "./a.js",
+        "./b.js",
+        "/c.js",
+        "./d.js",
+        "./e.js",
+    ])
+    assert_eq(
+        module_deps(
+            "import \"./a.js\"; import \"https://x.test/m.js\"; import \"bare\"",
+            "https://p.test/dir/main.js",
+        ),
+        ["https://p.test/dir/a.js", "https://x.test/m.js"],
+    )
     assert_eq(import_specifiers("import \"unclosed"), List[str]())

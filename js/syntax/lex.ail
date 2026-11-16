@@ -205,10 +205,10 @@ pub fn Lexer.reset(mut self, t Token)
     self.line = t.line
     self.line_start = t.start - t.col + 1
 
-fn Lexer.token(self, kind Kind, text str, start int, line_no int, col int, nl bool) Token
+fn Lexer.token(self, kind Kind, txt str, start int, line_no int, col int, nl bool) Token
     Token(
         kind: kind,
-        text: text,
+        text: txt,
         raw: "",
         num: 0,
         escaped: false,
