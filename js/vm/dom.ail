@@ -961,7 +961,7 @@ pub fn Vm.dom_setup(mut self)
     methods(
         performance,
         "dom.performance",
-        "now:0 mark:1 measure:1 getEntriesByType:1 getEntriesByName:1",
+        "now:0 mark:1 measure:1 getEntries:0 getEntriesByType:1 getEntriesByName:1 clearMarks:0 clearMeasures:0 clearResourceTimings:0 setResourceTimingBufferSize:1 toJSON:0",
     )
     performance.props["timeOrigin"] = data(Num(clock_ms))
     # Navigation Timing: every moment is the page's start, as nothing is
@@ -1235,6 +1235,13 @@ pub fn Vm.dom_native(
             return self.dom_exception(kind, msg).value
         if name == "DOMParser"
             return Value.Obj(object("DOMParser", proto_of("DOMParser")))
+        if name == "EventTarget" or self.plain_target_class(new_target)
+            ## `new EventTarget()` (DOM §2.7) and subclasses of it, which
+            ## GitHub and others use as a plain event emitter.
+            mut et := object("Object", proto_of("EventTarget"))
+            if po := obj_of(get(new_target, "prototype")?)
+                et.proto = Value.Obj(po)
+            return Value.Obj(et)
         return type_error(if name == "" then "Illegal constructor" else "Failed to construct '{name}': Illegal constructor")
     if m == "Image"
         # `new Image(width, height)` (HTML §4.8.4.1).
@@ -1261,6 +1268,8 @@ pub fn Vm.dom_native(
         return Value.Bool(true)
     match m
         "addEventListener" | "removeEventListener" | "dispatchEvent" =>
+            if this_val != Obj(global_obj) and node_id(this_val) == none
+                return self.plain_listener(m, this_val, args)
             target := if this_val
                 == Obj(global_obj) then -1 else (node_id(this_val) else return Undef)
             self.listener_method(m, target, args)
@@ -2311,6 +2320,86 @@ pub fn Vm.handler_set(mut self, target int, key str)
         capture: false,
         once: false,
     ))
+
+## Whether class `c` extends EventTarget itself, not a node interface.
+fn Vm.plain_target_class(mut self, c Value) bool
+    po := obj_of(get(c, "prototype") else Undef) else return false
+    mut p := po.proto
+    while is_obj(p)
+        if p == proto_of("Node")
+            return false
+        if p == proto_of("EventTarget")
+            return true
+        p = (obj_of(p) else break).proto
+    false
+
+## The EventTarget methods on an object that is no node and not the window
+## (`new EventTarget()` and its subclasses, DOM §2.7): its listeners are kept
+## on the object, as [type, callback, capture, once] entries, and an event
+## dispatched to it reaches only them (no tree, so no capture or bubbling).
+fn Vm.plain_listener(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    o := obj_of(this_val) else return Undef
+    key := "{PRIVATE}listeners"
+    if o.props.get(key) == none
+        o.props[key] = hidden(array([]))
+    list := obj_of(o.props[key].value) else return Undef
+    if m == "dispatchEvent"
+        ev := arg_at(args, 0)
+        eo := obj_of(ev) else return type_error("Failed to execute 'dispatchEvent' on 'EventTarget': parameter 1 is not of type 'Event'.")
+        type_name := to_string(get(ev, "type")?)?
+        eo.props["target"] = data(this_val)
+        eo.props["currentTarget"] = data(this_val)
+        eo.props["eventPhase"] = data(Num(2.0))
+        snapshot := list.elems[0..list.elems.len()]
+        for entry in snapshot
+            e := obj_of(entry) else continue
+            if e.elems.len() < 4 or to_string(e.elems[0])? != type_name
+                continue
+            if truthy(e.elems[3])
+                list.elems = [x for x in list.elems if x != entry]
+            cb := e.elems[1]
+            mut fn_val := cb
+            if not is_callable(cb)
+                fn_val = get(cb, "handleEvent")?
+            if is_callable(fn_val)
+                if v := call(fn_val, if is_callable(cb) then this_val else cb, [ev])
+                    v
+                else err
+                    if err.limit
+                        return err
+                    report_error(err)
+            if truthy(get(ev, "{PRIVATE}stop-now")?)
+                break
+        handler := get(this_val, "on{type_name}")?
+        if is_callable(handler)
+            _ := call(handler, this_val, [ev]) else Undef
+        eo.props["currentTarget"] = data(Null)
+        eo.props["eventPhase"] = data(Num(0.0))
+        return Value.Bool(not truthy(get(ev, "defaultPrevented")?))
+    type_name := to_string(arg_at(args, 0))?
+    cb := arg_at(args, 1)
+    if is_nullish(cb)
+        return Undef
+    opts := arg_at(args, 2)
+    mut capture := false
+    mut once := false
+    if oo := obj_of(opts)
+        capture = truthy(get(Obj(oo), "capture")?)
+        once = truthy(get(Obj(oo), "once")?)
+    else
+        capture = truthy(opts)
+    for entry in list.elems
+        e := obj_of(entry) else continue
+        if e.elems.len() >= 4
+            and to_string(e.elems[0])? == type_name
+            and e.elems[1] == cb
+            and truthy(e.elems[2]) == capture
+            if m == "removeEventListener"
+                list.elems = [x for x in list.elems if x != entry]
+            return Undef
+    if m == "addEventListener"
+        list.elems.push(array([Value.Str(type_name), cb, Value.Bool(capture), Value.Bool(once)]))
+    Undef
 
 ## A listener runs; an exception is reported and doesn't stop the dispatch.
 fn Vm.call_listener(mut self, cb Value, target int, ev Value, args List[Value]) Value ! Thrown

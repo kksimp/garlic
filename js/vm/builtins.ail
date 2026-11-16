@@ -497,8 +497,12 @@ fn Vm.native_group(
         2 => self.symbol_native(name, this_val, args, new_target)?
         3 => self.proxy_call(f, this_val, args, new_target)?
         4 =>
+            ## A class extending an element interface makes an element; one
+            ## extending EventTarget makes a plain target (dom.ail "illegal").
             if is_obj(new_target) and new_target != Value.Obj(f)
-                return self.ce_construct(new_target)?
+                ctor_name := to_string(get(Value.Obj(f), "name")?)?
+                if ctor_name != "EventTarget"
+                    return self.ce_construct(new_target)?
             self.dom_native(m, this_val, args, new_target)?
         5 => self.proxy_new(args, new_target)?
         6 => self.reflect_function(m, args)?
