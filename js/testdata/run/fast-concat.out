@@ -1,0 +1,10 @@
+0,1,2,3,4, 10
+a1.5 1.5a x0 0x nNaN 1e+21 0.1
+true true true false
+true false true false true true true
+true true 2 3
+123 33 2 12 4 3
+anull aundefined atrue a1,2 a[object Object]
+true false true false false
+x4 4x 5
+300 abcdefghijklmnopqrstuvwxyzabcd true

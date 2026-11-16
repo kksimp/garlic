@@ -1372,8 +1372,30 @@ pub fn Vm.binary(mut self, op str, a Value, b Value) Value ! Thrown
                                 return Value.Num((x.to_int() % y.to_int()).to_float())
                             return Value.Num(fmod(x, y))
                         _ => return self.binary_slow(op, a, b)
-                Undef | Null | Bool | Str | Big | Sym | Obj => return self.binary_slow(op, a, b)
-        Undef | Null | Bool | Str | Big | Sym | Obj => return self.binary_slow(op, a, b)
+                Str(y) =>
+                    if op == "+"
+                        return Value.Str("{syntax.number_to_string(x)}{y}")
+                    return self.binary_slow(op, a, b)
+                Undef | Null | Bool | Big | Sym | Obj => return self.binary_slow(op, a, b)
+        # Strings: concatenation and comparison need no ToPrimitive either.
+        Str(x) =>
+            match b
+                Str(y) =>
+                    match op
+                        "+" => return Value.Str("{x}{y}")
+                        "===" | "==" => return Value.Bool(x == y)
+                        "!==" | "!=" => return Value.Bool(x != y)
+                        "<" => return Value.Bool(x < y)
+                        ">" => return Value.Bool(y < x)
+                        "<=" => return Value.Bool(not (y < x))
+                        ">=" => return Value.Bool(not (x < y))
+                        _ => return self.binary_slow(op, a, b)
+                Num(y) =>
+                    if op == "+"
+                        return Value.Str("{x}{syntax.number_to_string(y)}")
+                    return self.binary_slow(op, a, b)
+                Undef | Null | Bool | Big | Sym | Obj => return self.binary_slow(op, a, b)
+        Undef | Null | Bool | Big | Sym | Obj => return self.binary_slow(op, a, b)
 
 fn Vm.binary_slow(mut self, op str, a Value, b Value) Value ! Thrown
     if (is_big_val(a) or is_big_val(b)) and big_op(op)
