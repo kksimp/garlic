@@ -506,7 +506,9 @@ pub fn color_over(v str, under int) int?
         args := color_args(t.slice(open + 1, t.chars().len() - 1))
         if args.len() < 3
             return none
-        alpha := if args.len() > 3 then channel(args[3], 1.0)? else 1.0
+        mut alpha := 1.0
+        if args.len() > 3
+            alpha = channel(args[3], 1.0)?
         fn_name := t.slice(0, open).trim()
         if fn_name == "rgb" or fn_name == "rgba"
             return mix(
@@ -528,7 +530,9 @@ pub fn color_over(v str, under int) int?
             lch := oklab_rgb(channel(args[0], 1.0)?, chroma * turn.cos(), chroma * turn.sin())
             return mix(lch[0], lch[1], lch[2], alpha, under)
         if fn_name == "color" and args.len() >= 4 and (args[0] == "srgb" or args[0] == "display-p3")
-            a2 := if args.len() > 4 then channel(args[4], 1.0)? else 1.0
+            mut a2 := 1.0
+            if args.len() > 4
+                a2 = channel(args[4], 1.0)?
             return mix(
                 byte_of(channel(args[1], 1.0)? * 255.0),
                 byte_of(channel(args[2], 1.0)? * 255.0),
