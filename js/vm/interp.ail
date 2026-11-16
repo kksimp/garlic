@@ -115,6 +115,9 @@ pub struct Vm
     pub modules ref ModState
     ## The 2D canvases' bitmaps (canvas2d.ail).
     pub cvs ref CanvasState
+    ## Each native name's dispatch group, found on its first call
+    ## (builtins.ail `native_route`); shared by copies of the Vm.
+    pub routes ref NativeRoutes
 
 ## How a statement ended (§6.2.4 Completion Records); a throw is the `Thrown` error.
 pub enum Flow

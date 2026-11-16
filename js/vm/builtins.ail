@@ -90,6 +90,7 @@ pub fn new_vm() Vm
         template_frags: {},
         modules: new_mod_state(),
         cvs: new_canvas_state(),
+        routes: new_native_routes(),
     )
     vm.setup()
     vm
@@ -391,6 +392,142 @@ pub fn native_is_ctor(name str) bool
             true
         _ => name.starts_with("bin.new.") or name.starts_with("intl.new.")
 
+## Where `Vm.native` sends each native name, kept per name (`native_route`)
+## so a call tests no prefixes: the group (0 for the names `native` matches
+## itself) and the name after the group's prefix.
+pub struct NativeRoutes
+    pub group Map[str, int]
+    pub rest Map[str, str]
+
+pub fn new_native_routes() ref NativeRoutes
+    ref NativeRoutes(group: {}, rest: {})
+
+struct NativeRoute
+    group int
+    rest str
+
+## The group of a native name, by the prefixes `Vm.native` tested in this
+## order before it kept them; `native_group` runs each group.
+fn native_route(name str) NativeRoute
+    if name.starts_with("Promise")
+        return NativeRoute(group: 1, rest: name)
+    if name.starts_with("Symbol")
+        return NativeRoute(group: 2, rest: name)
+    if name == "proxy"
+        return NativeRoute(group: 3, rest: name)
+    if name == "dom.illegal"
+        return NativeRoute(group: 4, rest: "illegal")
+    if name == "Proxy"
+        return NativeRoute(group: 5, rest: name)
+    if m := name.strip_prefix("Reflect.")
+        return NativeRoute(group: 6, rest: m)
+    if name.starts_with("Iterator.")
+        return NativeRoute(group: 7, rest: name)
+    if m := name.strip_prefix("Generator.prototype.")
+        return NativeRoute(group: 8, rest: m)
+    if name == "Async.resume"
+        return NativeRoute(group: 9, rest: name)
+    if m := name.strip_prefix("Module.")
+        return NativeRoute(group: 10, rest: m)
+    if m := name.strip_prefix("AsyncGenerator.prototype.")
+        return NativeRoute(group: 11, rest: m)
+    if name == "AsyncGen.resume"
+        return NativeRoute(group: 12, rest: name)
+    if m := name.strip_prefix("AsyncFromSync.")
+        return NativeRoute(group: 13, rest: m)
+    if m := name.strip_prefix("dom.")
+        return NativeRoute(group: 14, rest: m)
+    if m := name.strip_prefix("bin.")
+        return NativeRoute(group: 15, rest: m)
+    if m := name.strip_prefix("intl.")
+        return NativeRoute(group: 16, rest: m)
+    if m := name.strip_prefix("Array.prototype.")
+        return NativeRoute(group: 17, rest: m)
+    if m := name.strip_prefix("String.prototype.")
+        return NativeRoute(group: 18, rest: m)
+    if m := name.strip_prefix("Number.prototype.")
+        return NativeRoute(group: 19, rest: m)
+    if m := name.strip_prefix("Math.")
+        return NativeRoute(group: 20, rest: m)
+    if m := name.strip_prefix("Object.prototype.")
+        return NativeRoute(group: 21, rest: m)
+    if m := name.strip_prefix("Object.")
+        return NativeRoute(group: 22, rest: m)
+    if m := name.strip_prefix("Map.prototype.")
+        return NativeRoute(group: 23, rest: m)
+    if m := name.strip_prefix("Set.prototype.")
+        return NativeRoute(group: 24, rest: m)
+    if m := name.strip_prefix("IntersectionObserver.prototype.")
+        return NativeRoute(group: 25, rest: m)
+    if m := name.strip_prefix("ResizeObserver.prototype.")
+        return NativeRoute(group: 26, rest: m)
+    if m := name.strip_prefix("PerformanceObserver.prototype.")
+        return NativeRoute(group: 27, rest: m)
+    if m := name.strip_prefix("WeakMap.prototype.")
+        return NativeRoute(group: 28, rest: m)
+    if m := name.strip_prefix("WeakSet.prototype.")
+        return NativeRoute(group: 29, rest: m)
+    if m := name.strip_prefix("WeakRef.prototype.")
+        return NativeRoute(group: 30, rest: m)
+    if m := name.strip_prefix("FinalizationRegistry.prototype.")
+        return NativeRoute(group: 31, rest: m)
+    if m := name.strip_prefix("Date.prototype.")
+        return NativeRoute(group: 32, rest: m)
+    if m := name.strip_prefix("RegExp.prototype.")
+        return NativeRoute(group: 33, rest: m)
+    NativeRoute(group: 0, rest: name)
+
+## Run a native of a group (`native_route`); `m` is its name after the
+## group's prefix.
+fn Vm.native_group(
+    mut self,
+    group int,
+    m str,
+    name str,
+    f ref JsObject,
+    this_val Value,
+    args List[Value],
+    new_target Value,
+) Value ! Thrown
+    match group
+        1 => self.promise_native(name, this_val, args, new_target)?
+        2 => self.symbol_native(name, this_val, args, new_target)?
+        3 => self.proxy_call(f, this_val, args, new_target)?
+        4 =>
+            if is_obj(new_target) and new_target != Value.Obj(f)
+                return self.ce_construct(new_target)?
+            self.dom_native(m, this_val, args, new_target)?
+        5 => self.proxy_new(args, new_target)?
+        6 => self.reflect_function(m, args)?
+        7 => self.iterator_native(name, this_val)?
+        8 => self.generator_native(m, this_val, args)?
+        9 => self.async_native(name, this_val, args)?
+        10 => self.module_native(m, this_val, args)?
+        11 => self.async_generator_native(m, this_val, args)?
+        12 => self.async_gen_resume(this_val, args)?
+        13 => self.async_from_sync_native(m, this_val, args)?
+        14 => self.dom_native(m, this_val, args, new_target)?
+        15 => self.bin_native(m, this_val, args, new_target)?
+        16 => self.intl_native(m, this_val, args, new_target)?
+        17 => self.array_method(m, this_val, args)?
+        18 => self.string_method(m, this_val, args)?
+        19 => self.number_method(m, this_val, args)?
+        20 => self.math_function(m, args)?
+        21 => self.object_proto_method(m, this_val, args)?
+        22 => self.object_function(m, args)?
+        23 => self.map_method(m, this_val, args)?
+        24 => self.set_method(m, this_val, args)?
+        25 => self.observer_method("IntersectionObserver", m, this_val, args)?
+        26 => self.observer_method("ResizeObserver", m, this_val, args)?
+        27 => if m == "takeRecords" then self.array([]) else Value.Undef
+        28 => self.weak_method("WeakMap", m, this_val, args)?
+        29 => self.weak_method("WeakSet", m, this_val, args)?
+        30 => self.weak_method("WeakRef", m, this_val, args)?
+        31 => self.weak_method("FinalizationRegistry", m, this_val, args)?
+        32 => self.date_method(m, this_val, args)?
+        33 => self.regexp_method(m, this_val, args)?
+        _ => return self.type_error("{name} is not a native group")
+
 ## Run the native function `name`. `new_target` is Undef for a plain call.
 pub fn Vm.native(
     mut self,
@@ -401,66 +538,17 @@ pub fn Vm.native(
     new_target Value,
 ) Value ! Thrown
     tick()?
-    if name.starts_with("Promise")
-        return promise_native(name, this_val, args, new_target)
-    if name.starts_with("Symbol")
-        return symbol_native(name, this_val, args, new_target)
-    if name == "proxy"
-        return proxy_call(f, this_val, args, new_target)
-    if name == "dom.illegal" and is_obj(new_target) and new_target != Value.Obj(f)
-        return ce_construct(new_target)
-    if name == "Proxy"
-        return proxy_new(args, new_target)
-    if m := name.strip_prefix("Reflect.")
-        return reflect_function(m, args)
-    if name.starts_with("Iterator.")
-        return iterator_native(name, this_val)
-    if m := name.strip_prefix("Generator.prototype.")
-        return generator_native(m, this_val, args)
-    if name == "Async.resume"
-        return async_native(name, this_val, args)
-    if m := name.strip_prefix("Module.")
-        return module_native(m, this_val, args)
-    if m := name.strip_prefix("AsyncGenerator.prototype.")
-        return async_generator_native(m, this_val, args)
-    if name == "AsyncGen.resume"
-        return async_gen_resume(this_val, args)
-    if m := name.strip_prefix("AsyncFromSync.")
-        return async_from_sync_native(m, this_val, args)
-    if m := name.strip_prefix("dom.")
-        return dom_native(m, this_val, args, new_target)
-    if m := name.strip_prefix("bin.")
-        return bin_native(m, this_val, args, new_target)
-    if m := name.strip_prefix("intl.")
-        return intl_native(m, this_val, args, new_target)
-    if m := name.strip_prefix("Array.prototype.")
-        return array_method(m, this_val, args)
-    if m := name.strip_prefix("String.prototype.")
-        return string_method(m, this_val, args)
-    if m := name.strip_prefix("Number.prototype.")
-        return number_method(m, this_val, args)
-    if m := name.strip_prefix("Math.")
-        return self.math_function(m, args)
-    if m := name.strip_prefix("Object.prototype.")
-        return self.object_proto_method(m, this_val, args)
-    if m := name.strip_prefix("Object.")
-        return self.object_function(m, args)
-    if m := name.strip_prefix("Map.prototype.")
-        return self.map_method(m, this_val, args)
-    if m := name.strip_prefix("Set.prototype.")
-        return self.set_method(m, this_val, args)
-    for w in ["IntersectionObserver", "ResizeObserver"]
-        if m := name.strip_prefix("{w}.prototype.")
-            return self.observer_method(w, m, this_val, args)
-    if m := name.strip_prefix("PerformanceObserver.prototype.")
-        return if m == "takeRecords" then array([]) else Value.Undef
-    for w in ["WeakMap", "WeakSet", "WeakRef", "FinalizationRegistry"]
-        if m := name.strip_prefix("{w}.prototype.")
-            return weak_method(w, m, this_val, args)
-    if m := name.strip_prefix("Date.prototype.")
-        return date_method(m, this_val, args)
-    if m := name.strip_prefix("RegExp.prototype.")
-        return regexp_method(m, this_val, args)
+    # The group is found once per name (native_route); the names matched
+    # one by one below are group 0.
+    mut group := self.routes.group.get(name) else -1
+    if group < 0
+        route := native_route(name)
+        group = route.group
+        self.routes.group[name] = route.group
+        self.routes.rest[name] = route.rest
+    if group > 0
+        rest := self.routes.rest[name]
+        return self.native_group(group, rest, name, f, this_val, args, new_target)
     a0 := arg_at(args, 0)
     match name
         "Function.prototype" => Undef
