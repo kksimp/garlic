@@ -515,7 +515,7 @@ it comes later for speed, and these frames will move onto it).
   exception and why: an unsupported feature, a twin that is not the same
   script, a test made stale by a later edition, or a gap. A listed test that
   starts to behave is reported, so the list only shrinks.
-- `testdata/run`: 21 programs (operators, functions, classes, control flow,
+- `testdata/run`: programs (operators, functions, classes, control flow,
   built-ins, numbers, JSON, collections, errors, strings, console layout,
   promises, symbols, generators, async functions, `await` positions,
   `eval`, `Date` setters, assignment order, async generators, direct
@@ -590,6 +590,31 @@ reports 1,324 constructs outside the native subset: `?` 342, `==` on `str`
 174, string interpolation 107, optionals as parameters and indexes, and
 string methods. These are the same groups the native lanes are closing for
 self-compilation.
+
+**Fast paths in the walker** (2026-11-16). Native AIL copies structs, lists
+and maps when they are bound from a place, so the hot paths read in place:
+
+- Bindings and properties are read and written through `vars[name]` and
+  `props[key]` (no `Binding` or `Prop` copied); `props_only` says when an
+  object's own property is just its map entry. A name that doesn't start with
+  a digit is never parsed as an index.
+- `a[i]` and `a[i] = v` (and `op=`) on an array with a number index use the
+  element itself; on ASCII text `s[i]`, `length` and the indexing string
+  methods use `slice`, which is O(1) there, instead of a list of UTF-16
+  units.
+- `+` and comparisons on strings skip ToPrimitive.
+- A native's handler is found by a group number kept per name.
+- A Map or Set of 16 entries or more keeps a hash index of its `elems`
+  (`CollIndex`, by a canonical key text), rebuilt lazily after deletes.
+- A statement allocates nothing before it runs (no label list; the current
+  statement, not its position, is kept for error positions).
+- A loop turn keeps its `let` scope when no closure or class was made in it
+  (`Vm.closures_made`); an arrow call keeps no argument list.
+- Compiled generator and async bodies are shared (`ref Code`) and kept by
+  source as well as per function object.
+
+`js/testdata/bench/run.sh` times six pure-JS scripts (properties, calls,
+strings, arrays, Map and Set, loops) against Node's output.
 
 ## Notes on writing it in AIL
 
