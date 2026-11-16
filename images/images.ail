@@ -33,7 +33,9 @@ MAX_PIXELS := 4000000
 
 ## The `[width, height]` of every `<img>` on `d` (by resolved address) that
 ## isn't in `sizes` yet. An address that can't be fetched or read as an
-## image is stored as `[0, 0]` so it isn't asked for again.
+## image is stored as `[0, 0]` so it isn't asked for again. The pictures
+## are fetched and decoded side by side (`fetch_all`), and kept in
+## document order.
 pub fn prefetch(
     d html.Doc,
     url str,
@@ -43,28 +45,50 @@ pub fn prefetch(
     mut sizes Map[str, List[int]],
     mut bits Map[str, Bitmap],
 )
+    _ := prefetch_some(d, url, from, cj, o, mut sizes, mut bits, MAX_IMAGES)
+    canvases(d, mut sizes, mut bits)
+
+## `prefetch` for at most `limit` fetched pictures (`data:` ones are not
+## counted), without the canvases: the window's batches after its first
+## frame (garlic `Browser.picture_step`). Returns how many pictures were
+## taken; 0 when every one is in `sizes`.
+pub fn prefetch_some(
+    d html.Doc,
+    url str,
+    from str,
+    cj jar.Jar,
+    o net.Options,
+    mut sizes Map[str, List[int]],
+    mut bits Map[str, Bitmap],
+    limit int,
+) int
+    mut jobs := List[Job]()
+    mut queued := Set[str]()
     mut n := 0
     for id in d.all("img")
         src := source_of(d, id) else continue
         if src.starts_with("data:")
             # A `data:` picture is its own bytes; the URL is its key.
-            if sizes.contains(src)
+            if sizes.contains(src) or queued.contains(src)
                 continue
-            raw := data_image(src) else
-                sizes[src] = [0, 0]
-                continue
-            keep_picture(raw, src, mut sizes, mut bits)
+            queued.add(src)
+            jobs.push(Job(at: src, o: o))
             continue
         at := page.resolve(url, src)
-        if sizes.contains(at)
+        if sizes.contains(at) or queued.contains(at)
             continue
-        if n == MAX_IMAGES
+        if n == limit
             break
         n += 1
-        raw := load(at, o, from, cj) else
-            sizes[at] = [0, 0]
-            continue
-        keep_picture(raw, at, mut sizes, mut bits)
+        queued.add(at)
+        jobs.push(job(at, o, from, cj))
+    for p in fetch_all(jobs)
+        p.keep(mut sizes, mut bits)
+    jobs.len()
+
+## The pictures of the `<canvas>` elements scripts drew on, decoded for the
+## host, and the pictures of earlier redraws forgotten.
+pub fn canvases(d html.Doc, mut sizes Map[str, List[int]], mut bits Map[str, Bitmap])
     # A `<canvas>` a script drew on: the engine publishes its bitmap as a
     # `data:` picture in `data-garlic-pixels` (js/vm/canvas2d.ail).
     mut live := Set[str]()
@@ -189,6 +213,153 @@ pub fn load(at str, base net.Options, from str, cj jar.Jar) List[int]?
     if raw.len() > MAX_BYTES
         return none
     [v.to_int() for v in raw.to_list()]
+
+# ---- Fetching side by side ---------------------------------------------------
+#
+# std.net keeps idle connections in one pool for the whole program, and that
+# pool has no lock (ail compiler/rt/native/net_http.ail, `pool_take` and
+# `pool_put`, global slot 41): two tasks that request at once can take the
+# same connection or tear its entries. So a request made in a lane uses a
+# connection of its own (`fetch_alone`), which never enters the pool; only
+# the window's own thread uses the pool, and never while lanes run.
+
+## Requests in flight at once in `fetch_all`, and in garlic's text lanes.
+pub LANES := 6
+
+## A picture to fetch in a lane: its address and the request's options, with
+## the page's cookie and `Referer` already in them (the jar stays with the
+## window, which owns it).
+pub struct Job
+    pub at str
+    pub o net.Options
+
+## What a lane brought back for a `Job`: the picture's size (`[0, 0]` when
+## it could not be had or read) and its pixels when they were decoded.
+pub struct Pic
+    pub at str
+    pub size List[int]
+    pub bits Bitmap?
+
+## The job for the picture at `at` on the page `from`, asked for as `load`
+## asks: `base` with the site's cookies and the `Referer`.
+pub fn job(at str, base net.Options, from str, cj jar.Jar) Job
+    mut o := base
+    s := page.scheme(at)
+    if s == "http" or s == "https"
+        cookie := cj.header_from(at, from, false)
+        if cookie != ""
+            o.headers["cookie"] = cookie
+        sent := page.referrer(from, at)
+        if sent != ""
+            o.headers["referer"] = sent
+    Job(at: at, o: o)
+
+## Records what `self` brought: its size, and its pixels when decoded.
+pub fn Pic.keep(self, mut sizes Map[str, List[int]], mut bits Map[str, Bitmap])
+    sizes[self.at] = self.size
+    if bm := self.bits
+        bits[self.at] = bm
+
+## Fetches and decodes job `j`; safe in a lane (no keep-alive pool).
+pub fn fetch_job(j Job) Pic
+    mut sizes := Map[str, List[int]]()
+    mut bits := Map[str, Bitmap]()
+    raw := job_bytes(j) else return Pic(at: j.at, size: [0, 0], bits: none)
+    keep_picture(raw, j.at, mut sizes, mut bits)
+    Pic(at: j.at, size: sizes.get(j.at) else [0, 0], bits: bits.get(j.at))
+
+## The bytes job `j` names: a `data:` address's own, a file's, or a
+## response's on a connection of its own; none when there are none.
+fn job_bytes(j Job) List[int]?
+    if j.at.starts_with("data:")
+        return data_image(j.at)
+    s := page.scheme(j.at)
+    if s == "http" or s == "https"
+        r := fetch_alone("GET", j.at, j.o) else return none
+        if r.status >= 400 or r.data.len() > MAX_BYTES
+            return none
+        return [v.to_int() for v in r.data.to_list()]
+    raw := fs.read_bytes(page.file_path(j.at)) else return none
+    if raw.len() > MAX_BYTES
+        return none
+    [v.to_int() for v in raw.to_list()]
+
+## What every job brought, in the jobs' order whatever order they finish
+## in, fetched and decoded `LANES` at a time on the task pool. One job runs
+## on the caller's thread.
+pub fn fetch_all(jobs List[Job]) List[Pic]
+    n := jobs.len()
+    if n == 0
+        return []
+    if n == 1
+        return [fetch_job(jobs[0])]
+    queue := Channel[int](n)
+    for i in 0..n
+        queue.send(i)
+    queue.close()
+    out := Mutex([Pic(at: j.at, size: [0, 0], bits: none) for j in jobs])
+    run_lanes(jobs, queue, out, n.min(LANES))
+    out.get()
+
+## Runs `lanes` lanes over `queue` and returns when all have ended. A lane
+## that traps leaves its jobs as failures (`[0, 0]`).
+fn run_lanes(jobs List[Job], queue Channel[int], out Mutex[List[Pic]], lanes int)
+    g := TaskGroup()
+    for _ in 0..lanes
+        g.add(spawn lane(jobs, queue, out))
+    g.wait_all() else return
+
+## One lane (a task): takes the next job's index from `queue` and stores
+## what it brought at that index of `out`, until `queue` is empty.
+fn lane(jobs List[Job], queue Channel[int], out Mutex[List[Pic]])
+    for i in queue
+        p := fetch_job(jobs[i])
+        with out as mut got
+            got[i] = p
+
+## `net.request_bytes` on a connection of its own, closed after the response
+## and never put in std.net's keep-alive pool, so tasks can call it at once:
+## `Connection: close` keeps an HTTP/1.1 exchange out of the pool
+## (std.net.19), and a streamed body (`net.open`, std.net.25) is never
+## offered HTTP/2 (std.net.31), whose connections the pool keeps whatever
+## the request says. Redirects follow `o.max_redirects` as for `request`.
+pub fn fetch_alone(method str, url str, o net.Options) net.RawResponse ! net.NetError
+    mut alone := o
+    alone.headers["Connection"] = "close"
+    b := net.open(method, url, alone)?
+    mut parts := List[bytes]()
+    while true
+        piece := b.read_bytes(1048576) else err
+            b.close()
+            return err
+        if piece.len() == 0
+            break
+        parts.push(piece)
+    b.close()
+    net.RawResponse(
+        status: b.status,
+        headers: b.headers,
+        data: join_bytes(parts),
+        all_headers: b.all_headers,
+    )
+
+## `parts` as one `bytes`, joined pairwise so each byte is copied about
+## log2(parts) times rather than once per later part.
+pub fn join_bytes(parts List[bytes]) bytes
+    if parts.len() == 0
+        return b""
+    mut level := parts
+    while level.len() > 1
+        mut joined := List[bytes]()
+        mut i := 0
+        while i < level.len()
+            if i + 1 < level.len()
+                joined.push(level[i] + level[i + 1])
+            else
+                joined.push(level[i])
+            i += 2
+        level = joined
+    level[0]
 
 ## The bytes of `s` with `%XX` escapes decoded.
 fn percent_bytes(s str) List[int]?
@@ -532,6 +703,36 @@ fn feature_matches(f str, viewport float) bool
     assert_eq(px[0].to_int(), 255)
     assert_eq(px[3].to_int(), 255)
     assert_eq(px[(15 * 4) + 3].to_int(), 0)
+
+## A `data:` SVG of `w` by `h`.
+fn sized_svg(w int, h int) str
+    "data:image/svg+xml,%3Csvg%20width='{w}'%20height='{h}'%3E%3C/svg%3E"
+
+@test fn lanes_give_back_pictures_in_the_jobs_order()
+    o := net.options()
+    jobs := [Job(at: sized_svg(k + 1, 2 * k + 1), o: o) for k in 0..9]
+    got := fetch_all(jobs)
+    assert_eq([p.at for p in got], [j.at for j in jobs])
+    assert_eq([p.size for p in got], [[k + 1, 2 * k + 1] for k in 0..9])
+    assert_eq(fetch_all([]).len(), 0)
+    bad := fetch_all([Job(at: "data:image/png;base64,!!", o: o), Job(at: sized_svg(4, 4), o: o)])
+    assert_eq([p.size for p in bad], [[0, 0], [4, 4]])
+
+@test fn prefetch_some_takes_the_next_batch_in_document_order()
+    src := "<img src=\"{sized_svg(1, 1)}\"><img src=\"{sized_svg(2, 2)}\"><img src=\"{sized_svg(1, 1)}\">"
+    d := html.parse(src)
+    mut sizes := Map[str, List[int]]()
+    mut bits := Map[str, Bitmap]()
+    j := jar.new()
+    assert_eq(prefetch_some(d, "file:///p.html", "file:///p.html", j, net.options(), mut sizes, mut bits, 6), 2)
+    assert_eq(sizes[sized_svg(2, 2)], [2, 2])
+    assert_eq(prefetch_some(d, "file:///p.html", "file:///p.html", j, net.options(), mut sizes, mut bits, 6), 0)
+
+@test fn joined_bytes_keep_their_order()
+    parts := [b"ab", b"c", b"", b"def", b"g"]
+    assert_eq(join_bytes(parts), b"abcdefg")
+    assert_eq(join_bytes([]), b"")
+    assert_eq(join_bytes([b"x"]), b"x")
 
 @test fn a_percent_encoded_svg_data_url_is_read()
     raw := data_image("data:image/svg+xml,%3Csvg%20width='2'%20height='2'%3E%3C/svg%3E") else
