@@ -116,6 +116,8 @@ struct Browser
     ## The page's engine while its scripts listen; clicks, typing and
     ## submits go through it first (GL-JS events).
     js jsdom.Session?
+    ## The last load's phase times and counters (`--timings`).
+    perf ref Perf
 
 ## A page as it was left: its tree, style sheets and place.
 struct Kept
@@ -141,7 +143,7 @@ fn options() net.Options
 ## The headers for a picture: any image type.
 fn image_options() net.Options
     mut o := options()
-    o.headers["accept"] = "image/png,image/jpeg,image/gif,*/*;q=0.5"
+    o.headers["accept"] = "image/png,image/jpeg,image/gif,image/svg+xml,*/*;q=0.5"
     o.headers["accept-encoding"] = "identity"
     o
 
@@ -157,15 +159,17 @@ fn fetch(url str, method str, body str) str
 ## response sets.
 fn fetch_with(url str, method str, body str, mut cj jar.Jar) str
     mut none_kept := Map[str, Cached]()
-    fetch_got(url, method, body, "", true, false, mut cj, mut none_kept).text
+    fetch_got(url, method, body, "", true, false, mut cj, mut none_kept, new_perf()).text
 
 ## What a fetch got: the address it ended at (after redirects) and the page.
 struct Got
     url str
     text str
     ## False when nothing came or the status was 400 or more (`text` then
-    ## shows why).
+    ## shows why: the server's own page, or Garlic's when it sent none).
     ok bool
+    ## The HTTP status when it was 400 or more, else 0.
+    status int
 
 MAX_HOPS := 10
 
@@ -176,6 +180,76 @@ MAX_REPLIES := 32
 ## one-second rounds `wait` lets the page's timers run.
 LOG_KEEP := 20
 MAX_WAIT_ROUNDS := 10
+
+## Where a load's time went (wall ms per phase) and what it did (counters),
+## for `--timings` (docs/garlic-browser.md, "Timings"). Each tab holds one
+## in a `ref` cell, so the fetch helpers add to it without handing it back.
+struct Perf
+    ## When the load began (ms since 1970).
+    start int
+    ms Map[str, int]
+    counts Map[str, int]
+    ## Set when a load finishes, cleared when its lines are printed.
+    pending bool
+
+fn new_perf() ref Perf
+    ref Perf(start: time.now_ms(), ms: {}, counts: {}, pending: false)
+
+## Starts a new record for the load beginning now.
+fn restart(p ref Perf)
+    p.start = time.now_ms()
+    p.ms = {}
+    p.counts = {}
+    p.pending = false
+
+## Adds the time since `since` (a `time.now_ms()`) to phase `name`.
+fn spent(p ref Perf, name str, since int)
+    p.ms[name] = (p.ms.get(name) else 0) + (time.now_ms() - since)
+
+## Adds `n` to counter `name`.
+fn tally(p ref Perf, name str, n int)
+    p.counts[name] = (p.counts.get(name) else 0) + n
+
+## The phases `--timings` prints, in the order a load runs them.
+TIMING_PHASES := [
+    "fetch.document",
+    "html.parse",
+    "fetch.scripts",
+    "fetch.modules",
+    "script.run",
+    "fetch.replies",
+    "fetch.sheets",
+    "css.parse",
+    "layout.cells",
+    "fetch.images",
+    "layout.pixels",
+    "fetch.favicon",
+]
+
+## Whether `--timings` (or `GARLIC_TIMINGS=1`) asks for the load's times.
+fn timings_on() bool
+    env.args().contains("--timings") or (env.get("GARLIC_TIMINGS") else "") == "1"
+
+## The `--timings` lines for a load that took `total` ms: the total, each
+## phase that ran in `TIMING_PHASES` order, then the counters as counted.
+fn timing_lines(p ref Perf, total int) List[str]
+    mut out := ["timings: nav.total {total} ms"]
+    for name in TIMING_PHASES
+        if ms := p.ms.get(name)
+            out.push("timings: {name} {ms} ms")
+    for name in p.counts.keys()
+        out.push("timings: {name} {p.counts[name]}")
+    out
+
+## Prints the finished load's timings to standard error, once, when asked for.
+fn report_timings(p ref Perf)
+    if not p.pending
+        return
+    p.pending = false
+    if not timings_on()
+        return
+    for line in timing_lines(p, time.now_ms() - p.start)
+        io.eprint(line)
 
 ## `fetch_with`, also telling where redirects ended. Every hop sends the
 ## cookies the jar holds for it and stores the ones it sets, so a login that
@@ -190,6 +264,7 @@ fn fetch_got(
     reload bool,
     mut cj jar.Jar,
     mut cache Map[str, Cached],
+    perf ref Perf,
 ) Got
     s := page.scheme(url)
     if s == "http" or s == "https"
@@ -197,7 +272,8 @@ fn fetch_got(
         have := if method == "GET" then cache.get(url) else none
         if h := have
             if not reload and h.fresh_until > now
-                return Got(url: h.final_url, text: h.text, ok: true)
+                tally(perf, "cache.fresh", 1)
+                return Got(url: h.final_url, text: h.text, ok: true, status: 0)
         mut cond := Map[str, str]()
         if h := have
             ## Only an answer that didn't come through a redirect can be asked
@@ -217,9 +293,10 @@ fn fetch_got(
             true,
             cond,
             mut cj,
+            perf,
         )
         if w.failure != ""
-            return Got(url: w.url, text: error_page(w.url, w.failure), ok: false)
+            return Got(url: w.url, text: error_page(w.url, w.failure), ok: false, status: 0)
         if w.status == 304
             if h := have
                 cache[url] = Cached(
@@ -229,16 +306,26 @@ fn fetch_got(
                     modified: h.modified,
                     fresh_until: fresh_until(w.headers, now, h.fresh_until),
                 )
-                return Got(url: h.final_url, text: h.text, ok: true)
+                tally(perf, "cache.revalidated", 1)
+                return Got(url: h.final_url, text: h.text, ok: true, status: 0)
         if w.status >= 400
-            return Got(url: w.url, text: "{w.text}<p>(HTTP status {w.status})", ok: false)
+            return Got(url: w.url, text: failed_body(w.url, w.status, w.text), ok: false, status: w.status)
         if method == "GET" and w.status == 200
             keep_cached(url, w, now, mut cache)
-        return Got(url: w.url, text: w.text, ok: true)
+        return Got(url: w.url, text: w.text, ok: true, status: 0)
     file := page.file_path(url).split("?")[0].split("#")[0]
     data := fs.read_bytes(file) else err
-        return Got(url, error_page(url, "{err}"), false)
-    Got(url, decode(data, ""), true)
+        return Got(url, error_page(url, "{err}"), false, 0)
+    Got(url, decode(data, ""), true, 0)
+
+## What a page that answered `status` (400 or more) shows: the body as the
+## server sent it, as a browser renders it (an error page, a bot check);
+## only an empty body is replaced by Garlic's own page. The status goes to
+## the status line (`Loaded.status`), never into the page.
+fn failed_body(url str, status int, text str) str
+    if text.trim() == ""
+        return error_page(url, "HTTP status {status}")
+    text
 
 ## When a response stops being fresh (ms): by `max-age`, else `fallback`
 ## (a 304 without one keeps what the copy had, a new answer passes 0).
@@ -292,6 +379,7 @@ fn walk(
     creds bool,
     extra Map[str, str],
     mut cj jar.Jar,
+    perf ref Perf,
 ) Walked
     mut o := options()
     o.max_redirects = 0
@@ -314,8 +402,11 @@ fn walk(
             o.headers["cookie"] = cookie
         else
             o.headers.remove("cookie")
+        tally(perf, "requests", 1)
         r := net.request_bytes(m, cur, o) else err
+            tally(perf, "requests.failed", 1)
             return Walked(url: cur, failure: "{err}", status: 0, headers: {}, text: "")
+        tally(perf, "bytes", r.data.len())
         if creds
             for line in r.all_headers.get("set-cookie") else List[str]()
                 cj.set_cookie(cur, line)
@@ -464,31 +555,249 @@ fn refresh_target(d html.Doc, url str, scripting bool) str?
             return target
     none
 
-## At most this many linked style sheets are fetched per page.
-MAX_SHEETS := 8
+## At most this many style sheets (linked and imported) are fetched per page.
+MAX_SHEETS := 64
 
-## The page's linked style sheets, fetched and parsed in document order.
-fn linked_sheets(d html.Doc, url str, mut cj jar.Jar, mut cache Map[str, Cached]) css.Sheet
+## How deep `@import` rules are followed: a linked sheet's imports are depth
+## 0, theirs depth 1.
+MAX_IMPORT_DEPTH := 4
+
+## The `order` (`css.Rule`) the rules of sheets linked after a `<style>`
+## element start at: above every `<style>` rule, which `gfx` and `page`
+## number from the linked sheet's rule count up (`css.concat`), and below
+## 1000000, where specificity begins in `css.cascade`'s weight.
+LATE_ORDER := 500000
+
+## The `<link>` and `<style>` elements under node `id`, in document order
+## (a script-inserted node sits where it was inserted; a removed one is gone).
+fn style_nodes(d html.Doc, id int, mut out List[int])
+    if d.nodes[id].kind == html.Kind.Element
+        if d.nodes[id].tag == "template"
+            return
+        if d.nodes[id].tag == "link" or d.nodes[id].tag == "style"
+            out.push(id)
+    for c in d.nodes[id].children
+        style_nodes(d, c, mut out)
+
+## Whether a sheet in media queries `media` (one query list per line, as
+## `css.Rule.media`) can apply in some window; print-only sheets can't.
+fn media_fits(media str) bool
+    for q in media.split("\n")
+        if not css.media_matches(q, 320) and not css.media_matches(q, 2000)
+            return false
+    true
+
+## Media queries `inner` inside `outer`, as `css.Rule.media` lines.
+fn joined_media(outer str, inner str) str
+    if outer == ""
+        return inner
+    if inner == ""
+        return outer
+    "{outer}\n{inner}"
+
+## The page's linked style sheets (`<link rel=stylesheet>`) with the sheets
+## their `@import` rules name, fetched and parsed in document order, as one
+## sheet. Each address is fetched once, at most `MAX_SHEETS` in all;
+## `disabled` links, alternate sheets and print-only sheets are left out.
+## A sheet linked after a `<style>` element is numbered after every `<style>`
+## rule (`LATE_ORDER`), so it overrides them as in a browser. A link between
+## two `<style>` elements still loses to the later one: `gfx` and `page`
+## append `css.document_sheet` last, and one walk over both in document
+## order needs a change there.
+fn linked_sheets(d html.Doc, url str, mut cj jar.Jar, mut cache Map[str, Cached], perf ref Perf) css.Sheet
+    mut nodes := List[int]()
+    style_nodes(d, 0, mut nodes)
     mut all := css.parse("", 0)
-    mut n := 0
-    for l in d.all("link")
+    mut seen := Set[str]()
+    ## How many rules came before the first `<style>` element; -1 before it.
+    mut early := -1
+    for l in nodes
+        if d.nodes[l].tag == "style"
+            if early < 0
+                early = all.rules.len()
+            continue
         rel := (d.attr(l, "rel") else "").to_lower().split(" ")
         media := (d.attr(l, "media") else "").trim()
         ## A sheet for print, or for no window width at all, isn't fetched;
         ## the rest apply by the window's width at layout.
-        fits := css.media_matches(media, 320) or css.media_matches(media, 2000)
-        if not rel.contains("stylesheet") or rel.contains("alternate") or not fits
+        if not rel.contains("stylesheet") or rel.contains("alternate") or not media_fits(media)
+            continue
+        if d.attr(l, "disabled") != none
             continue
         href := d.attr(l, "href") else continue
-        if n == MAX_SHEETS
-            break
-        n += 1
-        all = css.concat(all, css.parse_in(
-            fetch_text(page.resolve(page.base_of(d, url), href), url, mut cj, mut cache),
-            0,
-            media,
-        ))
+        u := page.resolve(page.base_of(d, url), href)
+        if seen.contains(u) or seen.len() >= MAX_SHEETS
+            continue
+        seen.add(u)
+        text := fetch_sheet(u, url, mut cj, mut cache, perf)
+        all = css.concat(all, sheet_with_imports(text, u, media, url, 0, mut seen, mut cj, mut cache, perf))
+    if early >= 0
+        for k in early..all.rules.len()
+            all.rules[k].order = (LATE_ORDER + k - early).min(999999)
     all
+
+## The text of style sheet `u` for the page `from` ("" when it can't be had).
+fn fetch_sheet(u str, from str, mut cj jar.Jar, mut cache Map[str, Cached], perf ref Perf) str
+    t0 := time.now_ms()
+    text := fetch_text(u, from, mut cj, mut cache, perf)
+    spent(perf, "fetch.sheets", t0)
+    tally(perf, "sheets", 1)
+    text
+
+## Sheet `text` (from address `at`, inside media queries `media`) with the
+## rules of the sheets its leading `@import` rules name in front of its own
+## (CSS Cascade 4 §6.1), each resolved against `at` and fetched once,
+## `MAX_IMPORT_DEPTH` deep at most.
+fn sheet_with_imports(
+    text str,
+    at str,
+    media str,
+    from str,
+    depth int,
+    mut seen Set[str],
+    mut cj jar.Jar,
+    mut cache Map[str, Cached],
+    perf ref Perf,
+) css.Sheet
+    mut all := css.parse("", 0)
+    if depth < MAX_IMPORT_DEPTH
+        for imp in leading_imports(text)
+            u := page.resolve(at, imp.href)
+            inner := joined_media(media, imp.media)
+            if seen.contains(u) or seen.len() >= MAX_SHEETS or not media_fits(inner)
+                continue
+            seen.add(u)
+            got := fetch_sheet(u, from, mut cj, mut cache, perf)
+            all = css.concat(all, sheet_with_imports(got, u, inner, from, depth + 1, mut seen, mut cj, mut cache, perf))
+    t0 := time.now_ms()
+    own := css.parse_in(text, 0, media)
+    spent(perf, "css.parse", t0)
+    css.concat(all, own)
+
+## One `@import` rule: the address as written and its media query list
+## ("" for all media).
+struct Import
+    href str
+    media str
+
+## The `@import` rules at the head of sheet `text`, in order: after
+## whitespace, comments, `@charset` and `@layer` statements and before any
+## other rule. An `@import` anywhere else is invalid (CSS Cascade 4 §2.1),
+## and `css` skips it.
+fn leading_imports(text str) List[Import]
+    cs := text.chars()
+    mut out := List[Import]()
+    mut i := 0
+    while i < cs.len()
+        c := cs[i]
+        if c.is_space()
+            i += 1
+        elif c == '/' and i + 1 < cs.len() and cs[i + 1] == '*'
+            i = comment_end(cs, i + 2)
+        elif c == '@'
+            mut j := i + 1
+            while j < cs.len() and (cs[j].is_alnum() or cs[j] == '-')
+                j += 1
+            name := cs[i + 1..j].join("").to_lower()
+            end := statement_end(cs, j)
+            ## A block (`@media {`, `@layer x {`) or the end of the text ends the head.
+            if end >= cs.len() or cs[end] != ';'
+                break
+            if name == "import"
+                if imp := import_of(cs[j..end].join("").trim())
+                    out.push(imp)
+            elif name != "charset" and name != "layer"
+                break
+            i = end + 1
+        else
+            break
+    out
+
+## The index just after the `*/` that closes a comment whose body starts at `at`.
+fn comment_end(cs List[char], at int) int
+    mut i := at
+    while i + 1 < cs.len()
+        if cs[i] == '*' and cs[i + 1] == '/'
+            return i + 2
+        i += 1
+    cs.len()
+
+## Where the at-rule prelude from `at` ends: the index of its `;` or `{`
+## outside strings and parentheses, or `cs.len()` when it has neither.
+fn statement_end(cs List[char], at int) int
+    mut i := at
+    mut depth := 0
+    mut quote := ' '
+    while i < cs.len()
+        c := cs[i]
+        if quote != ' '
+            if c == '\\'
+                i += 1
+            elif c == quote
+                quote = ' '
+        elif c == '"' or c == '\''
+            quote = c
+        elif c == '('
+            depth += 1
+        elif c == ')'
+            depth -= 1
+        elif depth <= 0 and (c == ';' or c == '{')
+            return i
+        i += 1
+    cs.len()
+
+## The index of the `)` that closes the `(` at `open`, or `cs.len()`.
+fn paren_end(cs List[char], open int) int
+    mut depth := 0
+    mut i := open
+    while i < cs.len()
+        if cs[i] == '('
+            depth += 1
+        elif cs[i] == ')'
+            depth -= 1
+            if depth == 0
+                return i
+        i += 1
+    cs.len()
+
+## `s` without one pair of matching quotes around it.
+fn unquote(s str) str
+    double := s.starts_with("\"") and s.ends_with("\"")
+    single := s.starts_with("'") and s.ends_with("'")
+    if s.len() >= 2 and (double or single)
+        return s.slice(1, s.len() - 1)
+    s
+
+## The address and media of an `@import` prelude (what follows `@import`):
+## `url(x)`, `url("x")` or `"x"`, then an optional `layer` or `layer(name)`
+## and `supports(...)`, which Garlic takes as met, then a media query list.
+fn import_of(prelude str) Import?
+    cs := prelude.chars()
+    mut href := ""
+    mut i := 0
+    if prelude.to_lower().starts_with("url(")
+        close := paren_end(cs, 3)
+        href = unquote(cs[4..close].join("").trim())
+        i = close + 1
+    elif cs.len() > 0 and (cs[0] == '"' or cs[0] == '\'')
+        mut j := 1
+        while j < cs.len() and cs[j] != cs[0]
+            j += 1
+        href = cs[1..j].join("")
+        i = j + 1
+    else
+        return none
+    if href == ""
+        return none
+    mut rest := cs[i.min(cs.len())..].join("").trim()
+    lower := rest.to_lower()
+    if lower.starts_with("layer(")
+        rest = rest.slice((paren_end(rest.chars(), 5) + 1).min(rest.len()), rest.len()).trim()
+    elif lower == "layer" or lower.starts_with("layer ")
+        rest = rest.slice(5, rest.len()).trim()
+    if rest.to_lower().starts_with("supports(")
+        rest = rest.slice((paren_end(rest.chars(), 8) + 1).min(rest.len()), rest.len()).trim()
+    Import(href: href, media: rest)
 
 ## The bytes of a `data:` URL's payload (RFC 2397): base64 or %-escapes.
 fn data_bytes(url str) bytes
@@ -544,11 +853,20 @@ fn max_age(cc str) int
 ## `max-age` is used without a request; an older one is asked about with
 ## `If-None-Match` or `If-Modified-Since`, and a 304 renews it. `no-store`
 ## responses are not kept.
-fn fetch_text(url str, from str, mut cj jar.Jar, mut cache Map[str, Cached]) str
+fn fetch_text(url str, from str, mut cj jar.Jar, mut cache Map[str, Cached], perf ref Perf) str
+    got := script_source(url, from, mut cj, mut cache, perf) else return ""
+    got
+
+## `fetch_text`, or none when the sub-resource can't be had (no answer, or a
+## status of 400 or more), as a script element needs to tell `load` from
+## `error`.
+fn script_source(url str, from str, mut cj jar.Jar, mut cache Map[str, Cached], perf ref Perf) str?
     if url.starts_with("data:")
         return data_text(url)
-    got := fetch_got(url, "GET", "", from, false, false, mut cj, mut cache)
-    if got.ok then got.text else ""
+    got := fetch_got(url, "GET", "", from, false, false, mut cj, mut cache, perf)
+    if not got.ok
+        return none
+    got.text
 
 ## A loaded page: where it ended up and its tree.
 struct Loaded
@@ -558,6 +876,8 @@ struct Loaded
     js jsdom.Session?
     ## What the scripts logged and requested while the page loaded.
     out jsdom.Outcome
+    ## The HTTP status when the page came with 400 or more, else 0.
+    status int
 
 ## With scripting on, `<noscript>` holds markup for browsers without
 ## scripts and shows nothing (HTML §13.2.6.4.4, §4.12.2); `hidden` keeps it
@@ -579,6 +899,7 @@ fn load_doc(
     mut socks Map[int, ws.Sock],
     zone str,
     pool jsdom.Pool,
+    perf ref Perf,
 ) Loaded
     mut at := target
     mut m := method
@@ -586,35 +907,47 @@ fn load_doc(
     mut via := from
     mut first := true
     for _ in 0..MAX_REFRESHES
-        got := fetch_got(at, m, b, via, true, reload and first, mut cj, mut cache)
+        t_doc := time.now_ms()
+        got := fetch_got(at, m, b, via, true, reload and first, mut cj, mut cache, perf)
+        spent(perf, "fetch.document", t_doc)
         first = false
         via = at
         at = got.url
+        t_parse := time.now_ms()
         mut d := if env.args().contains("--no-js") then html.parse(got.text) else html.parse_scripting(got.text)
+        spent(perf, "html.parse", t_parse)
+        tally(perf, "dom.nodes.parsed", d.nodes.len())
         if env.args().contains("--no-js")
             next := refresh_target(d, at, false) else return Loaded(
                 url: at,
                 doc: d,
                 js: none,
                 out: quiet(),
+                status: got.status,
             )
             at = next
             m = "GET"
             b = ""
             continue
         mut scripts := Map[str, str]()
+        t_scripts := time.now_ms()
         for s in d.all("script")
             if src := d.attr(s, "src")
                 u := page.resolve(page.base_of(d, at), src)
-                scripts[script_url(u)] = fetch_text(u, at, mut cj, mut cache)
+                if not scripts.contains(script_url(u))
+                    tally(perf, "scripts", 1)
+                    scripts[script_url(u)] = fetch_text(u, at, mut cj, mut cache, perf)
+        spent(perf, "fetch.scripts", t_scripts)
+        t_modules := time.now_ms()
         for s in d.all("script")
             if (d.attr(s, "type") else "").to_lower().trim() != "module"
                 continue
             if src := d.attr(s, "src")
                 u := script_url(page.resolve(page.base_of(d, at), src))
-                prefetch_modules(scripts.get(u) else "", u, at, mut scripts, mut cj, mut cache)
+                prefetch_modules(scripts.get(u) else "", u, at, mut scripts, mut cj, mut cache, perf)
             else
-                prefetch_modules(d.text(s), script_url(at), at, mut scripts, mut cj, mut cache)
+                prefetch_modules(d.text(s), script_url(at), at, mut scripts, mut cj, mut cache, perf)
+        spent(perf, "fetch.modules", t_modules)
         now := time.now_ms().to_float()
         ## A page with no scripts has nothing to run, and starting the engine
         ## costs about 0.2 s.
@@ -634,6 +967,7 @@ fn load_doc(
             net: [],
         )
         if d.all("script").len() > 0
+            t_run := time.now_ms()
             ran := jsdom.start(
                 mut d,
                 script_url(at),
@@ -645,8 +979,13 @@ fn load_doc(
                 5000000,
                 pool,
             )
+            spent(perf, "script.run", t_run)
             mut live := ran.0
-            out = serve_page(mut live, mut d, ran.1, at, mut cj, mut socks)
+            out = serve_page(mut live, mut d, ran.1, at, mut cj, mut socks, mut cache, perf)
+            tally(perf, "js.steps", live.steps())
+            if live.stopped()
+                tally(perf, "js.stopped", 1)
+            tally(perf, "dom.mutations", out.changes)
             session = live
         for line in out.cookies
             cj.set_from_script(at, line)
@@ -660,22 +999,24 @@ fn load_doc(
             next = refresh_target(d, at, true) else ""
             if next == ""
                 hide_noscript(mut d)
-                return Loaded(url: at, doc: d, js: session, out: out)
+                return Loaded(url: at, doc: d, js: session, out: out, status: got.status)
             m = "GET"
             b = ""
         else
             m = out.method
             b = out.body
         at = next
-    last := fetch_got(at, m, b, via, true, false, mut cj, mut cache)
-    Loaded(url: last.url, doc: html.parse(last.text), js: none, out: quiet())
+    last := fetch_got(at, m, b, via, true, false, mut cj, mut cache, perf)
+    Loaded(url: last.url, doc: html.parse(last.text), js: none, out: quiet(), status: last.status)
 
 ## What page scripts asked the browser for, answered against the live engine
-## `live`; the scripts never run again. `fetch` and XMLHttpRequest requests
-## (`out.asks`) are made and their replies handed back; WebSocket operations
-## (`out.sockets`) open, write to and close the connections in `socks`, and
-## whatever the open sockets have received is delivered. An answer can ask
-## for more. What it all did is added to `out`.
+## `live`; the scripts never run again. Classic scripts the page inserted
+## (`out.missing`) are fetched and run, at most `MAX_LATE_SCRIPTS` per call;
+## `fetch` and XMLHttpRequest requests (`out.asks`) are made and their
+## replies handed back; WebSocket operations (`out.sockets`) open, write to
+## and close the connections in `socks`, and whatever the open sockets have
+## received is delivered. An answer can ask for more. What it all did is
+## added to `out`.
 fn serve_page(
     mut live jsdom.Session,
     mut d html.Doc,
@@ -683,46 +1024,79 @@ fn serve_page(
     at str,
     mut cj jar.Jar,
     mut socks Map[int, ws.Sock],
+    mut cache Map[str, Cached],
+    perf ref Perf,
 ) jsdom.Outcome
     mut out := first
     mut asks := first.asks
     mut ops := first.sockets
     mut mods := first.mods
+    mut wanted := first.missing
     out.asks = []
     out.sockets = []
     out.mods = []
+    out.missing = []
     mut work := 0
+    mut late := 0
     mut polled := false
     mut worked := false
     while work < MAX_REPLIES
         mut more := quiet()
-        if mods.len() > 0
+        if wanted.len() > 0 and late < MAX_LATE_SCRIPTS
+            ## A classic script the page inserted (HTML §4.12.1.1): fetched
+            ## like a parser's script, then run, then `load` or `error` fires
+            ## on its element. These have their own cap, not `MAX_REPLIES`.
+            want := wanted.remove_at(0)
+            late += 1
+            t0 := time.now_ms()
+            src := script_source(local_url(want.url), at, mut cj, mut cache, perf)
+            spent(perf, "fetch.scripts", t0)
+            tally(perf, "scripts.inserted", 1)
+            out.net.push(if src != none then "GET {want.url} (script)" else "GET {want.url} (script, failed)")
+            t1 := time.now_ms()
+            more = live.script(mut d, want.node, want.url, src else "", src != none, 1000.0)
+            spent(perf, "script.run", t1)
+        elif mods.len() > 0
             ## A module the page imports: fetched with CORS, handed to the
             ## engine, which goes on with the imports waiting for it.
             want := mods.remove_at(0)
-            src := module_source(want, at, mut cj)
+            t0 := time.now_ms()
+            src := module_source(want, at, mut cj, perf)
+            spent(perf, "fetch.modules", t0)
             out.net.push(if src != none then "GET {want} (module)" else "GET {want} (module, failed)")
+            t1 := time.now_ms()
             more = live.module(mut d, want, src else "", src != none, 1000.0)
+            spent(perf, "script.run", t1)
+            work += 1
         elif asks.len() > 0
             ask := asks.remove_at(0)
             out.net.push("{ask.method} {ask.url}")
-            more = live.reply(mut d, ask.id, script_reply(ask, at, mut cj), 1000.0)
+            t0 := time.now_ms()
+            reply := script_reply(ask, at, mut cj, perf)
+            spent(perf, "fetch.replies", t0)
+            tally(perf, "replies", 1)
+            t1 := time.now_ms()
+            more = live.reply(mut d, ask.id, reply, 1000.0)
+            spent(perf, "script.run", t1)
+            work += 1
         elif ops.len() > 0
             op := ops.remove_at(0)
             more = socket_op(mut live, mut d, op, at, mut cj, mut socks)
+            work += 1
         elif not polled and socks.len() > 0
             ## A moment for the server to speak after an open or a send.
             polled = true
             more = deliver_received(mut live, mut d, mut socks, if work > 0 then 50 else 1)
+            work += 1
             if more.changes == 0 and more.sockets.len() == 0 and more.asks.len() == 0
                 break
         elif not worked and live.workers_live()
             ## What the page's Web Workers sent since the last time.
             worked = true
             more = live.workers_poll(mut d, 1000.0)
+            work += 1
         else
             break
-        work += 1
         if out.url == ""
             out.url = more.url
             out.method = more.method
@@ -735,10 +1109,18 @@ fn serve_page(
         asks.extend(more.asks)
         ops.extend(more.sockets)
         mods.extend(more.mods)
-        if more.changes > 0 or more.asks.len() > 0 or more.sockets.len() > 0 or more.mods.len() > 0
+        wanted.extend(more.missing)
+        if more.changes > 0
+            or more.asks.len() > 0
+            or more.sockets.len() > 0
+            or more.mods.len() > 0
+            or more.missing.len() > 0
             polled = false
             worked = false
     out
+
+## Classic scripts a page may insert and have run, per `serve_page` call.
+MAX_LATE_SCRIPTS := 64
 
 fn quiet() jsdom.Outcome
     jsdom.Outcome(
@@ -818,13 +1200,13 @@ fn deliver_received(
 ## The source of the module at `u` (an engine address) for the page `from`,
 ## or none. An http(s) module is a CORS request: another origin must allow
 ## the page with `Access-Control-Allow-Origin`.
-fn module_source(u str, from str, mut cj jar.Jar) str?
+fn module_source(u str, from str, mut cj jar.Jar, perf ref Perf) str?
     real := u.strip_prefix("file://local/") else u
     if real.starts_with("data:")
         return data_text(real)
     s := page.scheme(real)
     if s == "http" or s == "https"
-        w := walk("GET", real, "", "", from, false, origin_of(from) == origin_of(real), {}, mut cj)
+        w := walk("GET", real, "", "", from, false, origin_of(from) == origin_of(real), {}, mut cj, perf)
         if w.failure != "" or w.status >= 400
             return none
         if origin_of(w.url) != origin_of(from)
@@ -850,6 +1232,7 @@ fn prefetch_modules(
     mut scripts Map[str, str],
     mut cj jar.Jar,
     mut cache Map[str, Cached],
+    perf ref Perf,
 )
     mut queue := jsdom.module_deps(source, base)
     mut i := 0
@@ -859,7 +1242,8 @@ fn prefetch_modules(
         if scripts.contains(u)
             continue
         real := u.strip_prefix("file://local/") else u
-        text := fetch_text(real, from, mut cj, mut cache)
+        text := fetch_text(real, from, mut cj, mut cache, perf)
+        tally(perf, "modules", 1)
         if text == ""
             continue
         scripts[u] = text
@@ -880,7 +1264,7 @@ fn origin_of(u str) str
 ## `Access-Control-Allow-Origin` (`*` or the page's origin), else the script
 ## sees a network error, as in a browser. Custom request headers and
 ## preflights are not sent.
-fn script_reply(ask jsdom.Ask, from str, mut cj jar.Jar) str
+fn script_reply(ask jsdom.Ask, from str, mut cj jar.Jar, perf ref Perf) str
     failed := r"""{"error":true}"""
     s := page.scheme(ask.url)
     if s != "http" and s != "https"
@@ -889,7 +1273,7 @@ fn script_reply(ask jsdom.Ask, from str, mut cj jar.Jar) str
     ctype := lines[0]
     body := lines[1..lines.len()].join("\n")
     same := origin_of(from) == origin_of(ask.url)
-    w := walk(ask.method, ask.url, body, ctype, from, false, same, {}, mut cj)
+    w := walk(ask.method, ask.url, body, ctype, from, false, same, {}, mut cj, perf)
     if w.failure != ""
         return failed
     if origin_of(w.url) != origin_of(from)
@@ -964,6 +1348,7 @@ fn Browser.empty(url str, width int, height int) Browser
         ahead: [],
         bits: {},
         js: none,
+        perf: new_perf(),
     )
     b
 
@@ -979,7 +1364,10 @@ fn Browser.scroll_to(mut self, row int)
 
 ## Lays the page out again, after a resize or a change to a form control.
 fn Browser.relayout(mut self)
+    t0 := time.now_ms()
     self.pg = page.layout_with(self.doc, self.url, self.width, self.sheet)
+    spent(self.perf, "layout.cells", t0)
+    tally(self.perf, "relayouts", 1)
     self.stamp += 1
     self.scroll_to(self.scroll)
 
@@ -1061,11 +1449,19 @@ fn Browser.pump(mut self)
     mut s := self.js else return
     if self.socks.len() == 0 and not s.workers_live()
         return
-    out := serve_page(mut s, mut self.doc, quiet(), self.url, mut self.cj, mut self.socks)
+    out := serve_page(
+        mut s,
+        mut self.doc,
+        quiet(),
+        self.url,
+        mut self.cj,
+        mut self.socks,
+        mut self.cache,
+        self.perf,
+    )
     self.js = s
     self.record(out)
-    if not self.js_went(out)
-        self.relayout()
+    self.after_scripts(out)
 
 ## Gives the page's scripts the layout's element boxes, so they can measure.
 fn Browser.measure(mut self, boxes List[gfx.Box], top float)
@@ -1098,6 +1494,13 @@ fn Browser.record(mut self, out jsdom.Outcome)
     if self.net_log.len() > LOG_KEEP
         self.net_log = self.net_log[self.net_log.len() - LOG_KEEP..]
 
+## Follows a navigation the page's scripts asked for; else lays the page out
+## again only when they changed it (`js_went`), so a page whose timers tick
+## without touching the tree costs no layout each second.
+fn Browser.after_scripts(mut self, out jsdom.Outcome)
+    if not self.js_went(out) and out.changes == 0
+        tally(self.perf, "relayouts.skipped", 1)
+
 ## Lets the page's timers, requests and sockets run for one second of its
 ## clock. True when something happened (a change, a request or a log line) or a
 ## timer is still waiting.
@@ -1110,11 +1513,12 @@ fn Browser.settle(mut self) bool
         self.url,
         mut self.cj,
         mut self.socks,
+        mut self.cache,
+        self.perf,
     )
     self.js = s
     self.record(out)
-    if not self.js_went(out)
-        self.relayout()
+    self.after_scripts(out)
     out.changes > 0
         or out.net.len() > 0
         or out.console.len() > 0
@@ -1145,6 +1549,7 @@ fn Browser.reload(mut self)
     self.load(self.url, "GET", "")
 
 fn Browser.load(mut self, target str, method str, body str)
+    restart(self.perf)
     self.close_sockets()
     self.stop_workers()
     loaded := load_doc(
@@ -1158,6 +1563,7 @@ fn Browser.load(mut self, target str, method str, body str)
         mut self.socks,
         self.zone,
         self.workers,
+        self.perf,
     )
     self.reloading = false
     self.refer = ""
@@ -1169,12 +1575,17 @@ fn Browser.load(mut self, target str, method str, body str)
     self.console_log = []
     self.net_log = []
     self.record(loaded.out)
-    self.sheet = linked_sheets(self.doc, self.url, mut self.cj, mut self.cache)
+    self.sheet = linked_sheets(self.doc, self.url, mut self.cj, mut self.cache, self.perf)
+    t_cells := time.now_ms()
     self.pg = page.layout_with(self.doc, self.url, self.width, self.sheet)
+    spent(self.perf, "layout.cells", t_cells)
     self.stamp += 1
     self.scroll = 0
     self.focus = 0
-    self.message = ""
+    ## A page that came with an error status is shown as sent; the status
+    ## line says what it was.
+    self.message = if loaded.status >= 400 then "HTTP status {loaded.status}" else ""
+    self.perf.pending = true
     ## A fresh load replaces any copy kept for that address.
     self.kept.remove(self.url)
     self.kept_order = [u for u in self.kept_order if u != self.url]
@@ -1379,6 +1790,8 @@ fn Browser.js_click(mut self, id int) bool
         self.url,
         mut self.cj,
         mut self.socks,
+        mut self.cache,
+        self.perf,
     )
     self.js = s
     self.record(out)
@@ -1423,6 +1836,8 @@ fn Browser.type_into(mut self, id int, text str)
             self.url,
             mut self.cj,
             mut self.socks,
+            mut self.cache,
+            self.perf,
         )
         self.js = s
         self.record(out)
@@ -1515,6 +1930,8 @@ fn Browser.submit(mut self, id int)
             self.url,
             mut self.cj,
             mut self.socks,
+            mut self.cache,
+            self.perf,
         )
         self.js = s
         self.record(out)
@@ -2156,6 +2573,7 @@ fn Gui.refresh(mut self)
     if self.b.stamp != self.scene_stamp
         or self.area_w != self.scene_w
         or self.b.editing() != self.scene_edit
+        t_images := time.now_ms()
         images.prefetch(
             self.b.doc,
             page.base_of(self.b.doc, self.b.url),
@@ -2165,6 +2583,8 @@ fn Gui.refresh(mut self)
             mut self.b.sizes,
             mut self.b.bits,
         )
+        spent(self.b.perf, "fetch.images", t_images)
+        t_pixels := time.now_ms()
         self.scene = gfx.layout_measured(
             self.b.doc,
             self.b.url,
@@ -2174,6 +2594,8 @@ fn Gui.refresh(mut self)
             self.meas,
             self.b.editing(),
         )
+        spent(self.b.perf, "layout.pixels", t_pixels)
+        tally(self.b.perf, "layouts.pixels", 1)
         self.scene_edit = self.b.editing()
         self.scene_stamp = self.b.stamp
         self.scene_w = self.area_w
@@ -3565,6 +3987,7 @@ impl app.App for Garlic
             self.pick_row = -1
         self.remember()
         if self.g.pixel
+            t_icon := time.now_ms()
             self.g.icon = favicon.fetch(
                 self.g.b.doc,
                 self.g.b.url,
@@ -3572,8 +3995,12 @@ impl app.App for Garlic
                 image_options(),
                 mut self.icons,
             )
+            spent(self.g.b.perf, "fetch.favicon", t_icon)
             if self.g.icon != "" and not self.icon_sent.contains(self.g.icon)
                 self.icon_fresh.add(self.g.icon)
+        ## A load's timings once its first pixel layout is done, before the
+        ## frame goes out.
+        report_timings(self.g.b.perf)
 
     fn view(self) app.Node
         ## A canvas of 0 by 0 fills the window; the host reports its size.
@@ -3816,7 +4243,7 @@ fn flag(args List[str], name str) str?
     if at + 1 < args.len() then args[at + 1] else none
 
 fn usage()
-    print("usage: ail run garlic.ail [--width N] [--height N] [--follow N | --find TEXT | --do ACTION:ARG]... [--viewport] [--budget TOKENS] [--diff] [--no-js] [--console] [--print | --json | --links | --session | --pixels-dump [--pixel-width N] | --marks FILE.svg [--pixel-width N] | --keys] URL|FILE (options may come before or after it)")
+    print("usage: ail run garlic.ail [--width N] [--height N] [--follow N | --find TEXT | --do ACTION:ARG]... [--viewport] [--budget TOKENS] [--diff] [--no-js] [--console] [--timings] [--print | --json | --links | --session | --pixels-dump [--pixel-width N] | --marks FILE.svg [--pixel-width N] | --keys] URL|FILE (options may come before or after it)")
 
 ## Flags that take a value, so the address is the first argument that is
 ## neither a flag nor a value.
@@ -3894,6 +4321,7 @@ fn op_line(op draw.Op) str
 ## `--pixels-dump`: the pixel layout of the page, one operation per line,
 ## after the canvas colour and height.
 fn pixels_dump(mut b Browser, width float)
+    t_images := time.now_ms()
     images.prefetch(
         b.doc,
         page.base_of(b.doc, b.url),
@@ -3903,7 +4331,10 @@ fn pixels_dump(mut b Browser, width float)
         mut b.sizes,
         mut b.bits,
     )
+    spent(b.perf, "fetch.images", t_images)
+    t_pixels := time.now_ms()
     s := gfx.layout_with(b.doc, b.url, width, b.sheet, b.sizes)
+    spent(b.perf, "layout.pixels", t_pixels)
     print("canvas #{s.bg.to_hex().pad_left(6, '0')} height {s.height.round()} ops {s.ops.len()} links {s.hits.len()}")
     for op in s.ops
         print(op_line(op))
@@ -4104,6 +4535,8 @@ fn run_cli(args List[str], width int, height int, pool jsdom.Pool, inbox app.Inb
             not eager,
         ) else err
             print("garlic: {err}")
+    if eager
+        report_timings(b.perf)
 
 # ---- Tests -------------------------------------------------------------
 
@@ -5708,6 +6141,62 @@ fn flat(s gfx.Scene) List[str]
     assert_eq(data_text("data:text/plain;base64,aGk="), "hi")
     assert_eq(data_text("data:,a%2"), "a%2")
     assert_eq(data_text("data:nope"), "")
+
+@test fn many_linked_sheets_load_once_each_and_disabled_ones_not_at_all()
+    b := Browser.new("{testdata()}/many-sheets.html", 60, 12)
+    # The 14th and last link hides the advert; a repeated address is fetched
+    # once and a `disabled` link not at all.
+    assert_eq(b.pg.text(), "# Sheets\n\nshown")
+    assert_eq(b.sheet.rules.len(), 12)
+
+@test fn a_sheet_linked_after_a_style_element_overrides_it()
+    b := Browser.new("{testdata()}/sheet-order.html", 60, 12)
+    text := b.pg.text()
+    assert(text.contains("shown by the link after the style"))
+    assert(not text.contains("hidden by the style"))
+
+@test fn imported_sheets_apply_before_the_importing_one()
+    b := Browser.new("{testdata()}/imports.html", 60, 12)
+    text := b.pg.text()
+    assert(not text.contains("hidden"))
+    assert(text.contains("shown: print only"))
+    assert(text.contains("shown"))
+
+@test fn leading_imports_stop_at_the_first_rule()
+    imps := leading_imports("@charset \"utf-8\";\n/* c */ @import url(\"a.css\") screen; @import 'b.css' layer(base) supports(display: grid) (min-width: 10px);\n@import url(data:text/css;x,a);\n.x \{} @import \"late.css\";")
+    assert_eq([i.href for i in imps], ["a.css", "b.css", "data:text/css;x,a"])
+    assert_eq([i.media for i in imps], ["screen", "(min-width: 10px)", ""])
+    assert_eq(leading_imports("@media screen \{ p \{} } @import \"z.css\";").len(), 0)
+    assert_eq(leading_imports("@layer base, theme;\n@import \"z.css\" layer;").len(), 1)
+    assert(import_of("nothing") == none)
+
+@test fn script_inserted_scripts_are_fetched_run_and_told_load_or_error()
+    b := Browser.new("{testdata()}/late-script.html", 80, 12)
+    text := b.pg.text()
+    assert(text.contains("late script ran / missing one failed"))
+    assert(text.contains("load fired"))
+    assert_eq(b.net_log.len(), 2)
+    assert(b.net_log[1].ends_with("no-such-script.js (script, failed)"))
+
+@test fn error_statuses_show_the_body_as_sent()
+    assert_eq(failed_body("https://a.org/", 403, "<h1>Blocked</h1>"), "<h1>Blocked</h1>")
+    assert(failed_body("https://a.org/x", 404, "  ").contains("HTTP status 404"))
+
+@test fn timings_list_phases_in_load_order_then_counters()
+    p := ref Perf(start: 0, ms: {"fetch.sheets": 5, "html.parse": 2}, counts: {"requests": 3}, pending: false)
+    assert_eq(timing_lines(p, 9), [
+        "timings: nav.total 9 ms",
+        "timings: html.parse 2 ms",
+        "timings: fetch.sheets 5 ms",
+        "timings: requests 3",
+    ])
+
+@test fn a_timer_that_changes_nothing_costs_no_layout()
+    mut b := Browser.new("{testdata()}/idle-timer.html", 60, 12)
+    before := b.stamp
+    b.advance()
+    assert_eq(b.stamp, before)
+    assert(b.perf.counts.contains("relayouts.skipped"))
 
 @test fn clicks_typing_and_submits_reach_the_pages_listeners()
     mut b := Browser.new("{testdata()}/events.html", 80, 30)
