@@ -202,7 +202,7 @@ fn Vm.setup(mut self)
     self.methods(
         object_ctor,
         "Object",
-        "keys:1 values:1 entries:1 assign:2 create:2 getPrototypeOf:1 setPrototypeOf:2 defineProperty:3 defineProperties:2 getOwnPropertyNames:1 getOwnPropertyDescriptor:2 getOwnPropertyDescriptors:1 freeze:1 isFrozen:1 seal:1 isSealed:1 preventExtensions:1 isExtensible:1 fromEntries:1 is:2",
+        "keys:1 values:1 entries:1 assign:2 create:2 getPrototypeOf:1 setPrototypeOf:2 defineProperty:3 defineProperties:2 getOwnPropertyNames:1 getOwnPropertyDescriptor:2 getOwnPropertyDescriptors:1 freeze:1 isFrozen:1 seal:1 isSealed:1 preventExtensions:1 isExtensible:1 fromEntries:1 is:2 hasOwn:2",
     )
     self.methods(
         object_proto,
@@ -948,6 +948,11 @@ fn Vm.object_function(mut self, m str, args List[Value]) Value ! Thrown
             p := to_object(arg_at(args, 1))?
             self.define_properties(o, p)?
             a0
+        "hasOwn" =>
+            ## §20.1.2.13: ToObject first, then the key.
+            o := to_object(a0)?
+            key := to_key(arg_at(args, 1))?
+            Value.Bool(own(o, key) != none)
         "getOwnPropertySymbols" => array([Value.Sym(k) for k in own_symbols(to_object(a0)?)])
         "getOwnPropertyNames" =>
             o := to_object(a0)?

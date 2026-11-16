@@ -1696,6 +1696,9 @@ pub fn document_sheet(d html.Doc) Sheet
             start: 0,
         )
         rules_of(strip_comments(d.text(s)).chars(), sc, mut rules, mut layers)
+        ## Rules a script added with `sheet.insertRule` (js/vm/platform.ail).
+        if added := d.attr(s, "data-garlic-rules")
+            rules_of(added.chars(), sc, mut rules, mut layers)
     build(rules, layers)
 
 ## Tests: run with `ail test garlic.ail` (this module's `@test` functions
@@ -1735,6 +1738,12 @@ pub fn document_sheet(d html.Doc) Sheet
     d := html.parse("<html data-theme=dark><p>t</p></html>")
     assert_eq(cascade(d, d.first("p")?, sheet)["color"], "var(--fg)")
     assert_eq(cascade(d, d.first("html")?, sheet)["--fg"], "#fff")
+
+@test fn css_rules_a_script_inserted_follow_the_style_text()
+    d := html.parse("<style data-garlic-rules=\".a \{ color: blue }\">.a \{ color: red; margin: 0 }</style><p class=a>t</p>")
+    got := cascade(d, d.first("p")?, document_sheet(d))
+    assert_eq(got["color"], "blue")
+    assert_eq(got["margin"], "0")
 
 @test fn css_is_where_and_not_lists_match_with_their_specificity()
     d := html.parse("<div class=x><h2><b>t</b></h2><p class=a>1</p><p class=c>2</p></div>")
