@@ -347,6 +347,15 @@ pub fn units(s str) List[int]
             out.push(k)
     out
 
+## Whether `s` is ASCII, so that its UTF-16 units are its characters and
+## indexes can use `slice` (O(1) on ASCII text) instead of `units`.
+pub fn is_ascii_text(s str) bool
+    s.byte_len() == s.len()
+
+## The code unit at `i` of ASCII text `s` (`i` inside it).
+pub fn ascii_unit(s str, i int) int
+    (s.slice(i, i + 1).char_at(0) else ' ').code()
+
 ## Code units back to a string; a lone surrogate becomes U+FFFD.
 pub fn from_units(us List[int]) str
     mut out := List[char]()
@@ -367,6 +376,10 @@ pub fn from_units(us List[int]) str
 
 ## The length in UTF-16 code units.
 pub fn unit_len(s str) int
+    # ASCII text (as many bytes as characters) has one unit per character;
+    # both counts are stored with the string.
+    if is_ascii_text(s)
+        return s.len()
     mut n := 0
     for c in s.chars()
         n += if c.code() >= 0x10000 then 2 else 1

@@ -1133,7 +1133,7 @@ pub fn Vm.eval(mut self, e syntax.Expr, env ref Env) Value ! Thrown
             if optional and is_nullish(base)
                 self.chain_shorted = true
                 return Undef
-            if computed and is_array_value(base) and not is_super(object)
+            if computed and is_indexed_value(base) and not is_super(object)
                 kv := self.eval(prop, env)?
                 if fast := array_fast_get(base, kv)
                     return fast
@@ -1189,15 +1189,30 @@ fn is_array_value(v Value) bool
         Obj(o) => o.class == "Array" or o.class == "Arguments"
         Undef | Null | Bool | Num | Str | Big | Sym => false
 
+## Whether `a[i]` on `v` may take `array_fast_get`: an array, `arguments`
+## or ASCII text.
+fn is_indexed_value(v Value) bool
+    match v
+        Obj(o) => o.class == "Array" or o.class == "Arguments"
+        Str(s) => is_ascii_text(s)
+        Undef | Null | Bool | Num | Big | Sym => false
+
 ## `a[i]` for an array `a` and a number `i` that is an index inside it: the
-## element, without making the key "i" and parsing it back.
+## element, without making the key "i" and parsing it back. On ASCII text,
+## the character at `i` (one UTF-16 unit, §10.4.3.5).
 fn array_fast_get(base Value, kv Value) Value?
-    o := obj_of(base) else return none
     n := num_of(kv) else return none
     i := as_index(n) else return none
-    if i < o.elems.len()
-        return o.elems[i]
-    none
+    match base
+        Obj(o) =>
+            if i < o.elems.len()
+                return o.elems[i]
+            none
+        Str(s) =>
+            if i < s.len() and is_ascii_text(s)
+                return Value.Str(s.slice(i, i + 1))
+            none
+        Undef | Null | Bool | Num | Big | Sym => none
 
 ## `a[i] = v` for an index inside an unfrozen array: the element is an own
 ## writable data property, so no setter on the prototype chain can apply.

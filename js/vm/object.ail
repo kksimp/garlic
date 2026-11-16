@@ -72,6 +72,18 @@ pub fn Vm.own(self, o ref JsObject, key str) Prop?
         if key == "length"
             return hidden(Num(unit_len(s).to_float()))
         if i := index_of_key(key)
+            if is_ascii_text(s)
+                if i < s.len()
+                    return Prop(
+                        value: Str(s.slice(i, i + 1)),
+                        get: Undef,
+                        set: Undef,
+                        accessor: false,
+                        enumerable: true,
+                        writable: false,
+                        configurable: false,
+                    )
+                return o.props.get(key)
             us := units(s)
             if i < us.len()
                 return Prop(
@@ -114,6 +126,8 @@ pub fn Vm.get(mut self, base Value, key str) Value ! Thrown
             if key == "length"
                 return Num(unit_len(s).to_float())
             if i := index_of_key(key)
+                if is_ascii_text(s)
+                    return if i < s.len() then Value.Str(s.slice(i, i + 1)) else Value.Undef
                 us := units(s)
                 if i < us.len()
                     return Str(from_units([us[i]]))
