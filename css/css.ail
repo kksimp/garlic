@@ -851,41 +851,47 @@ fn media_len(s str) float?
         if b == 0.0
             return none
         return a / b
-    cs := t.chars()
-    mut i := 0
-    v := calc_sum(cs, mut i)?
-    skip_ws(cs, mut i)
-    if i != cs.len()
+    mut c := Calc(cs: t.chars(), i: 0)
+    v := calc_sum(mut c)?
+    skip_ws(mut c)
+    if c.i != c.cs.len()
         return none
     v
 
-fn skip_ws(cs List[char], mut i int)
-    while i < cs.len() and (cs[i] == ' ' or cs[i] == '\t' or cs[i] == '\n')
-        i += 1
+## A cursor over the characters of a `calc()` or media length. It is a
+## struct so the position written by nested parsers reaches the caller
+## (ail 0.1 drops writes to a `mut int` parameter that is only passed on).
+struct Calc
+    cs List[char]
+    i int
+
+fn skip_ws(mut c Calc)
+    while c.i < c.cs.len() and (c.cs[c.i] == ' ' or c.cs[c.i] == '\t' or c.cs[c.i] == '\n')
+        c.i += 1
 
 ## `a + b - c` in a `calc()` (CSS Values 4, 10.1, simplified).
-fn calc_sum(cs List[char], mut i int) float?
-    mut total := calc_product(cs, mut i)?
+fn calc_sum(mut c Calc) float?
+    mut total := calc_product(mut c)?
     while true
-        skip_ws(cs, mut i)
-        if i >= cs.len() or (cs[i] != '+' and cs[i] != '-')
+        skip_ws(mut c)
+        if c.i >= c.cs.len() or (c.cs[c.i] != '+' and c.cs[c.i] != '-')
             break
-        plus := cs[i] == '+'
-        i += 1
-        v := calc_product(cs, mut i)?
+        plus := c.cs[c.i] == '+'
+        c.i += 1
+        v := calc_product(mut c)?
         total = if plus then total + v else total - v
     total
 
 ## `a * b / c` in a `calc()`.
-fn calc_product(cs List[char], mut i int) float?
-    mut v := calc_atom(cs, mut i)?
+fn calc_product(mut c Calc) float?
+    mut v := calc_atom(mut c)?
     while true
-        skip_ws(cs, mut i)
-        if i >= cs.len() or (cs[i] != '*' and cs[i] != '/')
+        skip_ws(mut c)
+        if c.i >= c.cs.len() or (c.cs[c.i] != '*' and c.cs[c.i] != '/')
             break
-        times := cs[i] == '*'
-        i += 1
-        w := calc_atom(cs, mut i)?
+        times := c.cs[c.i] == '*'
+        c.i += 1
+        w := calc_atom(mut c)?
         if times
             v = v * w
         elif w == 0.0
@@ -896,35 +902,35 @@ fn calc_product(cs List[char], mut i int) float?
 
 ## A number with an optional `px`, `em` or `rem` unit, a parenthesised
 ## sum, or `calc(...)`.
-fn calc_atom(cs List[char], mut i int) float?
-    skip_ws(cs, mut i)
-    if i >= cs.len()
+fn calc_atom(mut c Calc) float?
+    skip_ws(mut c)
+    if c.i >= c.cs.len()
         return none
-    if cs[i] == '('
-        i += 1
-        inner := calc_sum(cs, mut i)?
-        skip_ws(cs, mut i)
-        if i < cs.len() and cs[i] == ')'
-            i += 1
+    if c.cs[c.i] == '('
+        c.i += 1
+        inner := calc_sum(mut c)?
+        skip_ws(mut c)
+        if c.i < c.cs.len() and c.cs[c.i] == ')'
+            c.i += 1
         return inner
-    start := i
-    if cs[i] == '-' or cs[i] == '+'
-        i += 1
-    while i < cs.len() and (cs[i].is_digit() or cs[i] == '.')
-        i += 1
-    num := cs[start..i].join("")
-    ustart := i
-    while i < cs.len() and (cs[i].is_alpha() or cs[i] == '%')
-        i += 1
-    unit := cs[ustart..i].join("").to_lower()
+    start := c.i
+    if c.cs[c.i] == '-' or c.cs[c.i] == '+'
+        c.i += 1
+    while c.i < c.cs.len() and (c.cs[c.i].is_digit() or c.cs[c.i] == '.')
+        c.i += 1
+    num := c.cs[start..c.i].join("")
+    ustart := c.i
+    while c.i < c.cs.len() and (c.cs[c.i].is_alpha() or c.cs[c.i] == '%')
+        c.i += 1
+    unit := c.cs[ustart..c.i].join("").to_lower()
     if num == "" or num == "-" or num == "+"
-        if unit != "calc" or i >= cs.len() or cs[i] != '('
+        if unit != "calc" or c.i >= c.cs.len() or c.cs[c.i] != '('
             return none
-        i += 1
-        got := calc_sum(cs, mut i)?
-        skip_ws(cs, mut i)
-        if i < cs.len() and cs[i] == ')'
-            i += 1
+        c.i += 1
+        got := calc_sum(mut c)?
+        skip_ws(mut c)
+        if c.i < c.cs.len() and c.cs[c.i] == ')'
+            c.i += 1
         return if num == "-" then 0.0 - got else got
     n := num.to_float()?
     if unit == "em" or unit == "rem"
