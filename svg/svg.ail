@@ -1,12 +1,13 @@
-## Inline SVG for the pixel layout (docs/design/garlic-browser.md): the
-## shapes of an `<svg>` element rasterised to a bitmap the host can draw.
+## SVG for the pixel layout (docs/design/garlic-browser.md): the shapes of
+## an `<svg>` element rasterised to `R, G, B, A` bytes (`images.svg_render`
+## wraps them for the host, and `images` draws SVG files the same way).
 ## Fills and strokes of rect, circle, ellipse, line, polyline, polygon and
 ## path (M L H V C S Q T A Z, absolute and relative); groups pass their
-## paint down. No gradients, filters, `use` or text.
+## paint down; `<use>` draws a same-document element or `<symbol>`; a
+## gradient paint is drawn as the average of its stops. No transforms,
+## filters, clipping or text.
 
-use std.app
 use html
-use images
 
 ## One shape's outline: closed or open subpaths as flat `x, y` lists.
 struct Shape
@@ -22,9 +23,42 @@ struct Paint
     alpha float
     ink int
 
-## The pixels of the `<svg>` element `id`, `w` by `h`, with `ink` standing
-## for `currentColor`; none when the element draws nothing or has no size.
-pub fn render(d html.Doc, id int, w int, h int, ink int) images.Bitmap?
+## User units to pixels: `x * sc + ox`, and the viewport's size in user
+## units (what `100%` means).
+struct Frame
+    sc float
+    ox float
+    oy float
+    vw float
+    vh float
+
+## Elements that draw nothing where they stand (lowercase names).
+HIDDEN := {
+    "defs",
+    "clippath",
+    "mask",
+    "style",
+    "title",
+    "desc",
+    "metadata",
+    "symbol",
+    "lineargradient",
+    "radialgradient",
+    "pattern",
+    "marker",
+    "filter",
+    "script",
+    "foreignobject",
+    "text",
+}
+
+## How deep `<use>` may nest (a reference cycle stops here).
+MAX_USE := 8
+
+## The pixels of the `<svg>` element `id`, `w` by `h`, as `R, G, B, A`
+## bytes, with `ink` standing for `currentColor`; none when the element
+## draws nothing or has no size.
+pub fn rgba(d html.Doc, id int, w int, h int, ink int) List[int]?
     if w <= 0 or h <= 0 or w * h > 262144
         return none
     mut vw := w.to_float()
@@ -41,13 +75,14 @@ pub fn render(d html.Doc, id int, w int, h int, ink int) images.Bitmap?
     scale := (w.to_float() / vw).min(h.to_float() / vh)
     ox := (w.to_float() - vw * scale) / 2.0 - vx * scale
     oy := (h.to_float() - vh * scale) / 2.0 - vy * scale
+    f := Frame(sc: scale, ox, oy, vw, vh)
     mut canvas := List[float]()
     for k in 0..w * h * 4
         canvas.push(0.0)
-    top := Paint(fill: 0, stroke: -1, width: 1.0, alpha: 1.0, ink: ink)
+    top := paint_of(d, id, Paint(fill: 0, stroke: -1, width: 1.0, alpha: 1.0, ink: ink))
     mut drew := false
     for c in d.nodes[id].children
-        if paint_node(d, c, top, scale, ox, oy, w, h, mut canvas)
+        if paint_node(d, c, top, f, w, h, mut canvas, 0)
             drew = true
     if not drew
         return none
@@ -58,7 +93,53 @@ pub fn render(d html.Doc, id int, w int, h int, ink int) images.Bitmap?
             v := if a > 0.0 then canvas[k * 4 + ch] / a else 0.0
             bytes.push((v * 255.0).round().to_int().max(0).min(255))
         bytes.push((a * 255.0).round().to_int().max(0).min(255))
-    images.Bitmap(w, h, data: app.bitmap_data(bytes))
+    bytes
+
+## The size the `<svg>` element `id` asks for in CSS pixels: `width` and
+## `height` (a missing one from the `viewBox` shape), else the `viewBox`
+## size, else 300 by 150 (CSS 2 replaced elements).
+pub fn size_of(d html.Doc, id int) List[int]
+    mut w := plain_length(d.attr(id, "width") else "")
+    mut h := plain_length(d.attr(id, "height") else "")
+    vb := numbers(d.attr(id, "viewBox") else "")
+    if vb.len() == 4 and vb[2] > 0.0 and vb[3] > 0.0
+        if w <= 0.0 and h <= 0.0
+            w = vb[2]
+            h = vb[3]
+        elif w <= 0.0
+            w = h * vb[2] / vb[3]
+        elif h <= 0.0
+            h = w * vb[3] / vb[2]
+    if w <= 0.0
+        w = 300.0
+    if h <= 0.0
+        h = 150.0
+    [w.round().to_int().max(1), h.round().to_int().max(1)]
+
+## A length in px (`12`, `12px`); 0 for a percentage or anything else.
+fn plain_length(v str) float
+    t := v.trim()
+    if t.ends_with("%")
+        return 0.0
+    t.replace("px", "").to_float() else 0.0
+
+## The element whose `id` attribute is `name`, or none.
+fn find_id(d html.Doc, name str) int?
+    for i in 0..d.nodes.len()
+        if d.nodes[i].kind == html.Kind.Element
+            for a in d.nodes[i].attrs
+                if a.name == "id" and a.value == name
+                    return i
+    none
+
+## A length attribute of `id` in user units, `%` taken of `whole`; none
+## when it is absent or not a number.
+fn length_attr(d html.Doc, id int, name str, whole float) float?
+    t := (d.attr(id, name)?).trim()
+    if t.ends_with("%")
+        pct := t.slice(0, t.chars().len() - 1).to_float()?
+        return pct * whole / 100.0
+    t.replace("px", "").to_float()
 
 ## The numbers in `s`, split at anything that is not part of one.
 fn numbers(s str) List[float]
@@ -112,6 +193,61 @@ fn paint_colour(v str, p Paint) int
         "orange" => 0xffa500
         _ => p.fill
 
+## A fill or stroke value: a colour, or `url(#id)` naming a gradient,
+## drawn as the average of its stops, with the colour after `)` as the
+## fallback; -1 (none) when the reference draws nothing Garlic knows.
+fn paint_value(d html.Doc, v str, p Paint) int
+    t := v.trim()
+    if not t.to_lower().starts_with("url(")
+        return paint_colour(t, p)
+    close := t.find(")") else return -1
+    target := t.slice(4, close).trim().replace("\"", "").replace("'", "")
+    if target.starts_with("#")
+        if g := find_id(d, target.slice(1, target.chars().len()))
+            c := gradient_colour(d, g, p, 0)
+            if c >= 0
+                return c
+    rest := t.slice(close + 1, t.chars().len()).trim()
+    if rest == ""
+        return -1
+    paint_colour(rest, p)
+
+## The average colour of the stops of gradient `g` (following its `href`
+## to the gradient it borrows stops from), or -1.
+fn gradient_colour(d html.Doc, g int, p Paint, depth int) int
+    tag := d.nodes[g].tag.to_lower()
+    if tag != "lineargradient" and tag != "radialgradient"
+        return -1
+    mut r := 0
+    mut gr := 0
+    mut b := 0
+    mut n := 0
+    for c in d.nodes[g].children
+        if d.nodes[c].kind != html.Kind.Element or d.nodes[c].tag != "stop"
+            continue
+        mut v := d.attr(c, "stop-color") else "black"
+        if style := d.attr(c, "style")
+            for part in style.split(";")
+                at := part.find(":") else -1
+                if at > 0 and part.slice(0, at).trim() == "stop-color"
+                    v = part.slice(at + 1, part.chars().len()).trim()
+        col := paint_colour(v, p)
+        if col < 0
+            continue
+        r += (col / 65536) % 256
+        gr += (col / 256) % 256
+        b += col % 256
+        n += 1
+    if n == 0
+        if depth >= 4
+            return -1
+        href := d.attr(g, "href") else (d.attr(g, "xlink:href") else "")
+        if not href.starts_with("#")
+            return -1
+        borrowed := find_id(d, href.slice(1, href.chars().len())) else return -1
+        return gradient_colour(d, borrowed, p, depth + 1)
+    (r / n) * 65536 + (gr / n) * 256 + b / n
+
 fn parse_hex(h str) int
     mut v := 0
     for ch in h.chars()
@@ -134,9 +270,9 @@ fn paint_of(d html.Doc, id int, p Paint) Paint
     if v := decl.get("color")
         out.ink = paint_colour(v, p).max(0)
     if v := decl.get("fill")
-        out.fill = paint_colour(v, out)
+        out.fill = paint_value(d, v, out)
     if v := decl.get("stroke")
-        out.stroke = paint_colour(v, out)
+        out.stroke = paint_value(d, v, out)
     if v := decl.get("stroke-width")
         out.width = v.replace("px", "").to_float() else p.width
     if v := decl.get("opacity")
@@ -150,40 +286,106 @@ fn paint_node(
     d html.Doc,
     id int,
     parent Paint,
-    sc float,
-    ox float,
-    oy float,
+    f Frame,
     w int,
     h int,
     mut canvas List[float],
+    depth int,
 ) bool
     n := d.nodes[id]
     if n.kind != html.Kind.Element
         return false
-    if n.tag == "defs"
-        or n.tag == "clippath"
-        or n.tag == "mask"
-        or n.tag == "style"
-        or n.tag == "title"
+    tag := n.tag.to_lower()
+    if HIDDEN.contains(tag) or (d.attr(id, "display") else "") == "none"
         return false
     p := paint_of(d, id, parent)
-    if n.tag == "g" or n.tag == "svg" or n.tag == "a"
-        mut drew := false
-        for c in n.children
-            if paint_node(d, c, p, sc, ox, oy, w, h, mut canvas)
-                drew = true
-        return drew
-    shape := shape_of(d, id, n.tag)
+    if tag == "use"
+        return paint_use(d, id, p, f, w, h, mut canvas, depth)
+    if tag == "svg"
+        x := length_attr(d, id, "x", f.vw) else 0.0
+        y := length_attr(d, id, "y", f.vh) else 0.0
+        vw := length_attr(d, id, "width", f.vw) else f.vw
+        vh := length_attr(d, id, "height", f.vh) else f.vh
+        if vw <= 0.0 or vh <= 0.0
+            return false
+        return paint_children(d, id, p, viewport(d, id, x, y, vw, vh, f), w, h, mut canvas, depth)
+    if tag == "g" or tag == "a" or tag == "switch"
+        return paint_children(d, id, p, f, w, h, mut canvas, depth)
+    shape := shape_of(d, id, tag)
     if shape.subs.len() == 0
         return false
     mut drew := false
     if p.fill >= 0
-        fill_shape(shape, p.fill, p.alpha, sc, ox, oy, w, h, mut canvas)
+        fill_shape(shape, p.fill, p.alpha, f.sc, f.ox, f.oy, w, h, mut canvas)
         drew = true
     if p.stroke >= 0 and p.width > 0.0
-        stroke_shape(shape, p.stroke, p.alpha, p.width, sc, ox, oy, w, h, mut canvas)
+        stroke_shape(shape, p.stroke, p.alpha, p.width, f.sc, f.ox, f.oy, w, h, mut canvas)
         drew = true
     drew
+
+## Draws the children of `id` with paint `p`; whether anything was drawn.
+fn paint_children(
+    d html.Doc,
+    id int,
+    p Paint,
+    f Frame,
+    w int,
+    h int,
+    mut canvas List[float],
+    depth int,
+) bool
+    mut drew := false
+    for c in d.nodes[id].children
+        if paint_node(d, c, p, f, w, h, mut canvas, depth)
+            drew = true
+    drew
+
+## A `<use>`: the element its `href` (or `xlink:href`) names in this
+## document, moved by `x`, `y`; a `<symbol>` or `<svg>` target is a new
+## viewport `width` by `height` (default 100%) through its `viewBox`.
+fn paint_use(
+    d html.Doc,
+    id int,
+    p Paint,
+    f Frame,
+    w int,
+    h int,
+    mut canvas List[float],
+    depth int,
+) bool
+    if depth >= MAX_USE
+        return false
+    href := d.attr(id, "href") else (d.attr(id, "xlink:href") else "")
+    if not href.starts_with("#")
+        return false
+    target := find_id(d, href.slice(1, href.chars().len())) else return false
+    if d.within(id, target)
+        return false
+    x := length_attr(d, id, "x", f.vw) else 0.0
+    y := length_attr(d, id, "y", f.vh) else 0.0
+    kind := d.nodes[target].tag.to_lower()
+    if kind == "symbol" or kind == "svg"
+        tw := length_attr(d, target, "width", f.vw) else f.vw
+        th := length_attr(d, target, "height", f.vh) else f.vh
+        uw := length_attr(d, id, "width", f.vw) else tw
+        uh := length_attr(d, id, "height", f.vh) else th
+        if uw <= 0.0 or uh <= 0.0
+            return false
+        inner := viewport(d, target, x, y, uw, uh, f)
+        return paint_children(d, target, paint_of(d, target, p), inner, w, h, mut canvas, depth + 1)
+    moved := Frame(sc: f.sc, ox: f.ox + x * f.sc, oy: f.oy + y * f.sc, vw: f.vw, vh: f.vh)
+    paint_node(d, target, p, moved, w, h, mut canvas, depth + 1)
+
+## The frame inside a viewport at `x`, `y`, `vw` by `vh` user units of
+## `f`, mapped through element `el`'s `viewBox` (centred, `meet`).
+fn viewport(d html.Doc, el int, x float, y float, vw float, vh float, f Frame) Frame
+    vb := numbers(d.attr(el, "viewBox") else "")
+    if vb.len() == 4 and vb[2] > 0.0 and vb[3] > 0.0
+        s := (vw / vb[2]).min(vh / vb[3])
+        tx := x + (vw - vb[2] * s) / 2.0 - vb[0] * s
+        ty := y + (vh - vb[3] * s) / 2.0 - vb[1] * s
+        return Frame(sc: f.sc * s, ox: f.ox + tx * f.sc, oy: f.oy + ty * f.sc, vw: vb[2], vh: vb[3])
+    Frame(sc: f.sc, ox: f.ox + x * f.sc, oy: f.oy + y * f.sc, vw, vh)
 
 fn shape_of(d html.Doc, id int, tag str) Shape
     mut subs := List[List[float]]()
@@ -609,3 +811,79 @@ fn span(x0 float, x1 float, w int, mut cov List[float])
         hi := b.min(px.to_float() + 1.0)
         if hi > lo
             cov[px] = cov[px] + (hi - lo)
+
+# ---- Tests -----------------------------------------------------------------
+
+## The alpha byte of pixel `x`, `y` of a `w`-wide `rgba` result.
+fn alpha_at(px List[int], w int, x int, y int) int
+    px[(y * w + x) * 4 + 3]
+
+@test fn a_viewbox_scales_the_drawing_to_the_element()
+    d := html.parse("<svg viewBox=\"0 0 24 24\" width=48 height=48><rect width=24 height=24 /></svg>")
+    root := d.first("svg") else
+        assert(false)
+        return
+    px := rgba(d, root, 48, 48, 0) else
+        assert(false)
+        return
+    assert_eq(alpha_at(px, 48, 47, 47), 255)
+    assert_eq(alpha_at(px, 48, 0, 0), 255)
+    assert_eq(size_of(d, root), [48, 48])
+    half := html.parse("<svg viewBox=\"0 0 24 12\" width=\"48\"></svg>")
+    hr := half.first("svg") else
+        assert(false)
+        return
+    assert_eq(size_of(half, hr), [48, 24])
+    bare := html.parse("<svg></svg>")
+    br := bare.first("svg") else
+        assert(false)
+        return
+    assert_eq(size_of(bare, br), [300, 150])
+
+@test fn use_draws_a_symbol_through_its_viewbox()
+    src := "<svg width=8 height=8 viewBox=\"0 0 8 8\"><defs><symbol id=s viewBox=\"0 0 2 2\"><rect width=1 height=2 fill=currentColor /></symbol></defs><use href=\"#s\"/></svg>"
+    d := html.parse(src)
+    root := d.first("svg") else
+        assert(false)
+        return
+    px := rgba(d, root, 8, 8, 0x00ff00) else
+        assert(false)
+        return
+    # the symbol's 2 by 2 box fills the 8 by 8 viewport: its left half is drawn
+    assert_eq(alpha_at(px, 8, 1, 1), 255)
+    assert_eq(px[(1 * 8 + 1) * 4 + 1], 255)
+    assert_eq(alpha_at(px, 8, 6, 1), 0)
+
+@test fn use_draws_a_defs_element_moved_and_with_its_paint()
+    src := "<svg width=8 height=8 viewBox=\"0 0 8 8\"><defs><path id=p d=\"M0 0h2v2h-2z\"/></defs><use xlink:href=\"#p\" x=4 y=4 fill=\"#ff0000\"/></svg>"
+    d := html.parse(src)
+    root := d.first("svg") else
+        assert(false)
+        return
+    px := rgba(d, root, 8, 8, 0) else
+        assert(false)
+        return
+    assert_eq(alpha_at(px, 8, 1, 1), 0)
+    assert_eq(alpha_at(px, 8, 5, 5), 255)
+    assert_eq(px[(5 * 8 + 5) * 4], 255)
+
+@test fn a_use_that_names_its_own_group_draws_nothing_and_stops()
+    d := html.parse("<svg width=4 height=4><g id=a><use href=\"#a\"/></g></svg>")
+    root := d.first("svg") else
+        assert(false)
+        return
+    assert(rgba(d, root, 4, 4, 0) == none)
+
+@test fn a_gradient_paint_is_the_average_of_its_stops()
+    src := "<svg width=2 height=2><linearGradient id=g><stop offset=0 stop-color=\"#ff0000\"/><stop offset=1 style=\"stop-color: #0000ff\"/></linearGradient><rect width=2 height=2 fill=\"url(#g)\"/></svg>"
+    d := html.parse(src)
+    root := d.first("svg") else
+        assert(false)
+        return
+    px := rgba(d, root, 2, 2, 0) else
+        assert(false)
+        return
+    assert_eq(px[0], 127)
+    assert_eq(px[1], 0)
+    assert_eq(px[2], 127)
+    assert_eq(px[3], 255)
