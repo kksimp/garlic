@@ -852,14 +852,19 @@ fn Vm.code_for(mut self, fobj ref JsObject, fun syntax.Func) int ! Thrown
         if n := num_of(p.value)
             return n.to_int()
     # Strictness is part of the key: nested functions inherit it.
+    # A body with no source text (a module's top-level `await` body, from
+    # modules.ail) is not shared: its text and place say nothing of its code.
     key := "{fun.strict}:{fun.pos.line}:{fun.pos.col}:{fun.pos.offset}:{fun.text}"
-    mut index := self.code_keys.get(key) else -1
+    mut index := -1
+    if fun.text != ""
+        index = self.code_keys.get(key) else -1
     if index < 0
         code := compile_body(fun) else err
             return syntax_error(err.text.strip_prefix("SyntaxError: ") else err.text)
         self.codes.push(ref Code(ops: code.ops, targets: code.targets, ctxs: code.ctxs))
         index = self.codes.len() - 1
-        self.code_keys[key] = index
+        if fun.text != ""
+            self.code_keys[key] = index
     fobj.props["{PRIVATE}code"] = hidden(Num(index.to_float()))
     index
 
