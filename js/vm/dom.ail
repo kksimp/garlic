@@ -151,6 +151,7 @@ fn Vm.rect_of(self, id int) List[float]
 ## A new empty document: node 0.
 pub fn Vm.dom_reset(mut self)
     dom = [DomNode(kind: 9, tag: "#document", attrs: [], text: "", parent: -1, children: [])]
+    dom_gen += 1
     mutations = []
     node_objs = {}
 
@@ -158,6 +159,7 @@ pub fn Vm.dom_reset(mut self)
 pub fn Vm.dom_create(mut self, tag str, kind int, text str) int
     id := dom.len()
     dom.push(DomNode(kind: kind, tag: tag, attrs: [], text: text, parent: -1, children: []))
+    dom_gen += 1
     if recording
         op := match kind
             1 => "create"
@@ -186,6 +188,7 @@ pub fn Vm.dom_detach(mut self, id int)
     if i := dom[p].children.index_of(id)
         dom[p].children.remove_at(i)
     dom[id].parent = -1
+    dom_gen += 1
     self.dom_log("detach", id, p, -1, "", "")
     if was_connected
         ce_disconnected(id)
@@ -194,6 +197,7 @@ pub fn Vm.dom_append(mut self, parent int, id int)
     self.dom_detach(id)
     dom[parent].children.push(id)
     dom[id].parent = parent
+    dom_gen += 1
     self.dom_log("append", id, parent, -1, "", "")
     self.after_insert(id)
 
@@ -205,6 +209,7 @@ pub fn Vm.dom_insert_before(mut self, parent int, id int, before int)
     at := dom[parent].children.index_of(before) else dom[parent].children.len()
     dom[parent].children.insert(at, id)
     dom[id].parent = parent
+    dom_gen += 1
     self.dom_log("insert_before", id, parent, before, "", "")
     self.after_insert(id)
 
@@ -225,6 +230,8 @@ pub fn Vm.set_attr(mut self, id int, name str, value str)
                 o.props.remove(name)
     if name == "style"
         self.refresh_style(id, value)
+    if name == "id"
+        dom_gen += 1
     for i in 0..dom[id].attrs.len()
         if dom[id].attrs[i].name == name
             dom[id].attrs[i].value = value
@@ -293,6 +300,8 @@ fn Vm.refresh_style(mut self, id int, text str)
         o.props[style_key(pair.name)] = data(Str(pair.value))
 
 pub fn Vm.remove_attr(mut self, id int, name str)
+    if name == "id"
+        dom_gen += 1
     for i in 0..dom[id].attrs.len()
         if dom[id].attrs[i].name == name
             dom[id].attrs.remove_at(i)
@@ -1615,6 +1624,9 @@ fn Vm.document_method(mut self, m str, args List[Value], doc int) Value ! Thrown
     match m
         "getElementById" =>
             want := to_string(a0)?
+            if doc == 0
+                found := self.element_by_id(want)
+                return if found >= 0 then self.node_value(found) else Null
             for e in self.elements_under(doc)
                 if self.attr_of(e, "id") == want
                     return self.node_value(e)
@@ -1703,19 +1715,17 @@ fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
                     out.push(e)
             self.node_list(out)
         "querySelector" | "querySelectorAll" =>
-            sel := self.parse_selector(to_string(a0)?)?
+            sel := self.selector(to_string(a0)?)?
             scope_id = id
+            if m == "querySelector"
+                return self.node_value(self.first_match(id, sel))
             mut out := List[int]()
             for e in self.elements_under(id)
                 if self.matches_selector(e, sel)
                     out.push(e)
-                    if m == "querySelector"
-                        return self.node_value(e)
-            if m == "querySelector"
-                return Null
             self.node_list(out)
         "closest" =>
-            sel := self.parse_selector(to_string(a0)?)?
+            sel := self.selector(to_string(a0)?)?
             scope_id = id
             mut e := id
             while e > 0
@@ -1724,7 +1734,7 @@ fn Vm.node_method(mut self, m str, id int, args List[Value]) Value ! Thrown
                 e = dom[e].parent
             Null
         "matches" =>
-            sel := self.parse_selector(to_string(a0)?)?
+            sel := self.selector(to_string(a0)?)?
             scope_id = id
             Value.Bool(self.matches_selector(id, sel))
         "appendChild" =>
@@ -2417,7 +2427,7 @@ pub fn form_encode(s str) str
 
 ## A selector list: alternatives, each a chain of compound selectors joined
 ## by combinators (" " descendant, ">" child, "+" next, "~" later sibling).
-struct Compound
+pub struct Compound
     tag str
     ids List[str]
     classes List[str]
@@ -2429,6 +2439,42 @@ struct Compound
     pseudo_sels List[List[List[Compound]]]
     ## How this compound relates to the one before it in the chain.
     combinator str
+
+## The parsed form of selector `text`, kept by its text (at most 256).
+fn Vm.selector(mut self, text str) List[List[Compound]] ! Thrown
+    if cached := sel_cache.get(text)
+        return cached
+    sel := self.parse_selector(text)?
+    if sel_cache.len() >= 256
+        sel_cache = {}
+    sel_cache[text] = sel
+    sel
+
+## The first element under `id` (not itself), in document order, that
+## matches `sel`; -1 for none. Stops at the first match.
+fn Vm.first_match(self, id int, sel List[List[Compound]]) int
+    for c in dom[id].children
+        if dom[c].kind == 1
+            if self.matches_selector(c, sel)
+                return c
+            found := self.first_match(c, sel)
+            if found >= 0
+                return found
+    -1
+
+## The first element in the page with id `want` (DOM §4.2.4), from an index
+## rebuilt when the tree or an `id` attribute changed since it was made.
+fn Vm.element_by_id(mut self, want str) int
+    if id_gen != dom_gen or id_len != dom.len()
+        mut index := Map[str, int]()
+        for e in self.elements_under(0)
+            if v := self.attr_of(e, "id")
+                if v != "" and not index.contains(v)
+                    index[v] = e
+        id_index = index
+        id_gen = dom_gen
+        id_len = dom.len()
+    id_index.get(want) else -1
 
 fn Vm.parse_selector(mut self, text str) List[List[Compound]] ! Thrown
     mut groups := List[List[Compound]]()
@@ -2823,12 +2869,16 @@ pub fn Vm.run_event_loop(mut self, until_ms float, max_tasks int)
     mut ran := 0
     self.run_microtasks()
     while timers.len() > 0 and ran < max_tasks and not stopped
+        # The earliest due, then the first made; no Timer is copied per step.
         mut best := 0
+        mut best_due := timers[0].due
+        mut best_seq := timers[0].seq
         for i in 1..timers.len()
-            t := timers[i]
-            b := timers[best]
-            if t.due < b.due or (t.due == b.due and t.seq < b.seq)
+            d := timers[i].due
+            if d < best_due or (d == best_due and timers[i].seq < best_seq)
                 best = i
+                best_due = d
+                best_seq = timers[i].seq
         t := timers[best]
         if t.due > until_ms
             break
@@ -2860,8 +2910,9 @@ pub fn Vm.run_event_loop(mut self, until_ms float, max_tasks int)
 
 pub fn Vm.run_microtasks(mut self)
     mut n := 0
-    while microtasks.len() > 0 and n < 100000
-        cb := microtasks.remove_at(0)
+    while micro_head < microtasks.len() and n < 100000
+        cb := microtasks[micro_head]
+        micro_head += 1
         # The marker `mo_note` queued: observers hear of their changes in
         # the order the jobs were queued (DOM §4.3.3).
         if cb == Value.Str(MO_MARK)
@@ -2874,9 +2925,19 @@ pub fn Vm.run_microtasks(mut self)
             report_error(err)
             if err.limit
                 stopped = true
+                self.compact_microtasks()
                 return
         n += 1
+    self.compact_microtasks()
     report_unhandled()
+
+## Drop the microtasks already run from the front of the queue.
+fn Vm.compact_microtasks(mut self)
+    if micro_head >= microtasks.len()
+        microtasks = []
+    elif micro_head > 0
+        microtasks = microtasks[micro_head..]
+    micro_head = 0
 
 # -------------------------------------------------------------- location
 
