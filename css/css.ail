@@ -294,6 +294,13 @@ fn rules_of(cs List[char], sc Nest, mut rules List[Rule], mut layers List[str])
             i = at_rule(cs, i, sc, mut rules, mut layers)
             prelude.clear()
             continue
+        ## A backslash escapes the next character, so `\'` in a
+        ## class name (`.\[class\*\=\'x\'\]`) opens no string.
+        if c == '\\' and i + 1 < cs.len()
+            prelude.push(c)
+            prelude.push(cs[i + 1])
+            i += 2
+            continue
         if c == '"' or c == '\''
             stop := string_end(cs, i).min(cs.len())
             for k in i..stop
@@ -316,6 +323,10 @@ fn at_rule(cs List[char], at int, sc Nest, mut rules List[Rule], mut layers List
     mut depth := 0
     while j < cs.len()
         c := cs[j]
+        ## An escaped character, as in `rules_of`.
+        if c == '\\' and j + 1 < cs.len()
+            j += 2
+            continue
         if c == '"' or c == '\''
             j = string_end(cs, j)
             continue
@@ -448,6 +459,12 @@ fn rule_body(cs List[char], sc Nest, mut rules List[Rule], mut layers List[str])
     mut i := 0
     while i < cs.len()
         c := cs[i]
+        ## An escaped character, as in `rules_of`.
+        if c == '\\' and i + 1 < cs.len()
+            seg.push(c)
+            seg.push(cs[i + 1])
+            i += 2
+            continue
         if c == '"' or c == '\''
             stop := string_end(cs, i).min(cs.len())
             for k in i..stop
@@ -963,6 +980,10 @@ fn block_end(cs List[char], open int) int
     mut i := open
     while i < cs.len()
         c := cs[i]
+        ## An escaped character, as in `rules_of`.
+        if c == '\\' and i + 1 < cs.len()
+            i += 2
+            continue
         if c == '"' or c == '\''
             i = string_end(cs, i)
             continue
@@ -995,6 +1016,12 @@ fn split_decls(body str) List[str]
     mut i := 0
     while i < cs.len()
         c := cs[i]
+        ## An escaped character, as in `rules_of`.
+        if c == '\\' and i + 1 < cs.len()
+            cur.push(c)
+            cur.push(cs[i + 1])
+            i += 2
+            continue
         if c == '"' or c == '\''
             stop := string_end(cs, i).min(cs.len())
             for k in i..stop
@@ -1699,6 +1726,15 @@ pub fn document_sheet(d html.Doc) Sheet
     assert_eq(sheet.rules.len(), 1)
     d := html.parse("<ul><li class=x>1</li></ul>")
     assert_eq(cascade(d, d.first("li")?, sheet)["display"], "none")
+
+@test fn css_an_escaped_quote_in_a_class_name_opens_no_string()
+    ## A Tailwind class from x.com: the escaped quotes are part of its name,
+    ## and the rules after it are kept (review X, gr3).
+    src := ".\\[\\&\\>a\\:not\\(\\[class\\*\\=\\'min-w-\\'\\]\\)\\]\\:min-w-0>a:not([class*=min-w-]) \{ min-width: 0 } [data-theme=dark] \{ --fg: #fff } p \{ color: var(--fg) }"
+    sheet := parse(src, 0)
+    d := html.parse("<html data-theme=dark><p>t</p></html>")
+    assert_eq(cascade(d, d.first("p")?, sheet)["color"], "var(--fg)")
+    assert_eq(cascade(d, d.first("html")?, sheet)["--fg"], "#fff")
 
 @test fn css_is_where_and_not_lists_match_with_their_specificity()
     d := html.parse("<div class=x><h2><b>t</b></h2><p class=a>1</p><p class=c>2</p></div>")
