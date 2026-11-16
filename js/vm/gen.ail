@@ -909,7 +909,8 @@ fn Vm.prepare_frame(
     env ref Env,
     args List[Value],
 ) Frame ! Thrown
-    env.args = args
+    if not fun.is_arrow
+        env.args = args
     for i in 0..fun.params.len()
         v := if i < args.len() then args[i] else Undef
         bind_pattern(fun.params[i], v, env, "param")?

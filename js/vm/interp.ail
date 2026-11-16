@@ -1888,7 +1888,10 @@ fn Vm.run_body(mut self, fun syntax.Func, env ref Env, args List[Value]) Value !
         return err
 
 fn Vm.run_params_and_body(mut self, fun syntax.Func, env ref Env, args List[Value]) Value ! Thrown
-    env.args = args
+    # Kept for `arguments` (`lookup`), which an arrow's scope never answers
+    # (no `this` of its own): an arrow call copies no list.
+    if not fun.is_arrow
+        env.args = args
     for i in 0..fun.params.len()
         v := if i < args.len() then args[i] else Undef
         self.bind_pattern(fun.params[i], v, env, "param")?
