@@ -25,11 +25,15 @@ fn Vm.impl_method(mut self, m str, args List[Value]) Value ! Thrown
         "createDocumentType" =>
             if args.len() < 3
                 return type_error("Failed to execute 'createDocumentType' on 'DOMImplementation': 3 arguments required, but only {args.len()} present.")
-            self.doctype_node(to_string(a0)?, to_string(arg_at(args, 1))?, to_string(arg_at(args, 2))?)
+            self.doctype_node(
+                to_string(a0)?,
+                to_string(arg_at(args, 1))?,
+                to_string(arg_at(args, 2))?,
+            )
         "createHTMLDocument" =>
             # DOM §4.5.1 createHTMLDocument: doctype, html, head, title, body.
             doc := dom_create("#document", 9, "")
-            if dt := node_id(self.doctype_node("html", "", "")?)
+            if dt := node_id(self.doctype_node("html", "", ""))
                 dom_append(doc, dt)
             html := dom_create("html", 1, "")
             dom_append(doc, html)
@@ -62,7 +66,7 @@ fn Vm.impl_method(mut self, m str, args List[Value]) Value ! Thrown
         _ => Undef
 
 ## A DocumentType node (DOM §4.6) with its name and ids.
-fn Vm.doctype_node(mut self, name str, public_id str, system_id str) Value ! Thrown
+fn Vm.doctype_node(mut self, name str, public_id str, system_id str) Value
     id := dom_create(name, 10, "")
     v := node_value(id)
     if o := obj_of(v)
