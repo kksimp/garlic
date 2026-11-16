@@ -841,35 +841,6 @@ fn box_of(tag str, cs Map[str, str], st St, avail float) Bx
 
 # ---- Layout ---------------------------------------------------------------
 
-## `v` with each `var(--x)` and `var(--x, fallback)` replaced from `vars`.
-fn subst(v str, vars Map[str, str]) str
-    mut out := v
-    mut guard := 0
-    while guard < 16
-        guard += 1
-        at := out.find("var(") else break
-        cs := out.chars()
-        mut depth := 1
-        mut k := at + 4
-        mut comma := -1
-        while k < cs.len() and depth > 0
-            if cs[k] == '('
-                depth += 1
-            elif cs[k] == ')'
-                depth -= 1
-            elif cs[k] == ',' and depth == 1 and comma < 0
-                comma = k
-            k += 1
-        if depth != 0
-            break
-        close := k - 1
-        stop := if comma >= 0 then comma else close
-        name := out.slice(at + 4, stop).trim()
-        fallback := if comma >= 0 then out.slice(comma + 1, close).trim() else ""
-        val := vars.get(name) else fallback
-        out = "{out.slice(0, at)}{val}{out.slice(close + 1, cs.len())}"
-    out
-
 ## `color` over the rounded rectangle (`x`, `y`, `w`, `h`) with corners of
 ## radius `r`: a few strips, since the host fills only rectangles.
 fn rounded(x float, y float, w float, h float, r float, fill int) List[draw.Op]
@@ -940,10 +911,17 @@ struct Ctx
     marker str
     marker_x float
     canvas int
-    ## Cascaded styles, custom properties in scope and raw cascades by node.
+    ## Cascaded styles and raw cascades by node.
     styles Map[int, Map[str, str]]
-    scopes Map[int, Map[str, str]]
     cascades Map[int, Map[str, str]]
+    ## Custom properties: for each node the nearest element at or above it
+    ## that declares any (-1 for none), and each such element's own resolved
+    ## values by `var_key`. No node keeps a copy of all the names in scope.
+    var_owner Map[int, int]
+    var_vals Map[str, str]
+    ## A height the next `block` call must take (a grown column flex item),
+    ## or -1.
+    force_h float
     ## Widest-line widths of nodes, by node.
     contents Map[int, float]
     ## The text field being typed into, drawn with a caret; -1 for none.
@@ -980,11 +958,12 @@ fn Ctx.element_style(mut self, id int) Map[str, str]
     if cached := self.styles.get(id)
         return cached
     r := self.cascaded(id)
-    sc := self.scope(id)
+    owner := self.var_owner_of(id)
+    none_own := Map[str, str]()
     mut out := Map[str, str]()
     for k in r.keys()
         if not k.starts_with("--")
-            out[k] = subst(r[k], sc)
+            out[k] = self.subst_at(r[k], none_own, owner)
     self.styles[id] = out
     out
 
@@ -995,29 +974,91 @@ fn Ctx.cascaded(mut self, id int) Map[str, str]
     self.cascades[id] = r
     r
 
-## The custom properties in scope at node `id`: its parent's, then its own.
-fn Ctx.scope(mut self, id int) Map[str, str]
-    if cached := self.scopes.get(id)
+## The key of custom property `name` declared on element `owner` in `var_vals`.
+fn var_key(owner int, name str) str
+    "{owner}|{name}"
+
+## The nearest element at or above node `id` that declares custom
+## properties, or -1; on the way, each declaring element's own values are
+## resolved into `var_vals`. A node that declares none points at its
+## ancestor's, so nothing is copied per node (review-speed 3.4).
+fn Ctx.var_owner_of(mut self, id int) int
+    if cached := self.var_owner.get(id)
         return cached
-    parent := self.d.nodes[id].parent
-    mut m := Map[str, str]()
-    if id != 0
-        m = self.scope(parent)
+    up := if id == 0 then -1 else self.var_owner_of(self.d.nodes[id].parent)
+    mut owner := up
     if self.d.nodes[id].kind == Element
         r := self.cascaded(id)
+        mut own := Map[str, str]()
         for k in r.keys()
             if k.starts_with("--")
-                m[k] = subst(r[k], m)
-    self.scopes[id] = m
-    m
+                own[k] = self.subst_at(r[k], own, up)
+        if own.len() > 0
+            for k in own.keys()
+                self.var_vals[var_key(id, k)] = own[k]
+            owner = id
+    self.var_owner[id] = owner
+    owner
+
+## Custom property `name` in the scope whose nearest declaring element is
+## `owner`: that element's value, else its ancestors'.
+fn Ctx.var_value(mut self, owner int, name str) str?
+    mut o := owner
+    mut guard := 0
+    while o >= 0 and guard < 4096
+        guard += 1
+        if v := self.var_vals.get(var_key(o, name))
+            return v
+        o = if o == 0 then -1 else self.var_owner_of(self.d.nodes[o].parent)
+    none
+
+## `v` with each `var(--x)` and `var(--x, fallback)` replaced: from `own`
+## first (the element's own earlier declarations), then from the scope of
+## declaring element `owner`.
+fn Ctx.subst_at(mut self, v str, own Map[str, str], owner int) str
+    if not v.contains("var(")
+        return v
+    mut out := v
+    mut guard := 0
+    while guard < 16
+        guard += 1
+        at := out.find("var(") else break
+        cs := out.chars()
+        mut depth := 1
+        mut k := at + 4
+        mut comma := -1
+        while k < cs.len() and depth > 0
+            if cs[k] == '('
+                depth += 1
+            elif cs[k] == ')'
+                depth -= 1
+            elif cs[k] == ',' and depth == 1 and comma < 0
+                comma = k
+            k += 1
+        if depth != 0
+            break
+        close := k - 1
+        stop := if comma >= 0 then comma else close
+        name := out.slice(at + 4, stop).trim()
+        fallback := if comma >= 0 then out.slice(comma + 1, close).trim() else ""
+        mut val := fallback
+        if mine := own.get(name)
+            val = mine
+        elif found := self.var_value(owner, name)
+            val = found
+        out = "{out.slice(0, at)}{val}{out.slice(close + 1, cs.len())}"
+    out
 
 fn Ctx.is_block(mut self, id int, cs Map[str, str]) bool
     tag := self.d.nodes[id].tag
     display := cs.get("display") else ""
     if display == "none"
         return false
-    if display == ""
+    if display == "" or display == "unset" or display == "revert" or display == "inherit"
         return page.BLOCKS.contains(tag) or tag == "li" or tag == "tr" or tag == "td" or tag == "th"
+    ## The initial value of `display` is `inline` (CSS Display 3 §2).
+    if display == "initial"
+        return false
     display.starts_with("inline") == false
 
 ## Moves the pending margin into the flow.
@@ -1577,33 +1618,44 @@ fn Ctx.children(mut self, id int, st St, x float, w float)
     self.col_x = x
     self.col_w = w
     for c in self.d.nodes[id].children
-        n := self.d.nodes[c]
-        if n.kind == Text
-            self.add_text(n.text, st)
-        elif n.kind == Element and self.visible(c)
-            cs := self.element_style(c)
-            pos := (cs.get("position") else "").trim()
-            side := (cs.get("float") else "").trim()
-            if pos == "absolute" or pos == "fixed"
-                continue
-            clr := (cs.get("clear") else "").trim()
-            if clr == "left" or clr == "right" or clr == "both"
-                self.flush(x, w, st.align)
-                self.settle()
-                for f in self.floats
-                    if clr == "both" or (clr == "right") == f.right
-                        self.y = fmax(self.y, f.y + f.h)
-            if (side == "left" or side == "right") and n.tag != "img"
-                self.flush(x, w, st.align)
-                self.place_float(c, st, x, w, side == "right")
-            elif self.is_block(c, cs)
-                self.flush(x, w, st.align)
-                self.block(c, st, x, w)
-            else
-                self.inline(c, st, w)
+        self.flow_child(c, st, x, w)
     self.flush(x, w, st.align)
     self.col_x = saved_x
     self.col_w = saved_w
+
+## Lays out child `c` of a flow in the column from `x`, `w` wide: text and
+## inline elements join the pending line, blocks and floats are placed. The
+## children of a `display: contents` element take its place (CSS Display 3 §2.5).
+fn Ctx.flow_child(mut self, c int, st St, x float, w float)
+    if self.d.nodes[c].kind == Text
+        self.add_text(self.d.nodes[c].text, st)
+    elif self.d.nodes[c].kind == Element and self.visible(c)
+        n := self.d.nodes[c]
+        cs := self.element_style(c)
+        if (cs.get("display") else "") == "contents"
+            cst := text_style(n.tag, self.with_attrs(c, n.tag, cs), st)
+            for g in n.children
+                self.flow_child(g, cst, x, w)
+            return
+        pos := (cs.get("position") else "").trim()
+        side := (cs.get("float") else "").trim()
+        if pos == "absolute" or pos == "fixed"
+            return
+        clr := (cs.get("clear") else "").trim()
+        if clr == "left" or clr == "right" or clr == "both"
+            self.flush(x, w, st.align)
+            self.settle()
+            for f in self.floats
+                if clr == "both" or (clr == "right") == f.right
+                    self.y = fmax(self.y, f.y + f.h)
+        if (side == "left" or side == "right") and n.tag != "img"
+            self.flush(x, w, st.align)
+            self.place_float(c, st, x, w, side == "right")
+        elif self.is_block(c, cs)
+            self.flush(x, w, st.align)
+            self.block(c, st, x, w)
+        else
+            self.inline(c, st, w)
 
 ## Lays out box `id` as a float against the left or right edge of the
 ## column from `x`, `w` wide, at the current line; text then wraps around it.
@@ -1791,11 +1843,16 @@ fn Ctx.intrinsic(mut self, id int, st St) float
 ## Lays out block `id` inside a column from `x`, `w` wide, with the
 ## parent's text style `parent`.
 fn Ctx.block(mut self, id int, parent St, x float, w float)
+    forced := self.force_h
+    self.force_h = -1.0
     n := self.d.nodes[id]
     tag := n.tag
     cs := self.element_style(id)
     display := cs.get("display") else ""
     if display == "none" or (cs.get("visibility") else "") == "hidden"
+        return
+    if display == "contents"
+        self.children(id, text_style(tag, self.with_attrs(id, tag, cs), parent), x, w)
         return
     if tag == "svg"
         ## An icon is drawn; one that draws nothing is stood for by its link's label.
@@ -1810,7 +1867,9 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
         return
     ecs := self.with_attrs(id, tag, cs)
     mut st := text_style(tag, ecs, parent)
-    bx := box_of(tag, cs, st, w)
+    mut bx := box_of(tag, cs, st, w)
+    if forced >= 0.0
+        bx.height = forced
     if bg := bx.bg
         st.under = bg
     if tag == "hr"
@@ -1872,15 +1931,12 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
     self.absolutes(id, st, false, 0.0)
     if tag == "table"
         self.table(id, st, content_x, content_w)
-    elif FLOW_FLEX.contains(display) and (cs.get("flex-direction") else "row").starts_with("row")
-        self.flex(
-            id,
-            st,
-            cs,
-            content_x,
-            content_w,
-            (bx.height else 0.0) - bx.pt - bx.pb - bx.bt - bx.bb,
-        )
+    elif FLOW_FLEX.contains(display)
+        inner_h := (bx.height else 0.0) - bx.pt - bx.pb - bx.bt - bx.bb
+        if flex_dir(cs).starts_with("row")
+            self.flex(id, st, cs, content_x, content_w, inner_h)
+        else
+            self.flex_column(id, st, cs, content_x, content_w, inner_h)
     elif display == "grid" or display == "inline-grid"
         self.grid(id, st, cs, content_x, content_w)
     elif column_count(cs) > 1 and content_w < SHRINK_W
@@ -2033,9 +2089,21 @@ fn Ctx.items(mut self, id int) List[int]
         elif self.visible(c)
             cs := self.element_style(c)
             pos := (cs.get("position") else "").trim()
-            if (cs.get("display") else "") != "none" and pos != "absolute" and pos != "fixed"
+            display := cs.get("display") else ""
+            if display == "contents"
+                ## Its children are the container's items (CSS Display 3 §2.5).
+                out.extend(self.items(c))
+            elif display != "none" and pos != "absolute" and pos != "fixed"
                 out.push(c)
     out
+
+## Where an item shorter than its row sits: at the top, in the middle or at
+## the bottom (`align-items`, `align-self`).
+ALIGN_START := 0
+ALIGN_CENTER := 1
+ALIGN_END := 2
+## Only for a column flex item: as wide as the column.
+ALIGN_STRETCH := 3
 
 ## Lays out `items` side by side in columns of `widths` starting at `x`
 ## and `gap` apart, from the current line; the row ends at the tallest.
@@ -2047,6 +2115,22 @@ fn Ctx.row(
     widths List[float],
     offsets List[float],
     center bool,
+    min_h float,
+)
+    mut aligns := List[int]()
+    for k in 0..items.len()
+        aligns.push(if center then ALIGN_CENTER else ALIGN_START)
+    self.row_aligned(items, parent, x, widths, offsets, aligns, min_h)
+
+## `Ctx.row` with each item's own vertical alignment (`ALIGN_*`).
+fn Ctx.row_aligned(
+    mut self,
+    items List[int],
+    parent St,
+    x float,
+    widths List[float],
+    offsets List[float],
+    aligns List[int],
     min_h float,
 )
     self.settle()
@@ -2068,23 +2152,26 @@ fn Ctx.row(
     mut tall := min_h
     for h in heights
         tall = fmax(tall, h)
-    if center
-        for k in 0..items.len()
-            dy := (tall - heights[k]) / 2.0
-            if dy > 0.5
-                self.shift_boxes(spans[k].0, dy)
-                for o in spans[k].0..spans[k].1
-                    self.ops[o] = shifted(self.ops[o], dy)
-                for h in spans[k].2..spans[k].3
-                    self.hits[h] = Hit(
-                        x: self.hits[h].x,
-                        y: self.hits[h].y + dy,
-                        w: self.hits[h].w,
-                        h: self.hits[h].h,
-                        href: self.hits[h].href,
-                        node: self.hits[h].node,
-                        anchor: self.hits[h].anchor,
-                    )
+    for k in 0..items.len()
+        mut dy := 0.0
+        if aligns[k] == ALIGN_CENTER
+            dy = (tall - heights[k]) / 2.0
+        elif aligns[k] == ALIGN_END
+            dy = tall - heights[k]
+        if dy > 0.5
+            self.shift_boxes(spans[k].0, dy)
+            for o in spans[k].0..spans[k].1
+                self.ops[o] = shifted(self.ops[o], dy)
+            for h in spans[k].2..spans[k].3
+                self.hits[h] = Hit(
+                    x: self.hits[h].x,
+                    y: self.hits[h].y + dy,
+                    w: self.hits[h].w,
+                    h: self.hits[h].h,
+                    href: self.hits[h].href,
+                    node: self.hits[h].node,
+                    anchor: self.hits[h].anchor,
+                )
     self.y = y0 + tall
     self.pend = 0.0
 
@@ -2178,31 +2265,184 @@ fn shifted(op draw.Op, dy float) draw.Op
         )
         Pic(x, y, w, h, src) => draw.Op.Pic(x, y: y + dy, w, h, src)
 
+## A flex item's `flex-grow`, `flex-shrink` and `flex-basis`.
+struct FlexItem
+    grow float
+    shrink float
+    basis str
+
+## The flex factors of an item with cascaded values `cs`: the `flex`
+## shorthand (CSS Flexbox 1 §7.1.1: `flex: 1` is `1 1 0%`, `auto` is
+## `1 1 auto`, `none` is `0 0 auto`, a lone basis grows by 1), then the
+## longhands.
+fn flex_of(cs Map[str, str]) FlexItem
+    mut f := FlexItem(grow: 0.0, shrink: 1.0, basis: "auto")
+    if v := cs.get("flex")
+        ts := tokens(v.trim())
+        one := if ts.len() == 1 then ts[0] else ""
+        if one == "none"
+            f = FlexItem(grow: 0.0, shrink: 0.0, basis: "auto")
+        elif one == "auto"
+            f = FlexItem(grow: 1.0, shrink: 1.0, basis: "auto")
+        elif one == "initial" or one == "unset" or one == "revert"
+            f = FlexItem(grow: 0.0, shrink: 1.0, basis: "auto")
+        elif ts.len() > 0
+            mut nums := List[float]()
+            mut basis := "0%"
+            for t in ts
+                if nums.len() < 2 and css_float(t) != none
+                    nums.push(css_float(t) else 0.0)
+                else
+                    basis = t
+            f = FlexItem(
+                grow: if nums.len() > 0 then nums[0] else 1.0,
+                shrink: if nums.len() > 1 then nums[1] else 1.0,
+                basis: basis,
+            )
+    if v := cs.get("flex-grow")
+        f.grow = css_float(v) else f.grow
+    if v := cs.get("flex-shrink")
+        f.shrink = css_float(v) else f.shrink
+    if v := cs.get("flex-basis")
+        f.basis = v.trim()
+    f
+
+## `flex-direction`, or the direction in `flex-flow`; `row` by default.
+fn flex_dir(cs Map[str, str]) str
+    if v := cs.get("flex-direction")
+        return v.trim()
+    for t in tokens(cs.get("flex-flow") else "")
+        if t.starts_with("row") or t.starts_with("column")
+            return t
+    "row"
+
+## Whether a flex container wraps its items (`flex-wrap`, or `flex-flow`).
+fn flex_wraps(cs Map[str, str]) bool
+    v := cs.get("flex-wrap") else (cs.get("flex-flow") else "")
+    for t in tokens(v)
+        if t == "wrap" or t == "wrap-reverse"
+            return true
+    false
+
+## The `ALIGN_*` of an item from its `align-self` and its container's
+## `align-items`; `stretch` (the default) is `ALIGN_STRETCH`.
+fn align_of(self_v str, items_v str) int
+    v := if self_v == "" or self_v == "auto" then items_v else self_v
+    match v
+        "center" | "safe center" | "unsafe center" => ALIGN_CENTER
+        "flex-end" | "end" | "self-end" | "last baseline" => ALIGN_END
+        "flex-start" | "start" | "self-start" | "baseline" | "first baseline" => ALIGN_START
+        _ => ALIGN_STRETCH
+
+## The row and column gaps of a grid or flex container: `gap` (one value
+## for both, or the row gap then the column gap), then `row-gap` and
+## `column-gap` and their old `grid-` names. `normal` is 0.
+fn box_gaps(cs Map[str, str], size float, w float) List[float]
+    mut rg := 0.0
+    mut cg := 0.0
+    ts := tokens(cs.get("gap") else (cs.get("grid-gap") else ""))
+    if ts.len() > 0
+        rg = gap_length(ts[0], size, w) else 0.0
+        cg = rg
+        if ts.len() > 1
+            cg = gap_length(ts[1], size, w) else cg
+    for name in ["row-gap", "grid-row-gap"]
+        if v := cs.get(name)
+            rg = gap_length(v, size, w) else rg
+    for name in ["column-gap", "grid-column-gap"]
+        if v := cs.get(name)
+            cg = gap_length(v, size, w) else cg
+    [rg, cg]
+
+## A gap as `length` reads it; a percentage is 0 while measuring.
+fn gap_length(v str, size float, w float) float?
+    if w >= SHRINK_W and v.trim().ends_with("%")
+        return 0.0
+    length(v, size, w)
+
+## `items` in the order of their `order` values, stable (CSS Flexbox 1 §5.4).
+fn Ctx.flex_order(mut self, items List[int]) List[int]
+    mut keys := List[int]()
+    mut moved := false
+    for it in items
+        mut o := 0
+        if self.d.nodes[it].kind == Element
+            o = (self.element_style(it).get("order") else "0").trim().to_int() else 0
+        if o != 0
+            moved = true
+        keys.push(o)
+    if not moved
+        return items
+    mut out := List[int]()
+    mut ks := List[int]()
+    for k in 0..items.len()
+        mut pos := out.len()
+        while pos > 0 and ks[pos - 1] > keys[k]
+            pos -= 1
+        out.insert(pos, items[k])
+        ks.insert(pos, keys[k])
+    out
+
+## The width item `it` of a grid or flex container takes when nothing wraps:
+## its set width (a border box, as `block` reads it), else its laid-out
+## content, with its margins. `max_content` caches the content per node, so
+## nested containers measure each node once per layout.
+fn Ctx.item_width(mut self, it int, st St, w float) float
+    if self.d.nodes[it].kind == Text
+        return self.max_content(it, st) + 2.0
+    tag := self.d.nodes[it].tag
+    ics := self.element_style(it)
+    ib := box_of(tag, ics, text_style(tag, ics, st), w)
+    if bw := ib.width
+        return bw + ib.ml + ib.mr
+    self.max_content(it, st) + ib.pr + ib.br + ib.mr
+
+## A row flex container (CSS Flexbox 1 §9, one pass): each item's base size
+## is its `flex-basis`, else its width, else its content; lines break when
+## `flex-wrap` allows; free space goes to `flex-grow`, overflow is taken back
+## by `flex-shrink` weighted by the base size; `justify-content` places the
+## rest, `align-items` and `align-self` place items in the line.
 fn Ctx.flex(mut self, id int, st St, cs Map[str, str], x float, w float, min_h float)
-    items := self.items(id)
-    gap := length(cs.get("gap") else (cs.get("column-gap") else "0"), st.size, w) else 0.0
-    justify := if w
-        >= SHRINK_W then "flex-start" else (cs.get("justify-content") else "flex-start").trim()
-    wrap := (cs.get("flex-wrap") else "nowrap").trim() == "wrap"
+    mut items := self.flex_order(self.items(id))
+    if flex_dir(cs) == "row-reverse"
+        items = items.reversed()
+    measuring := w >= SHRINK_W
+    gaps := box_gaps(cs, st.size, w)
+    gap := gaps[1]
+    line_gap := gaps[0]
+    justify := if measuring then "flex-start" else (cs.get("justify-content") else "flex-start").trim()
+    wrap := flex_wraps(cs)
+    align_items := (cs.get("align-items") else "").trim()
     mut sizes := List[float]()
     mut grows := List[float]()
+    mut shrinks := List[float]()
+    mut aligns := List[int]()
     for it in items
         if self.d.nodes[it].kind == Text
             sizes.push(self.max_content(it, st) + 2.0)
             grows.push(0.0)
+            shrinks.push(1.0)
+            aligns.push(align_of("", align_items))
             continue
+        tag := self.d.nodes[it].tag
         ics := self.element_style(it)
-        ist := text_style(self.d.nodes[it].tag, ics, st)
-        ib := box_of(self.d.nodes[it].tag, ics, ist, w)
+        ist := text_style(tag, ics, st)
+        ib := box_of(tag, ics, ist, w)
         extra := ib.ml + ib.mr + ib.bl + ib.br + ib.pl + ib.pr
-        mut grow := css_float(ics.get("flex-grow") else "0") else 0.0
-        if f := ics.get("flex")
-            ts := tokens(f)
-            if ts.len() > 0
-                grow = css_float(ts[0]) else grow
-        grows.push(grow)
-        if basis := ics.get("flex-basis")
-            sizes.push((length(basis, ist.size, w) else self.max_content(it, st)) + extra)
+        fx := flex_of(ics)
+        ## While measuring there is no free space to share: an item takes at
+        ## least its content (a `flex: 1` item's 0 basis would hide it).
+        grows.push(if measuring then 0.0 else fx.grow)
+        shrinks.push(fx.shrink)
+        aligns.push(align_of((ics.get("align-self") else "").trim(), align_items))
+        mut basis := none
+        if fx.basis != "auto" and fx.basis != "content" and not (measuring and fx.basis.ends_with("%"))
+            basis = length(fx.basis, ist.size, w)
+        if b := basis
+            if measuring
+                sizes.push(fmax(b + extra, self.max_content(it, st) + ib.pr + ib.br + ib.mr + 4.0))
+            else
+                sizes.push(b + extra)
         elif bw := ib.width
             sizes.push(bw + extra)
         else
@@ -2218,68 +2458,557 @@ fn Ctx.flex(mut self, id int, st St, cs Map[str, str], x float, w float, min_h f
             used += need
             end += 1
         mut row_items := List[int]()
+        mut row_aligns := List[int]()
         mut widths := List[float]()
         mut total_grow := 0.0
+        mut weight := 0.0
         for j in k..end
             total_grow += grows[j]
+            weight += shrinks[j] * sizes[j]
         free := w - used
-        scale := if free < 0.0 then w / used else 1.0
+        mut taken := 0.0
         for j in k..end
             row_items.push(items[j])
-            mut cw := sizes[j] * scale
+            row_aligns.push(if aligns[j] == ALIGN_STRETCH then ALIGN_START else aligns[j])
+            mut cw := sizes[j]
             if free > 0.0 and total_grow > 0.0
-                cw += free * grows[j] / total_grow
+                cw += free * grows[j] / fmax(total_grow, 1.0)
+            elif free < 0.0 and weight > 0.0
+                cw = fmax(cw + free * shrinks[j] * sizes[j] / weight, 0.0)
             widths.push(cw)
-        mut slack := fmax(
-            w - (used * scale) - (if total_grow > 0.0 then fmax(free, 0.0) else 0.0),
-            0.0,
-        )
+            taken += cw
+        gaps_w := gap * (end - k - 1).to_float()
+        slack := fmax(w - taken - gaps_w, 0.0)
         mut start := 0.0
         mut between := gap
         count := (end - k).to_float()
         if justify == "center"
             start = slack / 2.0
-        elif justify == "flex-end" or justify == "end"
+        elif justify == "flex-end" or justify == "end" or justify == "right"
             start = slack
         elif justify == "space-between" and end - k > 1
             between = gap + slack / (count - 1.0)
         elif justify == "space-around"
             between = gap + slack / count
             start = slack / count / 2.0
+        elif justify == "space-evenly"
+            between = gap + slack / (count + 1.0)
+            start = slack / (count + 1.0)
         mut offsets := List[float]()
         mut at := start
         for j in 0..widths.len()
             offsets.push(at)
             at += widths[j] + between
-        self.row(
-            row_items,
-            st,
-            x,
-            widths,
-            offsets,
-            (cs.get("align-items") else "").trim() == "center",
-            min_h,
-        )
-        self.y += 0.0
+        self.row_aligned(row_items, st, x, widths, offsets, row_aligns, min_h)
         if end < items.len()
-            self.y += gap
+            self.y += line_gap
         k = end
 
-## One grid track: positive for `Nfr`, negative for a fixed length, none for
-## `auto`, `min-content` and the like (sized by their content). `minmax(a, b)`
-## takes `b`.
-fn grid_track(t str, size float, w float) float?
-    if t.starts_with("minmax(")
-        parts := t.slice(7, t.chars().len() - 1).split(",")
-        if parts.len() == 2
-            if v := grid_track(parts[1].trim(), size, w)
-                return v
-            return grid_track(parts[0].trim(), size, w)
-        return none
+## Lays item `it` out at `x`, `w` wide, measures its height with its
+## margins, and takes it all back.
+fn Ctx.measure_h(mut self, it int, st St, x float, w float) float
+    o0 := self.ops.len()
+    h0 := self.hits.len()
+    saved := self.atoms
+    self.atoms = []
+    y0 := self.y
+    p0 := self.pend
+    self.pend = 0.0
+    self.lay_item(it, st, x, w)
+    self.settle()
+    h := self.y - y0
+    self.drop_boxes(o0)
+    while self.ops.len() > o0
+        self.ops.pop()
+    while self.hits.len() > h0
+        self.hits.pop()
+    self.atoms = saved
+    self.y = y0
+    self.pend = p0
+    h
+
+## A column flex container (CSS Flexbox 1 with `flex-direction: column`):
+## each item is blockified and stacked, `gap` apart, with no margin
+## collapsing; `align-items` and `align-self` place items narrower than the
+## column (`stretch`, the default, makes them as wide). With a definite
+## height (`min_h` > 0) `flex-grow` shares the free height and
+## `justify-content` places the stack.
+fn Ctx.flex_column(mut self, id int, st St, cs Map[str, str], x float, w float, min_h float)
+    mut items := self.flex_order(self.items(id))
+    if flex_dir(cs) == "column-reverse"
+        items = items.reversed()
+    gap := box_gaps(cs, st.size, w)[0]
+    align_items := (cs.get("align-items") else "").trim()
+    justify := (cs.get("justify-content") else "flex-start").trim()
+    n := items.len()
+    mut grows := List[float]()
+    mut total_grow := 0.0
+    for it in items
+        mut g := 0.0
+        if self.d.nodes[it].kind == Element
+            g = flex_of(self.element_style(it)).grow
+        grows.push(g)
+        total_grow += g
+    self.settle()
+    y0 := self.y
+    ## The border-box height each growing item is given, or -1.
+    mut grown := List[float]()
+    for k in 0..n
+        grown.push(-1.0)
+    if min_h > 0.0 and total_grow > 0.0 and w < SHRINK_W
+        mut heights := List[float]()
+        mut sum := fmax(gap * (n - 1).to_float(), 0.0)
+        for it in items
+            h := self.measure_h(it, st, x, w)
+            heights.push(h)
+            sum += h
+        free := min_h - sum
+        if free > 0.0
+            for k in 0..n
+                if grows[k] > 0.0
+                    tag := self.d.nodes[items[k]].tag
+                    ics := self.element_style(items[k])
+                    ib := box_of(tag, ics, text_style(tag, ics, st), w)
+                    share := free * grows[k] / fmax(total_grow, 1.0)
+                    grown[k] = fmax(heights[k] - ib.mt - ib.mb + share, 0.0)
+    mut o_starts := List[int]()
+    mut h_starts := List[int]()
+    for k in 0..n
+        item := items[k]
+        if k > 0
+            self.y += gap
+        o_starts.push(self.ops.len())
+        h_starts.push(self.hits.len())
+        if self.d.nodes[item].kind == Text
+            self.add_text(self.d.nodes[item].text, st)
+            self.flush(x, w, st.align)
+        else
+            ics := self.element_style(item)
+            al := align_of((ics.get("align-self") else "").trim(), align_items)
+            mut ix := x
+            mut iw := w
+            if al != ALIGN_STRETCH and w < SHRINK_W
+                iw = fmin(self.item_width(item, st, w), w)
+                if al == ALIGN_CENTER
+                    ix = x + (w - iw) / 2.0
+                elif al == ALIGN_END
+                    ix = x + w - iw
+            if grown[k] >= 0.0
+                self.force_h = grown[k]
+            self.block(item, st, ix, iw)
+            self.force_h = -1.0
+        self.settle()
+    used := self.y - y0
+    if n > 0 and min_h > used + 0.5 and w < SHRINK_W
+        free := min_h - used
+        if justify == "center"
+            self.lower(o_starts[0], h_starts[0], free / 2.0)
+            self.y += free / 2.0
+        elif justify == "flex-end" or justify == "end"
+            self.lower(o_starts[0], h_starts[0], free)
+            self.y += free
+        elif justify == "space-between" and n > 1
+            for k in 1..n
+                self.lower(o_starts[k], h_starts[k], free / (n - 1).to_float())
+            self.y += free
+        elif justify == "space-around"
+            self.lower(o_starts[0], h_starts[0], free / n.to_float() / 2.0)
+            for k in 1..n
+                self.lower(o_starts[k], h_starts[k], free / n.to_float())
+            self.y += free - free / n.to_float() / 2.0
+    self.pend = 0.0
+
+# ---- Grid (CSS Grid 1 §7 and §8, single pass) -------------------------------
+
+TRACK_FIXED := 0
+TRACK_FR := 1
+TRACK_AUTO := 2
+## The most tracks a `repeat()` makes, and the most rows an item spans.
+MAX_TRACKS := 1000
+
+## One column track of a grid template: a fixed width, a share of the free
+## space (`fr`), or sized by its content (`auto`, `min-content`,
+## `max-content`, `fit-content()`).
+struct Track
+    kind int
+    ## Pixels for a fixed track, the factor for an `fr` one.
+    size float
+    ## The least width (`minmax(lo, ...)`), 0 if none.
+    lo float
+    ## The most width a content-sized track takes (`fit-content(hi)`), -1 if none.
+    hi float
+
+fn content_track() Track
+    Track(kind: TRACK_AUTO, size: 0.0, lo: 0.0, hi: -1.0)
+
+## The words of a track list: spaces inside parentheses do not split, and
+## line names in brackets (`[full-start]`) are dropped.
+fn track_words(spec str) List[str]
+    mut out := List[str]()
+    mut cur := List[char]()
+    mut depth := 0
+    mut named := false
+    for c in spec.chars()
+        if named
+            if c == ']'
+                named = false
+        elif c == '[' and depth == 0
+            named = true
+            if cur.len() > 0
+                out.push(cur.join(""))
+                cur = []
+        else
+            if c == '('
+                depth += 1
+            elif c == ')'
+                depth -= 1
+            if (c == ' ' or c == '\n' or c == '\t') and depth == 0
+                if cur.len() > 0
+                    out.push(cur.join(""))
+                    cur = []
+            else
+                cur.push(c)
+    if cur.len() > 0
+        out.push(cur.join(""))
+    out
+
+## `s` split at the commas that are not inside parentheses, each trimmed.
+fn top_commas(s str) List[str]
+    mut out := List[str]()
+    mut cur := List[char]()
+    mut depth := 0
+    for c in s.chars()
+        if c == '('
+            depth += 1
+        elif c == ')'
+            depth -= 1
+        if c == ',' and depth == 0
+            out.push(cur.join("").trim())
+            cur = []
+        else
+            cur.push(c)
+    out.push(cur.join("").trim())
+    out
+
+## One track size (CSS Grid 1 §7.2.1). `minmax(a, b)` is fixed when `b` is
+## a length, else takes `a` as its least width. While measuring (`w` at
+## least `SHRINK_W`) a percentage means nothing, so it is content-sized.
+fn one_track(t str, size float, w float) Track
+    if w >= SHRINK_W and t.ends_with("%")
+        return content_track()
+    if t.starts_with("minmax(") and t.ends_with(")")
+        parts := top_commas(t.slice(7, t.chars().len() - 1))
+        if parts.len() != 2
+            return content_track()
+        lo := length(parts[0], size, w) else 0.0
+        top := one_track(parts[1], size, w)
+        if top.kind == TRACK_FIXED
+            return Track(kind: TRACK_FIXED, size: fmax(top.size, lo), lo: 0.0, hi: -1.0)
+        return Track(kind: top.kind, size: top.size, lo: fmax(lo, top.lo), hi: top.hi)
+    if t.starts_with("fit-content(") and t.ends_with(")")
+        cap := length(t.slice(12, t.chars().len() - 1), size, w) else -1.0
+        return Track(kind: TRACK_AUTO, size: 0.0, lo: 0.0, hi: cap)
     if r := t.strip_suffix("fr")
-        return css_float(r)
-    v := length(t, size, w)?
-    0.0 - v
+        if f := css_float(r)
+            return Track(kind: TRACK_FR, size: fmax(f, 0.0), lo: 0.0, hi: -1.0)
+    if v := length(t, size, w)
+        return Track(kind: TRACK_FIXED, size: fmax(v, 0.0), lo: 0.0, hi: -1.0)
+    content_track()
+
+## The least width a track can take: its size if fixed, else its `lo`.
+fn track_min(t Track) float
+    if t.kind == TRACK_FIXED then t.size else t.lo
+
+## The tracks of `spec` (`grid-template-columns` or `-rows`) for a grid `w`
+## wide with `gap` between tracks, holding `count` items: `repeat(n, ...)`
+## anywhere in the list, `repeat(auto-fill, ...)` as many as fit and
+## `repeat(auto-fit, ...)` no more than there are items (CSS Grid 1 §7.2.3).
+fn grid_tracks(spec str, size float, w float, gap float, count int) List[Track]
+    words := track_words(spec)
+    mut fixed := 0.0
+    mut n_fixed := 0
+    for t in words
+        if not t.starts_with("repeat(")
+            fixed += track_min(one_track(t, size, w))
+            n_fixed += 1
+    mut out := List[Track]()
+    for t in words
+        if t.starts_with("repeat(") and t.ends_with(")")
+            parts := top_commas(t.slice(7, t.chars().len() - 1))
+            if parts.len() != 2
+                continue
+            mut unit := List[Track]()
+            for u in track_words(parts[1])
+                unit.push(one_track(u, size, w))
+            if unit.len() == 0
+                continue
+            mut n := parts[0].to_int() else 0
+            if n <= 0
+                mut each := 0.0
+                for u in unit
+                    each += track_min(u)
+                if each < 1.0
+                    each = 200.0
+                room := w - fixed - gap * n_fixed.to_float()
+                per := each + gap * unit.len().to_float()
+                n = ((room + gap) / per).floor().to_int().max(1)
+                if parts[0] == "auto-fit" or w >= SHRINK_W
+                    n = n.min(count.max(1))
+            n = n.min(MAX_TRACKS)
+            for k in 0..n
+                out.extend(unit)
+        else
+            out.push(one_track(t, size, w))
+    out
+
+## Whether track `t` is sized by what it holds; every `fr` track is while
+## measuring.
+fn by_content(t Track, measuring bool) bool
+    t.kind == TRACK_AUTO or (measuring and t.kind == TRACK_FR)
+
+## The widths of `tracks` in a grid `w` wide with `gap` between them, given
+## the widest content each holds (`content`, from `Ctx.track_content`), as
+## CSS Grid 1 §11 does it in one pass: fixed tracks take their size,
+## content-sized ones their content, `fr` tracks share what is left. With no
+## `fr` track the content-sized ones stretch to fill the grid
+## (`justify-content: normal`); when they do not fit they shrink in
+## proportion.
+fn track_sizes(tracks List[Track], content List[float], w float, gap float) List[float]
+    measuring := w >= SHRINK_W
+    n := tracks.len()
+    mut out := List[float]()
+    mut fixed := 0.0
+    mut autos := 0.0
+    mut stretchy := 0
+    mut frs := 0.0
+    for k in 0..n
+        t := tracks[k]
+        if by_content(t, measuring)
+            mut c := fmax(content[k], t.lo)
+            if t.hi >= 0.0
+                c = fmax(fmin(c, t.hi), t.lo)
+            else
+                stretchy += 1
+            out.push(c)
+            autos += c
+        elif t.kind == TRACK_FR
+            out.push(0.0)
+            frs += t.size
+        else
+            out.push(t.size)
+            fixed += t.size
+    room := w - fixed - gap * (n - 1).max(0).to_float()
+    if measuring
+        return out
+    mut squeeze := 1.0
+    mut stretch := 0.0
+    if room < autos and autos > 0.0
+        squeeze = fmax(room, 0.0) / autos
+    elif frs == 0.0 and stretchy > 0
+        stretch = (room - autos) / stretchy.to_float()
+    left := fmax(room - autos, 0.0)
+    for k in 0..n
+        t := tracks[k]
+        if by_content(t, measuring)
+            out[k] = out[k] * squeeze + (if t.hi < 0.0 then stretch else 0.0)
+        elif t.kind == TRACK_FR and frs > 0.0
+            ## Factors summing below 1 take only that part (CSS Grid 1 §11.7.1).
+            out[k] = fmax(left * t.size / fmax(frs, 1.0), t.lo)
+    out
+
+## The widest content each track holds alone (`item_width`), then for each
+## item spanning several content-sized tracks, what it needs beyond them
+## spread evenly over them. `cells` are the items' [row0, row1, col0, col1].
+fn Ctx.track_content(
+    mut self,
+    items List[int],
+    cells List[List[int]],
+    tracks List[Track],
+    st St,
+    w float,
+) List[float]
+    measuring := w >= SHRINK_W
+    mut content := List[float]()
+    for t in tracks
+        content.push(0.0)
+    for k in 0..items.len()
+        c0 := cells[k][2]
+        if c0 == cells[k][3] and by_content(tracks[c0], measuring)
+            content[c0] = fmax(content[c0], self.item_width(items[k], st, w))
+    for k in 0..items.len()
+        c0 := cells[k][2]
+        c1 := cells[k][3]
+        if c0 < c1
+            mut sized := true
+            mut have := 0.0
+            for c in c0..c1 + 1
+                if not by_content(tracks[c], measuring)
+                    sized = false
+                have += content[c]
+            if sized
+                need := self.item_width(items[k], st, w)
+                if need > have
+                    more := (need - have) / (c1 - c0 + 1).to_float()
+                    for c in c0..c1 + 1
+                        content[c] = content[c] + more
+    content
+
+## A placement word of `grid-column-start` and the like as [line, span]:
+## [N, 0] for line N (negative counts from the end), [0, N] for `span N`,
+## [0, 0] for `auto` and for a line name (named lines are not supported).
+fn grid_line(v str) List[int]
+    words := [t for t in v.trim().split(" ") if t != ""]
+    if words.len() == 0
+        return [0, 0]
+    if words[0] == "span"
+        mut n := 1
+        for t in words
+            if k := t.to_int()
+                n = k
+        return [0, n.max(1)]
+    for t in words
+        if k := t.to_int()
+            return [k, 0]
+    [0, 0]
+
+## An item's placement on `axis` (`column` or `row`) as [start line, start
+## span, end line, end span] (`grid_line`), from `grid-area` (`r0 / c0 /
+## r1 / c1`), then `grid-column` or `grid-row` (`a / b`), then the
+## `-start` and `-end` longhands.
+fn grid_lines(cs Map[str, str], axis str) List[int]
+    mut s := "auto"
+    mut e := "auto"
+    if v := cs.get("grid-area")
+        parts := v.split("/")
+        first := if axis == "row" then 0 else 1
+        if parts.len() > first and v.contains("/")
+            s = parts[first]
+            if parts.len() > first + 2
+                e = parts[first + 2]
+    if v := cs.get("grid-{axis}")
+        parts := v.split("/")
+        s = parts[0]
+        e = if parts.len() > 1 then parts[1] else "auto"
+    s = cs.get("grid-{axis}-start") else s
+    e = cs.get("grid-{axis}-end") else e
+    a := grid_line(s)
+    b := grid_line(e)
+    [a[0], a[1], b[0], b[1]]
+
+## Line `line` (from 1, or negative from the end) of a grid with `n`
+## explicit tracks as a 0-based track index.
+fn line_index(line int, n int) int
+    if line > 0
+        return line - 1
+    (n + 1 + line).max(0)
+
+## The tracks an item covers from its `grid_lines` `l` in a grid of `n`
+## explicit tracks: [first track (0-based, -1 when placed automatically),
+## span]. Columns stay inside the explicit grid (no implicit columns);
+## rows (`grow`) may go past it.
+fn grid_range(l List[int], n int, grow bool) List[int]
+    mut a := -1
+    mut span := 1
+    if l[0] != 0
+        a = line_index(l[0], n)
+        if l[2] != 0
+            b := line_index(l[2], n)
+            if b < a
+                span = a - b
+                a = b
+            else
+                span = (b - a).max(1)
+        elif l[3] > 0
+            span = l[3]
+    elif l[2] != 0
+        b := line_index(l[2], n)
+        a = (b - l[1].max(1)).max(0)
+        span = (b - a).max(1)
+    else
+        span = l[1].max(l[3]).max(1)
+    if grow
+        return [a, span.min(MAX_TRACKS)]
+    span = span.min(n)
+    if a >= n
+        a = n - 1
+    if a >= 0
+        span = span.min(n - a)
+    [a, span.max(1)]
+
+## Whether cells rows `r` to `r + rs` and columns `c` to `c + cs` are all free
+## in `occ`, a row-major grid of `ncols` columns.
+fn grid_free(occ List[bool], ncols int, r int, rs int, c int, cs int) bool
+    for rr in r..r + rs
+        for cc in c..c + cs
+            at := rr * ncols + cc
+            if at < occ.len() and occ[at]
+                return false
+    true
+
+## Marks cells as `grid_free` reads them as taken.
+fn grid_take(mut occ List[bool], ncols int, r int, rs int, c int, cs int)
+    while occ.len() < (r + rs) * ncols
+        occ.push(false)
+    for rr in r..r + rs
+        for cc in c..c + cs
+            occ[rr * ncols + cc] = true
+
+## Places the items of a grid of `ncols` columns (CSS Grid 1 §8.5, sparse
+## row flow): `cols` and `rows` are each item's [first, span] from
+## `grid_range`. Items fixed in both axes go first, then those fixed to a
+## row, then the rest in order behind a cursor. Returns each item's
+## [row0, row1, col0, col1], inclusive.
+fn grid_place(cols List[List[int]], rows List[List[int]], ncols int) List[List[int]]
+    mut occ := List[bool]()
+    mut out := List[List[int]]()
+    for k in 0..cols.len()
+        out.push([0, 0, 0, 0])
+    for k in 0..cols.len()
+        if cols[k][0] >= 0 and rows[k][0] >= 0
+            r := rows[k][0]
+            c := cols[k][0]
+            grid_take(mut occ, ncols, r, rows[k][1], c, cols[k][1])
+            out[k] = [r, r + rows[k][1] - 1, c, c + cols[k][1] - 1]
+    for k in 0..cols.len()
+        if cols[k][0] < 0 and rows[k][0] >= 0
+            r := rows[k][0]
+            span := cols[k][1]
+            mut at := 0
+            mut c := 0
+            while c + span <= ncols
+                if grid_free(occ, ncols, r, rows[k][1], c, span)
+                    at = c
+                    break
+                c += 1
+            grid_take(mut occ, ncols, r, rows[k][1], at, span)
+            out[k] = [r, r + rows[k][1] - 1, at, at + span - 1]
+    mut cr := 0
+    mut cc := 0
+    for k in 0..cols.len()
+        if rows[k][0] >= 0
+            continue
+        span := cols[k][1]
+        rs := rows[k][1]
+        if cols[k][0] >= 0
+            c := cols[k][0]
+            if c < cc
+                cr += 1
+            while not grid_free(occ, ncols, cr, rs, c, span)
+                cr += 1
+            cc = c
+        else
+            while true
+                if cc + span > ncols
+                    cr += 1
+                    cc = 0
+                elif grid_free(occ, ncols, cr, rs, cc, span)
+                    break
+                else
+                    cc += 1
+        grid_take(mut occ, ncols, cr, rs, cc, span)
+        out[k] = [cr, cr + rs - 1, cc, cc + span - 1]
+        cc += span
+    out
 
 ## The rows of `grid-template-areas`, each a list of area names.
 fn area_rows(spec str) List[List[str]]
@@ -2310,90 +3039,106 @@ fn area_box(rows List[List[str]], name str) List[int]
         return []
     [r0, r1, c0, c1]
 
+## Whether a grid centres its items in their rows (`align-items` or
+## `place-items`).
+fn grid_centred(cs Map[str, str]) bool
+    (cs.get("align-items") else "").trim() == "center"
+        or (cs.get("place-items") else "").trim().starts_with("center")
+
 fn Ctx.grid(mut self, id int, st St, cs Map[str, str], x float, w float)
     items := self.items(id)
-    gap := length(cs.get("gap") else (cs.get("column-gap") else "0"), st.size, w) else 0.0
+    gaps := box_gaps(cs, st.size, w)
     mut spec := (cs.get("grid-template-columns") else "").trim()
     shorthand := cs.get("grid-template") else ""
     if spec == "" and shorthand.contains("/")
         spec = shorthand.slice((shorthand.find("/") else 0) + 1, shorthand.chars().len()).trim()
     areas := area_rows((cs.get("grid-template-areas") else "").trim())
     if areas.len() > 0
-        self.grid_areas(items, st, x, w, gap, spec, areas)
+        self.grid_areas(items, st, cs, x, w, spec, areas)
         return
-    mut cols := List[float]()
-    if spec.starts_with("repeat(")
-        inner := spec.slice(7, spec.chars().len() - 1)
-        comma := inner.find(",") else 0
-        count := inner.slice(0, comma).trim()
-        track := inner.slice(comma + 1, inner.chars().len()).trim()
-        mut n := count.to_int() else 0
-        if n == 0
-            mut min := 200.0
-            if track.starts_with("minmax(")
-                parts := track.slice(7, track.chars().len() - 1).split(",")
-                min = length(parts[0], st.size, w) else 200.0
-            n = ((w + gap) / (min + gap)).floor().to_int().max(1)
-        for k in 0..n
-            cols.push(1.0)
-    else
-        for t in tokens(spec)
-            if r := t.strip_suffix("fr")
-                cols.push(r.to_float() else 1.0)
-            else
-                cols.push(0.0 - (length(t, st.size, w) else 0.0))
-    if cols.len() == 0
-        cols.push(1.0)
-    mut fixed := 0.0
-    mut fr := 0.0
-    for c in cols
-        if c < 0.0
-            fixed += 0.0 - c
+    mut tracks := grid_tracks(spec, st.size, w, gaps[1], items.len())
+    if tracks.len() == 0
+        tracks.push(Track(kind: TRACK_FR, size: 1.0, lo: 0.0, hi: -1.0))
+    ncols := tracks.len()
+    n_rows := track_words((cs.get("grid-template-rows") else "").trim()).len()
+    mut cols := List[List[int]]()
+    mut rows := List[List[int]]()
+    for it in items
+        if self.d.nodes[it].kind == Element
+            ics := self.element_style(it)
+            cols.push(grid_range(grid_lines(ics, "column"), ncols, false))
+            rows.push(grid_range(grid_lines(ics, "row"), n_rows, true))
         else
-            fr += c
-    avail := w - fixed - gap * (cols.len() - 1).to_float()
-    mut widths := List[float]()
+            cols.push([-1, 1])
+            rows.push([-1, 1])
+    cells := grid_place(cols, rows, ncols)
+    self.grid_rows(items, cells, tracks, st, x, w, gaps, grid_centred(cs))
+
+## Lays out placed grid items a row at a time: column widths from
+## `track_sizes`, each item as wide as the tracks and gaps it spans. An item
+## spanning several rows is laid out in its first row, whose height it then
+## sets alone (row heights are not shared out yet).
+fn Ctx.grid_rows(
+    mut self,
+    items List[int],
+    cells List[List[int]],
+    tracks List[Track],
+    st St,
+    x float,
+    w float,
+    gaps List[float],
+    center bool,
+)
+    gap := gaps[1]
+    content := self.track_content(items, cells, tracks, st, w)
+    widths := track_sizes(tracks, content, w, gap)
     mut offsets := List[float]()
     mut at := 0.0
-    for c in cols
-        cw := if c < 0.0 then 0.0 - c else avail * c / fr
-        widths.push(fmax(cw, 1.0))
+    for cw in widths
         offsets.push(at)
-        at += fmax(cw, 1.0) + gap
-    mut k := 0
-    while k < items.len()
-        end := (k + cols.len()).min(items.len())
-        self.row(items[k..end], st, x, widths[0..end - k], offsets[0..end - k], false, 0.0)
-        k = end
-        if k < items.len()
-            self.y += gap
+        at += cw + gap
+    mut last := -1
+    for b in cells
+        last = last.max(b[0])
+    mut first := true
+    for r in 0..last + 1
+        mut row := List[int]()
+        mut ws := List[float]()
+        mut os := List[float]()
+        for k in 0..items.len()
+            b := cells[k]
+            if b[0] == r
+                mut span := gap * (b[3] - b[2]).to_float()
+                for c in b[2]..b[3] + 1
+                    span += widths[c]
+                row.push(items[k])
+                ws.push(span)
+                os.push(offsets[b[2]])
+        if row.len() > 0
+            if not first
+                self.y += gaps[0]
+            first = false
+            self.row(row, st, x, ws, os, center, 0.0)
 
 ## A grid with `grid-template-areas`: each item goes in the cells its
-## `grid-area` names, a row at a time; items with no area follow, full width.
+## `grid-area` names; items with no area follow, full width, a row each.
 fn Ctx.grid_areas(
     mut self,
     items List[int],
     st St,
+    cs Map[str, str],
     x float,
     w float,
-    gap float,
     spec str,
     areas List[List[str]],
 )
+    gaps := box_gaps(cs, st.size, w)
     ncols := areas[0].len()
-    mut cols := List[float]()
-    mut autos := List[bool]()
-    for t in tokens(spec)
-        if cols.len() < ncols
-            if v := grid_track(t, st.size, w)
-                cols.push(v)
-                autos.push(false)
-            else
-                cols.push(0.0)
-                autos.push(true)
-    while cols.len() < ncols
-        cols.push(1.0)
-        autos.push(false)
+    mut tracks := grid_tracks(spec, st.size, w, gaps[1], items.len())
+    while tracks.len() > ncols
+        tracks.pop()
+    while tracks.len() < ncols
+        tracks.push(Track(kind: TRACK_FR, size: 1.0, lo: 0.0, hi: -1.0))
     ## Each item's box: [row0, row1, col0, col1]; unplaced ones get new rows.
     mut cells := List[List[int]]()
     mut extra := areas.len()
@@ -2405,60 +3150,7 @@ fn Ctx.grid_areas(
             extra += 1
         else
             cells.push(b)
-    ## Content-sized tracks take the widest item that sits in them alone.
-    for k in 0..items.len()
-        b := cells[k]
-        if b[2] == b[3] and autos[b[2]] and self.d.nodes[items[k]].kind == Element
-            cs2 := self.element_style(items[k])
-            cst := text_style(self.d.nodes[items[k]].tag, cs2, st)
-            cols[b[2]] = fmax(cols[b[2]], self.intrinsic(items[k], cst))
-    mut fixed := 0.0
-    mut fr := 0.0
-    for c in 0..cols.len()
-        if autos[c]
-            fixed += cols[c]
-        elif cols[c] < 0.0
-            fixed += 0.0 - cols[c]
-        else
-            fr += cols[c]
-    avail := fmax(w - fixed - gap * (cols.len() - 1).to_float(), 0.0)
-    mut widths := List[float]()
-    mut offsets := List[float]()
-    mut at := 0.0
-    for c in 0..cols.len()
-        mut cw := cols[c]
-        if not autos[c]
-            if cw < 0.0
-                cw = 0.0 - cw
-            elif fr > 0.0
-                cw = avail * cw / fr
-            else
-                cw = 0.0
-        widths.push(cw)
-        offsets.push(at)
-        at += cw + gap
-    for r in 0..extra
-        mut order := List[int]()
-        for k in 0..items.len()
-            if cells[k][0] == r
-                mut pos := 0
-                while pos < order.len() and cells[order[pos]][2] <= cells[k][2]
-                    pos += 1
-                order.insert(pos, k)
-        if order.len() > 0
-            mut row := List[int]()
-            mut ws := List[float]()
-            mut os := List[float]()
-            for k in order
-                b := cells[k]
-                mut span := gap * (b[3] - b[2]).to_float()
-                for c in b[2]..b[3] + 1
-                    span += widths[c]
-                row.push(items[k])
-                ws.push(span)
-                os.push(offsets[b[2]])
-            self.row(row, st, x, ws, os, false, 0.0)
-            self.y += gap
+    self.grid_rows(items, cells, tracks, st, x, w, gaps, grid_centred(cs))
 
 fn Ctx.table(mut self, id int, st St, x float, w float)
     mut rows := List[int]()
@@ -2570,8 +3262,10 @@ pub fn layout_measured(
         marker_x: 0.0,
         canvas: 0xffffff,
         styles: {},
-        scopes: {},
         cascades: {},
+        var_owner: {},
+        var_vals: {},
+        force_h: -1.0,
         contents: {},
         editing: editing,
         pics: sizes,
@@ -2615,3 +3309,178 @@ pub fn Scene.link_at(self, x float, y float) str?
     if h.href == ""
         return none
     h.href
+
+# ---- Tests ----------------------------------------------------------------
+
+## `src` laid out `width` wide with no linked sheet.
+fn test_scene(src str, width float) Scene
+    layout(html.parse(src), "file:///t.html", width, css.parse("", 0))
+
+## The first rectangle drawn in `color` as [x, y, w, h], or [].
+fn rect_in(s Scene, color int) List[float]
+    for op in s.ops
+        match op
+            Rect(x, y, w, h, c) =>
+                if c == color
+                    return [x, y, w, h]
+            _ => continue
+    []
+
+## The first string drawn that starts with `word` as [x, y], or [].
+fn text_at(s Scene, word str) List[float]
+    for op in s.ops
+        match op
+            Str(x, y, t, _, _, _, _, _, _) =>
+                if t.starts_with(word)
+                    return [x, y]
+            _ => continue
+    []
+
+## The first string drawn that contains `word`, or "".
+fn run_with(s Scene, word str) str
+    for op in s.ops
+        match op
+            Str(_, _, t, _, _, _, _, _, _) =>
+                if t.contains(word)
+                    return t
+            _ => continue
+    ""
+
+## BBC News: a 24-column page grid whose items each span 12 columns.
+@test fn grid_items_span_the_columns_their_lines_name()
+    src := """
+        <style>body \{ margin: 0 } .g \{ display: grid; grid-template-columns: repeat(24, 1fr) } .a \{ grid-column: 1/span 12; background: #ff0000 } .b \{ grid-column: 13/span 12; background: #00ff00 }</style>
+        <div class=g><div class=a>one</div><div class=b>two</div></div>
+        """
+    s := test_scene(src, 1000.0)
+    a := rect_in(s, 0xff0000)
+    b := rect_in(s, 0x00ff00)
+    assert_eq(a.len(), 4)
+    assert_eq(b.len(), 4)
+    assert_near(a[0], 0.0, 0.5)
+    assert_near(a[2], 500.0, 1.0)
+    assert_near(b[0], 500.0, 1.0)
+    assert_near(b[2], 500.0, 1.0)
+    assert_near(a[1], b[1], 0.5)
+
+@test fn auto_placement_honours_spans_and_wraps_to_the_next_row()
+    src := """
+        <style>body \{ margin: 0 } .g \{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px 0 } .w \{ grid-column: span 2 } .e \{ grid-column: -2 / -1 }</style>
+        <div class=g><div class=w>wide</div><div>next</div><div>third</div><div class=e>last</div></div>
+        """
+    s := test_scene(src, 300.0)
+    wide := text_at(s, "wide")
+    nx := text_at(s, "next")
+    third := text_at(s, "third")
+    last := text_at(s, "last")
+    assert_near(nx[0], 200.0, 1.0)
+    assert_near(nx[1], wide[1], 0.5)
+    assert_near(third[0], 0.0, 0.5)
+    assert(third[1] > wide[1] + 10.0)
+    assert_near(last[0], 200.0, 1.0)
+    assert_near(last[1], third[1], 0.5)
+
+@test fn auto_tracks_take_their_content_and_fr_tracks_the_rest()
+    src := """
+        <style>body \{ margin: 0 } .g \{ display: grid; grid-template-columns: 1fr auto } .a \{ background: #ff0000 } .b \{ background: #00ff00 }</style>
+        <div class=g><div class=a>main</div><div class=b>ok</div></div>
+        """
+    s := test_scene(src, 600.0)
+    a := rect_in(s, 0xff0000)
+    b := rect_in(s, 0x00ff00)
+    assert(b[2] > 5.0 and b[2] < 100.0)
+    assert_near(a[2] + b[2], 600.0, 1.0)
+    assert_near(b[0], a[2], 1.0)
+    only := test_scene("<style>body \{ margin: 0 } .g \{ display: grid; grid-template-columns: auto auto }</style><div class=g><div>one</div><div>two</div></div>", 600.0)
+    ## Both stretch by the same amount, so the second starts near the middle.
+    assert_near(text_at(only, "two")[0], 300.0, 3.0)
+
+@test fn repeat_mixes_with_other_tracks_and_minmax_keeps_its_floor()
+    src := """
+        <style>body \{ margin: 0 } .g \{ display: grid; grid-template-columns: [full-start] repeat(2, 1fr) 100px [full-end] } .h \{ display: grid; grid-template-columns: minmax(300px, 1fr) 1fr }</style>
+        <div class=g><div>aa</div><div>bb</div><div>cc</div></div>
+        <div class=h><div>dd</div><div>ee</div></div>
+        """
+    s := test_scene(src, 500.0)
+    assert_near(text_at(s, "aa")[0], 0.0, 0.5)
+    assert_near(text_at(s, "bb")[0], 200.0, 1.0)
+    assert_near(text_at(s, "cc")[0], 400.0, 1.0)
+    assert_near(text_at(s, "ee")[0], 300.0, 1.0)
+    fill := test_scene("<style>body \{ margin: 0 } .g \{ display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)) }</style><div class=g><div>p</div><div>q</div><div>r</div><div>s</div><div>t</div></div>", 450.0)
+    assert_near(text_at(fill, "q")[0], 112.5, 1.0)
+    assert(text_at(fill, "t")[1] > text_at(fill, "p")[1])
+
+@test fn display_contents_hands_its_children_to_the_grid_and_the_flow()
+    src := """
+        <style>body \{ margin: 0 } .g \{ display: grid; grid-template-columns: 1fr 1fr } .c \{ display: contents }</style>
+        <div class=g><div class=c><div>left</div><div>right</div></div></div>
+        <p>before <span class=c>inside</span> after</p>
+        """
+    s := test_scene(src, 400.0)
+    l := text_at(s, "left")
+    r := text_at(s, "right")
+    assert_near(r[0], 200.0, 1.0)
+    assert_near(r[1], l[1], 0.5)
+    assert_eq(run_with(s, "before"), "before inside after")
+
+@test fn flex_one_shares_the_row_equally_whatever_the_content()
+    src := """
+        <style>body \{ margin: 0 } .f \{ display: flex } .a \{ flex: 1; background: #ff0000 } .b \{ flex: 1; background: #00ff00 } .c \{ flex: 1; background: #0000ff }</style>
+        <div class=f><div class=a>a</div><div class=b>a much longer label</div><div class=c>cc</div></div>
+        """
+    s := test_scene(src, 600.0)
+    a := rect_in(s, 0xff0000)
+    b := rect_in(s, 0x00ff00)
+    c := rect_in(s, 0x0000ff)
+    assert_near(a[2], 200.0, 1.0)
+    assert_near(b[2], 200.0, 1.0)
+    assert_near(c[2], 200.0, 1.0)
+    assert_near(c[0], 400.0, 1.0)
+
+@test fn flex_none_keeps_its_width_and_shrink_takes_the_overflow()
+    src := """
+        <style>body \{ margin: 0 } .f \{ display: flex } .a \{ flex: 0 0 auto; width: 300px; background: #ff0000 } .b \{ flex: 1 1 400px; background: #00ff00 }</style>
+        <div class=f><div class=a>fixed</div><div class=b>shrinks</div></div>
+        """
+    s := test_scene(src, 500.0)
+    a := rect_in(s, 0xff0000)
+    b := rect_in(s, 0x00ff00)
+    assert_near(a[2], 300.0, 1.0)
+    assert_near(b[0], 300.0, 1.0)
+    assert_near(b[2], 200.0, 1.0)
+
+@test fn flex_columns_stack_blockified_items_with_gaps_and_alignment()
+    src := """
+        <style>body \{ margin: 0 } .f \{ display: flex; flex-direction: column; gap: 20px; align-items: center } .a \{ width: 100px; background: #ff0000 }</style>
+        <div class=f><span>one</span><span>two</span><div class=a>box</div></div>
+        """
+    s := test_scene(src, 400.0)
+    one := text_at(s, "one")
+    two := text_at(s, "two")
+    assert(two[1] > one[1] + 20.0)
+    assert(one[0] > 150.0)
+    a := rect_in(s, 0xff0000)
+    assert_near(a[0], 150.0, 1.0)
+    grow := test_scene("<style>body \{ margin: 0 } .f \{ display: flex; flex-direction: column; height: 300px } .g \{ flex-grow: 1; background: #00ff00 }</style><div class=f><div>top</div><div class=g>fill</div></div>", 400.0)
+    g := rect_in(grow, 0x00ff00)
+    assert(g[3] > 250.0)
+
+@test fn flex_wrap_breaks_lines_with_the_row_gap()
+    src := """
+        <style>body \{ margin: 0 } .f \{ display: flex; flex-flow: row wrap; gap: 30px 10px } .i \{ width: 150px }</style>
+        <div class=f><div class=i>one</div><div class=i>two</div><div class=i>three</div></div>
+        """
+    s := test_scene(src, 400.0)
+    assert_near(text_at(s, "two")[0], 160.0, 1.0)
+    assert(text_at(s, "three")[1] > text_at(s, "one")[1] + 30.0)
+    assert_near(text_at(s, "three")[0], 0.0, 0.5)
+
+@test fn custom_properties_resolve_through_ancestors_that_declare_none()
+    src := """
+        <style>:root \{ --ink: #ff0000; --pad: 8px } .mid \{ --ink: #00ff00 } .box \{ background: var(--ink); padding: var(--pad) } .far \{ background: var(--gone, #0000ff) }</style>
+        <div><div class=box>red</div><div class=mid><div><div class=box>green</div></div></div><div class=far>blue</div></div>
+        """
+    s := test_scene(src, 400.0)
+    assert_eq(rect_in(s, 0xff0000).len(), 4)
+    assert_eq(rect_in(s, 0x00ff00).len(), 4)
+    assert_eq(rect_in(s, 0x0000ff).len(), 4)
