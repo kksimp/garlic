@@ -443,9 +443,11 @@ pub fn Vm.native(
         return self.map_method(m, this_val, args)
     if m := name.strip_prefix("Set.prototype.")
         return self.set_method(m, this_val, args)
-    for w in ["IntersectionObserver", "ResizeObserver", "PerformanceObserver"]
+    for w in ["IntersectionObserver", "ResizeObserver"]
         if m := name.strip_prefix("{w}.prototype.")
-            return if m == "takeRecords" then array([]) else Value.Undef
+            return self.observer_method(w, m, this_val, args)
+    if m := name.strip_prefix("PerformanceObserver.prototype.")
+        return if m == "takeRecords" then array([]) else Value.Undef
     for w in ["WeakMap", "WeakSet", "WeakRef", "FinalizationRegistry"]
         if m := name.strip_prefix("{w}.prototype.")
             return weak_method(w, m, this_val, args)

@@ -22,9 +22,8 @@ fn Vm.weak_setup(mut self)
     )
     for name in ["WeakMap", "WeakSet", "WeakRef", "FinalizationRegistry"]
         self.weak_tag(name)
-    # Garlic draws no scroll or resize, so these observers never see a
-    # change: they take their callback and do nothing (Intersection
-    # Observer §3, Resize Observer §3).
+    # Garlic draws no scroll or resize a page can see, so these observers
+    # report each target once, a frame after `observe` (observer_method).
     for name in ["IntersectionObserver", "ResizeObserver"]
         constructor(name, 1)
         methods(
@@ -95,7 +94,87 @@ fn Vm.observer_stub_new(mut self, name str, args List[Value], new_target Value) 
     if not is_callable(arg_at(args, 0))
         return type_error("Failed to construct '{name}': The callback provided as parameter 1 is not a function.")
     proto := get(new_target, "prototype")?
-    Value.Obj(object(name, if is_obj(proto) then proto else proto_of(name)))
+    o := object(name, if is_obj(proto) then proto else proto_of(name))
+    o.props["{PRIVATE}cb"] = hidden(arg_at(args, 0))
+    Value.Obj(o)
+
+## IntersectionObserver and ResizeObserver methods. Each reports every
+## target once (Intersection Observer §3.2.8 "initial notification",
+## Resize Observer §3.4.3): a frame (16 ms) after `observe`, the targets
+## not yet reported reach the callback, intersecting and at their laid-out
+## boxes, so lazy pictures load. Nothing changes after that, since Garlic
+## has no scrolling or resizing a page can see. The targets waiting for
+## their report are the observer's `elems`.
+fn Vm.observer_method(mut self, name str, m str, this_val Value, args List[Value]) Value ! Thrown
+    if m == "deliver"
+        return self.observer_deliver(name, arg_at(args, 0))
+    o := this_class(this_val, name, m)?
+    a0 := arg_at(args, 0)
+    match m
+        "observe" =>
+            if node_id(a0) == none
+                return type_error("Failed to execute 'observe' on '{name}': parameter 1 is not of type 'Element'.")
+            if not o.elems.contains(a0)
+                o.elems.push(a0)
+            if not o.props.contains("{PRIVATE}due")
+                o.props["{PRIVATE}due"] = hidden(Value.Bool(true))
+                timer_seq += 1
+                timers.push(Timer(
+                    id: timer_seq,
+                    # Resize observations broadcast in the frame; the
+                    # intersection report is a task queued after it.
+                    due: clock_ms + (if name == "ResizeObserver" then 16.0 else 17.0),
+                    seq: timer_seq,
+                    callback: native_fn("{name}.prototype.deliver", "deliver", 1),
+                    args: [this_val],
+                    every: 0.0,
+                    level: timer_level + 1,
+                ))
+            Undef
+        "unobserve" =>
+            o.elems = [t for t in o.elems if t != a0]
+            Undef
+        "disconnect" =>
+            o.elems = []
+            Undef
+        _ => array([])
+
+## Report the waiting targets of observer `ov` to its callback.
+fn Vm.observer_deliver(mut self, name str, ov Value) Value ! Thrown
+    o := obj_of(ov) else return Undef
+    o.props.remove("{PRIVATE}due")
+    targets := o.elems
+    o.elems = []
+    if targets.len() == 0
+        return Undef
+    cb := o.props.get("{PRIVATE}cb") else return Undef
+    mut entries := List[Value]()
+    for t in targets
+        id := node_id(t) else continue
+        e := plain()
+        r := self.rect_value(id)
+        if name == "ResizeObserver"
+            box := self.rect_of(id)
+            size := plain()
+            size.props["inlineSize"] = data(Value.Num(box[2]))
+            size.props["blockSize"] = data(Value.Num(box[3]))
+            sizes := array([Value.Obj(size)])
+            e.props["target"] = data(t)
+            e.props["contentRect"] = data(r)
+            e.props["borderBoxSize"] = data(sizes)
+            e.props["contentBoxSize"] = data(sizes)
+            e.props["devicePixelContentBoxSize"] = data(sizes)
+        else
+            e.props["time"] = data(Value.Num(clock_ms - page_start_ms))
+            e.props["rootBounds"] = data(Null)
+            e.props["boundingClientRect"] = data(r)
+            e.props["intersectionRect"] = data(r)
+            e.props["isIntersecting"] = data(Value.Bool(true))
+            e.props["intersectionRatio"] = data(Value.Num(1.0))
+            e.props["target"] = data(t)
+        entries.push(Value.Obj(e))
+    call(cb.value, ov, [array(entries), ov])?
+    Undef
 
 fn Vm.weak_method(mut self, name str, m str, this_val Value, args List[Value]) Value ! Thrown
     o := this_class(this_val, name, m)?
