@@ -2859,9 +2859,17 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
             self.y = fmax(self.y, top + mh)
         ## A box that cuts its overflow ends at its set height, and at most
         ## at its `max-height`; the rest is cut off below (CSS 2.1 §10.7).
-        if bx.clips
+        ## The root's and the body's overflow is the viewport's (CSS Overflow
+        ## 3 §3.3), which Garlic scrolls: they cut nothing. A percentage
+        ## height is not known here (its block's height is), so it cuts
+        ## nothing either (html.duckduckgo.com: `html { height: 100%;
+        ## overflow: hidden }` cut the whole page).
+        cuts := bx.clips and tag != "html" and tag != "body"
+        sized := not (cs.get("height") else "").contains("%")
+        if cuts
             if hh := bx.height
-                self.y = fmin(self.y, top + fmax(hh, bx.min_height else 0.0))
+                if sized
+                    self.y = fmin(self.y, top + fmax(hh, bx.min_height else 0.0))
             if mh := bx.max_height
                 self.y = fmin(self.y, top + fmax(mh, bx.min_height else 0.0))
         bottom := self.y
@@ -2873,7 +2881,7 @@ fn Ctx.block(mut self, id int, parent St, x float, w float)
             self.ax = saved_ax
             self.ay = saved_ay
             self.aw = saved_aw
-        if bx.clips
+        if cuts
             cw := if border_w >= SHRINK_W then 4.0 * SHRINK_W else border_w - bx.bl - bx.br
             self.clip_from(
                 o_in,
@@ -4622,6 +4630,16 @@ fn pics_in(s Scene) List[List[float]]
     )
     cut := run_with(wide, "abc")
     assert(cut.len() > 2 and cut.len() < 26)
+
+@test fn the_root_and_a_percentage_height_cut_no_overflow()
+    s := test_scene(
+        "<style>html, body \{ height: 100%; overflow: hidden; margin: 0 } .p \{ height: 50%; overflow: hidden }</style><div class=p><p>first</p><p>second</p></div><p>after</p>",
+        400.0,
+    )
+    assert(run_with(s, "first") != "")
+    assert(run_with(s, "second") != "")
+    assert(text_at(s, "after")[1] > text_at(s, "second")[1])
+    assert(s.height > 50.0)
 
 @test fn visibility_hidden_keeps_its_room_and_opacity_fades()
     src := """
