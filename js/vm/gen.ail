@@ -843,17 +843,30 @@ fn go() Stop
 fn Vm.take_frame(mut self, id int) Frame?
     frames.remove(id)
 
-## The code of a generator or async function, compiled once per function
-## object.
+## The code of a generator or async function, compiled once per function:
+## kept on the function object, and by the function's source text and
+## place, so closures made again from the same code (an async arrow made in
+## a loop) share one compiled body.
 fn Vm.code_for(mut self, fobj ref JsObject, fun syntax.Func) int ! Thrown
     if p := fobj.props.get("{PRIVATE}code")
         if n := num_of(p.value)
             return n.to_int()
-    code := compile_body(fun) else err
-        return syntax_error(err.text.strip_prefix("SyntaxError: ") else err.text)
-    codes.push(code)
-    fobj.props["{PRIVATE}code"] = hidden(Num((codes.len() - 1).to_float()))
-    codes.len() - 1
+    # Strictness is part of the key: nested functions inherit it.
+    # A body with no source text (a module's top-level `await` body, from
+    # modules.ail) is not shared: its text and place say nothing of its code.
+    key := "{fun.strict}:{fun.pos.line}:{fun.pos.col}:{fun.pos.offset}:{fun.text}"
+    mut index := -1
+    if fun.text != ""
+        index = self.code_keys.get(key) else -1
+    if index < 0
+        code := compile_body(fun) else err
+            return syntax_error(err.text.strip_prefix("SyntaxError: ") else err.text)
+        self.codes.push(ref Code(ops: code.ops, targets: code.targets, ctxs: code.ctxs))
+        index = self.codes.len() - 1
+        if fun.text != ""
+            self.code_keys[key] = index
+    fobj.props["{PRIVATE}code"] = hidden(Num(index.to_float()))
+    index
 
 ## Call a generator or async function: bind its parameters now, and run
 ## its body in a frame (§10.2.11, §27.5.3.1, §27.7.5.1).
@@ -901,7 +914,8 @@ fn Vm.prepare_frame(
     env ref Env,
     args List[Value],
 ) Frame ! Thrown
-    env.args = args
+    if not fun.is_arrow
+        env.args = args
     for i in 0..fun.params.len()
         v := if i < args.len() then args[i] else Undef
         bind_pattern(fun.params[i], v, env, "param")?
@@ -1014,7 +1028,8 @@ pub fn Vm.run_frame(mut self, mut f Frame, resume Completion) Stop ! Thrown
                 if c.kind == "throw"
                     return thrown(c.value)
                 return Stop(kind: "return", value: c.value)
-    code := codes[f.code]
+    # A shared reference: the compiled body is not copied per resume.
+    code := self.codes[f.code]
     while true
         stop := self.step(mut f, code) else err
             if err.limit
@@ -1037,7 +1052,7 @@ fn Vm.pop_value(mut self, mut f Frame) Value
 ## Leave code with completion `c`: run the `catch` or `finally` it meets,
 ## or give it back when it leaves the frame (none: code goes on).
 fn Vm.unwind(mut self, mut f Frame, c Completion) Completion?
-    code := codes[f.code]
+    code := self.codes[f.code]
     while f.handlers.len() > 0
         if c.kind == "jump" and f.handlers.len() <= code.targets[c.target].handlers
             break
@@ -1065,7 +1080,7 @@ fn Vm.restore(mut self, mut f Frame, scopes int, depth int)
         f.stack.pop()
 
 ## Where a `break` or `continue` out of an `Exec` goes.
-fn find_target(code Code, ctx int, kind str, label str) int?
+fn find_target(code ref Code, ctx int, kind str, label str) int?
     ids := code.ctxs[ctx]
     mut i := ids.len() - 1
     while i >= 0
@@ -1077,7 +1092,7 @@ fn find_target(code Code, ctx int, kind str, label str) int?
     none
 
 ## Run one instruction; a `Stop` when the frame suspends or returns.
-fn Vm.step(mut self, mut f Frame, code Code) Stop ! Thrown
+fn Vm.step(mut self, mut f Frame, code ref Code) Stop ! Thrown
     tick()?
     ins := code.ops[f.pc]
     f.pc += 1

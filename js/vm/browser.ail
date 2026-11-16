@@ -70,7 +70,13 @@ fn Vm.element_interfaces(mut self)
 ## Window and the host objects get Chrome's interface prototypes, so that
 ## `Object.prototype.toString` names them as Chrome does.
 fn Vm.host_interfaces(mut self)
-    window_proto := object("Object", global_obj.proto)
+    ## Window inherits from EventTarget (HTML §7.2.2), which polyfills such
+    ## as ShadyDOM rely on to find the native listener methods.
+    target_proto := proto_of("EventTarget")
+    window_proto := object(
+        "Object",
+        if is_obj(target_proto) then target_proto else global_obj.proto,
+    )
     self.interface("Window", window_proto)
     global_obj.proto = Obj(window_proto)
     if lp := obj_of(proto_of("Location"))

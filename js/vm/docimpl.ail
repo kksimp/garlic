@@ -1,0 +1,139 @@
+## `document.implementation` (DOM §4.5.1 DOMImplementation) and `DOMParser`
+## (HTML §8.5.1). A new document is a node of kind 9 in the page's own node
+## arena, so every node and document method works on it. It is never
+## connected: Garlic never draws it and its scripts never run. Its nodes are
+## logged like other new nodes, so the ids of both trees stay the same.
+
+fn Vm.impl_setup(mut self)
+    impl_proto := object("Object", proto_of("Object"))
+    protos["DOMImplementation"] = Obj(impl_proto)
+    methods(
+        impl_proto,
+        "dom.impl",
+        "createHTMLDocument:0 createDocument:2 createDocumentType:3 hasFeature:0",
+    )
+    interface("DOMImplementation", impl_proto)
+    # The one object `document.implementation` answers.
+    protos["{PRIVATE}implementation"] = Obj(object("DOMImplementation", Obj(impl_proto)))
+    parser_proto := object("Object", proto_of("Object"))
+    protos["DOMParser"] = Obj(parser_proto)
+    methods(parser_proto, "dom.impl", "parseFromString:2")
+    interface("DOMParser", parser_proto)
+    sub_interface("DocumentType", "Node")
+
+## The methods of DOMImplementation and DOMParser.
+fn Vm.impl_method(mut self, m str, args List[Value]) Value ! Thrown
+    a0 := arg_at(args, 0)
+    match m
+        "hasFeature" => Value.Bool(true)
+        "createDocumentType" =>
+            if args.len() < 3
+                return type_error("Failed to execute 'createDocumentType' on 'DOMImplementation': 3 arguments required, but only {args.len()} present.")
+            self.doctype_node(
+                to_string(a0)?,
+                to_string(arg_at(args, 1))?,
+                to_string(arg_at(args, 2))?,
+            )
+        "createHTMLDocument" =>
+            # DOM §4.5.1 createHTMLDocument: doctype, html, head, title, body.
+            doc := dom_create("#document", 9, "")
+            if dt := node_id(self.doctype_node("html", "", ""))
+                dom_append(doc, dt)
+            html := dom_create("html", 1, "")
+            dom_append(doc, html)
+            head := dom_create("head", 1, "")
+            dom_append(html, head)
+            if a0 != Undef
+                title := dom_create("title", 1, "")
+                dom_append(head, title)
+                dom_append(title, dom_create("#text", 3, to_string(a0)?))
+            dom_append(html, dom_create("body", 1, ""))
+            node_value(doc)
+        "createDocument" =>
+            # An XML document: the doctype, then the root element if named.
+            doc := dom_create("#document", 9, "")
+            if dt := node_id(arg_at(args, 2))
+                if dom[dt].kind == 10
+                    dom_append(doc, dt)
+            qname := if is_nullish(arg_at(args, 1)) then "" else to_string(arg_at(args, 1))?
+            if qname != ""
+                dom_append(doc, dom_create(qname, 1, ""))
+            node_value(doc)
+        "parseFromString" =>
+            source := to_string(a0)?
+            kind := to_string(arg_at(args, 1))?
+            doc := dom_create("#document", 9, "")
+            parse_into(doc, source)
+            if kind == "text/html"
+                self.html_shape(doc)
+            node_value(doc)
+        _ => Undef
+
+## A DocumentType node (DOM §4.6) with its name and ids.
+fn Vm.doctype_node(mut self, name str, public_id str, system_id str) Value
+    id := dom_create(name, 10, "")
+    v := node_value(id)
+    if o := obj_of(v)
+        o.props["name"] = data(Str(name))
+        o.props["publicId"] = data(Str(public_id))
+        o.props["systemId"] = data(Str(system_id))
+    v
+
+## Give a parsed document the shape the HTML parser makes: one `html` with a
+## `head` and a `body`, the other content moved into the body.
+fn Vm.html_shape(mut self, doc int)
+    mut html := -1
+    for c in dom[doc].children
+        if dom[c].kind == 1 and dom[c].tag == "html"
+            html = c
+    if html < 0
+        html = dom_create("html", 1, "")
+        loose := dom[doc].children
+        dom_append(doc, html)
+        mut head_kids := List[int]()
+        mut body_kids := List[int]()
+        for c in loose
+            if dom[c].kind == 1 and HEAD_TAGS.contains(dom[c].tag) and body_kids.len() == 0
+                head_kids.push(c)
+            elif dom[c].kind != 10
+                body_kids.push(c)
+        head := dom_create("head", 1, "")
+        dom_append(html, head)
+        for c in head_kids
+            dom_append(head, c)
+        body := dom_create("body", 1, "")
+        dom_append(html, body)
+        for c in body_kids
+            dom_append(body, c)
+        return
+    mut has_head := false
+    mut has_body := false
+    for c in dom[html].children
+        if dom[c].tag == "head"
+            has_head = true
+        if dom[c].tag == "body"
+            has_body = true
+    if not has_head
+        head := dom_create("head", 1, "")
+        dom_insert_before(
+            html,
+            head,
+            if dom[html].children.len() > 0 then dom[html].children[0] else -1,
+        )
+    if not has_body
+        body := dom_create("body", 1, "")
+        loose := [c for c in dom[html].children if dom[c].tag != "head"]
+        dom_append(html, body)
+        for c in loose
+            dom_append(body, c)
+
+## Elements that belong in `head` when a parsed document has none.
+HEAD_TAGS := ["title", "meta", "link", "style", "base", "script", "noscript"]
+
+## The document that holds node `id`: the root above it when that is a
+## document, else the page's.
+pub fn Vm.document_of(self, id int) int
+    mut n := id
+    while dom[n].parent >= 0
+        n = dom[n].parent
+    if dom[n].kind == 9 then n else 0

@@ -1,0 +1,23 @@
+<!DOCTYPE html><html><body><script>
+async function readAll(s) { const r = s.getReader(); const a = []; for (;;) { const { value, done } = await r.read(); if (done) return a; a.push(value); } }
+(async () => {
+  const rs = new ReadableStream({ start(c) { c.enqueue("a"); c.enqueue("b"); }, pull(c) { if (!this.n) { this.n = 1; c.enqueue("c"); c.close(); } } });
+  console.log((await readAll(rs)).join(""), rs.locked, Object.prototype.toString.call(rs));
+  const chunks = [];
+  for await (const ch of new ReadableStream({ start(c) { c.enqueue(1); c.enqueue(2); c.close(); } })) chunks.push(ch);
+  console.log(chunks.join(","));
+  const [t1, t2] = new ReadableStream({ start(c) { c.enqueue("x"); c.enqueue("y"); c.close(); } }).tee();
+  console.log((await readAll(t1)).join(""), await new Response(t2.pipeThrough(new TextEncoderStream())).text());
+  const up = new TransformStream({ transform(ch, c) { c.enqueue(ch.toUpperCase()); } });
+  const written = [];
+  await new ReadableStream({ start(c) { c.enqueue("p"); c.enqueue("q"); c.close(); } }).pipeThrough(up).pipeTo(new WritableStream({ write(ch) { written.push(ch); } }));
+  console.log(written.join(""));
+  let text = "";
+  for await (const s of new Response("héllo").body.pipeThrough(new TextDecoderStream())) text += s;
+  console.log(text, typeof ReadableStream, new ReadableStream().locked);
+  let cancelled;
+  await new ReadableStream({ cancel(r) { cancelled = r; } }).cancel("why");
+  console.log(cancelled);
+  try { ReadableStream(); } catch (e) { console.log(e.constructor.name); }
+})();
+</script></body></html>

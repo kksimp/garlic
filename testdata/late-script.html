@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html><head><title>Late script</title></head>
+<body>
+<p id="out">waiting</p>
+<p id="state">no load</p>
+<script>
+const s = document.createElement("script");
+s.src = "late-script.js";
+s.onload = () => { document.getElementById("state").textContent = "load fired"; };
+document.body.appendChild(s);
+const bad = document.createElement("script");
+bad.src = "no-such-script.js";
+bad.onerror = () => { document.getElementById("out").textContent += " / missing one failed"; };
+document.body.appendChild(bad);
+</script>
+</body></html>

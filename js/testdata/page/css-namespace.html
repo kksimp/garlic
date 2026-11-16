@@ -1,0 +1,8 @@
+<!doctype html>
+<html><body><script>
+console.log(CSS.escape("app-name"), CSS.escape("1a"), CSS.escape("-1x"), CSS.escape("a b#c"), CSS.escape("-"));
+console.log(CSS.supports("display", "grid"), CSS.supports("--x", "1"), CSS.supports("(display: flex)"), CSS.supports("selector(:has(a))"), CSS.supports("selector(:is(a))"));
+console.log(Object.hasOwn({ a: 1 }, "a"), Object.hasOwn({ a: 1 }, "toString"), Object.hasOwn([1], 0));
+try { Object.hasOwn(null, "a"); } catch (e) { console.log(e.constructor.name); }
+console.log(document.querySelector('[data-app="' + CSS.escape("x.y") + '"]') === null);
+</script></body></html>

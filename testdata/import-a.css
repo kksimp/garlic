@@ -1,0 +1,5 @@
+@charset "utf-8";
+/* imports come first */
+@import url("import-b.css");
+@import "import-print.css" print;
+.a { display: none }

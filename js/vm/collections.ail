@@ -1,0 +1,44 @@
+## HTMLCollection and HTMLFormControlsCollection (DOM §4.2.10.2, HTML
+## §2.6.2): `document.forms` and `form.elements` are arrays of their nodes
+## with `item`, `namedItem` and one hidden property per `id` and `name`
+## (the first element wins). They are snapshots, not live. Their prototype
+## sits on Array.prototype, so the array methods scripts call through them
+## still work.
+
+fn Vm.collections_setup(mut self)
+    coll := object("Object", proto_of("Array"))
+    protos["HTMLCollection"] = Obj(coll)
+    methods(coll, "dom.coll", "item:1 namedItem:1")
+    interface("HTMLCollection", coll)
+    sub_interface("HTMLFormControlsCollection", "HTMLCollection")
+
+## The nodes `ids` as a collection of interface `iface`.
+fn Vm.named_collection(mut self, ids List[int], iface str) Value
+    v := array([self.node_value(i) for i in ids])
+    o := obj_of(v) else return v
+    o.proto = proto_of(iface)
+    for which in ["id", "name"]
+        for i in ids
+            key := self.attr_of(i, which) else ""
+            if key != "" and index_of_key(key) == none and not o.props.contains(key)
+                o.props[key] = hidden(self.node_value(i))
+    v
+
+## `item(i)` and `namedItem(name)`: by `id` first, then by `name`.
+fn Vm.collection_method(mut self, m str, this_val Value, args List[Value]) Value ! Thrown
+    o := obj_of(this_val) else return type_error("Illegal invocation")
+    if not is_array_like(o)
+        return type_error("Illegal invocation")
+    a0 := arg_at(args, 0)
+    if m == "item"
+        i := int_of(to_number(a0)?)
+        if i < 0 or i >= o.elems.len()
+            return Null
+        return o.elems[i]
+    key := to_string(a0)?
+    for which in ["id", "name"]
+        for v in o.elems
+            if id := node_id(v)
+                if self.attr_of(id, which) == key
+                    return v
+    Null

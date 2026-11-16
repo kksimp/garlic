@@ -610,6 +610,136 @@ PLATFORM_PRELUDE := r"""
     g.IDBFactory = function IDBFactory() { throw new TypeError("Illegal constructor"); };
     g.IDBVersionChangeEvent = function IDBVersionChangeEvent(type, init) { var e = new Event(type); e.oldVersion = init ? init.oldVersion : 0; e.newVersion = init ? init.newVersion : null; return e; };
   }
+
+  // ---- The CSS namespace (CSSOM §7.1 escape, CSS Conditional 3 §6.1 supports)
+  if (!g.CSS) {
+    var hex = function (c) { return "\\" + c.toString(16) + " "; };
+    var css = {
+      escape: function (value) {
+        if (arguments.length === 0) throw new TypeError("Failed to execute 'escape' on 'CSS': 1 argument required, but only 0 present.");
+        var s = String(value), out = "", first = s.length > 0 ? s.charCodeAt(0) : 0;
+        for (var i = 0; i < s.length; i++) {
+          var c = s.charCodeAt(i);
+          if (c === 0) out += "\uFFFD";
+          else if ((c >= 1 && c <= 31) || c === 127) out += hex(c);
+          else if (i === 0 && c >= 48 && c <= 57) out += hex(c);
+          else if (i === 1 && c >= 48 && c <= 57 && first === 45) out += hex(c);
+          else if (i === 0 && c === 45 && s.length === 1) out += "\\" + s.charAt(i);
+          else if (c >= 128 || c === 45 || c === 95 || (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122)) out += s.charAt(i);
+          else out += "\\" + s.charAt(i);
+        }
+        return out;
+      },
+      // Garlic's style engine keeps most properties; a condition holds when
+      // each property it names is a real one, `selector()` holds but for
+      // `:has()`, which Garlic drops.
+      supports: function (a, b) {
+        function known(prop, val) {
+          prop = String(prop).trim().toLowerCase();
+          if (prop.indexOf("--") === 0) return true;
+          if (/^-(moz|ms|o)-/.test(prop)) return false;
+          if (val !== undefined && /^\s*$/.test(String(val))) return false;
+          return /^-?[a-z][a-z-]*$/.test(prop);
+        }
+        if (arguments.length >= 2) return known(a, b);
+        var cond = String(a);
+        var sel = cond.match(/selector\((.*)\)/);
+        if (sel) return sel[1].indexOf(":has(") < 0;
+        var decls = cond.match(/\(\s*-?-?[a-zA-Z][\w-]*\s*:[^()]*(\([^()]*\)[^()]*)*\)/g);
+        if (!decls) return false;
+        for (var i = 0; i < decls.length; i++) {
+          var d = decls[i].slice(1, -1), at = d.indexOf(":");
+          if (!known(d.slice(0, at), d.slice(at + 1)) && !/\bor\b/.test(cond)) return false;
+        }
+        return true;
+      },
+      registerProperty: function () {}
+    };
+    tag(css, "CSS");
+    g.CSS = css;
+  }
+
+  // ---- <style> element sheets (CSSOM §6.1): insertRule, deleteRule and
+  // cssRules, as CSS-in-JS libraries (styled-components, emotion,
+  // react-native-web) drive them. The rules a script inserts are not in the
+  // element's text, so they are mirrored, once per microtask, into its
+  // data-garlic-rules attribute, which Garlic's style engine reads after the
+  // text (css.document_sheet).
+  if (g.HTMLElement && g.CSSStyleSheet) {
+    var splitRules = function (text) {
+      var out = [], depth = 0, start = 0, quote = "";
+      text = String(text).replace(/\/\*[\s\S]*?\*\//g, "");
+      for (var i = 0; i < text.length; i++) {
+        var c = text.charAt(i);
+        if (quote) { if (c === "\\") i++; else if (c === quote) quote = ""; continue; }
+        if (c === "\\") { i++; continue; }
+        if (c === '"' || c === "'") quote = c;
+        else if (c === "{") depth++;
+        else if (c === "}" && depth > 0) { depth--; if (depth === 0) { var r = text.slice(start, i + 1).trim(); if (r) out.push(r); start = i + 1; } }
+      }
+      return out;
+    };
+    var makeRule = function (sheet, text) {
+      var at = text.indexOf("{");
+      var rule = Object.create(g.CSSStyleRule ? g.CSSStyleRule.prototype : Object.prototype);
+      rule.cssText = text;
+      rule.selectorText = at >= 0 ? text.slice(0, at).trim() : "";
+      rule.parentStyleSheet = sheet;
+      rule.type = text.charAt(0) === "@" ? (text.indexOf("@media") === 0 ? 4 : 0) : 1;
+      return rule;
+    };
+    var sheetOf = function (el) {
+      if (el.__garlicSheet) return el.__garlicSheet;
+      var sheet = Object.create(g.CSSStyleSheet.prototype);
+      var rules = [], added = [], due = false;
+      var flush = function () {
+        due = false;
+        el.setAttribute("data-garlic-rules", added.map(function (r) { return r.cssText; }).join("\n"));
+      };
+      var later = function () { if (!due) { due = true; Promise.resolve().then(flush); } };
+      splitRules(el.textContent || "").forEach(function (t) { rules.push(makeRule(sheet, t)); });
+      var list = Object.create(g.CSSRuleList ? g.CSSRuleList.prototype : Object.prototype);
+      Object.defineProperty(list, "length", { get: function () { return rules.length; } });
+      list.item = function (i) { return rules[i] || null; };
+      var proxyList = typeof Proxy === "function" ? new Proxy(list, {
+        get: function (t, k) { if (typeof k === "string" && /^\d+$/.test(k)) return rules[+k]; return t[k]; },
+        has: function (t, k) { if (typeof k === "string" && /^\d+$/.test(k)) return +k < rules.length; return k in t; }
+      }) : list;
+      Object.defineProperty(sheet, "cssRules", { get: function () { return proxyList; } });
+      Object.defineProperty(sheet, "rules", { get: function () { return proxyList; } });
+      sheet.ownerNode = el;
+      sheet.type = "text/css";
+      sheet.disabled = false;
+      sheet.href = null;
+      sheet.media = { mediaText: el.getAttribute("media") || "", length: 0 };
+      sheet.insertRule = function (text, index) {
+        if (arguments.length === 0) throw new TypeError("Failed to execute 'insertRule' on 'CSSStyleSheet': 1 argument required, but only 0 present.");
+        index = index === undefined ? 0 : index >>> 0;
+        if (index > rules.length) throw new DOMException("Failed to execute 'insertRule' on 'CSSStyleSheet': The index provided (" + index + ") is larger than the maximum index (" + rules.length + ").", "IndexSizeError");
+        var parts = splitRules(text);
+        if (parts.length !== 1 && !/^\s*@(import|charset|namespace|layer)[^{]*;\s*$/.test(String(text))) throw new DOMException("Failed to execute 'insertRule' on 'CSSStyleSheet': Failed to parse the rule '" + text + "'.", "SyntaxError");
+        var rule = makeRule(sheet, parts.length ? parts[0] : String(text).trim());
+        rules.splice(index, 0, rule);
+        added.push(rule);
+        later();
+        return index;
+      };
+      sheet.deleteRule = function (index) {
+        index = index >>> 0;
+        if (index >= rules.length) throw new DOMException("Failed to execute 'deleteRule' on 'CSSStyleSheet': The index provided (" + index + ") is larger than the maximum index (" + (rules.length - 1) + ").", "IndexSizeError");
+        var gone = rules.splice(index, 1)[0], at = added.indexOf(gone);
+        if (at >= 0) { added.splice(at, 1); later(); }
+      };
+      sheet.addRule = function (sel, style, index) { return sheet.insertRule(sel + "{" + style + "}", index === undefined ? rules.length : index), -1; };
+      sheet.removeRule = function (index) { sheet.deleteRule(index === undefined ? 0 : index); };
+      Object.defineProperty(el, "__garlicSheet", { value: sheet, enumerable: false });
+      return sheet;
+    };
+    Object.defineProperty(g.HTMLElement.prototype, "sheet", {
+      get: function () { return this.tagName === "STYLE" && this.isConnected !== false ? sheetOf(this) : null; },
+      configurable: true
+    });
+  }
 })(this);
 """
 

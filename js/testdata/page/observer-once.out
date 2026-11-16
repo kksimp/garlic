@@ -1,0 +1,20 @@
+sync
+ro 1 a number 1
+io 2 a:true:1,b:true:1 true
+later
+== body
+<div id="a">hello</div><div id="b"></div><script>
+const io = new IntersectionObserver((entries, obs) => {
+  console.log("io", entries.length, entries.map(e => e.target.id + ":" + e.isIntersecting + ":" + e.intersectionRatio).join(","), obs === io);
+});
+io.observe(document.getElementById("a"));
+io.observe(document.getElementById("b"));
+io.observe(document.getElementById("a"));
+const ro = new ResizeObserver(entries => console.log("ro", entries.length, entries[0].target.id, typeof entries[0].contentRect.width, entries[0].borderBoxSize.length));
+ro.observe(document.getElementById("a"));
+const io2 = new IntersectionObserver(() => console.log("never"));
+io2.observe(document.body);
+io2.disconnect();
+console.log("sync");
+setTimeout(() => console.log("later"), 100);
+</script>

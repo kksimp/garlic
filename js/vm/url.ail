@@ -38,6 +38,8 @@ pub fn Vm.url_setup(mut self)
         "get:1 getAll:1 set:2 append:2 has:1 delete:1 toString:0 forEach:1 keys:0 values:0 entries:0 sort:0",
     )
     getter(params_proto, "size", "dom.params.size")
+    # URLSearchParams.prototype[Symbol.iterator] is `entries` itself (WebIDL §3.7.9).
+    params_proto.props[ITERATOR] = params_proto.props["entries"]
     for name in ["URL", "URLSearchParams"]
         c := obj_of(native_fn("dom.{name}", name, 1)) else continue
         p := obj_of(proto_of(name)) else continue
@@ -206,9 +208,13 @@ fn Vm.params_method(mut self, m str, this_val Value, args List[Value]) Value ! T
                 ])?
                 i += 1
             Undef
-        "keys" => array([o.elems[2 * i] for i in 0..n])
-        "values" => array([o.elems[2 * i + 1] for i in 0..n])
-        "entries" => array([array([o.elems[2 * i], o.elems[2 * i + 1]]) for i in 0..n])
+        # Iterators, not arrays (URL §6.2 "iterable<USVString, USVString>").
+        "keys" => list_iterator([o.elems[2 * i] for i in 0..n], "URLSearchParams Iterator")
+        "values" => list_iterator([o.elems[2 * i + 1] for i in 0..n], "URLSearchParams Iterator")
+        "entries" => list_iterator(
+            [array([o.elems[2 * i], o.elems[2 * i + 1]]) for i in 0..n],
+            "URLSearchParams Iterator",
+        )
         _ => Value.Str(params_text(o))
 
 fn params_text(o ref JsObject) str
