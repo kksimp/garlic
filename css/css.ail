@@ -1005,30 +1005,33 @@ fn lower_outside(v str) str
         return low
     cs := v.chars()
     mut out := List[str]()
-    mut run := List[char]()
+    mut word := List[char]()
     mut i := 0
     while i < cs.len()
         c := cs[i]
         if c == '"' or c == '\''
-            out.push(run.join("").to_lower())
-            run.clear()
+            out.push(word.join("").to_lower())
+            word.clear()
             stop := string_end(cs, i).min(cs.len())
             out.push(cs[i..stop].join(""))
             i = stop
             continue
-        if c == '(' and run.len() >= 3 and run[run.len() - 3..run.len()].join("").to_lower() == "url"
-            run.push(c)
-            out.push(run.join("").to_lower())
-            run.clear()
+        mut tail3 := ""
+        if word.len() >= 3
+            tail3 = word[word.len() - 3..].join("").to_lower()
+        if c == '(' and tail3 == "url"
+            word.push(c)
+            out.push(word.join("").to_lower())
+            word.clear()
             mut k := i + 1
             while k < cs.len() and cs[k] != ')'
                 k += 1
             out.push(cs[i + 1..k].join(""))
             i = k
             continue
-        run.push(c)
+        word.push(c)
         i += 1
-    out.push(run.join("").to_lower())
+    out.push(word.join("").to_lower())
     out.join("")
 
 ## The declarations of a block body that Garlic uses.

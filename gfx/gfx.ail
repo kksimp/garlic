@@ -3316,13 +3316,13 @@ fn test_scene(src str, width float) Scene
     layout(html.parse(src), "file:///t.html", width, css.parse("", 0))
 
 ## The first rectangle drawn in `color` as [x, y, w, h], or [].
-fn rect_in(s Scene, color int) List[float]
+fn rect_in(s Scene, want int) List[float]
     for op in s.ops
         match op
             Rect(x, y, w, h, c) =>
-                if c == color
+                if c == want
                     return [x, y, w, h]
-            _ => continue
+            Text | Str | Pic => continue
     []
 
 ## The first string drawn that starts with `word` as [x, y], or [].
@@ -3332,7 +3332,7 @@ fn text_at(s Scene, word str) List[float]
             Str(x, y, t, _, _, _, _, _, _) =>
                 if t.starts_with(word)
                     return [x, y]
-            _ => continue
+            Rect | Text | Pic => continue
     []
 
 ## The first string drawn that contains `word`, or "".
@@ -3342,7 +3342,7 @@ fn run_with(s Scene, word str) str
             Str(_, _, t, _, _, _, _, _, _) =>
                 if t.contains(word)
                     return t
-            _ => continue
+            Rect | Text | Pic => continue
     ""
 
 ## BBC News: a 24-column page grid whose items each span 12 columns.
