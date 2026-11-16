@@ -308,7 +308,12 @@ fn fetch_got(
                 tally(perf, "cache.revalidated", 1)
                 return Got(url: h.final_url, text: h.text, ok: true, status: 0)
         if w.status >= 400
-            return Got(url: w.url, text: failed_body(w.url, w.status, w.text), ok: false, status: w.status)
+            return Got(
+                url: w.url,
+                text: failed_body(w.url, w.status, w.text),
+                ok: false,
+                status: w.status,
+            )
         if method == "GET" and w.status == 200
             keep_cached(url, w, now, mut cache)
         return Got(url: w.url, text: w.text, ok: true, status: 0)
@@ -603,7 +608,13 @@ fn joined_media(outer str, inner str) str
 ## two `<style>` elements still loses to the later one: `gfx` and `page`
 ## append `css.document_sheet` last, and one walk over both in document
 ## order needs a change there.
-fn linked_sheets(d html.Doc, url str, mut cj jar.Jar, mut cache Map[str, Cached], perf ref Perf) css.Sheet
+fn linked_sheets(
+    d html.Doc,
+    url str,
+    mut cj jar.Jar,
+    mut cache Map[str, Cached],
+    perf ref Perf,
+) css.Sheet
     mut nodes := List[int]()
     style_nodes(d, 0, mut nodes)
     mut all := css.parse("", 0)
@@ -629,7 +640,17 @@ fn linked_sheets(d html.Doc, url str, mut cj jar.Jar, mut cache Map[str, Cached]
             continue
         seen.add(u)
         text := fetch_sheet(u, url, mut cj, mut cache, perf)
-        all = css.concat(all, sheet_with_imports(text, u, media, url, 0, mut seen, mut cj, mut cache, perf))
+        all = css.concat(all, sheet_with_imports(
+            text,
+            u,
+            media,
+            url,
+            0,
+            mut seen,
+            mut cj,
+            mut cache,
+            perf,
+        ))
     if early >= 0
         for k in early..all.rules.len()
             all.rules[k].order = (LATE_ORDER + k - early).min(999999)
@@ -667,7 +688,17 @@ fn sheet_with_imports(
                 continue
             seen.add(u)
             got := fetch_sheet(u, from, mut cj, mut cache, perf)
-            all = css.concat(all, sheet_with_imports(got, u, inner, from, depth + 1, mut seen, mut cj, mut cache, perf))
+            all = css.concat(all, sheet_with_imports(
+                got,
+                u,
+                inner,
+                from,
+                depth + 1,
+                mut seen,
+                mut cj,
+                mut cache,
+                perf,
+            ))
     t0 := time.now_ms()
     own := css.parse_in(text, 0, media)
     spent(perf, "css.parse", t0)
@@ -943,9 +974,25 @@ fn load_doc(
                 continue
             if src := d.attr(s, "src")
                 u := script_url(page.resolve(page.base_of(d, at), src))
-                prefetch_modules(scripts.get(u) else "", u, at, mut scripts, mut cj, mut cache, perf)
+                prefetch_modules(
+                    scripts.get(u) else "",
+                    u,
+                    at,
+                    mut scripts,
+                    mut cj,
+                    mut cache,
+                    perf,
+                )
             else
-                prefetch_modules(d.text(s), script_url(at), at, mut scripts, mut cj, mut cache, perf)
+                prefetch_modules(
+                    d.text(s),
+                    script_url(at),
+                    at,
+                    mut scripts,
+                    mut cj,
+                    mut cache,
+                    perf,
+                )
         spent(perf, "fetch.modules", t_modules)
         now := time.now_ms().to_float()
         ## A page with no scripts has nothing to run, and starting the engine
@@ -1205,7 +1252,18 @@ fn module_source(u str, from str, mut cj jar.Jar, perf ref Perf) str?
         return data_text(real)
     s := page.scheme(real)
     if s == "http" or s == "https"
-        w := walk("GET", real, "", "", from, false, origin_of(from) == origin_of(real), {}, mut cj, perf)
+        w := walk(
+            "GET",
+            real,
+            "",
+            "",
+            from,
+            false,
+            origin_of(from) == origin_of(real),
+            {},
+            mut cj,
+            perf,
+        )
         if w.failure != "" or w.status >= 400
             return none
         if origin_of(w.url) != origin_of(from)
@@ -6182,7 +6240,12 @@ fn flat(s gfx.Scene) List[str]
     assert(failed_body("https://a.org/x", 404, "  ").contains("HTTP status 404"))
 
 @test fn timings_list_phases_in_load_order_then_counters()
-    p := ref Perf(start: 0, ms: {"fetch.sheets": 5, "html.parse": 2}, counts: {"requests": 3}, pending: false)
+    p := ref Perf(
+        start: 0,
+        ms: {"fetch.sheets": 5, "html.parse": 2},
+        counts: {"requests": 3},
+        pending: false,
+    )
     assert_eq(timing_lines(p, 9), [
         "timings: nav.total 9 ms",
         "timings: html.parse 2 ms",

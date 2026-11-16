@@ -1335,7 +1335,8 @@ fn Vm.dom_get(mut self, p str, this_val Value) Value ! Thrown
         "tagName" => Value.Str(n.tag.to_upper())
         "localName" => Value.Str(n.tag)
         "parentNode" => self.node_value(n.parent)
-        "parentElement" => if n.parent > 0 and dom[n.parent].kind == 1 then self.node_value(n.parent) else Null
+        "parentElement" => if n.parent > 0
+            and dom[n.parent].kind == 1 then self.node_value(n.parent) else Null
         "childNodes" => self.node_list(n.children)
         "children" => self.node_list([c for c in n.children if dom[c].kind == 1])
         "childElementCount" => Value.Num(

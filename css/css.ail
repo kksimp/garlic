@@ -430,7 +430,8 @@ fn one_compound(s str) bool
             depth += 1
         elif c == ')' or c == ']'
             depth -= 1
-        elif depth == 0 and (c == ',' or c == ' ' or c == '>' or c == '+' or c == '~' or c == '\t' or c == '\n')
+        elif depth == 0
+            and (c == ',' or c == ' ' or c == '>' or c == '+' or c == '~' or c == '\t' or c == '\n')
             return false
     true
 
@@ -676,7 +677,12 @@ fn cond_tokens(text str) List[str]
                 j += 1
             j = (j + 1).min(cs.len())
         else
-            while j < cs.len() and cs[j] != '(' and cs[j] != ' ' and cs[j] != '\t' and cs[j] != '\n' and cs[j] != '\r'
+            while j < cs.len()
+                and cs[j] != '('
+                and cs[j] != ' '
+                and cs[j] != '\t'
+                and cs[j] != '\n'
+                and cs[j] != '\r'
                 j += 1
         out.push(cs[i..j].join(""))
         i = j
@@ -765,7 +771,12 @@ fn range_matches(f str, scr Media) bool
         name := p[0].trim()
         if bare := media_value(name, scr)
             return bare != 0.0
-        return name == "hover" or name == "any-hover" or name == "pointer" or name == "any-pointer" or name == "prefers-reduced-motion" or name == "scripting"
+        return name == "hover"
+            or name == "any-hover"
+            or name == "pointer"
+            or name == "any-pointer"
+            or name == "prefers-reduced-motion"
+            or name == "scripting"
     if p.len() == 3
         if left := media_value(p[0].trim(), scr)
             right := media_len(p[2]) else return false
@@ -1644,7 +1655,13 @@ pub fn document_sheet(d html.Doc) Sheet
     mut rules := List[Rule]()
     mut layers := List[str]()
     for s in d.all("style")
-        sc := Nest(media: (d.attr(s, "media") else "").trim(), layer: -1, layer_name: "", parent: "", start: 0)
+        sc := Nest(
+            media: (d.attr(s, "media") else "").trim(),
+            layer: -1,
+            layer_name: "",
+            parent: "",
+            start: 0,
+        )
         rules_of(strip_comments(d.text(s)).chars(), sc, mut rules, mut layers)
     build(rules, layers)
 
@@ -1656,7 +1673,10 @@ pub fn document_sheet(d html.Doc) Sheet
     assert_eq([x.name for x in got], ["overflow", "opacity", "grid-column", "z-index", "inset"])
 
 @test fn css_dynamic_pseudo_classes_parse_and_never_match()
-    sheet := parse(".j:not(:focus) \{ display: none } a:hover \{ color: red } a:focus-visible, p \{ color: blue } .k:not(.m:hover) \{ color: green }", 0)
+    sheet := parse(
+        ".j:not(:focus) \{ display: none } a:hover \{ color: red } a:focus-visible, p \{ color: blue } .k:not(.m:hover) \{ color: green }",
+        0,
+    )
     assert_eq(sheet.rules.len(), 3)
     d := html.parse("<a class='j k' href=x>skip</a><p>t</p>")
     a := d.first("a")?
@@ -1729,7 +1749,10 @@ pub fn document_sheet(d html.Doc) Sheet
     assert(not media_matches("(min-width: calc(100% - 1px))", 800))
 
 @test fn css_nested_rules_resolve_against_their_parent()
-    sheet := parse(".a \{ color: red; &:hover \{ color: blue } .b \{ display: none } @media (min-width: 10px) \{ display: block } > i \{ font-style: italic } &.c \{ font-weight: bold } }", 0)
+    sheet := parse(
+        ".a \{ color: red; &:hover \{ color: blue } .b \{ display: none } @media (min-width: 10px) \{ display: block } > i \{ font-style: italic } &.c \{ font-weight: bold } }",
+        0,
+    )
     assert_eq(sheet.rules.len(), 5)
     d := html.parse("<div class='a c'><p class=b>x</p><i>y</i></div><i>z</i>")
     wide := for_width(sheet, 800)
@@ -1770,7 +1793,10 @@ pub fn document_sheet(d html.Doc) Sheet
     assert_eq(got["color"], "green")
     assert_eq(got["display"], "block")
     assert_eq(got["font-style"], "italic")
-    both := concat(parse("@layer a \{ p \{ color: red } }", 0), parse("@layer b \{ p \{ color: blue } } @layer a \{ i \{ color: red } }", 0))
+    both := concat(parse("@layer a \{ p \{ color: red } }", 0), parse(
+        "@layer b \{ p \{ color: blue } } @layer a \{ i \{ color: red } }",
+        0,
+    ))
     assert_eq(both.layers, ["a", "b"])
     assert_eq(both.rules[2].layer, 0)
 
@@ -1779,10 +1805,16 @@ pub fn document_sheet(d html.Doc) Sheet
         "@supports (display: grid) and (gap: 1px) \{ p \{ color: red } } @supports (backdrop-filter: blur(2px)) \{ i \{ color: red } } @supports not (frobnicate: 1) \{ b \{ color: red } } @supports selector(:is(a, b)) \{ u \{ color: red } } @supports selector(:has(a)) \{ s \{ color: red } } @supports (display: grid) or (frob: 1) \{ q \{ color: red } } @supports ((display: flex) and (not (frob: 1))) \{ em \{ color: red } }",
         0,
     )
-    assert_eq([sheet.rules[k].selector.parts[0].tag for k in 0..sheet.rules.len()], ["p", "b", "u", "q", "em"])
+    assert_eq(
+        [sheet.rules[k].selector.parts[0].tag for k in 0..sheet.rules.len()],
+        ["p", "b", "u", "q", "em"],
+    )
 
 @test fn css_cascade_reads_rules_through_the_index()
-    sheet := parse("[data-mode] \{ color: red } .a \{ display: none } #i \{ font-style: italic } span \{ font-weight: bold } .zz \{ color: blue }", 0)
+    sheet := parse(
+        "[data-mode] \{ color: red } .a \{ display: none } #i \{ font-style: italic } span \{ font-weight: bold } .zz \{ color: blue }",
+        0,
+    )
     assert_eq(sheet.general.len(), 1)
     assert(sheet.by_class.contains("a") and sheet.by_id.contains("i") and sheet.by_tag.contains("span"))
     d := html.parse("<span id=i data-mode=x class='q\na'>t</span>")

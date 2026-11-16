@@ -7,7 +7,11 @@
 fn Vm.impl_setup(mut self)
     impl_proto := object("Object", proto_of("Object"))
     protos["DOMImplementation"] = Obj(impl_proto)
-    methods(impl_proto, "dom.impl", "createHTMLDocument:0 createDocument:2 createDocumentType:3 hasFeature:0")
+    methods(
+        impl_proto,
+        "dom.impl",
+        "createHTMLDocument:0 createDocument:2 createDocumentType:3 hasFeature:0",
+    )
     interface("DOMImplementation", impl_proto)
     # The one object `document.implementation` answers.
     protos["{PRIVATE}implementation"] = Obj(object("DOMImplementation", Obj(impl_proto)))
@@ -111,7 +115,11 @@ fn Vm.html_shape(mut self, doc int)
             has_body = true
     if not has_head
         head := dom_create("head", 1, "")
-        dom_insert_before(html, head, if dom[html].children.len() > 0 then dom[html].children[0] else -1)
+        dom_insert_before(
+            html,
+            head,
+            if dom[html].children.len() > 0 then dom[html].children[0] else -1,
+        )
     if not has_body
         body := dom_create("body", 1, "")
         loose := [c for c in dom[html].children if dom[c].tag != "head"]

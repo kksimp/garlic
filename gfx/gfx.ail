@@ -2435,7 +2435,9 @@ fn Ctx.flex(mut self, id int, st St, cs Map[str, str], x float, w float, min_h f
         shrinks.push(fx.shrink)
         aligns.push(align_of((ics.get("align-self") else "").trim(), align_items))
         mut basis := none
-        if fx.basis != "auto" and fx.basis != "content" and not (measuring and fx.basis.ends_with("%"))
+        if fx.basis != "auto"
+            and fx.basis != "content"
+            and not (measuring and fx.basis.ends_with("%"))
             basis = length(fx.basis, ist.size, w)
         if b := basis
             if measuring
@@ -3390,7 +3392,10 @@ fn run_with(s Scene, word str) str
     assert(b[2] > 5.0 and b[2] < 100.0)
     assert_near(a[2] + b[2], 600.0, 1.0)
     assert_near(b[0], a[2], 1.0)
-    only := test_scene("<style>body \{ margin: 0 } .g \{ display: grid; grid-template-columns: auto auto }</style><div class=g><div>one</div><div>two</div></div>", 600.0)
+    only := test_scene(
+        "<style>body \{ margin: 0 } .g \{ display: grid; grid-template-columns: auto auto }</style><div class=g><div>one</div><div>two</div></div>",
+        600.0,
+    )
     ## Both stretch by the same amount, so the second starts near the middle.
     assert_near(text_at(only, "two")[0], 300.0, 3.0)
 
@@ -3405,7 +3410,10 @@ fn run_with(s Scene, word str) str
     assert_near(text_at(s, "bb")[0], 200.0, 1.0)
     assert_near(text_at(s, "cc")[0], 400.0, 1.0)
     assert_near(text_at(s, "ee")[0], 300.0, 1.0)
-    fill := test_scene("<style>body \{ margin: 0 } .g \{ display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)) }</style><div class=g><div>p</div><div>q</div><div>r</div><div>s</div><div>t</div></div>", 450.0)
+    fill := test_scene(
+        "<style>body \{ margin: 0 } .g \{ display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)) }</style><div class=g><div>p</div><div>q</div><div>r</div><div>s</div><div>t</div></div>",
+        450.0,
+    )
     assert_near(text_at(fill, "q")[0], 112.5, 1.0)
     assert(text_at(fill, "t")[1] > text_at(fill, "p")[1])
 
@@ -3460,7 +3468,10 @@ fn run_with(s Scene, word str) str
     assert(one[0] > 150.0)
     a := rect_in(s, 0xff0000)
     assert_near(a[0], 150.0, 1.0)
-    grow := test_scene("<style>body \{ margin: 0 } .f \{ display: flex; flex-direction: column; height: 300px } .g \{ flex-grow: 1; background: #00ff00 }</style><div class=f><div>top</div><div class=g>fill</div></div>", 400.0)
+    grow := test_scene(
+        "<style>body \{ margin: 0 } .f \{ display: flex; flex-direction: column; height: 300px } .g \{ flex-grow: 1; background: #00ff00 }</style><div class=f><div>top</div><div class=g>fill</div></div>",
+        400.0,
+    )
     g := rect_in(grow, 0x00ff00)
     assert(g[3] > 250.0)
 

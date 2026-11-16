@@ -120,16 +120,16 @@ fn Vm.observer_method(mut self, name str, m str, this_val Value, args List[Value
                 o.props["{PRIVATE}due"] = hidden(Value.Bool(true))
                 timer_seq += 1
                 timers.push(Timer(
-                    id: timer_seq,
-                    # Resize observations broadcast in the frame; the
-                    # intersection report is a task queued after it.
-                    due: clock_ms + (if name == "ResizeObserver" then 16.0 else 17.0),
-                    seq: timer_seq,
-                    callback: native_fn("{name}.prototype.deliver", "deliver", 1),
-                    args: [this_val],
-                    every: 0.0,
-                    level: timer_level + 1,
-                ))
+                        id: timer_seq,
+                        # Resize observations broadcast in the frame; the
+                        # intersection report is a task queued after it.
+                        due: clock_ms + (if name == "ResizeObserver" then 16.0 else 17.0),
+                        seq: timer_seq,
+                        callback: native_fn("{name}.prototype.deliver", "deliver", 1),
+                        args: [this_val],
+                        every: 0.0,
+                        level: timer_level + 1,
+                    ))
             Undef
         "unobserve" =>
             o.elems = [t for t in o.elems if t != a0]
