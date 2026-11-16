@@ -1108,7 +1108,7 @@ pub fn Vm.eval(mut self, e syntax.Expr, env ref Env) Value ! Thrown
                 return self.eval(yes, env)
             self.eval(no, env)
         Call(callee, args, optional, _) =>
-            if syntax.expr_kind(callee) == "Super"
+            if is_super(callee)
                 return self.super_call(args, env)
             target := self.callee_of(callee, env)?
             if self.chain_shorted
@@ -1133,13 +1133,13 @@ pub fn Vm.eval(mut self, e syntax.Expr, env ref Env) Value ! Thrown
             if optional and is_nullish(base)
                 self.chain_shorted = true
                 return Undef
-            if computed and is_array_value(base) and syntax.expr_kind(object) != "Super"
+            if computed and is_array_value(base) and not is_super(object)
                 kv := self.eval(prop, env)?
                 if fast := array_fast_get(base, kv)
                     return fast
                 return get(base, self.to_key(kv)?)
             key := self.member_key(prop, computed, env)?
-            if syntax.expr_kind(object) == "Super"
+            if is_super(object)
                 return self.get_super(key, env)
             get(base, key)
         Seq(items, _) =>
@@ -1162,7 +1162,7 @@ pub fn Vm.eval(mut self, e syntax.Expr, env ref Env) Value ! Thrown
 ## The object a member expression reads from; `super.x` reads from the
 ## home object's prototype (§13.3.7.1).
 fn Vm.member_base(mut self, object syntax.Expr, env ref Env) Value ! Thrown
-    if syntax.expr_kind(object) == "Super"
+    if is_super(object)
         return self.this_value(env)
     self.eval(object, env)
 
@@ -1174,6 +1174,13 @@ fn Vm.member_key(mut self, prop syntax.Expr, computed bool, env ref Env) str ! T
         PrivName(name, _) => "{PRIVATE}{name}"
         Num | Str | Big | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | Paren | Yield | Await =>
             self.to_key(self.eval(prop, env)?)
+
+## Whether an expression is `super` (no text made, unlike `expr_kind`).
+fn is_super(e syntax.Expr) bool
+    match e
+        Super => true
+        Paren | Num | Str | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Member | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
+            false
 
 ## Whether `v` is an array or `arguments` object, whose index properties
 ## are the elements themselves (§10.4.2, §10.4.4).
@@ -1232,13 +1239,13 @@ fn Vm.callee_of(mut self, callee syntax.Expr, env ref Env) Callee ! Thrown
             if optional and is_nullish(base)
                 self.chain_shorted = true
                 return Callee(f: Undef, this_val: Undef)
-            if computed and is_array_value(base) and syntax.expr_kind(object) != "Super"
+            if computed and is_array_value(base) and not is_super(object)
                 kv := self.eval(prop, env)?
                 if fast := array_fast_get(base, kv)
                     return Callee(f: fast, this_val: base)
                 return Callee(f: get(base, self.to_key(kv)?)?, this_val: base)
             key := self.member_key(prop, computed, env)?
-            if syntax.expr_kind(object) == "Super"
+            if is_super(object)
                 return Callee(f: self.get_super(key, env)?, this_val: base)
             Callee(f: get(base, key)?, this_val: base)
         Paren(inner, _) =>
@@ -1451,6 +1458,10 @@ pub fn Vm.instance_of(mut self, v Value, target Value) bool ! Thrown
 
 ## `=`, `+=`, `&&=` and the rest (§13.15.2).
 fn Vm.assignment(mut self, op str, target syntax.Pat, value syntax.Expr, env ref Env) Value ! Thrown
+    if it := index_target(target)
+        if op == "="
+            return self.assign_index(it.object, it.prop, value, env)
+        return self.compound_index(op, it.object, it.prop, value, env)
     if op == "="
         # A property's object and key come before the value (§13.15.2).
         if r := self.member_target(target, env)?
@@ -1482,11 +1493,92 @@ fn Vm.assignment(mut self, op str, target syntax.Pat, value syntax.Expr, env ref
             return old
         result = self.eval_named(value, single_name(target), env)?
     else
-        result = self.binary(op.slice(0, op.chars().len() - 1), old, self.eval(value, env)?)?
+        result = self.binary(op.slice(0, op.len() - 1), old, self.eval(value, env)?)?
     if is_member
         put(base, key, result)?
     else
         self.assign_to(t, result, env)?
+    result
+
+## The object and key expressions of a computed member target `o[k]`
+## (not `super[k]`), for the index fast paths of `assignment`.
+struct IndexTarget
+    object syntax.Expr
+    prop syntax.Expr
+
+fn index_target(target syntax.Pat) IndexTarget?
+    match target
+        PatTarget(t) =>
+            match t
+                Member(object, prop, computed, _, _) =>
+                    if computed and not is_super(object)
+                        return IndexTarget(object: object, prop: prop)
+                    none
+                Paren | Num | Str | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
+                    none
+        PatId | PatObj | PatArr | PatDefault => none
+
+## `o[k] = value` (§13.15.2): the object, the key, then the value. A number
+## key needs no conversion that could run code, so on an array it is used
+## as the index itself, with no key text made and parsed back.
+fn Vm.assign_index(
+    mut self,
+    object syntax.Expr,
+    prop syntax.Expr,
+    value syntax.Expr,
+    env ref Env,
+) Value ! Thrown
+    base := self.eval(object, env)?
+    kv := self.eval(prop, env)?
+    if is_array_value(base) and num_of(kv) != none
+        x := self.eval(value, env)?
+        if not array_fast_set(base, kv, x)
+            self.put(base, self.to_key(kv)?, x)?
+        return x
+    key := self.to_key(kv)?
+    v := self.eval(value, env)?
+    self.put(base, key, v)?
+    v
+
+## `o[k] op= value`, as `assignment` does it for any member, with the
+## element read and written directly when `o` is an array and `k` an index
+## inside it.
+fn Vm.compound_index(
+    mut self,
+    op str,
+    object syntax.Expr,
+    prop syntax.Expr,
+    value syntax.Expr,
+    env ref Env,
+) Value ! Thrown
+    base := self.eval(object, env)?
+    kv := self.eval(prop, env)?
+    mut direct := false
+    mut key := ""
+    mut old := Value.Undef
+    if is_array_value(base)
+        if hit := array_fast_get(base, kv)
+            direct = true
+            old = hit
+    if not direct
+        key = self.to_key(kv)?
+        old = self.get(base, key)?
+    mut result := old
+    if op == "&&=" or op == "||=" or op == "??="
+        keep := match op
+            "&&=" => not truthy(old)
+            "||=" => truthy(old)
+            _ => not is_nullish(old)
+        if keep
+            return old
+        result = self.eval(value, env)?
+    else
+        result = self.binary(op.slice(0, op.len() - 1), old, self.eval(value, env)?)?
+    if direct
+        if array_fast_set(base, kv, result)
+            return result
+        key = self.to_key(kv)?
+    self.put(base, key, result)?
     result
 
 ## The object and key of an assignment to a property, or none.
