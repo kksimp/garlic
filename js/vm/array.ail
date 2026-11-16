@@ -409,6 +409,9 @@ fn Vm.sort_before(mut self, xs List[Value], keys List[str], a int, b int, cmp Va
 
 ## String order by UTF-16 code units (§7.2.13 step 3).
 pub fn utf16_less(a str, b str) bool
+    # ASCII text: byte order is unit order.
+    if is_ascii_text(a) and is_ascii_text(b)
+        return a < b
     ua := units(a)
     ub := units(b)
     n := ua.len().min(ub.len())

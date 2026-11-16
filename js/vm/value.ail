@@ -44,6 +44,18 @@ pub struct JsObject
     pub id int
     ## Object.freeze: no property may change, elements included.
     pub frozen bool
+    ## A Map's or Set's hash index of `elems` (builtins.ail `coll_find`),
+    ## made once it is large; none for every other object.
+    pub coll ref CollIndex?
+
+## Where each key of a large Map or Set is in its `elems`: the key's
+## canonical text (`coll_key`) to its index. It is right while `synced` is
+## `elems.len()`; a change it was not told of leaves it stale (-1), and it
+## is rebuilt after a few lookups by scan.
+pub struct CollIndex
+    pub at Map[str, int]
+    pub synced int
+    pub scans int
 
 ## What calling a function object does.
 pub enum Callable
@@ -312,6 +324,10 @@ pub fn as_index(x float) int?
 
 ## An array index key (§6.1.7): "0", "1", ... without leading zeros.
 pub fn index_of_key(key str) int?
+    # Most keys are names: one that doesn't start with a digit, or is longer
+    # than any index, is answered before making the list of characters.
+    if not starts_with_digit(key) or key.byte_len() > 10
+        return none
     cs := key.chars()
     if cs.len() == 0 or cs.len() > 10 or cs[0] == '0' and cs.len() > 1
         return none
@@ -321,6 +337,11 @@ pub fn index_of_key(key str) int?
             return none
         v = v * 10 + c.code() - 48
     if v < 4294967295 then v else none
+
+## Whether `key` starts with an ASCII digit, by comparing strings: "0" <=
+## key < ":" holds exactly for those, and allocates nothing.
+pub fn starts_with_digit(key str) bool
+    key >= "0" and key < ":"
 
 ## ToInt32 (§7.1.6).
 pub fn to_int32(x float) int
@@ -347,6 +368,15 @@ pub fn units(s str) List[int]
             out.push(k)
     out
 
+## Whether `s` is ASCII, so that its UTF-16 units are its characters and
+## indexes can use `slice` (O(1) on ASCII text) instead of `units`.
+pub fn is_ascii_text(s str) bool
+    s.byte_len() == s.len()
+
+## The code unit at `i` of ASCII text `s` (`i` inside it).
+pub fn ascii_unit(s str, i int) int
+    (s.slice(i, i + 1).char_at(0) else ' ').code()
+
 ## Code units back to a string; a lone surrogate becomes U+FFFD.
 pub fn from_units(us List[int]) str
     mut out := List[char]()
@@ -367,6 +397,10 @@ pub fn from_units(us List[int]) str
 
 ## The length in UTF-16 code units.
 pub fn unit_len(s str) int
+    # ASCII text (as many bytes as characters) has one unit per character;
+    # both counts are stored with the string.
+    if is_ascii_text(s)
+        return s.len()
     mut n := 0
     for c in s.chars()
         n += if c.code() >= 0x10000 then 2 else 1

@@ -217,6 +217,10 @@ fn Parser.peek(mut self) Token ! JsError
 
 ## The source from `p` to the last token consumed.
 fn Parser.source_since(self, p Pos) str
+    # Every function keeps its text, nested ones too: on ASCII source a
+    # slice of the string, not a copy of the characters joined again.
+    if self.lx.ascii
+        return self.lx.text.slice(p.offset, self.last_end)
     self.lx.src[p.offset..self.last_end].join("")
 
 fn Parser.pos(self) Pos
