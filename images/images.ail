@@ -4,7 +4,9 @@
 ## pool as the page, and keeps each one's pixel size, so `gfx` can reserve
 ## the room before the host draws the picture. The size comes from the
 ## header alone (`image.dims`); `image.decode` gives the pixels when a host
-## can take them.
+## can take them. SVG files are parsed with `html` and drawn by `svg`.
+## `source_of` picks the address an `<img>` shows from `srcset` and
+## `<picture>` (HTML 4.8.4.3), preferring formats Garlic decodes.
 
 use std.net
 use std.net.jar
@@ -13,6 +15,7 @@ use std.app
 use html
 use page
 use image
+use svg
 
 ## Pictures fetched per page, and the largest one taken.
 MAX_IMAGES := 24
@@ -30,7 +33,9 @@ MAX_PIXELS := 4000000
 
 ## The `[width, height]` of every `<img>` on `d` (by resolved address) that
 ## isn't in `sizes` yet. An address that can't be fetched or read as an
-## image is stored as `[0, 0]` so it isn't asked for again.
+## image is stored as `[0, 0]` so it isn't asked for again. The pictures
+## are fetched and decoded side by side (`fetch_all`), and kept in
+## document order.
 pub fn prefetch(
     d html.Doc,
     url str,
@@ -40,34 +45,50 @@ pub fn prefetch(
     mut sizes Map[str, List[int]],
     mut bits Map[str, Bitmap],
 )
+    _ := prefetch_some(d, url, from, cj, o, mut sizes, mut bits, MAX_IMAGES)
+    canvases(d, mut sizes, mut bits)
+
+## `prefetch` for at most `limit` fetched pictures (`data:` ones are not
+## counted), without the canvases: the window's batches after its first
+## frame (garlic `Browser.picture_step`). Returns how many pictures were
+## taken; 0 when every one is in `sizes`.
+pub fn prefetch_some(
+    d html.Doc,
+    url str,
+    from str,
+    cj jar.Jar,
+    o net.Options,
+    mut sizes Map[str, List[int]],
+    mut bits Map[str, Bitmap],
+    limit int,
+) int
+    mut jobs := List[Job]()
+    mut queued := Set[str]()
     mut n := 0
     for id in d.all("img")
-        src := d.attr(id, "src") else continue
+        src := source_of(d, id) else continue
         if src.starts_with("data:")
             # A `data:` picture is its own bytes; the URL is its key.
-            if sizes.contains(src)
+            if sizes.contains(src) or queued.contains(src)
                 continue
-            raw := data_image(src) else
-                sizes[src] = [0, 0]
-                continue
-            sizes[src] = image.dims(raw)
-            if sizes[src][0] * sizes[src][1] <= MAX_PIXELS
-                px := image.decode(raw) else continue
-                bits[src] = Bitmap(w: px.width, h: px.height, data: app.bitmap_data(px.bytes()))
+            queued.add(src)
+            jobs.push(Job(at: src, o: o))
             continue
         at := page.resolve(url, src)
-        if sizes.contains(at)
+        if sizes.contains(at) or queued.contains(at)
             continue
-        if n == MAX_IMAGES
+        if n == limit
             break
         n += 1
-        raw := load(at, o, from, cj) else
-            sizes[at] = [0, 0]
-            continue
-        sizes[at] = image.dims(raw)
-        if sizes[at][0] * sizes[at][1] <= MAX_PIXELS
-            px := image.decode(raw) else continue
-            bits[at] = Bitmap(w: px.width, h: px.height, data: app.bitmap_data(px.bytes()))
+        queued.add(at)
+        jobs.push(job(at, o, from, cj))
+    for p in fetch_all(jobs)
+        p.keep(mut sizes, mut bits)
+    jobs.len()
+
+## The pictures of the `<canvas>` elements scripts drew on, decoded for the
+## host, and the pictures of earlier redraws forgotten.
+pub fn canvases(d html.Doc, mut sizes Map[str, List[int]], mut bits Map[str, Bitmap])
     # A `<canvas>` a script drew on: the engine publishes its bitmap as a
     # `data:` picture in `data-garlic-pixels` (js/vm/canvas2d.ail).
     mut live := Set[str]()
@@ -91,16 +112,81 @@ fn add_data_picture(src str, mut sizes Map[str, List[int]], mut bits Map[str, Bi
     raw := data_image(src) else
         sizes[src] = [0, 0]
         return
-    sizes[src] = image.dims(raw)
-    if sizes[src][0] * sizes[src][1] <= MAX_PIXELS
-        px := image.decode(raw) else return
-        bits[src] = Bitmap(w: px.width, h: px.height, data: app.bitmap_data(px.bytes()))
+    keep_picture(raw, src, mut sizes, mut bits)
 
-## The bytes of a base64 `data:` image URL (RFC 2397), or none.
+## Records picture `raw` under `key`: its size, and its pixels when it is
+## small enough. An SVG file keeps its own size and is drawn at twice it
+## (for a Retina screen) within the rasteriser's limit.
+fn keep_picture(raw List[int], key str, mut sizes Map[str, List[int]], mut bits Map[str, Bitmap])
+    if is_svg(raw)
+        d := html.parse(svg_text(raw))
+        root := d.first("svg") else
+            sizes[key] = [0, 0]
+            return
+        size := svg.size_of(d, root)
+        sizes[key] = size
+        area := (size[0] * size[1]).to_float()
+        f := (SVG_PIXELS.to_float() / area).sqrt().min(2.0)
+        bw := (size[0].to_float() * f).floor().to_int().max(1)
+        bh := (size[1].to_float() * f).floor().to_int().max(1)
+        if bm := svg_render(d, root, bw, bh, 0)
+            bits[key] = bm
+        return
+    sizes[key] = image.dims(raw)
+    if sizes[key][0] * sizes[key][1] <= MAX_PIXELS
+        px := image.decode(raw) else return
+        bits[key] = Bitmap(w: px.width, h: px.height, data: app.bitmap_data(px.bytes()))
+
+## The most pixels `svg.rgba` draws.
+SVG_PIXELS := 262144
+
+## The `<svg>` element `id` of `d` drawn `w` by `h` for the host, with
+## `ink` standing for `currentColor`; none when it draws nothing.
+pub fn svg_render(d html.Doc, id int, w int, h int, ink int) Bitmap?
+    px := svg.rgba(d, id, w, h, ink) else return none
+    Bitmap(w, h, data: app.bitmap_data(px))
+
+## An SVG file drawn `w` by `h` (its laid-out size), or none when the
+## bytes are not SVG or draw nothing.
+pub fn svg_file(raw List[int], w int, h int, ink int) Bitmap?
+    if not is_svg(raw)
+        return none
+    d := html.parse(svg_text(raw))
+    root := d.first("svg") else return none
+    svg_render(d, root, w, h, ink)
+
+## Whether `raw` is an SVG document (`image/svg+xml`): after an optional
+## byte order mark, white space, an XML declaration, comments or a doctype,
+## the first tag is `<svg`.
+pub fn is_svg(raw List[int]) bool
+    mut i := 0
+    if raw.len() >= 3 and raw[0] == 0xEF and raw[1] == 0xBB and raw[2] == 0xBF
+        i = 3
+    while i < raw.len() and (raw[i] == 32 or raw[i] == 9 or raw[i] == 10 or raw[i] == 13)
+        i += 1
+    if i >= raw.len() or raw[i] != 60
+        return false
+    head := svg_text(raw[i..(i + 2048).min(raw.len())]).to_lower()
+    at := head.find("<svg") else return false
+    # Only markup that is not an element may come before `<svg`.
+    cs := head.chars()
+    for k in 0..at
+        if cs[k] == '<' and cs[k + 1] != '?' and cs[k + 1] != '!'
+            return false
+    true
+
+## The text of SVG bytes (UTF-8, lossy).
+fn svg_text(raw List[int]) str
+    bytes.from_list([v.to_u8() for v in raw]).text()
+
+## The bytes of a `data:` image URL (RFC 2397): base64, or percent-encoded
+## text (as `data:image/svg+xml,%3Csvg...` is written); none otherwise.
 pub fn data_image(src str) List[int]?
     comma := src.find(",") else return none
     meta := src.slice(5, comma).to_lower()
     if not meta.ends_with(";base64")
+        if meta.starts_with("image/svg+xml")
+            return percent_bytes(src.slice(comma + 1, src.chars().len()))
         return none
     payload := src.slice(comma + 1, src.chars().len())
     if payload.chars().len() > MAX_BYTES
@@ -127,3 +213,553 @@ pub fn load(at str, base net.Options, from str, cj jar.Jar) List[int]?
     if raw.len() > MAX_BYTES
         return none
     [v.to_int() for v in raw.to_list()]
+
+# ---- Fetching side by side ---------------------------------------------------
+#
+# std.net keeps idle connections in one pool for the whole program, and that
+# pool has no lock (ail compiler/rt/native/net_http.ail, `pool_take` and
+# `pool_put`, global slot 41): two tasks that request at once can take the
+# same connection or tear its entries. So a request made in a lane uses a
+# connection of its own (`fetch_alone`), which never enters the pool; only
+# the window's own thread uses the pool, and never while lanes run.
+
+## Requests in flight at once in `fetch_all`, and in garlic's text lanes.
+pub LANES := 6
+
+## A picture to fetch in a lane: its address and the request's options, with
+## the page's cookie and `Referer` already in them (the jar stays with the
+## window, which owns it).
+pub struct Job
+    pub at str
+    pub o net.Options
+
+## What a lane brought back for a `Job`: the picture's size (`[0, 0]` when
+## it could not be had or read) and its pixels when they were decoded.
+pub struct Pic
+    pub at str
+    pub size List[int]
+    pub bits Bitmap?
+
+## The job for the picture at `at` on the page `from`, asked for as `load`
+## asks: `base` with the site's cookies and the `Referer`.
+pub fn job(at str, base net.Options, from str, cj jar.Jar) Job
+    mut o := base
+    s := page.scheme(at)
+    if s == "http" or s == "https"
+        cookie := cj.header_from(at, from, false)
+        if cookie != ""
+            o.headers["cookie"] = cookie
+        sent := page.referrer(from, at)
+        if sent != ""
+            o.headers["referer"] = sent
+    Job(at: at, o: o)
+
+## Records what `self` brought: its size, and its pixels when decoded.
+pub fn Pic.keep(self, mut sizes Map[str, List[int]], mut got Map[str, Bitmap])
+    sizes[self.at] = self.size
+    if bm := self.bits
+        got[self.at] = bm
+
+## Fetches and decodes job `j`; safe in a lane (no keep-alive pool).
+pub fn fetch_job(j Job) Pic
+    mut sizes := Map[str, List[int]]()
+    mut bits := Map[str, Bitmap]()
+    raw := job_bytes(j) else return Pic(at: j.at, size: [0, 0], bits: none)
+    keep_picture(raw, j.at, mut sizes, mut bits)
+    Pic(at: j.at, size: sizes.get(j.at) else [0, 0], bits: bits.get(j.at))
+
+## The bytes job `j` names: a `data:` address's own, a file's, or a
+## response's on a connection of its own; none when there are none.
+fn job_bytes(j Job) List[int]?
+    if j.at.starts_with("data:")
+        return data_image(j.at)
+    s := page.scheme(j.at)
+    if s == "http" or s == "https"
+        r := fetch_alone("GET", j.at, j.o) else return none
+        if r.status >= 400 or r.data.len() > MAX_BYTES
+            return none
+        return [v.to_int() for v in r.data.to_list()]
+    raw := fs.read_bytes(page.file_path(j.at)) else return none
+    if raw.len() > MAX_BYTES
+        return none
+    [v.to_int() for v in raw.to_list()]
+
+## What every job brought, in the jobs' order whatever order they finish
+## in, fetched and decoded `LANES` at a time on the task pool. One job runs
+## on the caller's thread.
+pub fn fetch_all(jobs List[Job]) List[Pic]
+    n := jobs.len()
+    if n == 0
+        return []
+    if n == 1
+        return [fetch_job(jobs[0])]
+    queue := Channel[int](n)
+    for i in 0..n
+        queue.send(i)
+    queue.close()
+    out := Mutex([Pic(at: j.at, size: [0, 0], bits: none) for j in jobs])
+    run_lanes(jobs, queue, out, n.min(LANES))
+    out.get()
+
+## Runs `lanes` lanes over `queue` and returns when all have ended. A lane
+## that traps leaves its jobs as failures (`[0, 0]`).
+fn run_lanes(jobs List[Job], queue Channel[int], out Mutex[List[Pic]], lanes int)
+    g := TaskGroup()
+    for _ in 0..lanes
+        g.add(spawn lane(jobs, queue, out))
+    g.wait_all() else return
+
+## One lane (a task): takes the next job's index from `queue` and stores
+## what it brought at that index of `out`, until `queue` is empty.
+fn lane(jobs List[Job], queue Channel[int], out Mutex[List[Pic]])
+    for i in queue
+        p := fetch_job(jobs[i])
+        with out as mut got
+            got[i] = p
+
+## `net.request_bytes` on a connection of its own, closed after the response
+## and never put in std.net's keep-alive pool, so tasks can call it at once:
+## `Connection: close` keeps an HTTP/1.1 exchange out of the pool
+## (std.net.19), and a streamed body (`net.open`, std.net.25) is never
+## offered HTTP/2 (std.net.31), whose connections the pool keeps whatever
+## the request says. Redirects follow `o.max_redirects` as for `request`.
+pub fn fetch_alone(method str, url str, o net.Options) net.RawResponse ! net.NetError
+    mut alone := o
+    alone.headers["Connection"] = "close"
+    b := net.open(method, url, alone)?
+    mut parts := List[bytes]()
+    while true
+        piece := b.read_bytes(1048576) else err
+            b.close()
+            return err
+        if piece.len() == 0
+            break
+        parts.push(piece)
+    b.close()
+    net.RawResponse(
+        status: b.status,
+        headers: b.headers,
+        data: join_bytes(parts),
+        all_headers: b.all_headers,
+    )
+
+## `parts` as one `bytes`, joined pairwise so each byte is copied about
+## log2(parts) times rather than once per later part.
+pub fn join_bytes(parts List[bytes]) bytes
+    if parts.len() == 0
+        return b""
+    mut level := parts
+    while level.len() > 1
+        mut joined := List[bytes]()
+        mut i := 0
+        while i < level.len()
+            if i + 1 < level.len()
+                joined.push(level[i] + level[i + 1])
+            else
+                joined.push(level[i])
+            i += 2
+        level = joined
+    level[0]
+
+## The bytes of `s` with `%XX` escapes decoded.
+fn percent_bytes(s str) List[int]?
+    raw := s.to_bytes()
+    if raw.len() > MAX_BYTES
+        return none
+    mut out := List[int]()
+    mut i := 0
+    while i < raw.len()
+        c := raw[i].to_int()
+        if c == 37 and i + 2 < raw.len()
+            hi := hex_value(raw[i + 1].to_int())
+            lo := hex_value(raw[i + 2].to_int())
+            if hi >= 0 and lo >= 0
+                out.push(hi * 16 + lo)
+                i += 3
+                continue
+        out.push(c)
+        i += 1
+    out
+
+## The value of ASCII hex digit `c`, or -1.
+fn hex_value(c int) int
+    if c >= 48 and c <= 57
+        return c - 48
+    if c >= 97 and c <= 102
+        return c - 87
+    if c >= 65 and c <= 70
+        return c - 55
+    -1
+
+# ---- Picture sources (HTML 4.8.4.3) -------------------------------------------
+
+## The viewport width and device pixel ratio `source_of` assumes: the
+## window the render review measured, on a Retina screen.
+VIEW_WIDTH := 1000.0
+VIEW_SCALE := 2.0
+
+## One `srcset` candidate: its address and pixel density (`2x`, or a
+## `480w` width over the slot width).
+struct Candidate
+    url str
+    density float
+
+## The address the `<img>` `id` shows (unresolved), as `pick_source` at
+## the default viewport; none when it names none.
+pub fn source_of(d html.Doc, id int) str?
+    pick_source(d, id, VIEW_WIDTH, VIEW_SCALE)
+
+## The address the `<img>` `id` shows in a viewport `viewport` CSS pixels
+## wide at `scale` device pixels per CSS pixel: the first `<source>` of an
+## enclosing `<picture>` whose `media` matches and whose `type` Garlic
+## decodes, else the image's own `srcset`, else `src`. Within a `srcset`
+## the candidate is the least dense one at least `scale`, else the densest;
+## candidates in a format Garlic cannot decode (WebP, AVIF, JPEG XL) are
+## skipped while another remains, and one is only taken when `src` is no
+## better.
+pub fn pick_source(d html.Doc, id int, viewport float, scale float) str?
+    mut fallback := ""
+    p := d.nodes[id].parent
+    if p >= 0 and d.nodes[p].tag == "picture"
+        for c in d.nodes[p].children
+            if c == id
+                break
+            if d.nodes[c].kind != html.Kind.Element or d.nodes[c].tag != "source"
+                continue
+            if m := d.attr(c, "media")
+                if not media_matches(m, viewport)
+                    continue
+            if not decodable_type(d.attr(c, "type") else "")
+                continue
+            set := d.attr(c, "srcset") else continue
+            cands := parse_srcset(set, slot_width(d.attr(c, "sizes") else "", viewport))
+            if url := best(cands, scale, true)
+                return url
+            if fallback == ""
+                fallback = best(cands, scale, false) else ""
+    if set := d.attr(id, "srcset")
+        cands := parse_srcset(set, slot_width(d.attr(id, "sizes") else "", viewport))
+        if url := best(cands, scale, true)
+            return url
+        if fallback == ""
+            fallback = best(cands, scale, false) else ""
+    src := (d.attr(id, "src") else "").trim()
+    if src != "" and (fallback == "" or not undecodable_url(src))
+        return src
+    if fallback != ""
+        return fallback
+    none
+
+## Whether a `<source type>` names a format Garlic decodes (no type does).
+pub fn decodable_type(t str) bool
+    m := t.trim().to_lower()
+    ok := ["", "image/png", "image/jpeg", "image/jpg", "image/gif", "image/svg+xml", "image/x-icon"]
+    ok.contains(m) or m == "image/vnd.microsoft.icon"
+
+## Whether address `u` names a format Garlic has no decoder for, by its
+## extension or a `format=`/`fm=` query (CDNs that convert on the fly).
+pub fn undecodable_url(u str) bool
+    t := u.to_lower()
+    path := t.split("?")[0].split("#")[0]
+    if path.ends_with(".webp") or path.ends_with(".avif") or path.ends_with(".jxl")
+        return true
+    for q in ["format=webp", "format=avif", "fm=webp", "fm=avif", "f=webp", "f=avif"]
+        if t.contains("?{q}") or t.contains("&{q}")
+            return true
+    false
+
+## The candidates of a `srcset` (HTML 4.8.4.3.10): an address up to white
+## space, then descriptors up to a comma; `w` descriptors are divided by
+## `slot` (the `sizes` width) to give a density.
+fn parse_srcset(set str, slot float) List[Candidate]
+    cs := set.chars()
+    mut out := List[Candidate]()
+    mut i := 0
+    while i < cs.len()
+        while i < cs.len() and (html.is_space(cs[i]) or cs[i] == ',')
+            i += 1
+        if i >= cs.len()
+            break
+        mut url := List[char]()
+        while i < cs.len() and not html.is_space(cs[i])
+            url.push(cs[i])
+            i += 1
+        mut desc := List[char]()
+        # An address ending in commas has no descriptors.
+        if url.len() > 0 and url[url.len() - 1] == ','
+            while url.len() > 0 and url[url.len() - 1] == ','
+                url.pop()
+        else
+            mut depth := 0
+            while i < cs.len() and not (cs[i] == ',' and depth == 0)
+                if cs[i] == '('
+                    depth += 1
+                elif cs[i] == ')' and depth > 0
+                    depth -= 1
+                desc.push(cs[i])
+                i += 1
+        if url.len() == 0
+            continue
+        mut density := 1.0
+        for word in desc.join("").trim().split(" ")
+            t := word.trim().to_lower()
+            if t.ends_with("x") and t.chars().len() > 1
+                density = t.slice(0, t.chars().len() - 1).to_float() else density
+            elif t.ends_with("w") and t.chars().len() > 1 and slot > 0.0
+                density = (t.slice(0, t.chars().len() - 1).to_float() else slot) / slot
+        if density > 0.0
+            out.push(Candidate(url: url.join(""), density))
+    out
+
+## The best candidate for `scale`: the least dense at least `scale`, else
+## the densest; with `decodable`, only candidates in a format Garlic reads.
+fn best(cands List[Candidate], scale float, decodable bool) str?
+    mut above := -1
+    mut top := -1
+    for k in 0..cands.len()
+        c := cands[k]
+        if decodable and undecodable_url(c.url)
+            continue
+        if c.density >= scale and (above < 0 or c.density < cands[above].density)
+            above = k
+        if top < 0 or c.density > cands[top].density
+            top = k
+    if above >= 0
+        return cands[above].url
+    if top >= 0
+        return cands[top].url
+    none
+
+## The slot width a `sizes` list gives (HTML 4.8.4.3.11): the length of the
+## first entry whose media condition matches, the viewport when none does.
+fn slot_width(sizes str, viewport float) float
+    for entry in split_top(sizes)
+        t := entry.trim()
+        if t == ""
+            continue
+        if t.starts_with("(")
+            right := matching_paren(t) else continue
+            if not media_matches(t.slice(0, right + 1), viewport)
+                continue
+            return css_px(t.slice(right + 1, t.chars().len()).trim(), viewport)
+        return css_px(t, viewport)
+    viewport
+
+## `s` split at commas outside parentheses.
+fn split_top(s str) List[str]
+    mut out := List[str]()
+    mut cur := List[char]()
+    mut depth := 0
+    for c in s.chars()
+        if c == ',' and depth == 0
+            out.push(cur.join(""))
+            cur.clear()
+            continue
+        if c == '('
+            depth += 1
+        elif c == ')' and depth > 0
+            depth -= 1
+        cur.push(c)
+    out.push(cur.join(""))
+    out
+
+## The index of the `)` that closes the `(` at the start of `s`, or none.
+fn matching_paren(s str) int?
+    mut depth := 0
+    mut k := 0
+    for c in s.chars()
+        if c == '('
+            depth += 1
+        elif c == ')'
+            depth -= 1
+            if depth == 0
+                return k
+        k += 1
+    none
+
+## A `sizes` length in CSS pixels: `px`, `vw`, `em`/`rem` (16 px); the
+## viewport for anything else (`calc()`, `auto`).
+fn css_px(v str, viewport float) float
+    t := v.trim().to_lower()
+    if t.ends_with("px")
+        return t.slice(0, t.chars().len() - 2).to_float() else viewport
+    if t.ends_with("vw")
+        return (t.slice(0, t.chars().len() - 2).to_float() else 100.0) * viewport / 100.0
+    if t.ends_with("rem")
+        return (t.slice(0, t.chars().len() - 3).to_float() else 0.0) * 16.0
+    if t.ends_with("em")
+        return (t.slice(0, t.chars().len() - 2).to_float() else 0.0) * 16.0
+    t.to_float() else viewport
+
+## Whether the media query list `q` matches a screen `viewport` CSS pixels
+## wide: `min-width`, `max-width`, `orientation: landscape` and
+## `prefers-color-scheme: light` are understood; any other feature, `not`
+## or `print` fails. A comma means "or".
+pub fn media_matches(q str, viewport float) bool
+    for part in split_top(q.to_lower())
+        if query_matches(part.replace(" ", "").replace("\t", ""), viewport)
+            return true
+    false
+
+fn query_matches(q str, viewport float) bool
+    if q == "" or q == "all" or q == "screen"
+        return true
+    mut rest := q
+    while rest != ""
+        left := rest.find("(") else
+            return words_ok(rest)
+        if not words_ok(rest.slice(0, left))
+            return false
+        right := rest.find(")") else return false
+        if right < left
+            return false
+        if not feature_matches(rest.slice(left + 1, right), viewport)
+            return false
+        rest = rest.slice(right + 1, rest.chars().len())
+    true
+
+## Whether the words between features allow a match: `only`, `screen`,
+## `all` and `and` do.
+fn words_ok(s str) bool
+    t := s.replace("only", "").replace("screen", "").replace("all", "").replace("and", "")
+    t == ""
+
+fn feature_matches(f str, viewport float) bool
+    colon := f.find(":") else return false
+    name := f.slice(0, colon)
+    v := f.slice(colon + 1, f.chars().len())
+    match name
+        "min-width" => viewport >= css_px(v, viewport)
+        "max-width" => viewport <= css_px(v, viewport)
+        "orientation" => v == "landscape"
+        "prefers-color-scheme" => v == "light"
+        _ => false
+
+# ---- Tests -----------------------------------------------------------------
+
+@test fn srcset_picks_the_least_dense_candidate_that_is_enough()
+    d := html.parse("<img src=a.jpg srcset=\"s.jpg 1x, m.jpg 2x, l.jpg 3x\">")
+    img := d.first("img") else
+        assert(false)
+        return
+    assert_eq((pick_source(d, img, 1000.0, 2.0) else ""), "m.jpg")
+    assert_eq((pick_source(d, img, 1000.0, 1.0) else ""), "s.jpg")
+    assert_eq((pick_source(d, img, 1000.0, 4.0) else ""), "l.jpg")
+
+@test fn width_descriptors_use_the_sizes_slot()
+    src := "<img src=a.jpg sizes=\"(max-width: 600px) 100vw, 500px\" srcset=\"p400.jpg 400w, p1000.jpg 1000w, p2000.jpg 2000w\">"
+    d := html.parse(src)
+    img := d.first("img") else
+        assert(false)
+        return
+    # slot 500 px at 2x needs 1000 w
+    assert_eq((pick_source(d, img, 1000.0, 2.0) else ""), "p1000.jpg")
+    # slot 500 px at 1x: 400 w is too few, 1000 w is the least that is enough
+    assert_eq((pick_source(d, img, 1000.0, 1.0) else ""), "p1000.jpg")
+    # a 500 px viewport matches the first entry: slot 500 at 0.8x takes 400 w
+    assert_eq((pick_source(d, img, 500.0, 0.8) else ""), "p400.jpg")
+
+@test fn webp_candidates_are_skipped_for_a_decodable_one()
+    d := html.parse("<img src=\"x.jpg.webp\" srcset=\"a.webp 2x, a.jpg 1x\">")
+    img := d.first("img") else
+        assert(false)
+        return
+    assert_eq((pick_source(d, img, 1000.0, 2.0) else ""), "a.jpg")
+    only := html.parse("<img src=\"b.png\" srcset=\"b.webp 2x\">")
+    one := only.first("img") else
+        assert(false)
+        return
+    assert_eq((pick_source(only, one, 1000.0, 2.0) else ""), "b.png")
+
+@test fn picture_sources_go_by_type_and_media()
+    src := "<picture><source type=\"image/webp\" srcset=\"w.webp\"><source media=\"(min-width: 800px)\" srcset=\"wide.jpg\"><source srcset=\"narrow.png 1x, narrow2.png 2x\"><img src=\"f.jpg\"></picture>"
+    d := html.parse(src)
+    img := d.first("img") else
+        assert(false)
+        return
+    assert_eq((pick_source(d, img, 1000.0, 2.0) else ""), "wide.jpg")
+    assert_eq((pick_source(d, img, 600.0, 2.0) else ""), "narrow2.png")
+    assert(media_matches("only screen and (min-width:40em)", 1000.0))
+    assert(not media_matches("print", 1000.0))
+    assert(media_matches("(max-width: 300px), (min-width: 900px)", 1000.0))
+
+@test fn an_svg_file_becomes_a_picture()
+    text := "<?xml version=\"1.0\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"4\" viewBox=\"0 0 2 1\"><rect width=\"1\" height=\"1\" fill=\"#ff0000\"/></svg>"
+    raw := [b.to_int() for b in text.to_bytes().to_list()]
+    assert(is_svg(raw))
+    assert(not is_svg([0x89, 0x50, 0x4E, 0x47]))
+    mut sizes := Map[str, List[int]]()
+    mut bits := Map[str, Bitmap]()
+    keep_picture(raw, "logo.svg", mut sizes, mut bits)
+    assert_eq(sizes["logo.svg"], [8, 4])
+    bm := bits.get("logo.svg") else
+        assert(false)
+        return
+    assert_eq((bm.w, bm.h), (16, 8))
+    px := bytes.from_base64(bm.data) else
+        assert(false)
+        return
+    # left half red and opaque, right half empty
+    assert_eq(px[0].to_int(), 255)
+    assert_eq(px[3].to_int(), 255)
+    assert_eq(px[(15 * 4) + 3].to_int(), 0)
+
+## A `data:` SVG of `w` by `h`.
+fn sized_svg(w int, h int) str
+    "data:image/svg+xml,%3Csvg%20width='{w}'%20height='{h}'%3E%3C/svg%3E"
+
+@test fn lanes_give_back_pictures_in_the_jobs_order()
+    o := net.options()
+    jobs := [Job(at: sized_svg(k + 1, 2 * k + 1), o: o) for k in 0..9]
+    got := fetch_all(jobs)
+    assert_eq([p.at for p in got], [j.at for j in jobs])
+    assert_eq([p.size for p in got], [[k + 1, 2 * k + 1] for k in 0..9])
+    assert_eq(fetch_all([]).len(), 0)
+    bad := fetch_all([Job(at: "data:image/png;base64,!!", o: o), Job(at: sized_svg(4, 4), o: o)])
+    assert_eq([p.size for p in bad], [[0, 0], [4, 4]])
+
+@test fn prefetch_some_takes_the_next_batch_in_document_order()
+    src := "<img src=\"{sized_svg(1, 1)}\"><img src=\"{sized_svg(2, 2)}\"><img src=\"{sized_svg(1, 1)}\">"
+    d := html.parse(src)
+    mut sizes := Map[str, List[int]]()
+    mut bits := Map[str, Bitmap]()
+    j := jar.new()
+    assert_eq(
+        prefetch_some(
+            d,
+            "file:///p.html",
+            "file:///p.html",
+            j,
+            net.options(),
+            mut sizes,
+            mut bits,
+            6,
+        ),
+        2,
+    )
+    assert_eq(sizes[sized_svg(2, 2)], [2, 2])
+    assert_eq(
+        prefetch_some(
+            d,
+            "file:///p.html",
+            "file:///p.html",
+            j,
+            net.options(),
+            mut sizes,
+            mut bits,
+            6,
+        ),
+        0,
+    )
+
+@test fn joined_bytes_keep_their_order()
+    parts := [b"ab", b"c", b"", b"def", b"g"]
+    assert_eq(join_bytes(parts), b"abcdefg")
+    assert_eq(join_bytes([]), b"")
+    assert_eq(join_bytes([b"x"]), b"x")
+
+@test fn a_percent_encoded_svg_data_url_is_read()
+    raw := data_image("data:image/svg+xml,%3Csvg%20width='2'%20height='2'%3E%3C/svg%3E") else
+        assert(false)
+        return
+    assert(is_svg(raw))

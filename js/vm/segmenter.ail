@@ -1,0 +1,202 @@
+## Intl.Segmenter (ECMA-402 §18): an approximation of UAX #29 without the
+## Unicode break tables. A grapheme is a character with the combining marks
+## after it (ID_Continue but not ID_Start, from the parser's tables),
+## variation selectors, skin-tone modifiers, tag characters and ZWJ emoji
+## sequences; regional indicators pair up and CR LF stays together. Words
+## are runs of letters and digits (with `'`, `.` or `:` between letters and
+## `,` or `.` between digits), runs of spaces, and single other graphemes;
+## each Han or kana character is a word of its own (no dictionary).
+## Sentences end after `.`, `?` or `!`, the closing marks and spaces after
+## them, and at a line break; a `.` before a lower-case letter does not end
+## one.
+use syntax
+
+## One segment: its text, its start in UTF-16 units, and whether it is a
+## word (letters or digits) for the word granularity.
+struct Seg
+    text str
+    index int
+    word_like bool
+
+fn is_mark(c char) bool
+    k := c.code()
+    k >= 0x300 and syntax.id_part(c) and not syntax.id_start(c) and not c.is_digit()
+
+fn is_pictographic(k int) bool
+    (k >= 0x1F000 and k <= 0x1FAFF)
+        or (k >= 0x2600 and k <= 0x27BF)
+        or (k >= 0x2300 and k <= 0x23FF)
+        or k == 0x2B50
+        or k == 0x2B55
+        or k == 0xA9
+        or k == 0xAE
+
+fn is_regional(k int) bool
+    k >= 0x1F1E6 and k <= 0x1F1FF
+
+## Whether `c` continues the grapheme whose last character is `prev`;
+## `ri` counts the regional indicators in it so far.
+fn grapheme_joins(prev int, c char, ri int) bool
+    k := c.code()
+    if prev == 13
+        return k == 10
+    if prev == 10 or k == 13 or k == 10
+        return false
+    if k == 0x200D or (k >= 0xFE00 and k <= 0xFE0F) or (k >= 0xE0100 and k <= 0xE01EF)
+        return true
+    if (k >= 0x1F3FB and k <= 0x1F3FF) or (k >= 0xE0020 and k <= 0xE007F)
+        return true
+    if prev == 0x200D and is_pictographic(k)
+        return true
+    if is_regional(k)
+        return is_regional(prev) and ri % 2 == 1
+    is_mark(c)
+
+## The end of the grapheme that starts at `from`.
+fn grapheme_end(cs List[char], from int) int
+    mut ri := if is_regional(cs[from].code()) then 1 else 0
+    mut i := from + 1
+    while i < cs.len() and grapheme_joins(cs[i - 1].code(), cs[i], ri)
+        if is_regional(cs[i].code())
+            ri += 1
+        i += 1
+    i
+
+fn word_char(c char) bool
+    c.is_alnum() or c == '_' or (c.code() > 127 and syntax.id_part(c))
+
+fn ideographic(k int) bool
+    (k >= 0x3040 and k <= 0x30FF)
+        or (k >= 0x3400 and k <= 0x4DBF)
+        or (k >= 0x4E00 and k <= 0x9FFF)
+        or (k >= 0xF900 and k <= 0xFAFF)
+
+## Whether `m` between `a` and `b` keeps a word together ("can't", "3.14").
+fn mid_word(a char, m char, b char) bool
+    if a.is_digit() and b.is_digit()
+        return m == ',' or m == '.' or m == '\'' or m == ';'
+    letters := word_char(a) and not a.is_digit() and word_char(b) and not b.is_digit()
+    letters and (m == '\'' or m == '\u{2019}' or m == '.' or m == ':' or m == '\u{b7}')
+
+fn is_close(c char) bool
+    match c
+        '"' | '\'' | ')' | ']' | '}' | '\u{201d}' | '\u{2019}' | '\u{bb}' => true
+        _ => false
+
+fn is_terminator(c char) bool
+    c == '.' or c == '?' or c == '!'
+
+## The sentences of `cs`.
+fn sentence_segments(cs List[char]) List[Seg]
+    mut out := List[Seg]()
+    mut unit := 0
+    mut i := 0
+    mut start := 0
+    while i < cs.len()
+        c := cs[i]
+        mut cut := -1
+        if c == '\n' or c == '\u{2029}'
+            cut = i + 1
+        elif c == '\r'
+            cut = if i + 1 < cs.len() and cs[i + 1] == '\n' then i + 2 else i + 1
+        elif is_terminator(c)
+            mut j := i
+            while j < cs.len() and is_terminator(cs[j])
+                j += 1
+            while j < cs.len() and is_close(cs[j])
+                j += 1
+            mut k := j
+            while k < cs.len() and (cs[k] == ' ' or cs[k] == '\t')
+                k += 1
+            if k < cs.len() and cs[k] == '\r'
+                k += 1
+            if k < cs.len() and (cs[k] == '\n' or cs[k] == '\u{2029}')
+                k += 1
+            mut breaks := k > j or j == cs.len()
+            if breaks and c == '.' and k < cs.len() and cs[k].is_lower()
+                breaks = false
+            if not breaks
+                i = j
+                continue
+            cut = k
+        if cut < 0
+            i += 1
+            continue
+        text := cs[start..cut].join("")
+        out.push(Seg(text: text, index: unit, word_like: false))
+        unit += unit_len(text)
+        start = cut
+        i = cut
+    if start < cs.len()
+        out.push(Seg(text: cs[start..].join(""), index: unit, word_like: false))
+    out
+
+## The segments of `s` for granularity "grapheme", "word" or "sentence".
+fn segments_of(s str, granularity str) List[Seg]
+    cs := s.chars()
+    if granularity == "sentence"
+        return sentence_segments(cs)
+    mut out := List[Seg]()
+    mut unit := 0
+    mut i := 0
+    while i < cs.len()
+        start := i
+        c := cs[i]
+        mut like := false
+        if granularity != "word"
+            i = grapheme_end(cs, i)
+        elif ideographic(c.code())
+            like = true
+            i = grapheme_end(cs, i)
+        elif word_char(c)
+            like = true
+            i += 1
+            while i < cs.len()
+                if word_char(cs[i]) and not ideographic(cs[i].code())
+                    i += 1
+                elif i + 1 < cs.len() and mid_word(cs[i - 1], cs[i], cs[i + 1])
+                    i += 2
+                else
+                    break
+        elif c == ' ' or c == '\t'
+            i += 1
+            while i < cs.len() and (cs[i] == ' ' or cs[i] == '\t')
+                i += 1
+        else
+            i = grapheme_end(cs, i)
+        text := cs[start..i].join("")
+        out.push(Seg(text: text, index: unit, word_like: like))
+        unit += unit_len(text)
+    out
+
+## `segmenter.segment(input)`: a Segments object holding the segment data
+## objects (§18.5.1), in `elems`.
+fn Vm.segment_text(mut self, r ref JsObject, input str) Value
+    granularity := resolved_str(r, "granularity")
+    o := object("Segments", proto_of("Intl.Segments"))
+    o.prim = Str(input)
+    for seg in segments_of(input, granularity)
+        d := plain()
+        d.props["segment"] = data(Value.Str(seg.text))
+        d.props["index"] = data(Value.Num(seg.index.to_float()))
+        d.props["input"] = data(Value.Str(input))
+        if granularity == "word"
+            d.props["isWordLike"] = data(Value.Bool(seg.word_like))
+        o.elems.push(Value.Obj(d))
+    Value.Obj(o)
+
+## `segments.containing(index)` and `segments[Symbol.iterator]()`.
+fn Vm.segments_method(mut self, m str, this_val Value, a0 Value) Value ! Thrown
+    o := obj_of(this_val) else return type_error("Illegal invocation")
+    if o.class != "Segments"
+        return type_error("Illegal invocation")
+    if m == "iterator"
+        return list_iterator(o.elems, "Segmenter String Iterator")
+    n := to_number(a0)?
+    at := if is_nan(n) then 0.0 else trunc(n)
+    for d in o.elems
+        start := num_of(get(d, "index")?) else 0.0
+        len := unit_len(str_of(get(d, "segment")?) else "").to_float()
+        if at >= start and at < start + len
+            return d
+    Undef

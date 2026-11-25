@@ -51,7 +51,7 @@ url ─► fetch (std.net) ─► bytes ─► decode ─► HTML tokenizer ─�
 | Decode | `str` | gzip and deflate undone; charset from `Content-Type`, then a `<meta charset>` in the first 1024 bytes, then UTF-8 when valid and windows-1252 when not; UTF-8 and windows-1252 (with its aliases `iso-8859-1`, `us-ascii`) decoded | other legacy charsets |
 | Tokenize | `html` | WHATWG tokenizer: data, tags, attributes (quoted, unquoted, bare), comments, doctype, raw text (`script`, `style`), escapable raw text (`title`, `textarea`), character references (numeric and a named subset) | the full named-reference table, every parse-error state |
 | Tree | `html` | simplified tree construction: implied `html`/`head`/`body`, void elements, implied end tags (`p`, `li`, `dt`, `dd`, `option`, `tr`, `td`, `th`), end tags close up to the matching open element | adoption agency, foster parenting, templates, foreign content (SVG, MathML) |
-| Style | `css` | a fixed user-agent model (block vs inline elements, headings, `pre`, hidden elements) plus author CSS from `<style>`, linked sheets (8 at most) and `style=`; `@media` and `media=` by the window's width at 8 CSS pixels per cell (`min-width`, `max-width`, ranges, `px`/`em`/`rem`; a dark screen without hover): type, `#id`, `.class` (with `\` escapes such as `.md\:flex`), `[attr]` and `[attr=~|^$*v]`, `:not()`, `:first-child`, `:last-child`, `:only-child`, `:nth-child()` and the `-last-` and `-of-type` forms, `:empty`, `:checked`, `:disabled`, `:enabled`, `:link`, the descendant, `>`, `+` and `~` combinators, specificity, order, `!important`; `display` (`none`, block or inline), `visibility: hidden`, `font-weight`, `font-style`, `text-transform: uppercase`, `white-space: pre` | dynamic pseudo-classes (`:hover`, `:focus`; a static page never matches them, so the rule is dropped), `:is`, `:where`, `:has`, pseudo-elements, `@supports`, colors and margins on cells, then the box model in pixels |
+| Style | `css` | a fixed user-agent model (block vs inline elements, headings, `pre`, hidden elements) plus author CSS from `<style>`, linked sheets and their leading `@import` rules (64 sheets at most, each address fetched once, `disabled` and `alternate` links and print-only sheets skipped, imports 4 deep with their media queries; a link after a `<style>` element overrides it, one between two `<style>` elements still loses to the later) and `style=`; `@media` and `media=` by the window's width at 8 CSS pixels per cell (`min-width`, `max-width`, ranges, `px`/`em`/`rem`; a dark screen without hover): type, `#id`, `.class` (with `\` escapes such as `.md\:flex`), `[attr]` and `[attr=~|^$*v]`, `:not()`, `:first-child`, `:last-child`, `:only-child`, `:nth-child()` and the `-last-` and `-of-type` forms, `:empty`, `:checked`, `:disabled`, `:enabled`, `:link`, the descendant, `>`, `+` and `~` combinators, specificity, order, `!important`; `display` (`none`, block or inline), `visibility: hidden`, `font-weight`, `font-style`, `text-transform: uppercase`, `white-space: pre` | dynamic pseudo-classes (`:hover`, `:focus`; a static page never matches them, so the rule is dropped), `:is`, `:where`, `:has`, pseudo-elements, `@supports`, colors and margins on cells, then the box model in pixels |
 | Layout | `page` | text cells: block flow, inline runs, whitespace collapsing, word wrap to the window's width, lists, block quotes, `pre`; data tables (one line of text and links per cell, no `colspan`, fits the width) as aligned columns, others as cells joined by ` | ` | CSS box model on the cell grid, then pixels (needs a pixel layer) |
 | Paint | `std.ui` | the text-cell window (`put_styled`), colors per run, link highlighting | pixels, images, fonts (see Dependencies) |
 | Script | none | no JavaScript (decision pending with the designer) | see below |
@@ -82,6 +82,69 @@ way the editor's screen does (ADR 0181).
   the page model (below); `--links` lists the links; `--follow N` and
   `--find TEXT` act first; `--width N` and `--height N` set the size. Tests
   run headless.
+- **Error pages**: a 4xx or 5xx response is shown as the server sent it
+  (bot checks and error pages have their own content); the status goes to
+  the status line (`HTTP status 403`), and only an empty body gets Garlic's
+  own page.
+- **Timings**: `--timings` (or `GARLIC_TIMINGS=1`) prints where the last
+  load's time went to standard error, one `timings: NAME VALUE` line each:
+  `nav.total` (from the start of the load to the pixel layout after its
+  last step in the window, or to the end of the headless run), then the
+  phases that ran, in milliseconds, in load order (`fetch.document`,
+  `html.parse`, `paint.first` (the first frame's sheets and layout, window
+  only), `fetch.scripts`, `fetch.modules`, `script.run`, `fetch.replies`,
+  `fetch.sheets`, `css.parse` of linked sheets, `layout.cells`,
+  `fetch.images` with their decoding, `layout.pixels` with the display list,
+  `fetch.favicon`), then counters: `first.frame.ms` (from the start of the
+  load to the first frame, window only), `requests`, `bytes` (as received,
+  before decompression), `requests.failed`, `fetch.batches` (side-by-side
+  batches), `cache.fresh`, `cache.revalidated`, `sheets`, `scripts`,
+  `scripts.inserted`, `modules`, `replies`, `dom.nodes.parsed`,
+  `dom.mutations`, `js.steps`, `js.stopped` (the step limit ended the page's
+  scripts), `relayouts`, `relayouts.skipped`, `layouts.pixels`, `images`
+  (pictures taken by the window's steps). Image and favicon requests are
+  timed but not counted (they go through `images` and `favicon`). Clocks are
+  `time.now_ms`, so phases under a millisecond show as 0.
+- **Loading in steps** (the window): a load is a few steps, and the window
+  sends a frame after each, handling the clicks, scrolls and keys that came
+  meanwhile before the next: (1) the document is fetched and parsed, its
+  style sheets fetched, and it is laid out with `<noscript>` hidden: this
+  frame is the first paint; (2) its scripts and modules are fetched and run
+  and what they asked for answered; a refresh or a script navigation is
+  another (1) and (2); (3) the page as the scripts left it is laid out with
+  its sheets (the ones (1) fetched are not fetched again); then the favicon,
+  and the pictures, six per step, each step laying the page out again.
+  Until a picture arrives its `<img>` keeps the room its `width` and
+  `height` (or CSS) give, drawn as a light placeholder, and one with neither
+  has no room. `Browser.step` runs a step; `Garlic.continue_load` asks a
+  small task (`step_poster`) to post the next `load-step` event, because
+  `update` itself must never post to the inbox it alone empties (a full
+  inbox would wait for ever). An agent's call and a scheduled job finish
+  the load first; headless runs and tests load in one call, as before, and
+  get the same page. Still one step each: a page's script run (up to its
+  5,000,000-statement cap) and the `fetch`/XMLHttpRequest replies it waits
+  for. Rejected: running the load in a task that hands frames to the
+  window, since the script engine holds `ref` cells a task can't share, so
+  scripts must run on the window's thread anyway.
+- **Side-by-side fetches**: a page's linked sheets (a level of `@import`s at
+  a time), its `<script src>`, its module graph (a level at a time, with its
+  `<link rel=modulepreload>` addresses in the first) and its pictures go out
+  six at a time from short tasks (lanes) the caller waits for, and are used
+  in document order, so the page is the one a serial load gives. Lanes get
+  plain values (addresses, headers, a copy of the jar); the cookies they
+  bring are stored in the jar afterwards, in order, and the cache is
+  consulted before and updated after on the window's thread. Pictures are
+  decoded in the lanes too. std.net's keep-alive pool is one table shared by
+  every thread with no lock (`pool_take`/`pool_put` in ail's
+  `compiler/rt/native/net_http.ail`), so a lane never uses it: it asks with
+  `Connection: close` through `net.open` (never offered HTTP/2, whose
+  connections the pool also keeps) on a connection of its own, with a 3 s
+  connect and 10 s read limit (`images.fetch_alone`). That costs a TCP and
+  TLS handshake per lane request; a lone request still goes through the
+  pool. Module imports are found by a scan of the source
+  (`jsdom.import_specifiers`) instead of a parse, so each module is parsed
+  once, when it runs; an import the scan misses is still asked for by the
+  engine.
 - **Speed**: the Go specification (290 KB of HTML) parses, cascades and
   lays out in 1.5 s on the bytecode tier (Linux x86-64; 1.1 s before CSS).
 
@@ -233,8 +296,8 @@ module lays the document out in CSS pixels, with no cells:
 - **Blocks**: lists with markers, tables (column widths from content),
   flexbox rows (`gap`, `flex-grow`, `justify-content`, `flex-wrap`), grid
   tracks (`repeat`, `fr`, `minmax`), images with `width`/`height` attributes (an unsized one takes the size its
-  header gives: `images.prefetch` fetches each over the keep-alive pool and
-  `image.dims` reads PNG, JPEG or GIF headers; `image.decode` returns RGBA pixels
+  header gives: `images.prefetch` fetches them side by side, see
+  "Side-by-side fetches", and `image.dims` reads PNG, JPEG or GIF headers; `image.decode` returns RGBA pixels
   for a host that can take a bitmap, and the current host still draws `Pic` from the URL),
   buttons and fields drawn as boxes (not yet interactive).
 - **Output**: `draw.Op.Str`/`Pic`/`Rect` in page pixels plus a rectangle for

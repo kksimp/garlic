@@ -1,0 +1,8 @@
+<!doctype html>
+<html><body><script>
+["Text", "Comment", "CDATASection", "ProcessingInstruction"].forEach(function (n) {
+  var c = window[n];
+  console.log(n, typeof c, typeof c.prototype, Object.getPrototypeOf(c.prototype) === (n === "CDATASection" ? Text.prototype : CharacterData.prototype));
+});
+console.log(document.createTextNode("x") instanceof CDATASection);
+</script></body></html>

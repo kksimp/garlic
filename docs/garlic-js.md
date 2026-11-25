@@ -85,6 +85,10 @@ tools/garlic/js/
     dom.ail         the DOM: nodes, the change log, selectors, events, timers, forms, location
     markup.ail      innerHTML: an HTML fragment parser and serialiser
     url.ail         URL and URLSearchParams
+    docimpl.ail     document.implementation and DOMParser: detached documents
+    collections.ail HTMLCollection and HTMLFormControlsCollection
+    streams.ail     ReadableStream, WritableStream, TransformStream (a JavaScript prelude)
+    segmenter.ail   Intl.Segmenter, an approximation of UAX #29
   testdata/
     syntax/         NAME.js with NAME.ast (tree) or NAME.err (SyntaxError)
     tokens/         a lexer sample and its tokens
@@ -99,7 +103,12 @@ dependency and imports `garlicjs.vm` from `tools/garlic/jsdom`.
 In Garlic (`tools/garlic/jsdom`, `load_doc` in `garlic.ail`), a page's
 scripts run after it is parsed, with external scripts fetched first, a
 budget of 1 s of virtual time and 5,000,000 steps, and the real time as the
-clock. Their changes are replayed into Garlic's tree. A navigation a
+clock. Their changes are replayed into Garlic's tree. A classic script a
+script inserts (`fetch-script`, `Outcome.missing`) is fetched by the browser
+and run with `Session.script`, which fires `load` or `error` on its element;
+up to 64 per round, not counted against the 32 `fetch` replies. Once the
+page has loaded, its timers run once a second and the page is laid out
+again only when they changed the tree. A navigation a
 script asks for, or else a `<meta http-equiv=refresh>` outside `<noscript>`,
 is followed, up to 5 hops. `std.net.jar` (ADR 0638) is the cookie jar: cookies
 from `Set-Cookie` and `document.cookie` are sent back by domain, path and
@@ -312,8 +321,27 @@ regex engine is written.
 - `WeakMap`, `WeakSet`, `WeakRef` and `FinalizationRegistry` (`vm/weak.ail`)
   are a Map and Set that only take objects, a `deref` that always answers
   and a registry that never calls back: nothing is collected while scripts
-  run. `IntersectionObserver` and `ResizeObserver` take a callback and never
-  fire, since Garlic has no scrolling or resizing the page can see.
+  run. `IntersectionObserver` and `ResizeObserver` report each observed
+  target once, a frame after `observe` (intersecting, ratio 1, with its
+  layout box), so lazy pictures load; nothing changes after that, since
+  Garlic has no scrolling or resizing the page can see.
+- `document.currentScript` is the classic script element running now
+  (`Vm.cur_script`), null in modules and callbacks; `Vm.script_arrived`
+  runs a script the browser fetched for a `fetch-script` request.
+- The mutating `Array.prototype` methods (`push`, `splice`, `sort`, ...)
+  are generic: on an array-like (`{length: 0}`, a jQuery object, a proxy)
+  they work through `length` and the index properties (§23.1.3).
+- `document.implementation` and `DOMParser` (`vm/docimpl.ail`) make
+  detached documents, nodes of kind 9 in the same node list, so every
+  node and document method works on them; they are never connected, so
+  their scripts never run. `form.elements` and `document.forms` are
+  collections with `item`, `namedItem` and named properties, snapshots
+  whose prototype sits on `Array.prototype` (`vm/collections.ail`).
+- Streams (`vm/streams.ail`): `ReadableStream`, `WritableStream`,
+  `TransformStream`, `TextEncoderStream`, `TextDecoderStream`,
+  `Response.body` and a `Response` made from a stream, written in
+  JavaScript over promises. Byte streams act as default streams (no BYOB
+  reader), and a strategy's `size` is not used.
 - `Proxy` and `Reflect` (`vm/proxy.ail`, ECMA-262 §10.5, §28.1): a proxy is
   an object of class `Proxy` holding its target and handler; `get`, `set`,
   `has` (the `in` operator), `deleteProperty`, `apply` and `construct`
@@ -399,7 +427,10 @@ it comes later for speed, and these frames will move onto it).
   frames of the bootstrap interpreter, whose limit is 10,000. A bytecode
   compiler for the whole interpreter will remove this.
 - Import maps and `<link rel=modulepreload>`; module workers.
-- `Intl` knows one locale, en-US. Local time is the system zone in the
+- `Intl` knows one locale, en-US. `Intl.Segmenter` (`vm/segmenter.ail`)
+  approximates UAX #29 without break tables: graphemes join combining
+  marks, ZWJ emoji, modifiers and flag pairs; words have no dictionary
+  (each Han or kana character is a word). Local time is the system zone in the
   app (`Vm.zone`, offsets from std.tz) and UTC in tests and `jsdom.run`.
   Zone names are IANA names: `Date.prototype.toString` ends in
   "(America/New_York)" and `timeZoneName: "short"` gives "GMT-5", where
@@ -428,7 +459,7 @@ it comes later for speed, and these frames will move onto it).
   (webgl.ail, WebGL 1) keeps its state and validates like
   Chromium's but rasterizes nothing except `clear`: draw calls do nothing
   and the window never shows it. `webgl2` is the same with the WebGL 2
-  API; WebGPU is null. Streams, `Worker`, `WebAssembly`,
+  API; WebGPU is null. `WebAssembly`,
   geolocation and service workers are missing: pages that feature-test
   them report them unsupported.
 - Media (mediaapi.ail): `navigator.mediaDevices`, `MediaStream`,
@@ -484,7 +515,7 @@ it comes later for speed, and these frames will move onto it).
   exception and why: an unsupported feature, a twin that is not the same
   script, a test made stale by a later edition, or a gap. A listed test that
   starts to behave is reported, so the list only shrinks.
-- `testdata/run`: 21 programs (operators, functions, classes, control flow,
+- `testdata/run`: programs (operators, functions, classes, control flow,
   built-ins, numbers, JSON, collections, errors, strings, console layout,
   promises, symbols, generators, async functions, `await` positions,
   `eval`, `Date` setters, assignment order, async generators, direct
@@ -559,6 +590,31 @@ reports 1,324 constructs outside the native subset: `?` 342, `==` on `str`
 174, string interpolation 107, optionals as parameters and indexes, and
 string methods. These are the same groups the native lanes are closing for
 self-compilation.
+
+**Fast paths in the walker** (2026-11-16). Native AIL copies structs, lists
+and maps when they are bound from a place, so the hot paths read in place:
+
+- Bindings and properties are read and written through `vars[name]` and
+  `props[key]` (no `Binding` or `Prop` copied); `props_only` says when an
+  object's own property is just its map entry. A name that doesn't start with
+  a digit is never parsed as an index.
+- `a[i]` and `a[i] = v` (and `op=`) on an array with a number index use the
+  element itself; on ASCII text `s[i]`, `length` and the indexing string
+  methods use `slice`, which is O(1) there, instead of a list of UTF-16
+  units.
+- `+` and comparisons on strings skip ToPrimitive.
+- A native's handler is found by a group number kept per name.
+- A Map or Set of 16 entries or more keeps a hash index of its `elems`
+  (`CollIndex`, by a canonical key text), rebuilt lazily after deletes.
+- A statement allocates nothing before it runs (no label list; the current
+  statement, not its position, is kept for error positions).
+- A loop turn keeps its `let` scope when no closure or class was made in it
+  (`Vm.closures_made`); an arrow call keeps no argument list.
+- Compiled generator and async bodies are shared (`ref Code`) and kept by
+  source as well as per function object.
+
+`js/testdata/bench/run.sh` times six pure-JS scripts (properties, calls,
+strings, arrays, Map and Set, loops) against Node's output.
 
 ## Notes on writing it in AIL
 

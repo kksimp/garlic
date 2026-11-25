@@ -1,0 +1,20 @@
+<!DOCTYPE html><html><body><script>
+const push = Array.prototype.push;
+const o = { length: 0 };
+console.log(push.call(o, "a", "b"), o.length, o[0], o[1]);
+function Z(els) { this.length = 0; push.apply(this, els); }
+const z = new Z([1, 2, 3]);
+console.log(z.length, Array.prototype.join.call(z, "-"));
+console.log(Array.prototype.pop.call(z), z.length, z[2]);
+console.log(Array.prototype.shift.call(z), z.length, z[0], z[1]);
+console.log(Array.prototype.unshift.call(z, 7, 8), Array.prototype.slice.call(z).join());
+const removed = Array.prototype.splice.call(z, 1, 1, "x", "y");
+console.log(removed.join(), z.length, Array.prototype.join.call(z));
+Array.prototype.reverse.call(z);
+console.log(Array.prototype.join.call(z));
+console.log(Array.prototype.sort.call(z) === z, Array.prototype.join.call(z));
+console.log(Array.prototype.indexOf.call(z, "x"), Array.prototype.map.call(z, String).length, Array.prototype.filter.call({ length: 3, 0: 1, 1: 0, 2: 2 }, Boolean).join());
+const empty = { length: 0 };
+console.log(Array.prototype.pop.call(empty), empty.length);
+console.log(Object.keys(z).join());
+</script></body></html>

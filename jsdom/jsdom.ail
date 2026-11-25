@@ -13,8 +13,9 @@ pub struct Outcome
     pub body str
     ## Console lines and uncaught errors, in order.
     pub console List[str]
-    ## External scripts the page wanted that weren't in `scripts`.
-    pub missing List[str]
+    ## Classic scripts the page wanted that weren't in `scripts` (most often
+    ## ones a script inserted); answer each with `Session.script`.
+    pub missing List[ScriptAsk]
     ## How many changes were replayed.
     pub changes int
     ## What scripts assigned to `document.cookie`, in order.
@@ -31,6 +32,12 @@ pub struct Outcome
     pub sockets List[SockOp]
     ## The `fetch` and XMLHttpRequest requests the browser made for the page, as `METHOD url`.
     pub net List[str]
+
+## A classic script element (`node`) whose source at `url` (the address the
+## engine uses) the browser fetches and hands to `Session.script`.
+pub struct ScriptAsk
+    pub node int
+    pub url str
 
 ## A request from `fetch` or XMLHttpRequest, numbered `id`: `packed` is the
 ## content type, a newline and the body. The browser makes it and hands the
@@ -151,7 +158,7 @@ fn Session.collect(mut self, mut d html.Doc) Outcome
             out.method = r.method
             out.body = r.text
         if r.kind == "fetch-script"
-            out.missing.push(r.url)
+            out.missing.push(ScriptAsk(node: r.node, url: r.url))
         if r.kind == "fetch-module"
             out.mods.push(r.url)
         if r.kind == "fetch"
@@ -250,10 +257,206 @@ pub fn Session.module(mut self, mut d html.Doc, url str, text str, ok bool, budg
     self.machine.run_event_loop(self.machine.clock_ms + budget_ms, 10000)
     self.collect(mut d)
 
+## The browser's answer for classic script `url` that element `node` asked
+## for (see `Outcome.missing`): when `ok`, `text` runs as that script (HTML
+## §4.12.1.1, "execute the script element"), then `load` fires on the
+## element; when not, `error` fires. Then timers and microtasks that became
+## due run. `document.currentScript` is the element while it runs
+## (`Vm.script_arrived`).
+pub fn Session.script(
+    mut self,
+    mut d html.Doc,
+    node int,
+    url str,
+    text str,
+    ok bool,
+    budget_ms float,
+) Outcome
+    if ok and not self.machine.stopped
+        if node >= 0 and node < self.machine.dom.len()
+            self.machine.script_arrived(node, url, text)
+        else
+            self.machine.cur_url = url
+            self.machine.run_script_text(text)
+            self.machine.run_microtasks()
+    if node >= 0 and node < self.machine.dom.len()
+        self.fire_plain(node, if ok then "load" else "error")
+    self.machine.run_event_loop(self.machine.clock_ms + budget_ms, 10000)
+    self.collect(mut d)
+
+## Fires a `type_name` event that does not bubble at node `id`, as a
+## script element's `load` and `error` are (HTML §4.12.1.1).
+fn Session.fire_plain(mut self, id int, type_name str)
+    if self.machine.stopped
+        return
+    ev := self.machine.make_event_as("Event", type_name, vm.Value.Undef) else return
+    _ := self.machine.dispatch(id, ev) else false
+
+## How many statements the page's scripts have run (`--timings`).
+pub fn Session.steps(self) int
+    self.machine.step_count
+
+## Whether the step limit stopped the page's scripts for good.
+pub fn Session.stopped(self) bool
+    self.machine.stopped
+
 ## The modules a module's source imports statically, as engine addresses
 ## resolved against `base`, for the browser to fetch before the page runs.
+## Found by `import_specifiers`, a scan, not a parse: the engine parses each
+## module once, when it runs it (js/vm/modules.ail). A specifier the scan
+## misses is still asked for by the engine (`Outcome.mods`), and one it
+## takes wrongly is only fetched in vain.
 pub fn module_deps(source str, base str) List[str]
-    vm.module_dep_urls(source, base)
+    mut out := List[str]()
+    for spec in import_specifiers(source)
+        u := vm.specifier_url(spec, base)
+        if u != "" and not out.contains(u)
+            out.push(u)
+    out
+
+## What the scan in `import_specifiers` is inside: no statement that can
+## name a module, an `import` clause, or an `export` that may end `from "m"`.
+enum Clause
+    Free
+    Importing
+    Exporting
+
+## The module specifiers of `source`'s static imports, in order: `import
+## "m"`, `import x, { y } from "m"`, `import * as n from "m"` and `export
+## ... from "m"`; not `import("m")` or `import.meta`. Comments, strings,
+## template literals and regular expressions are skipped; a `/` is taken as
+## a regular expression where the previous token can't end an operand.
+pub fn import_specifiers(source str) List[str]
+    cs := source.chars()
+    n := cs.len()
+    mut out := List[str]()
+    mut i := 0
+    ## The last character of the previous token (' ' at the start, 'a' for a
+    ## word), for telling a regular expression from a division.
+    mut prev := ' '
+    mut clause := Clause.Free
+    while i < n
+        c := cs[i]
+        if c == '/' and i + 1 < n and cs[i + 1] == '/'
+            while i < n and cs[i] != '\n'
+                i += 1
+            continue
+        if c == '/' and i + 1 < n and cs[i + 1] == '*'
+            i = comment_after(cs, i + 2)
+            continue
+        if c == '"' or c == '\''
+            end := quote_end(cs, i)
+            ## `from "m"` ends a clause; a bare string ends it too.
+            if clause != Clause.Free and prev == 'f' and end < n
+                out.push(cs[i + 1..end].join(""))
+            clause = Clause.Free
+            i = end + 1
+            prev = '"'
+            continue
+        if c == '`'
+            i = quote_end(cs, i) + 1
+            prev = '"'
+            clause = Clause.Free
+            continue
+        if c == '/' and regex_can_start(prev)
+            i = regex_end(cs, i) + 1
+            prev = '"'
+            continue
+        if c.is_alpha() or c == '_' or c == '$'
+            mut j := i
+            while j < n and (cs[j].is_alnum() or cs[j] == '_' or cs[j] == '$')
+                j += 1
+            word := cs[i..j].join("")
+            after := next_token(cs, j)
+            mut mark := 'a'
+            if prev != '.' and word == "import"
+                if after == '"' or after == '\''
+                    clause = Clause.Importing
+                    mark = 'f'
+                elif after != '(' and after != '.'
+                    clause = Clause.Importing
+            elif prev != '.' and word == "export"
+                clause = Clause.Exporting
+            elif word == "from" and clause != Clause.Free and (after == '"' or after == '\'')
+                mark = 'f'
+            i = j
+            prev = mark
+            continue
+        if not c.is_space()
+            ## Only names, `*`, braces and commas come between `import` or
+            ## `export` and `from`; anything else ends the clause.
+            if c != '{' and c != '}' and c != ',' and c != '*'
+                clause = Clause.Free
+            prev = c
+        i += 1
+    out
+
+## The index just after the `*/` that ends a comment whose body starts at `at`.
+fn comment_after(cs List[char], at int) int
+    mut i := at
+    while i + 1 < cs.len()
+        if cs[i] == '*' and cs[i + 1] == '/'
+            return i + 2
+        i += 1
+    cs.len()
+
+## The index of the quote that closes the string or template literal opened
+## at `open`, past backslash escapes; `cs.len()` when it is not closed.
+fn quote_end(cs List[char], open int) int
+    q := cs[open]
+    mut i := open + 1
+    while i < cs.len()
+        if cs[i] == '\\'
+            i += 2
+            continue
+        if cs[i] == q
+            return i
+        if q != '`' and cs[i] == '\n'
+            return cs.len()
+        i += 1
+    cs.len()
+
+## The index of the `/` that closes the regular expression opened at `open`
+## (a `/` inside `[...]` doesn't close it).
+fn regex_end(cs List[char], open int) int
+    mut i := open + 1
+    mut in_class := false
+    while i < cs.len()
+        c := cs[i]
+        if c == '\\'
+            i += 2
+            continue
+        if c == '\n'
+            return i
+        if c == '['
+            in_class = true
+        elif c == ']'
+            in_class = false
+        elif c == '/' and not in_class
+            return i
+        i += 1
+    cs.len() - 1
+
+## Whether a `/` after a token ending in `prev` starts a regular expression
+## rather than dividing: after an operator, an opening bracket or the start.
+fn regex_can_start(prev char) bool
+    "(,=:[!&|?\{};+-*%<>~^ ".contains(prev)
+
+## The first character from `at` that is not white space or inside a
+## comment, ' ' at the end.
+fn next_token(cs List[char], at int) char
+    mut i := at
+    while i < cs.len()
+        if cs[i].is_space()
+            i += 1
+        elif cs[i] == '/' and i + 1 < cs.len() and cs[i + 1] == '*'
+            i = comment_after(cs, i + 2)
+        elif cs[i] == '/' and i + 1 < cs.len() and cs[i + 1] == '/'
+            while i < cs.len() and cs[i] != '\n'
+                i += 1
+        else
+            return cs[i]
+    ' '
 
 ## Lets the page's timers and microtasks run for `budget_ms` of its own clock
 ## (`wait:idle`), and replays what they changed.
@@ -392,3 +595,37 @@ fn replay(mut d html.Doc, log List[vm.Mutation]) int
                     d.set_attr(m.node, "value", m.value)
             _ => d.mark(m.node)
     log.len()
+
+# ---- Tests -----------------------------------------------------------------
+
+@test fn the_import_scan_finds_static_imports_only()
+    lines := [
+        "import \"./a.js\";",
+        "import x, \{ y as z } from './b.js'",
+        "import * as ns from \"/c.js\" with \{ type: \"json\" };",
+        "// import \"./no-comment.js\"",
+        "/* import \"./no-block.js\" */",
+        "export \{ q } from \"./d.js\";",
+        "export * from './e.js';",
+        "export const s = \"./no-const.js\";",
+        "const t = `import \"./no-template.js\"`;",
+        "const r = /\"[/]/; const from = \"./no-name.js\";",
+        "import(\"./no-dynamic.js\"); import.meta.url;",
+        "obj.import(\"./no-member.js\");",
+        "export default function f() \{ return \"./no-body.js\" }",
+    ]
+    assert_eq(import_specifiers(lines.join("\n")), [
+        "./a.js",
+        "./b.js",
+        "/c.js",
+        "./d.js",
+        "./e.js",
+    ])
+    assert_eq(
+        module_deps(
+            "import \"./a.js\"; import \"https://x.test/m.js\"; import \"bare\"",
+            "https://p.test/dir/main.js",
+        ),
+        ["https://p.test/dir/a.js", "https://x.test/m.js"],
+    )
+    assert_eq(import_specifiers("import \"unclosed"), List[str]())

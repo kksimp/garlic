@@ -62,6 +62,11 @@ fn Vm.string_method(mut self, m str, this_val Value, args List[Value]) Value ! T
                 return o.prim
         return type_error("String.prototype.{m} requires that 'this' be a String")
     s := self.this_string(this_val, m)?
+    # ASCII text indexes by character, so these need no UTF-16 copy.
+    if ascii_method(m) and is_ascii_text(s)
+        return self.ascii_string_method(m, s, a0, a1)
+    if m == "split"
+        return self.split_string(s, a0, a1)
     us := units(s)
     n := us.len()
     match m
@@ -170,31 +175,6 @@ fn Vm.string_method(mut self, m str, this_val Value, args List[Value]) Value ! T
             for a in args
                 out = "{out}{to_string(a)?}"
             Value.Str(out)
-        "split" =>
-            limit := if a1 == Undef then 4294967295 else to_uint32(to_number(a1)?)
-            if is_regexp(a0)
-                return regexp_split(a0, s, limit)
-            if a0 == Undef
-                return array([Value.Str(s)])
-            sep := units(to_string(a0)?)
-            mut out := List[Value]()
-            if limit == 0
-                return array(out)
-            if sep.len() == 0
-                for u in us
-                    if out.len() >= limit
-                        break
-                    out.push(Str(from_units([u])))
-                return array(out)
-            mut start := 0
-            while true
-                i := find_units(us, sep, start) else break
-                out.push(Str(from_units(us[start..i])))
-                if out.len() >= limit
-                    return array(out)
-                start = i + sep.len()
-            out.push(Str(from_units(us[start..])))
-            array(out)
         "replace" | "replaceAll" =>
             if is_regexp(a0)
                 return regexp_replace(a0, s, a1, m == "replaceAll")
@@ -237,6 +217,115 @@ fn Vm.string_method(mut self, m str, this_val Value, args List[Value]) Value ! T
         "normalize" => Value.Str(s)
         "match" | "matchAll" | "search" => regexp_string_method(m, s, a0)
         _ => return type_error("String.prototype.{m} is not supported yet")
+
+## The methods `ascii_string_method` answers.
+fn ascii_method(m str) bool
+    match m
+        "charAt" | "charCodeAt" | "codePointAt" | "at" | "slice" | "substring" | "substr" | "indexOf" | "includes" | "startsWith" | "endsWith" =>
+            true
+        _ => false
+
+## Those methods on ASCII text, where a UTF-16 index is a character index
+## and `slice` is O(1): the same results and argument order as
+## `string_method`, without the list of units.
+fn Vm.ascii_string_method(mut self, m str, s str, a0 Value, a1 Value) Value ! Thrown
+    n := s.len()
+    match m
+        "charAt" =>
+            i := self.integer_arg(a0, 0)?
+            if i < 0 or i >= n
+                return Value.Str("")
+            Value.Str(s.slice(i, i + 1))
+        "charCodeAt" =>
+            i := self.integer_arg(a0, 0)?
+            if i < 0 or i >= n
+                return Value.Num(nan())
+            Value.Num(ascii_unit(s, i).to_float())
+        "codePointAt" =>
+            i := self.integer_arg(a0, 0)?
+            if i < 0 or i >= n
+                return Value.Undef
+            Value.Num(ascii_unit(s, i).to_float())
+        "at" =>
+            k := self.integer_arg(a0, 0)?
+            i := if k < 0 then n + k else k
+            if i < 0 or i >= n
+                return Value.Undef
+            Value.Str(s.slice(i, i + 1))
+        "slice" =>
+            start := self.relative(a0, n, 0)?
+            end := self.relative(a1, n, n)?
+            if start >= end
+                return Value.Str("")
+            Value.Str(s.slice(start, end))
+        "substring" =>
+            a := clamp(self.integer_arg(a0, 0)?, 0, n)
+            b := clamp(self.integer_arg(a1, n)?, 0, n)
+            Value.Str(s.slice(a.min(b), a.max(b)))
+        "substr" =>
+            start := self.relative(a0, n, 0)?
+            len := clamp(self.integer_arg(a1, n)?, 0, n - start)
+            Value.Str(s.slice(start, start + len))
+        "indexOf" =>
+            needle := self.to_string(a0)?
+            from := clamp(self.integer_arg(a1, 0)?, 0, n)
+            Value.Num(ascii_find(s, needle, from).to_float())
+        "includes" =>
+            if is_regexp(a0)
+                return self.type_error("First argument to String.prototype.includes must not be a regular expression")
+            needle := self.to_string(a0)?
+            from := clamp(self.integer_arg(a1, 0)?, 0, n)
+            Value.Bool(ascii_find(s, needle, from) >= 0)
+        "startsWith" | "endsWith" =>
+            if is_regexp(a0)
+                return self.type_error("First argument to String.prototype.{m} must not be a regular expression")
+            needle := self.to_string(a0)?
+            k := unit_len(needle)
+            if m == "startsWith"
+                start := clamp(self.integer_arg(a1, 0)?, 0, n)
+                if start + k > n
+                    return Value.Bool(false)
+                return Value.Bool(s.slice(start, start + k) == needle)
+            end := clamp(self.integer_arg(a1, n)?, 0, n)
+            if k > end
+                return Value.Bool(false)
+            Value.Bool(s.slice(end - k, end) == needle)
+        _ => return self.type_error("String.prototype.{m} is not supported yet")
+
+## Where `needle` first occurs in ASCII text `s` at or after `from` (at most
+## `s.len()`), or -1. A needle that is not ASCII is never found, as by units.
+fn ascii_find(s str, needle str, from int) int
+    if needle == ""
+        return from
+    if from == 0
+        return s.find(needle) else -1
+    i := s.slice(from, s.len()).find(needle) else return -1
+    from + i
+
+## String.prototype.split (§22.1.3.23).
+fn Vm.split_string(mut self, s str, a0 Value, a1 Value) Value ! Thrown
+    limit := if a1 == Undef then 4294967295 else to_uint32(self.to_number(a1)?)
+    if is_regexp(a0)
+        return self.regexp_split(a0, s, limit)
+    if a0 == Undef
+        return self.array([Value.Str(s)])
+    sep := self.to_string(a0)?
+    mut out := List[Value]()
+    if limit == 0
+        return self.array(out)
+    if sep == ""
+        for u in units(s)
+            if out.len() >= limit
+                break
+            out.push(Str(from_units([u])))
+        return self.array(out)
+    # A separator is whole characters, so splitting the text at it splits
+    # its UTF-16 units at the same places.
+    for piece in s.split(sep)
+        if out.len() >= limit
+            break
+        out.push(Str(piece))
+    self.array(out)
 
 ## GetSubstitution (§22.1.3.19.1): `$&`, `` $` ``, `$'`, `$1`.., `$$`.
 pub fn expand_replacement(rep str, matched str, before str, after str, groups List[str?]) str

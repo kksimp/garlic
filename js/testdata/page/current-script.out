@@ -1,0 +1,17 @@
+SCRIPT a
+null
+inserted ins
+after SCRIPT
+module null
+dcl null
+== body
+<p id="a">x</p><script>
+console.log(document.currentScript.tagName, document.currentScript.previousElementSibling.id);
+document.addEventListener("DOMContentLoaded", () => console.log("dcl", document.currentScript));
+</script><script type="module">console.log("module", document.currentScript);</script><script>
+const s = document.createElement("script");
+s.textContent = "console.log('inserted', document.currentScript.id)";
+s.id = "ins";
+document.body.appendChild(s);
+console.log("after", document.currentScript.tagName);
+</script><script id="ins">console.log('inserted', document.currentScript.id)</script>

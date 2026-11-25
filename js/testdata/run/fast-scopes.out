@@ -1,0 +1,14 @@
+0,1,2,3,3,3,a,b
+2 undefined function
+ReferenceError Cannot access 'tdz' before initialization
+TypeError Assignment to constant variable.
+ReferenceError nope is not defined
+ReferenceError undeclaredStrict is not defined
+10,100
+[2,"x","y","object"] [1,1,null,"object"]
+11 5
+getter
+7
+block global
+2 3
+999

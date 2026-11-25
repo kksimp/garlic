@@ -1,0 +1,13 @@
+<!doctype html>
+<html><body><script>
+var t = new EventTarget(), got = [];
+t.addEventListener("ping", function (e) { got.push(e.type + ":" + (e.target === t)); });
+t.dispatchEvent(new Event("ping"));
+class Bus extends EventTarget { hello() { return "hi"; } }
+var b = new Bus();
+b.addEventListener("x", function () { got.push("bus"); });
+b.dispatchEvent(new Event("x"));
+console.log(got.join(), b.hello(), b instanceof EventTarget, t instanceof EventTarget);
+performance.mark("a"); performance.clearMarks(); performance.clearMeasures("b");
+console.log(typeof performance.clearMarks, Array.isArray(performance.getEntries()));
+</script></body></html>

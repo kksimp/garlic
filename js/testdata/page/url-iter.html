@@ -1,0 +1,9 @@
+<!DOCTYPE html><html><body><script>
+const p = new URLSearchParams("a=1&b=2");
+const seen = [];
+for (const [k, v] of p) seen.push(k + ":" + v);
+console.log(seen.join(","));
+console.log(typeof p.keys().next, [...p.values()].join(","), Array.from(p.entries()).length);
+console.log(typeof p[Symbol.iterator], p[Symbol.iterator] === p.entries);
+console.log(Object.fromEntries(p).b, new Map(p).get("a"), [...new URL("https://e.test/?x=9").searchParams][0].join("="));
+</script></body></html>

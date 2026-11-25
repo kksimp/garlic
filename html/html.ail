@@ -11,12 +11,14 @@ pub enum Kind
     Text
     Comment
 
-## One attribute; names are lowercase.
+## One attribute; names are lowercase, except on SVG elements, which keep
+## the spec's mixed case (`viewBox`, 13.2.6.5).
 pub struct Attr
     pub name str
     pub value str
 
-## One node of the tree: `tag` is the lowercase element name, `text` the
+## One node of the tree: `tag` is the element name (lowercase, except the
+## mixed-case SVG names such as `linearGradient`), `text` the
 ## content of a text or comment node, `parent` -1 for the document.
 pub struct TreeNode
     pub kind Kind
@@ -121,6 +123,111 @@ SCOPE := {
     "button",
 }
 
+## SVG element names the tokenizer lowered, restored ("adjust SVG tag
+## names", 13.2.6.5).
+SVG_TAGS := {
+    "altglyph": "altGlyph",
+    "altglyphdef": "altGlyphDef",
+    "altglyphitem": "altGlyphItem",
+    "animatecolor": "animateColor",
+    "animatemotion": "animateMotion",
+    "animatetransform": "animateTransform",
+    "clippath": "clipPath",
+    "feblend": "feBlend",
+    "fecolormatrix": "feColorMatrix",
+    "fecomponenttransfer": "feComponentTransfer",
+    "fecomposite": "feComposite",
+    "feconvolvematrix": "feConvolveMatrix",
+    "fediffuselighting": "feDiffuseLighting",
+    "fedisplacementmap": "feDisplacementMap",
+    "fedistantlight": "feDistantLight",
+    "fedropshadow": "feDropShadow",
+    "feflood": "feFlood",
+    "fefunca": "feFuncA",
+    "fefuncb": "feFuncB",
+    "fefuncg": "feFuncG",
+    "fefuncr": "feFuncR",
+    "fegaussianblur": "feGaussianBlur",
+    "feimage": "feImage",
+    "femerge": "feMerge",
+    "femergenode": "feMergeNode",
+    "femorphology": "feMorphology",
+    "feoffset": "feOffset",
+    "fepointlight": "fePointLight",
+    "fespecularlighting": "feSpecularLighting",
+    "fespotlight": "feSpotLight",
+    "fetile": "feTile",
+    "feturbulence": "feTurbulence",
+    "foreignobject": "foreignObject",
+    "glyphref": "glyphRef",
+    "lineargradient": "linearGradient",
+    "radialgradient": "radialGradient",
+    "textpath": "textPath",
+}
+
+## SVG attribute names the tokenizer lowered, restored ("adjust SVG
+## attributes", 13.2.6.5); MathML's one is `definitionURL`.
+SVG_ATTRS := {
+    "attributename": "attributeName",
+    "attributetype": "attributeType",
+    "basefrequency": "baseFrequency",
+    "baseprofile": "baseProfile",
+    "calcmode": "calcMode",
+    "clippathunits": "clipPathUnits",
+    "diffuseconstant": "diffuseConstant",
+    "edgemode": "edgeMode",
+    "filterunits": "filterUnits",
+    "glyphref": "glyphRef",
+    "gradienttransform": "gradientTransform",
+    "gradientunits": "gradientUnits",
+    "kernelmatrix": "kernelMatrix",
+    "kernelunitlength": "kernelUnitLength",
+    "keypoints": "keyPoints",
+    "keysplines": "keySplines",
+    "keytimes": "keyTimes",
+    "lengthadjust": "lengthAdjust",
+    "limitingconeangle": "limitingConeAngle",
+    "markerheight": "markerHeight",
+    "markerunits": "markerUnits",
+    "markerwidth": "markerWidth",
+    "maskcontentunits": "maskContentUnits",
+    "maskunits": "maskUnits",
+    "numoctaves": "numOctaves",
+    "pathlength": "pathLength",
+    "patterncontentunits": "patternContentUnits",
+    "patterntransform": "patternTransform",
+    "patternunits": "patternUnits",
+    "pointsatx": "pointsAtX",
+    "pointsaty": "pointsAtY",
+    "pointsatz": "pointsAtZ",
+    "preservealpha": "preserveAlpha",
+    "preserveaspectratio": "preserveAspectRatio",
+    "primitiveunits": "primitiveUnits",
+    "refx": "refX",
+    "refy": "refY",
+    "repeatcount": "repeatCount",
+    "repeatdur": "repeatDur",
+    "requiredextensions": "requiredExtensions",
+    "requiredfeatures": "requiredFeatures",
+    "specularconstant": "specularConstant",
+    "specularexponent": "specularExponent",
+    "spreadmethod": "spreadMethod",
+    "startoffset": "startOffset",
+    "stddeviation": "stdDeviation",
+    "stitchtiles": "stitchTiles",
+    "surfacescale": "surfaceScale",
+    "systemlanguage": "systemLanguage",
+    "tablevalues": "tableValues",
+    "targetx": "targetX",
+    "targety": "targetY",
+    "textlength": "textLength",
+    "viewbox": "viewBox",
+    "viewtarget": "viewTarget",
+    "xchannelselector": "xChannelSelector",
+    "ychannelselector": "yChannelSelector",
+    "zoomandpan": "zoomAndPan",
+}
+
 ## Named character references Garlic decodes (a subset of 13.5).
 NAMED := {
     "amp": "&",
@@ -205,6 +312,9 @@ struct Lexer
     text List[char]
     ## Scripting is on: `noscript` holds raw text (13.2.5.4).
     scripting bool
+    ## Open `svg` and `math` start tags not yet ended: foreign content,
+    ## where `<![CDATA[` is text and `<script/>` holds nothing.
+    foreign int
 
 ## The character `k` places ahead, or U+0000 past the end.
 fn Lexer.at(self, k int) char
@@ -439,7 +549,11 @@ fn Lexer.run(mut self)
                 continue
             self.out.push(tok)
             match tok
-                Start(tag, _, _) =>
+                Start(tag, _, sc) =>
+                    if (tag == "svg" or tag == "math") and not sc
+                        self.foreign += 1
+                    if sc and self.foreign > 0
+                        continue
                     if RAW_TEXT.contains(tag) or (self.scripting and tag == "noscript")
                         self.raw(tag, false)
                     elif RCDATA.contains(tag)
@@ -451,7 +565,14 @@ fn Lexer.run(mut self)
             self.i += 2
             tag := self.name(false)
             self.until(">")
+            if (tag == "svg" or tag == "math") and self.foreign > 0
+                self.foreign -= 1
             self.out.push(End(tag))
+            continue
+        if d == '!' and self.foreign > 0 and self.looking_at("<![cdata[")
+            # A CDATA section is text in foreign content (13.2.5.69).
+            self.i += 9
+            self.text.extend(self.until("]]>").chars())
             continue
         if d == '/' and self.at(2) == '>'
             self.i += 3
@@ -487,7 +608,7 @@ pub fn tokenize(src str) List[Token]
 
 ## `tokenize`, with `noscript` read as raw text when `scripting` is on.
 pub fn tokenize_with(src str, scripting bool) List[Token]
-    mut lx := Lexer(cs: src.chars(), i: 0, out: [], text: [], scripting: scripting)
+    mut lx := Lexer(cs: src.chars(), i: 0, out: [], text: [], scripting: scripting, foreign: 0)
     lx.run()
     lx.out
 
@@ -592,6 +713,34 @@ fn Builder.foreign(self) bool
             return true
     false
 
+## The namespace a new element goes in, from the nearest open `svg`,
+## `math` or `foreignObject` (an HTML integration point, 13.2.6.5): 1 for
+## SVG, 2 for MathML, 0 for HTML.
+fn Builder.namespace(self) int
+    mut k := self.stack.len() - 1
+    while k > 0
+        t := self.nodes[self.stack[k]].tag
+        if t == "svg"
+            return 1
+        if t == "math"
+            return 2
+        if t == "foreignObject"
+            return 0
+        k -= 1
+    0
+
+## `attrs` with their SVG (or, for MathML, `definitionURL`) case restored.
+fn adjust_attrs(attrs List[Attr], svg bool) List[Attr]
+    mut out := List[Attr]()
+    for a in attrs
+        if svg
+            out.push(Attr(name: SVG_ATTRS.get(a.name) else a.name, value: a.value))
+        elif a.name == "definitionurl"
+            out.push(Attr(name: "definitionURL", value: a.value))
+        else
+            out.push(a)
+    out
+
 fn Builder.start(mut self, tag str, attrs List[Attr], self_closing bool)
     if tag == "html"
         self.ensure_html()
@@ -615,7 +764,21 @@ fn Builder.start(mut self, tag str, attrs List[Attr], self_closing bool)
         self.ensure_body()
         self.close_implied(tag)
         parent = self.top()
-    id := self.element(parent, tag, attrs)
+    mut name := tag
+    mut adjusted := attrs
+    mut ns := 0
+    if tag == "svg"
+        ns = 1
+    elif tag == "math"
+        ns = 2
+    else
+        ns = self.namespace()
+    if ns == 1
+        name = SVG_TAGS.get(tag) else tag
+        adjusted = adjust_attrs(attrs, true)
+    elif ns == 2
+        adjusted = adjust_attrs(attrs, false)
+    id := self.element(parent, name, adjusted)
     if not VOID.contains(tag) and not (self_closing and self.foreign())
         self.stack.push(id)
     self.skip_newline = tag == "pre" or tag == "textarea" or tag == "listing"
@@ -628,9 +791,11 @@ fn Builder.end(mut self, tag str)
         if tag == "head" and self.body < 0 and self.head >= 0 and self.top() == self.head
             self.stack.pop()
         return
+    svg_name := SVG_TAGS.get(tag) else tag
     mut k := self.stack.len() - 1
     while k > 1
-        if self.nodes[self.stack[k]].tag == tag
+        t := self.nodes[self.stack[k]].tag
+        if t == tag or t == svg_name
             self.close_to(k)
             return
         k -= 1
@@ -712,12 +877,22 @@ pub fn parse(src str) Doc
 pub fn parse_scripting(src str) Doc
     build(tokenize_with(src, true))
 
-## The value of attribute `name` of node `id`, or none.
+## The value of attribute `name` of node `id`, or none. An exact match
+## wins; otherwise the name matches ignoring ASCII case, so `viewBox` finds
+## a `viewbox` a script set and `viewbox` (from `getAttribute`) finds the
+## parsed `viewBox`.
 pub fn Doc.attr(self, id int, name str) str?
     for a in self.nodes[id].attrs
         if a.name == name
             return a.value
+    for a in self.nodes[id].attrs
+        if same_name(a.name, name)
+            return a.value
     none
+
+## Whether attribute names `a` and `b` are equal ignoring ASCII case.
+fn same_name(a str, b str) bool
+    a.byte_len() == b.byte_len() and a.to_lower() == b.to_lower()
 
 ## Every element named `tag`, in document order.
 pub fn Doc.all(self, tag str) List[int]
@@ -734,14 +909,14 @@ pub fn Doc.first(self, tag str) int?
 pub fn Doc.set_attr(mut self, id int, name str, value str)
     self.mark(id)
     for k in 0..self.nodes[id].attrs.len()
-        if self.nodes[id].attrs[k].name == name
+        if same_name(self.nodes[id].attrs[k].name, name)
             self.nodes[id].attrs[k].value = value
             return
     self.nodes[id].attrs.push(Attr(name, value))
 
 ## Removes attribute `name` from node `id`, if it has it.
 pub fn Doc.remove_attr(mut self, id int, name str)
-    self.nodes[id].attrs = [a for a in self.nodes[id].attrs if a.name != name]
+    self.nodes[id].attrs = [a for a in self.nodes[id].attrs if not same_name(a.name, name)]
     self.mark(id)
 
 ## Records that node `id` changed.
@@ -908,3 +1083,54 @@ fn dump_node(d Doc, id int, depth int, mut out List[str])
         Document => out.push("{pad}#document")
     for c in n.children
         dump_node(d, c, depth + 1, mut out)
+
+# ---- Tests -----------------------------------------------------------------
+
+@test fn svg_names_keep_their_case_in_foreign_content()
+    d := parse("<div viewBox=1></div><svg viewBox=\"0 0 24 24\" preserveAspectRatio=none><linearGradient id=g gradientUnits=userSpaceOnUse></linearGradient><rect/></svg>")
+    div := d.first("div") else
+        assert(false)
+        return
+    assert_eq(d.nodes[div].attrs[0].name, "viewbox")
+    svg := d.first("svg") else
+        assert(false)
+        return
+    assert_eq(d.nodes[svg].attrs[0].name, "viewBox")
+    assert_eq(d.nodes[svg].attrs[1].name, "preserveAspectRatio")
+    g := d.first("linearGradient") else
+        assert(false)
+        return
+    assert_eq(d.nodes[g].attrs[1].name, "gradientUnits")
+    # `</linearGradient>` closes it, so the rect is its sibling
+    assert_eq(d.nodes[svg].children.len(), 2)
+    # either case finds the attribute
+    assert_eq((d.attr(svg, "viewbox") else ""), "0 0 24 24")
+    assert_eq((d.attr(div, "viewBox") else ""), "1")
+
+@test fn foreign_object_content_is_html_again()
+    d := parse("<svg><foreignObject><div viewBox=x></div></foreignObject></svg>")
+    div := d.first("div") else
+        assert(false)
+        return
+    assert_eq(d.nodes[div].attrs[0].name, "viewbox")
+    assert(d.first("foreignObject") != none)
+
+@test fn set_attr_matches_names_ignoring_case()
+    mut d := parse("<svg viewBox=\"0 0 1 1\"></svg>")
+    svg := d.first("svg") else
+        assert(false)
+        return
+    d.set_attr(svg, "viewbox", "0 0 2 2")
+    assert_eq(d.nodes[svg].attrs.len(), 1)
+    assert_eq((d.attr(svg, "viewBox") else ""), "0 0 2 2")
+    d.remove_attr(svg, "viewbox")
+    assert(d.attr(svg, "viewBox") == none)
+
+@test fn foreign_content_reads_cdata_and_empty_scripts()
+    d := parse("<svg><desc><![CDATA[a<b]]></desc><script href=\"x.js\"/><rect/></svg><p>after</p>")
+    desc := d.first("desc") else
+        assert(false)
+        return
+    assert_eq(d.text(desc), "a<b")
+    assert(d.first("rect") != none)
+    assert(d.first("p") != none)

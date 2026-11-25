@@ -1,0 +1,17 @@
+true a 2 p { color: red } .x
+0 1 2 @media (min-width: 1px) { .sc-2 { color: green } }
+SyntaxError
+IndexSizeError
+1 true null
+"@media (min-width: 1px) { .sc-2 { color: green } }"
+== body
+<p>t</p><script>
+var a = document.getElementById("a").sheet, b = document.getElementById("b").sheet;
+console.log(a instanceof CSSStyleSheet, a.ownerNode.id, a.cssRules.length, a.cssRules[0].cssText, a.cssRules[1].selectorText);
+console.log(b.insertRule(".sc-1 { color: blue }", 0), b.insertRule("@media (min-width: 1px) { .sc-2 { color: green } }", b.cssRules.length), b.cssRules.length, b.cssRules[1].cssText);
+try { b.insertRule("not a rule", 0); } catch (e) { console.log(e.name); }
+try { b.insertRule(".y{}", 9); } catch (e) { console.log(e.name); }
+b.deleteRule(0);
+console.log(b.cssRules.length, document.getElementById("b").sheet === b, document.createElement("div").sheet);
+Promise.resolve().then(function () { console.log(JSON.stringify(document.getElementById("b").getAttribute("data-garlic-rules"))); });
+</script>

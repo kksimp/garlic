@@ -17,12 +17,15 @@ pub struct Vm
     pub trace bool
     ## The script or module running, and its latest statement (when `trace`).
     pub cur_url str
-    pub cur_pos syntax.Pos
+    pub cur_stmt syntax.Stmt
     pub step_count int
     ## 0 for no limit.
     pub step_limit int
     pub next_id int
     pub call_depth int
+    ## Closures and classes made so far: a loop whose turn made none can
+    ## keep its turn's scope (`for_loop`, `for_in`).
+    pub closures_made int
     ## Set when `?.` meets null or undefined, until its chain ends (§13.3.9).
     pub chain_shorted bool
     pub rand_state int
@@ -71,7 +74,21 @@ pub struct Vm
     ## Set while an `error` event runs, so a failing handler can't recurse.
     pub in_error bool
     pub microtasks List[Value]
+    ## The next microtask to run: the queue is consumed from here and
+    ## compacted when a run ends, so a job is not a shift of the whole list.
+    pub micro_head int
+    ## Bumped by every tree change and `id` attribute change, for the
+    ## `getElementById` index (`id_index`, valid while `id_gen` matches).
+    pub dom_gen int
+    pub id_index Map[str, int]
+    pub id_gen int
+    pub id_len int
+    ## Parsed selectors by their text, for querySelector and friends.
+    pub sel_cache Map[str, List[List[Compound]]]
     pub started_scripts Set[int]
+    ## The classic script element running now, for `document.currentScript`;
+    ## -1 in modules, callbacks and between scripts.
+    pub cur_script int
     ## Custom elements (customelements.ail): the nodes whose upgrade is
     ## constructing them now, innermost last, and the nodes upgraded so far.
     pub ce_upgrading List[int]
@@ -91,7 +108,9 @@ pub struct Vm
     ## Generators and async functions stopped part way (gen.ail), by id, and
     ## the compiled bodies they run.
     pub frames Map[int, Frame]
-    pub codes List[Code]
+    pub codes List[ref Code]
+    ## Compiled bodies by function source and place (gen.ail `code_for`).
+    pub code_keys Map[str, int]
     pub frame_seq int
     ## Generators running now, to catch one that resumes itself.
     pub running Set[int]
@@ -101,6 +120,9 @@ pub struct Vm
     pub modules ref ModState
     ## The 2D canvases' bitmaps (canvas2d.ail).
     pub cvs ref CanvasState
+    ## Each native name's dispatch group, found on its first call
+    ## (builtins.ail `native_route`); shared by copies of the Vm.
+    pub routes ref NativeRoutes
 
 ## How a statement ended (§6.2.4 Completion Records); a throw is the `Thrown` error.
 pub enum Flow
@@ -131,8 +153,10 @@ pub fn Vm.tick(mut self) ! Thrown
 
 ## Where an error is made: "url:line:col" when tracing, else "<anonymous>".
 pub fn Vm.at_text(self) str
-    if self.trace and self.cur_pos.line > 0
-        return "{self.cur_url}:{self.cur_pos.line}:{self.cur_pos.col}"
+    if self.trace
+        p := stmt_pos(self.cur_stmt)
+        if p.line > 0
+            return "{self.cur_url}:{p.line}:{p.col}"
     "<anonymous>"
 
 ## A new error object of a built-in kind ("TypeError", ...).
@@ -337,7 +361,7 @@ fn this_scope(env ref Env) ref Env
 pub fn Vm.declare_var(mut self, env ref Env, name str)
     scope := var_scope(env)
     if scope == self.global_env
-        if self.global_obj.props.get(name) == none
+        if not self.global_obj.props.contains(name)
             self.global_obj.props[name] = Prop(
                 value: Undef,
                 get: Undef,
@@ -348,27 +372,34 @@ pub fn Vm.declare_var(mut self, env ref Env, name str)
                 configurable: false,
             )
         return
-    if scope.vars.get(name) == none
+    if not scope.vars.contains(name)
         scope.vars[name] = Binding(value: Undef, mutable: true, ready: true)
 
 ## Give `name` its value in `env` itself (`let`, `const`, parameters).
 pub fn init_binding(env ref Env, name str, v Value, mutable bool)
     env.vars[name] = Binding(value: v, mutable: mutable, ready: true)
 
-## The value of a name (§9.1.2.1 ResolveBinding, then GetValue).
+## The value of a name (§9.1.2.1 ResolveBinding, then GetValue). A binding
+## is read in place (`vars[name].value`): binding it with `get` would copy
+## the `Binding` struct on every read.
 pub fn Vm.lookup(mut self, name str, env ref Env) Value ! Thrown
     mut e := env
     while true
-        if b := e.vars.get(name)
-            if not b.ready
+        if e.vars.contains(name)
+            if not e.vars[name].ready
                 return self.reference_error("Cannot access '{name}' before initialization")
-            return b.value
+            return e.vars[name].value
         if name == "arguments" and e.has_this and e.is_function and e != self.global_env
             if is_obj(e.func)
                 args := self.make_arguments(e.args)
                 e.vars["arguments"] = Binding(value: args, mutable: true, ready: true)
                 return args
         if o := obj_of(e.object)
+            # The global object's own data properties: what has_property
+            # and get_from would find, with one map lookup.
+            if o.class == "global" and o.props.contains(name)
+                if not o.props[name].accessor
+                    return o.props[name].value
             if has_property(o, name)
                 return get_from(o, name, e.object)
         e = e.parent else break
@@ -378,7 +409,7 @@ pub fn Vm.lookup(mut self, name str, env ref Env) Value ! Thrown
 pub fn Vm.is_declared(self, name str, env ref Env) bool
     mut e := env
     while true
-        if e.vars.get(name) != none
+        if e.vars.contains(name)
             return true
         if o := obj_of(e.object)
             if has_property(o, name)
@@ -390,12 +421,13 @@ pub fn Vm.is_declared(self, name str, env ref Env) bool
 pub fn Vm.assign_name(mut self, name str, v Value, env ref Env) ! Thrown
     mut e := env
     while true
-        if b := e.vars.get(name)
-            if not b.ready
+        if e.vars.contains(name)
+            if not e.vars[name].ready
                 return self.reference_error("Cannot access '{name}' before initialization")
-            if not b.mutable
+            if not e.vars[name].mutable
                 return self.type_error("Assignment to constant variable.")
-            e.vars[name] = Binding(value: v, mutable: true, ready: true)
+            # Ready and mutable: only the value changes.
+            e.vars[name].value = v
             return
         if o := obj_of(e.object)
             if has_property(o, name) or e.parent == none
@@ -565,22 +597,34 @@ pub fn Vm.exec_block(mut self, body List[syntax.Stmt], env ref Env) Flow ! Throw
     Normal
 
 pub fn Vm.exec(mut self, s syntax.Stmt, env ref Env) Flow ! Thrown
-    self.exec_in(s, env, [])
+    self.exec_in(s, env, none)
 
 ## What a loop does with its body's completion: "next", "break", or "out"
 ## (leave the loop with it) (§14.7.1.1 LoopContinues).
-fn loop_action(f Flow, labels List[str]) str
+fn loop_action(f Flow, labels List[str]?) str
     match f
         Normal => "next"
-        Cont(l) => if l == "" or labels.contains(l) then "next" else "out"
-        Brk(l) => if l == "" or labels.contains(l) then "break" else "out"
+        Cont(l) => if l == "" or has_label(labels, l) then "next" else "out"
+        Brk(l) => if l == "" or has_label(labels, l) then "break" else "out"
         Ret => "out"
 
-## A statement with the labels in front of it (§14.13).
-fn Vm.exec_in(mut self, s syntax.Stmt, env ref Env, labels List[str]) Flow ! Thrown
-    self.tick()?
+## Whether `l` is one of a loop's labels (none: an unlabelled statement).
+fn has_label(labels List[str]?, l str) bool
+    if ls := labels
+        return ls.contains(l)
+    false
+
+## A statement with the labels in front of it (§14.13); none when it has
+## none, so a plain statement allocates no list.
+fn Vm.exec_in(mut self, s syntax.Stmt, env ref Env, labels List[str]?) Flow ! Thrown
+    # `tick`, written out: this runs for every statement.
+    self.step_count += 1
+    if self.step_count > self.step_limit and self.step_limit > 0
+        return Thrown(value: Undef, text: "step limit of {self.step_limit} reached", limit: true)
     if self.trace
-        self.cur_pos = stmt_pos(s)
+        # The statement itself (shared, not copied); `at_text` finds its
+        # position only when an error is made.
+        self.cur_stmt = s
     match s
         Exp(e, _) =>
             self.eval(e, env)?
@@ -657,7 +701,7 @@ fn Vm.exec_in(mut self, s syntax.Stmt, env ref Env, labels List[str]) Flow ! Thr
         )
         Switch(disc, cases, _) => self.switch_statement(disc, cases, env)
         Labeled(label, body, _) =>
-            mut inner := labels
+            mut inner := labels else List[str]()
             inner.push(label)
             f := self.exec_in(body, env, inner)?
             match f
@@ -693,7 +737,7 @@ fn Vm.for_loop(
     update syntax.Expr?,
     body syntax.Stmt,
     env ref Env,
-    labels List[str],
+    labels List[str]?,
 ) Flow ! Thrown
     loop_env := new_env(env, false)
     mut per_iteration := false
@@ -706,7 +750,11 @@ fn Vm.for_loop(
                 self.var_decl(d, loop_env)?
             InitExpr(e) => self.eval(e, loop_env)?
     # §14.7.4.4 CreatePerIterationEnvironment: closures see each turn's `let`.
+    # Only a closure (or class) made since the last copy can have seen the
+    # turn's scope; with none made, the copy would be unobservable, so the
+    # scope goes on as it is.
     mut iter_env := if per_iteration then copy_env(loop_env) else loop_env
+    mut made := self.closures_made
     while true
         if t := test
             if not truthy(self.eval(t, iter_env)?)
@@ -717,8 +765,9 @@ fn Vm.for_loop(
             break
         if act == "out"
             return f
-        if per_iteration
+        if per_iteration and self.closures_made != made
             iter_env = copy_env(iter_env)
+        made = self.closures_made
         if u := update
             self.eval(u, iter_env)?
     Normal
@@ -731,7 +780,7 @@ fn Vm.for_in(
     body syntax.Stmt,
     of bool,
     env ref Env,
-    labels List[str],
+    labels List[str]?,
 ) Flow ! Thrown
     mut head_env := env
     if d := left_decl(left)
@@ -759,8 +808,19 @@ fn Vm.for_in(
             Bool | Num | Str | Big | Sym | Obj =>
                 for k in for_in_keys(self.to_object(subject)?)
                     items.push(Str(k))
+    # Each turn binds in a new scope, unless no closure was made since the
+    # last one (then nothing can see the old scope) and the head binds a
+    # plain name, which the next turn overwrites.
+    reuse := simple_left(left)
+    mut iter_env := new_env(env, false)
+    mut made := self.closures_made
+    mut turns := 0
     for item in items
-        f := self.loop_turn(left, item, body, env)?
+        if turns > 0 and (not reuse or self.closures_made != made)
+            iter_env = new_env(env, false)
+        made = self.closures_made
+        turns += 1
+        f := self.loop_turn(left, item, body, iter_env)?
         act := loop_action(f, labels)
         if act == "break"
             break
@@ -768,15 +828,24 @@ fn Vm.for_in(
             return f
     Normal
 
-## One turn of a `for-in` or `for-of` body with `item` bound.
+## Whether a `for-in`/`for-of` head binds one plain name in the turn's
+## scope (or nothing there), so that scope can serve the next turn.
+fn simple_left(left syntax.ForLeft) bool
+    match left
+        LeftDecl(d) =>
+            match d.decls[0].target
+                PatId => true
+                PatTarget | PatObj | PatArr | PatDefault => false
+        LeftPat => true
+
+## One turn of a `for-in` or `for-of` body with `item` bound in `iter_env`.
 fn Vm.loop_turn(
     mut self,
     left syntax.ForLeft,
     item Value,
     body syntax.Stmt,
-    env ref Env,
+    iter_env ref Env,
 ) Flow ! Thrown
-    iter_env := new_env(env, false)
     match left
         LeftDecl(d) => self.bind_pattern(d.decls[0].target, item, iter_env, d.kind)?
         LeftPat(p) => self.bind_pattern(p, item, iter_env, "assign")?
@@ -790,9 +859,13 @@ fn Vm.for_of_lazy(
     it Value,
     body syntax.Stmt,
     env ref Env,
-    labels List[str],
+    labels List[str]?,
 ) Flow ! Thrown
     next := get(it, "next")?
+    reuse := simple_left(left)
+    mut iter_env := new_env(env, false)
+    mut made := self.closures_made
+    mut turns := 0
     while true
         r := self.call(next, it, [])?
         if not is_obj(r)
@@ -800,7 +873,11 @@ fn Vm.for_of_lazy(
         if truthy(get(r, "done")?)
             break
         item := get(r, "value")?
-        f := self.loop_turn(left, item, body, env) else err
+        if turns > 0 and (not reuse or self.closures_made != made)
+            iter_env = new_env(env, false)
+        made = self.closures_made
+        turns += 1
+        f := self.loop_turn(left, item, body, iter_env) else err
             if not err.limit
                 self.close_iterator(it) else ignored
                     return err
@@ -949,6 +1026,11 @@ fn Vm.assign_to(mut self, target syntax.Expr, v Value, env ref Env) ! Thrown
         Paren(inner, _) => self.assign_to(inner, v, env)?
         Member(object, prop, computed, _, _) =>
             base := self.member_base(object, env)?
+            if computed and is_array_value(base)
+                kv := self.eval(prop, env)?
+                if not array_fast_set(base, kv, v)
+                    put(base, self.to_key(kv)?, v)?
+                return
             key := self.member_key(prop, computed, env)?
             put(base, key, v)?
         Num | Str | Big | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
@@ -1089,7 +1171,7 @@ pub fn Vm.eval(mut self, e syntax.Expr, env ref Env) Value ! Thrown
                 return self.eval(yes, env)
             self.eval(no, env)
         Call(callee, args, optional, _) =>
-            if syntax.expr_kind(callee) == "Super"
+            if is_super(callee)
                 return self.super_call(args, env)
             target := self.callee_of(callee, env)?
             if self.chain_shorted
@@ -1114,8 +1196,13 @@ pub fn Vm.eval(mut self, e syntax.Expr, env ref Env) Value ! Thrown
             if optional and is_nullish(base)
                 self.chain_shorted = true
                 return Undef
+            if computed and is_indexed_value(base) and not is_super(object)
+                kv := self.eval(prop, env)?
+                if fast := array_fast_get(base, kv)
+                    return fast
+                return get(base, self.to_key(kv)?)
             key := self.member_key(prop, computed, env)?
-            if syntax.expr_kind(object) == "Super"
+            if is_super(object)
                 return self.get_super(key, env)
             get(base, key)
         Seq(items, _) =>
@@ -1138,7 +1225,7 @@ pub fn Vm.eval(mut self, e syntax.Expr, env ref Env) Value ! Thrown
 ## The object a member expression reads from; `super.x` reads from the
 ## home object's prototype (§13.3.7.1).
 fn Vm.member_base(mut self, object syntax.Expr, env ref Env) Value ! Thrown
-    if syntax.expr_kind(object) == "Super"
+    if is_super(object)
         return self.this_value(env)
     self.eval(object, env)
 
@@ -1150,6 +1237,58 @@ fn Vm.member_key(mut self, prop syntax.Expr, computed bool, env ref Env) str ! T
         PrivName(name, _) => "{PRIVATE}{name}"
         Num | Str | Big | Template | Tagged | Regex | Bool | Null | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Member | Seq | Spread | Chain | Paren | Yield | Await =>
             self.to_key(self.eval(prop, env)?)
+
+## Whether an expression is `super` (no text made, unlike `expr_kind`).
+fn is_super(e syntax.Expr) bool
+    match e
+        Super => true
+        Paren | Num | Str | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Member | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
+            false
+
+## Whether `v` is an array or `arguments` object, whose index properties
+## are the elements themselves (§10.4.2, §10.4.4).
+fn is_array_value(v Value) bool
+    match v
+        Obj(o) => o.class == "Array" or o.class == "Arguments"
+        Undef | Null | Bool | Num | Str | Big | Sym => false
+
+## Whether `a[i]` on `v` may take `array_fast_get`: an array, `arguments`
+## or ASCII text.
+fn is_indexed_value(v Value) bool
+    match v
+        Obj(o) => o.class == "Array" or o.class == "Arguments"
+        Str(s) => is_ascii_text(s)
+        Undef | Null | Bool | Num | Big | Sym => false
+
+## `a[i]` for an array `a` and a number `i` that is an index inside it: the
+## element, without making the key "i" and parsing it back. On ASCII text,
+## the character at `i` (one UTF-16 unit, §10.4.3.5).
+fn array_fast_get(base Value, kv Value) Value?
+    n := num_of(kv) else return none
+    i := as_index(n) else return none
+    match base
+        Obj(o) =>
+            if i < o.elems.len()
+                return o.elems[i]
+            none
+        Str(s) =>
+            if i < s.len() and is_ascii_text(s)
+                return Value.Str(s.slice(i, i + 1))
+            none
+        Undef | Null | Bool | Num | Big | Sym => none
+
+## `a[i] = v` for an index inside an unfrozen array: the element is an own
+## writable data property, so no setter on the prototype chain can apply.
+fn array_fast_set(base Value, kv Value, v Value) bool
+    o := obj_of(base) else return false
+    if o.frozen
+        return false
+    n := num_of(kv) else return false
+    i := as_index(n) else return false
+    if i >= o.elems.len()
+        return false
+    o.elems[i] = v
+    true
 
 ## `super[key]` with the current `this` as the receiver.
 fn Vm.get_super(mut self, key str, env ref Env) Value ! Thrown
@@ -1178,8 +1317,13 @@ fn Vm.callee_of(mut self, callee syntax.Expr, env ref Env) Callee ! Thrown
             if optional and is_nullish(base)
                 self.chain_shorted = true
                 return Callee(f: Undef, this_val: Undef)
+            if computed and is_array_value(base) and not is_super(object)
+                kv := self.eval(prop, env)?
+                if fast := array_fast_get(base, kv)
+                    return Callee(f: fast, this_val: base)
+                return Callee(f: get(base, self.to_key(kv)?)?, this_val: base)
             key := self.member_key(prop, computed, env)?
-            if syntax.expr_kind(object) == "Super"
+            if is_super(object)
                 return Callee(f: self.get_super(key, env)?, this_val: base)
             Callee(f: get(base, key)?, this_val: base)
         Paren(inner, _) =>
@@ -1306,8 +1450,30 @@ pub fn Vm.binary(mut self, op str, a Value, b Value) Value ! Thrown
                                 return Value.Num((x.to_int() % y.to_int()).to_float())
                             return Value.Num(fmod(x, y))
                         _ => return self.binary_slow(op, a, b)
-                Undef | Null | Bool | Str | Big | Sym | Obj => return self.binary_slow(op, a, b)
-        Undef | Null | Bool | Str | Big | Sym | Obj => return self.binary_slow(op, a, b)
+                Str(y) =>
+                    if op == "+"
+                        return Value.Str("{syntax.number_to_string(x)}{y}")
+                    return self.binary_slow(op, a, b)
+                Undef | Null | Bool | Big | Sym | Obj => return self.binary_slow(op, a, b)
+        # Strings: concatenation and comparison need no ToPrimitive either.
+        Str(x) =>
+            match b
+                Str(y) =>
+                    match op
+                        "+" => return Value.Str("{x}{y}")
+                        "===" | "==" => return Value.Bool(x == y)
+                        "!==" | "!=" => return Value.Bool(x != y)
+                        "<" => return Value.Bool(x < y)
+                        ">" => return Value.Bool(y < x)
+                        "<=" => return Value.Bool(not (y < x))
+                        ">=" => return Value.Bool(not (x < y))
+                        _ => return self.binary_slow(op, a, b)
+                Num(y) =>
+                    if op == "+"
+                        return Value.Str("{x}{syntax.number_to_string(y)}")
+                    return self.binary_slow(op, a, b)
+                Undef | Null | Bool | Big | Sym | Obj => return self.binary_slow(op, a, b)
+        Undef | Null | Bool | Big | Sym | Obj => return self.binary_slow(op, a, b)
 
 fn Vm.binary_slow(mut self, op str, a Value, b Value) Value ! Thrown
     if (is_big_val(a) or is_big_val(b)) and big_op(op)
@@ -1392,6 +1558,10 @@ pub fn Vm.instance_of(mut self, v Value, target Value) bool ! Thrown
 
 ## `=`, `+=`, `&&=` and the rest (§13.15.2).
 fn Vm.assignment(mut self, op str, target syntax.Pat, value syntax.Expr, env ref Env) Value ! Thrown
+    if it := index_target(target)
+        if op == "="
+            return self.assign_index(it.object, it.prop, value, env)
+        return self.compound_index(op, it.object, it.prop, value, env)
     if op == "="
         # A property's object and key come before the value (§13.15.2).
         if r := self.member_target(target, env)?
@@ -1423,11 +1593,92 @@ fn Vm.assignment(mut self, op str, target syntax.Pat, value syntax.Expr, env ref
             return old
         result = self.eval_named(value, single_name(target), env)?
     else
-        result = self.binary(op.slice(0, op.chars().len() - 1), old, self.eval(value, env)?)?
+        result = self.binary(op.slice(0, op.len() - 1), old, self.eval(value, env)?)?
     if is_member
         put(base, key, result)?
     else
         self.assign_to(t, result, env)?
+    result
+
+## The object and key expressions of a computed member target `o[k]`
+## (not `super[k]`), for the index fast paths of `assignment`.
+struct IndexTarget
+    object syntax.Expr
+    prop syntax.Expr
+
+fn index_target(target syntax.Pat) IndexTarget?
+    match target
+        PatTarget(t) =>
+            match t
+                Member(object, prop, computed, _, _) =>
+                    if computed and not is_super(object)
+                        return IndexTarget(object: object, prop: prop)
+                    none
+                Paren | Num | Str | Big | Template | Tagged | Regex | Bool | Null | Ident | This | Super | NewTarget | Import | Array | Object | Function | Arrow | ClassExpr | Unary | Update | Binary | Logical | Assign | Cond | Call | New | Seq | Spread | Chain | PrivName | Yield | Await =>
+                    none
+        PatId | PatObj | PatArr | PatDefault => none
+
+## `o[k] = value` (§13.15.2): the object, the key, then the value. A number
+## key needs no conversion that could run code, so on an array it is used
+## as the index itself, with no key text made and parsed back.
+fn Vm.assign_index(
+    mut self,
+    object syntax.Expr,
+    prop syntax.Expr,
+    value syntax.Expr,
+    env ref Env,
+) Value ! Thrown
+    base := self.eval(object, env)?
+    kv := self.eval(prop, env)?
+    if is_array_value(base) and num_of(kv) != none
+        x := self.eval(value, env)?
+        if not array_fast_set(base, kv, x)
+            self.put(base, self.to_key(kv)?, x)?
+        return x
+    key := self.to_key(kv)?
+    v := self.eval(value, env)?
+    self.put(base, key, v)?
+    v
+
+## `o[k] op= value`, as `assignment` does it for any member, with the
+## element read and written directly when `o` is an array and `k` an index
+## inside it.
+fn Vm.compound_index(
+    mut self,
+    op str,
+    object syntax.Expr,
+    prop syntax.Expr,
+    value syntax.Expr,
+    env ref Env,
+) Value ! Thrown
+    base := self.eval(object, env)?
+    kv := self.eval(prop, env)?
+    mut direct := false
+    mut key := ""
+    mut old := Value.Undef
+    if is_array_value(base)
+        if hit := array_fast_get(base, kv)
+            direct = true
+            old = hit
+    if not direct
+        key = self.to_key(kv)?
+        old = self.get(base, key)?
+    mut result := old
+    if op == "&&=" or op == "||=" or op == "??="
+        keep := match op
+            "&&=" => not truthy(old)
+            "||=" => truthy(old)
+            _ => not is_nullish(old)
+        if keep
+            return old
+        result = self.eval(value, env)?
+    else
+        result = self.binary(op.slice(0, op.len() - 1), old, self.eval(value, env)?)?
+    if direct
+        if array_fast_set(base, kv, result)
+            return result
+        key = self.to_key(kv)?
+    self.put(base, key, result)?
     result
 
 ## The object and key of an assignment to a property, or none.
@@ -1508,6 +1759,7 @@ fn is_computed(k syntax.Key) bool
 ## A function object (§10.2.3 OrdinaryFunctionCreate). `kind` is "normal"
 ## (has a `prototype` and can be `new`ed), "arrow" or "method".
 pub fn Vm.make_function(mut self, f syntax.Func, env ref Env, home Value, kind str) Value
+    self.closures_made += 1
     o := object("Function", proto_of("Function"))
     is_ctor := kind == "normal" and not f.is_gen and not f.is_async
     o.call = Closure(f: f, env: env, home: home, is_ctor: is_ctor, class_info: none)
@@ -1639,7 +1891,10 @@ fn Vm.run_body(mut self, fun syntax.Func, env ref Env, args List[Value]) Value !
         return err
 
 fn Vm.run_params_and_body(mut self, fun syntax.Func, env ref Env, args List[Value]) Value ! Thrown
-    env.args = args
+    # Kept for `arguments` (`lookup`), which an arrow's scope never answers
+    # (no `this` of its own): an arrow call copies no list.
+    if not fun.is_arrow
+        env.args = args
     for i in 0..fun.params.len()
         v := if i < args.len() then args[i] else Undef
         self.bind_pattern(fun.params[i], v, env, "param")?
@@ -1742,6 +1997,7 @@ fn Vm.init_fields(mut self, obj Value, info ClassInfo) ! Thrown
 
 ## A class (§15.7.14 ClassDefinitionEvaluation).
 fn Vm.make_class(mut self, c syntax.Class, env ref Env) Value ! Thrown
+    self.closures_made += 1
     class_env := new_env(env, false)
     class_env.strict = true
     name := c.name else ""

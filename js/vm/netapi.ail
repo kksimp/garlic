@@ -40,7 +40,10 @@ NET_PRELUDE := r"""
     init = init || {};
     var bytes = bodyBytes(body);
     Object.defineProperty(this, "_bytes", { value: bytes, enumerable: false, writable: true });
-    this._body = bytes ? new TextDecoder().decode(bytes) : (body == null ? "" : String(body));
+    // A ReadableStream body is read when a body method first needs it (streams.ail).
+    var stream = g.ReadableStream && body instanceof g.ReadableStream;
+    Object.defineProperty(this, "_rs", { value: stream ? body : null, enumerable: false, writable: true });
+    this._body = bytes ? new TextDecoder().decode(bytes) : (body == null || stream ? "" : String(body));
     if (bytes && g.Blob && body instanceof g.Blob && body.type && !(init.headers && new Headers(init.headers).has("content-type"))) {
       init = Object.assign({}, init, { headers: Object.assign({ "content-type": body.type }, init.headers || {}) });
     }
