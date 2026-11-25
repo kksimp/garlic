@@ -81,6 +81,14 @@ fn parse_big_string(text str) bigint.BigInt?
 fn bigval_text(v Value) str
     big_of(v).to_text()
 
+## -1, 0 or 1 for an `Ordering` (BigInt.cmp returns `Ordering` since ail
+## v0.2.0).
+fn ord_sign(o Ordering) int
+    match o
+        Less => -1
+        Equal => 0
+        Greater => 1
+
 ## -1, 0 or 1 as the BigInt `x` is less than, equal to or greater than the
 ## number `n`; none for NaN.
 fn cmp_big_num(x bigint.BigInt, n float) int?
@@ -91,7 +99,7 @@ fn cmp_big_num(x bigint.BigInt, n float) int?
     if n == 0.0 - infinity()
         return 1
     f := n.floor()
-    c := x.cmp(float_to_big(f))
+    c := ord_sign(x.cmp(float_to_big(f)))
     if c == 0 and n > f
         return -1
     c
@@ -103,13 +111,13 @@ fn cmp_big_other(x bigint.BigInt, o Value) int?
         Null => cmp_big_num(x, 0.0)
         Str(s) =>
             y := parse_big_string(s) else return none
-            x.cmp(y)
+            ord_sign(x.cmp(y))
         Undef | Sym | Obj => none
-        Big(y) => x.cmp(y)
+        Big(y) => ord_sign(x.cmp(y))
 
 fn big_compare(a Value, b Value) int?
     if is_big_val(a) and is_big_val(b)
-        return big_of(a).cmp(big_of(b))
+        return ord_sign(big_of(a).cmp(big_of(b)))
     if is_big_val(a)
         return cmp_big_other(big_of(a), b)
     c := cmp_big_other(big_of(b), a) else return none
@@ -156,7 +164,7 @@ fn big_bitop(op str, x bigint.BigInt, y bigint.BigInt) bigint.BigInt
             _ => xl[i].bit_xor(yl[i])
         r = r.mul(base).add(bigint.from_int(w))
         i -= 1
-    if r.cmp(big_pow(two, 32 * n - 1)) >= 0
+    if r >= big_pow(two, 32 * n - 1)
         return r.sub(m)
     r
 
@@ -175,7 +183,7 @@ fn big_as_int(bits int, x bigint.BigInt) bigint.BigInt
         return bigint.from_int(0)
     r := big_as_uint(bits, x)
     m := big_pow(bigint.from_int(2), bits)
-    if r.cmp(big_pow(bigint.from_int(2), bits - 1)) >= 0
+    if r >= big_pow(bigint.from_int(2), bits - 1)
         return r.sub(m)
     r
 
@@ -254,7 +262,7 @@ pub fn Vm.big_binary(mut self, op str, a Value, b Value) Value ! Thrown
             if y.is_negative()
                 return range_error("Exponent must be non-negative")
             k := y.as_int() else return range_error("Maximum BigInt size exceeded")
-            if k > 1000000 and x.abs().cmp(big_one()) > 0
+            if k > 1000000 and x.abs() > big_one()
                 return range_error("Maximum BigInt size exceeded")
             big_value(big_pow(x, k))
         "&" | "|" | "^" => big_value(big_bitop(op, x, y))
@@ -382,7 +390,7 @@ pub fn big_sort(items List[Value]) List[Value]
     mut i := 0
     mut j := 0
     while i < a.len() and j < b.len()
-        if big_of(b[j]).cmp(big_of(a[i])) < 0
+        if big_of(b[j]) < big_of(a[i])
             out.push(b[j])
             j += 1
         else
