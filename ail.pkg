@@ -1,4 +1,4 @@
 package garlic
-ail 0.1
+ail 0.2
 dep garlicjs path js caps env,proc,fs
 dep image path vendor/image caps fs
